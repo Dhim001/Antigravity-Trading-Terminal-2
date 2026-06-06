@@ -1,0 +1,246 @@
+/**
+ * MultiChartGrid.jsx
+ * Professional multi-asset chart grid inspired by Bloomberg Terminal, TradingView,
+ * and ThinkOrSwim. Supports 1×1, 2×1, 2×2, 3×2, and 1+3 mosaic layouts.
+ * Each cell is an independent MiniChartWidget with its own symbol selector.
+ */
+import React, { useState } from 'react';
+import { useStore } from '../store/useStore';
+import MiniChartWidget from './MiniChartWidget';
+
+// ── Layout Definitions ─────────────────────────────────────────────────────
+const LAYOUTS = [
+  {
+    id: '1x1',
+    label: '1×1',
+    icon: (
+      <svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor">
+        <rect x="1" y="1" width="20" height="16" rx="1.5" opacity="0.9" />
+      </svg>
+    ),
+    cols: 1, rows: 1,
+    defaults: ['BTCUSDT'],
+    description: 'Single chart',
+  },
+  {
+    id: '2x1',
+    label: '2×1',
+    icon: (
+      <svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor">
+        <rect x="1"  y="1" width="9" height="16" rx="1.5" />
+        <rect x="12" y="1" width="9" height="16" rx="1.5" />
+      </svg>
+    ),
+    cols: 2, rows: 1,
+    defaults: ['BTCUSDT', 'ETHUSDT'],
+    description: 'Side by side',
+  },
+  {
+    id: '1+2',
+    label: '1+2',
+    icon: (
+      <svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor">
+        <rect x="1"  y="1"  width="12" height="16" rx="1.5" />
+        <rect x="15" y="1"  width="6"  height="7"  rx="1.5" />
+        <rect x="15" y="10" width="6"  height="7"  rx="1.5" />
+      </svg>
+    ),
+    cols: null, rows: null,
+    defaults: ['BTCUSDT', 'ETHUSDT', 'AAPL'],
+    description: 'Main + 2 right',
+    custom: true,
+  },
+  {
+    id: '2x2',
+    label: '2×2',
+    icon: (
+      <svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor">
+        <rect x="1"  y="1"  width="9" height="7"  rx="1.5" />
+        <rect x="12" y="1"  width="9" height="7"  rx="1.5" />
+        <rect x="1"  y="10" width="9" height="7"  rx="1.5" />
+        <rect x="12" y="10" width="9" height="7"  rx="1.5" />
+      </svg>
+    ),
+    cols: 2, rows: 2,
+    defaults: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'],
+    description: '4 charts',
+  },
+  {
+    id: '3x2',
+    label: '3×2',
+    icon: (
+      <svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor">
+        <rect x="1"  y="1"  width="5.5" height="7" rx="1" />
+        <rect x="8.25" y="1" width="5.5" height="7" rx="1" />
+        <rect x="15.5" y="1" width="5.5" height="7" rx="1" />
+        <rect x="1"  y="10" width="5.5" height="7" rx="1" />
+        <rect x="8.25" y="10" width="5.5" height="7" rx="1" />
+        <rect x="15.5" y="10" width="5.5" height="7" rx="1" />
+      </svg>
+    ),
+    cols: 3, rows: 2,
+    defaults: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA', 'MSFT', 'BTCUSDT'],
+    description: '6 charts',
+  },
+];
+
+// ── Component ──────────────────────────────────────────────────────────────
+export default function MultiChartGrid({ onSwitchToSingle }) {
+  const [layoutId, setLayoutId]       = useState('2x2');
+  const [focusedIdx, setFocusedIdx]   = useState(0);
+  const [symbols, setSymbols]         = useState(() => {
+    const layout = LAYOUTS.find(l => l.id === '2x2');
+    return [...layout.defaults];
+  });
+  const { setActiveSymbol } = useStore();
+
+  const layout = LAYOUTS.find(l => l.id === layoutId);
+
+  // When layout changes, reset symbols to defaults and expand array if needed
+  const handleLayoutChange = (newLayout) => {
+    setLayoutId(newLayout.id);
+    const count = newLayout.defaults.length;
+    // Preserve existing symbols where possible, fill remainder with defaults
+    setSymbols(prev => {
+      const next = [...newLayout.defaults];
+      for (let i = 0; i < Math.min(prev.length, next.length); i++) {
+        next[i] = prev[i];
+      }
+      return next;
+    });
+    setFocusedIdx(0);
+  };
+
+  const handleFocus = (idx, sym) => {
+    setFocusedIdx(idx);
+    setActiveSymbol(sym);
+  };
+
+  // ── Render grid cells ──────────────────────────────────────────────────
+  const renderCells = () => {
+    const count = layout.defaults.length;
+
+    // Special layout: 1 large left + 2 stacked right
+    if (layout.id === '1+2') {
+      return (
+        <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gridTemplateRows: '1fr 1fr', gap: '4px', flex: 1, padding: '4px', minHeight: 0 }}>
+          <div style={{ gridRow: '1 / 3' }}>
+            <MiniChartWidget
+              key={`cell-0-${symbols[0]}`}
+              defaultSymbol={symbols[0]}
+              isFocused={focusedIdx === 0}
+              onFocus={(sym) => { symbols[0] = sym; handleFocus(0, sym); }}
+            />
+          </div>
+          <MiniChartWidget
+            key={`cell-1-${symbols[1]}`}
+            defaultSymbol={symbols[1]}
+            isFocused={focusedIdx === 1}
+            onFocus={(sym) => { symbols[1] = sym; handleFocus(1, sym); }}
+          />
+          <MiniChartWidget
+            key={`cell-2-${symbols[2]}`}
+            defaultSymbol={symbols[2]}
+            isFocused={focusedIdx === 2}
+            onFocus={(sym) => { symbols[2] = sym; handleFocus(2, sym); }}
+          />
+        </div>
+      );
+    }
+
+    // Standard grid layouts
+    return (
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+        gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
+        gap: '4px',
+        flex: 1,
+        padding: '4px',
+        minHeight: 0,
+        overflow: 'hidden',
+      }}>
+        {Array.from({ length: count }, (_, i) => (
+          <MiniChartWidget
+            key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
+            defaultSymbol={symbols[i] || layout.defaults[i]}
+            isFocused={focusedIdx === i}
+            onFocus={(sym) => {
+              const next = [...symbols];
+              next[i] = sym;
+              setSymbols(next);
+              handleFocus(i, sym);
+            }}
+          />
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: '#070c13' }}>
+
+      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 14px', height: '42px', flexShrink: 0,
+        borderBottom: '1px solid rgba(255,255,255,0.07)',
+        background: '#080d14',
+      }}>
+        {/* Left: Title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-secondary)', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+            Multi-Chart View
+          </span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            {layout.description} — click any chart to focus
+          </span>
+        </div>
+
+        {/* Center: Layout Selector */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px', padding: '3px' }}>
+          {LAYOUTS.map(l => (
+            <button
+              key={l.id}
+              title={l.description}
+              onClick={() => handleLayoutChange(l)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                gap: '5px',
+                padding: '4px 8px', borderRadius: '4px', cursor: 'pointer',
+                border: 'none',
+                background: layoutId === l.id ? 'rgba(37,99,235,0.25)' : 'transparent',
+                color: layoutId === l.id ? '#60a5fa' : 'var(--text-muted)',
+                transition: 'all 0.15s',
+              }}
+            >
+              {l.icon}
+              <span style={{ fontSize: '0.68rem', fontWeight: '600', fontFamily: 'var(--font-sans)' }}>{l.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Right: Back to single chart */}
+        <button
+          onClick={onSwitchToSingle}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '5px 12px', borderRadius: '6px', cursor: 'pointer',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            color: 'var(--text-secondary)', fontSize: '0.75rem',
+            fontWeight: '600', fontFamily: 'var(--font-sans)',
+            transition: 'all 0.15s',
+          }}
+        >
+          ← Single Chart
+        </button>
+      </div>
+
+      {/* ── Grid ────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {renderCells()}
+      </div>
+    </div>
+  );
+}
