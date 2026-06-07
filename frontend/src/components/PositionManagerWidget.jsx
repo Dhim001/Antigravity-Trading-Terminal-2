@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
-import { Briefcase, List, Landmark, XSquare } from 'lucide-react';
+import { Briefcase, List, Landmark, XSquare, Cpu, Play, Square, Trash2, Settings } from 'lucide-react';
 
 export default function PositionManagerWidget() {
-  const { positions, orders, balances, tickerData } = useStore();
-  const [activeTab, setActiveTab] = useState('positions'); // positions, orders, balances
+  const {
+    positions, orders, balances, tickerData, activeSymbol,
+    isBotRunning, botStrategy, botConfig, botLogs,
+    startBot, stopBot, setBotStrategy, updateBotConfig, clearBotLogs
+  } = useStore();
+
+  const [activeTab, setActiveTab] = useState('positions'); // positions, orders, balances, algo
 
   const handleCancelOrder = (orderId) => {
     sendWebSocketAction("cancel_order", { order_id: orderId });
@@ -79,6 +84,32 @@ export default function PositionManagerWidget() {
           >
             <Landmark size={14} />
             Balances
+          </button>
+          <button 
+            onClick={() => setActiveTab('algo')}
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px',
+              padding: '0 16px', 
+              background: 'transparent',
+              border: 'none',
+              borderBottom: activeTab === 'algo' ? '2px solid var(--color-accent)' : '2px solid transparent',
+              color: activeTab === 'algo' ? '#fff' : 'var(--text-muted)',
+              fontSize: '0.8rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+              height: '100%'
+            }}
+          >
+            <Cpu size={14} style={{ color: isBotRunning ? '#10b981' : 'inherit' }} />
+            Algo Trading
+            {isBotRunning && (
+              <span style={{
+                width: '6px', height: '6px', borderRadius: '50%', background: '#10b981',
+                boxShadow: '0 0 6px #10b981', marginLeft: '2px', display: 'inline-block'
+              }} />
+            )}
           </button>
         </div>
       </div>
@@ -263,6 +294,196 @@ export default function PositionManagerWidget() {
               )}
             </tbody>
           </table>
+        )}
+
+        {/* Algo Trading Tab */}
+        {activeTab === 'algo' && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '320px 1fr',
+            gap: '16px',
+            padding: '16px',
+            height: '100%',
+            overflow: 'hidden',
+            minHeight: 0,
+          }}>
+            {/* Left: Settings Panel */}
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: '12px',
+              background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)',
+              borderRadius: '8px', padding: '14px', overflowY: 'auto'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }}>
+                <Settings size={14} style={{ color: 'var(--color-accent)' }} />
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Bot Parameters</span>
+              </div>
+
+              {/* Strategy Select */}
+              <div className="terminal-input-group" style={{ margin: 0 }}>
+                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Select Strategy</label>
+                <select
+                  value={botStrategy}
+                  onChange={e => setBotStrategy(e.target.value)}
+                  disabled={isBotRunning}
+                  style={{
+                    width: '100%', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff', borderRadius: '5px', padding: '6px 10px',
+                    fontSize: '0.75rem', cursor: isBotRunning ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)',
+                    colorScheme: 'dark',
+                  }}
+                >
+                  <option value="EMA_CROSS" style={{ background: '#0f172a', color: '#fff' }}>EMA Crossover (9/21)</option>
+                  <option value="RSI_MEAN_REV" style={{ background: '#0f172a', color: '#fff' }}>RSI Mean Reversion (14)</option>
+                  <option value="MACD_TREND" style={{ background: '#0f172a', color: '#fff' }}>MACD Trend Follower</option>
+                </select>
+              </div>
+
+              {/* Quantity Input */}
+              <div className="terminal-input-group" style={{ margin: 0 }}>
+                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Order Size (Quantity)</label>
+                <div className="terminal-input-wrapper">
+                  <input
+                    type="number"
+                    step="any"
+                    value={botConfig?.quantity || ''}
+                    disabled={isBotRunning}
+                    onChange={e => updateBotConfig({ quantity: parseFloat(e.target.value) || 0 })}
+                    className="terminal-input"
+                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                  />
+                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>Units</span>
+                </div>
+              </div>
+
+              {/* Stop Loss Input */}
+              <div className="terminal-input-group" style={{ margin: 0 }}>
+                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Auto Stop Loss</label>
+                <div className="terminal-input-wrapper">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={botConfig?.stopLossPercent || ''}
+                    disabled={isBotRunning}
+                    onChange={e => updateBotConfig({ stopLossPercent: parseFloat(e.target.value) || 0 })}
+                    className="terminal-input"
+                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                  />
+                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>%</span>
+                </div>
+              </div>
+
+              {/* Take Profit Input */}
+              <div className="terminal-input-group" style={{ margin: 0 }}>
+                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Auto Take Profit</label>
+                <div className="terminal-input-wrapper">
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={botConfig?.takeProfitPercent || ''}
+                    disabled={isBotRunning}
+                    onChange={e => updateBotConfig({ takeProfitPercent: parseFloat(e.target.value) || 0 })}
+                    className="terminal-input"
+                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                  />
+                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>%</span>
+                </div>
+              </div>
+
+              {/* Start / Stop Toggle Button */}
+              <button
+                onClick={() => {
+                  if (isBotRunning) {
+                    stopBot();
+                  } else {
+                    startBot();
+                  }
+                }}
+                className="terminal-btn"
+                style={{
+                  marginTop: 'auto',
+                  background: isBotRunning ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)',
+                  border: `1px solid ${isBotRunning ? 'var(--color-down)' : 'var(--color-up)'}`,
+                  color: isBotRunning ? 'var(--color-down)' : 'var(--color-up)',
+                  boxShadow: isBotRunning ? '0 0 10px rgba(239,68,68,0.2)' : '0 0 10px rgba(16,185,129,0.2)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                  fontWeight: '700', padding: '10px', fontSize: '0.82rem',
+                }}
+              >
+                {isBotRunning ? (
+                  <>
+                    <Square size={14} fill="currentColor" />
+                    STOP ALGO BOT
+                  </>
+                ) : (
+                  <>
+                    <Play size={14} fill="currentColor" />
+                    START ALGO BOT
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Right: Console Log */}
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: '8px',
+              background: '#04060a', border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '8px', padding: '14px', overflow: 'hidden', minHeight: 0,
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyRules: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0, justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fff' }}>
+                  <Cpu size={14} style={{ color: isBotRunning ? '#10b981' : 'var(--text-muted)' }} />
+                  <span style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Bot Operation Log</span>
+                  <span style={{
+                    fontSize: '0.65rem', padding: '2px 8px', borderRadius: '4px',
+                    background: isBotRunning ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.05)',
+                    color: isBotRunning ? '#10b981' : 'var(--text-muted)', fontWeight: 600,
+                  }}>
+                    {isBotRunning ? `SCANNING ${activeSymbol}` : 'IDLE'}
+                  </span>
+                </div>
+                <button
+                  onClick={clearBotLogs}
+                  title="Clear Console"
+                  style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: '4px',
+                    borderRadius: '4px', transition: 'color 0.2s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = '#fff'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+
+              {/* Monospace Output */}
+              <div style={{
+                flex: 1, overflowY: 'auto', fontFamily: 'var(--font-mono)',
+                fontSize: '0.72rem', color: '#94a3b8', display: 'flex', flexDirection: 'column-reverse',
+                gap: '4px', paddingRight: '4px', scrollBehavior: 'smooth'
+              }}>
+                {botLogs.length === 0 ? (
+                  <div style={{ margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', opacity: 0.5 }}>
+                    <Cpu size={24} />
+                    <span>Bot console output is empty. Activate the bot to see logs.</span>
+                  </div>
+                ) : (
+                  botLogs.map((log, idx) => {
+                    let logColor = '#94a3b8'; // Neutral
+                    if (log.includes('BUY') || log.includes('Profit') || log.includes('Success')) logColor = '#10b981'; // Green
+                    if (log.includes('SELL') || log.includes('Loss') || log.includes('Stop Loss') || log.includes('Error')) logColor = '#ef4444'; // Red
+                    if (log.includes('Running') || log.includes('Config')) logColor = '#60a5fa'; // Blue
+                    return (
+                      <div key={idx} style={{ color: logColor, whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
+                        {log}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
         )}
 
       </div>

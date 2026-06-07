@@ -1,8 +1,24 @@
 import { create } from 'zustand';
 
+const getLocal = (key, fallback) => {
+  try {
+    const val = localStorage.getItem(key);
+    return val !== null ? JSON.parse(val) : fallback;
+  } catch (_) {
+    return fallback;
+  }
+};
+
+const setLocal = (key, val) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch (_) {}
+};
+
 export const useStore = create((set, get) => ({
   connectionStatus: 'disconnected',
-  activeSymbol: 'BTCUSDT',
+  activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
+  viewMode: getLocal('terminal_view_mode', 'single'),
   
   // Market data states
   tickerData: {},      // symbol -> { price, change_24h, volume_24h, high_24h, low_24h }
@@ -20,9 +36,27 @@ export const useStore = create((set, get) => ({
   tradeHistory: [],    // full enriched trade list with realized P&L
   tradeStats:   null,  // aggregate statistics object
 
+  // Algorithmic Auto-Trading States
+  isBotRunning: false,
+  botStrategy: getLocal('terminal_bot_strategy', 'EMA_CROSS'), // 'EMA_CROSS', 'RSI_MEAN_REV', 'MACD_TREND'
+  botConfig: getLocal('terminal_bot_config', {
+    quantity: 0.1,         // default quantity (BTC/ETH/Shares)
+    stopLossPercent: 1.5,  // default SL %
+    takeProfitPercent: 3.0,// default TP %
+  }),
+  botLogs: [],             // array of bot operation log strings
+
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   
-  setActiveSymbol: (symbol) => set({ activeSymbol: symbol }),
+  setActiveSymbol: (symbol) => {
+    setLocal('terminal_active_symbol', symbol);
+    set({ activeSymbol: symbol });
+  },
+
+  setViewMode: (mode) => {
+    setLocal('terminal_view_mode', mode);
+    set({ viewMode: mode });
+  },
 
   updateHistory: (historyData) => set({ candleData: historyData }),
 
@@ -36,6 +70,26 @@ export const useStore = create((set, get) => ({
     tradeHistory: data.trades || [],
     tradeStats:   data.stats  || null,
   }),
+
+  startBot: () => set({ isBotRunning: true }),
+  stopBot: () => set({ isBotRunning: false }),
+  setBotStrategy: (strategy) => {
+    setLocal('terminal_bot_strategy', strategy);
+    set({ botStrategy: strategy });
+  },
+  updateBotConfig: (config) => set((state) => {
+    const next = { ...state.botConfig, ...config };
+    setLocal('terminal_bot_config', next);
+    return { botConfig: next };
+  }),
+  addBotLog: (log) => set((state) => {
+    const time = new Date().toLocaleTimeString();
+    const entry = `[${time}] ${log}`;
+    const newLogs = [entry, ...state.botLogs];
+    if (newLogs.length > 100) newLogs.pop(); // Cap log size
+    return { botLogs: newLogs };
+  }),
+  clearBotLogs: () => set({ botLogs: [] }),
 
   setOrderResult: (result) => {
     set({ orderResult: result });

@@ -330,12 +330,17 @@ export default function TradeHistoryPanel({ onClose }) {
             value={symFilter}
             onChange={e => setSymFilter(e.target.value)}
             style={{
-              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+              background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)',
               color: 'var(--text-secondary)', borderRadius: '5px', padding: '4px 10px',
               fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'var(--font-sans)',
+              colorScheme: 'dark',
             }}
           >
-            {symbols.map(s => <option key={s} value={s}>{s === 'ALL' ? 'All Symbols' : s}</option>)}
+            {symbols.map(s => (
+              <option key={s} value={s} style={{ background: '#0f172a', color: '#fff' }}>
+                {s === 'ALL' ? 'All Symbols' : s}
+              </option>
+            ))}
           </select>
 
           {/* Side filter */}

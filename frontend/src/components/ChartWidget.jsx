@@ -47,6 +47,7 @@ function makeChart(container, height, showTimeAxis = false) {
       borderColor: 'rgba(255,255,255,0.08)',
       visible: true,
       scaleMargins: { top: 0.1, bottom: 0.1 },
+      minimumWidth: 80,
     },
     leftPriceScale: { visible: false },
     timeScale: {
@@ -89,12 +90,28 @@ export default function ChartWidget() {
   const activeSymbolRef = useRef('');
   const activeRef       = useRef({});  // always up-to-date active state
 
-  const { activeSymbol, candleData, tickerData } = useStore();
+  // Price line references
+  const entryLineRef = useRef(null);
+  const slLineRef    = useRef(null);
+  const tpLineRef    = useRef(null);
 
-  const [active, setActive] = useState({
-    ema9: true, ema21: true, ema50: false,
-    sma200: false, bb: true, vwap: false,
-    rsi: true, macd: true, atr: false,
+  const {
+    activeSymbol, candleData, tickerData,
+    positions, tradeHistory, botConfig
+  } = useStore();
+
+  const [active, setActive] = useState(() => {
+    try {
+      const saved = localStorage.getItem('terminal_chart_indicators_active');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (_) {}
+    return {
+      ema9: true, ema21: true, ema50: false,
+      sma200: false, bb: true, vwap: false,
+      rsi: true, macd: true, atr: false,
+    };
   });
   const [signal, setSignal]             = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
   const [showReasons, setShowReasons]   = useState(false);
@@ -102,6 +119,12 @@ export default function ChartWidget() {
 
   // keep ref in sync
   activeRef.current = active;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active));
+    } catch (_) {}
+  }, [active]);
 
   const toggle = (key) => setActive(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -277,6 +300,106 @@ export default function ChartWidget() {
     if (!candles || candles.length === 0) return;
     renderAll(candles, activeSymbol);
   }, [candleData, activeSymbol, active, renderAll]);
+
+  // ─── Live Positions, SL/TP & Execution Markers Overlays ──────────────────
+  useEffect(() => {
+    const candleSeries = series.current.candle;
+    if (!candleSeries) return;
+
+    // 1. Remove old price lines if they exist
+    if (entryLineRef.current) {
+      try { candleSeries.removePriceLine(entryLineRef.current); } catch (_) {}
+      entryLineRef.current = null;
+    }
+    if (slLineRef.current) {
+      try { candleSeries.removePriceLine(slLineRef.current); } catch (_) {}
+      slLineRef.current = null;
+    }
+    if (tpLineRef.current) {
+      try { candleSeries.removePriceLine(tpLineRef.current); } catch (_) {}
+      tpLineRef.current = null;
+    }
+
+    // 2. Add current active position levels
+    const pos = positions[activeSymbol];
+    if (pos && pos.size !== 0) {
+      const isLong = pos.size > 0;
+      const entryPrice = pos.avg_price;
+
+      // Position entry line
+      entryLineRef.current = candleSeries.createPriceLine({
+        price: entryPrice,
+        color: '#3b82f6', // Blue
+        lineWidth: 2,
+        lineStyle: 1, // Solid
+        axisLabelVisible: true,
+        title: `ENTRY: ${isLong ? 'LONG' : 'SHORT'} (${Math.abs(pos.size).toFixed(3)})`,
+      });
+
+      // Stop Loss level line
+      if (botConfig?.stopLossPercent > 0) {
+        const slPrice = isLong 
+          ? entryPrice * (1 - botConfig.stopLossPercent / 100)
+          : entryPrice * (1 + botConfig.stopLossPercent / 100);
+        
+        slLineRef.current = candleSeries.createPriceLine({
+          price: slPrice,
+          color: '#ef4444', // Red
+          lineWidth: 1.5,
+          lineStyle: 2, // Dashed
+          axisLabelVisible: true,
+          title: `SL (${botConfig.stopLossPercent}%)`,
+        });
+      }
+
+      // Take Profit level line
+      if (botConfig?.takeProfitPercent > 0) {
+        const tpPrice = isLong 
+          ? entryPrice * (1 + botConfig.takeProfitPercent / 100)
+          : entryPrice * (1 - botConfig.takeProfitPercent / 100);
+        
+        tpLineRef.current = candleSeries.createPriceLine({
+          price: tpPrice,
+          color: '#10b981', // Green
+          lineWidth: 1.5,
+          lineStyle: 2, // Dashed
+          axisLabelVisible: true,
+          title: `TP (${botConfig.takeProfitPercent}%)`,
+        });
+      }
+    }
+
+    // 3. Render historical trade execution markers
+    const symbolTrades = tradeHistory.filter(
+      t => t.symbol === activeSymbol && t.status === 'FILLED'
+    );
+
+    const markers = symbolTrades.map(t => {
+      const isBuy = t.side === 'BUY';
+      const qty = t.filled_quantity ?? t.quantity;
+      const price = t.average_fill_price || t.price;
+      const timestamp = new Date(t.timestamp).getTime() / 1000;
+
+      return {
+        time: timestamp,
+        position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? '#10b981' : '#ef4444',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
+        text: `${t.side} ${qty} @ $${price.toLocaleString()}`,
+        size: 1.2,
+      };
+    });
+
+    // Sort markers chronologically (required by Lightweight Charts)
+    markers.sort((a, b) => a.time - b.time);
+    
+    try {
+      candleSeries.setMarkers(markers);
+    } catch (err) {
+      console.warn("Failed to set chart markers:", err);
+    }
+
+  }, [activeSymbol, positions, tradeHistory, botConfig, candleData]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
   const ticker    = tickerData[activeSymbol];

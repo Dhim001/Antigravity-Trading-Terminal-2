@@ -51,15 +51,21 @@ def init_db():
     
     conn.commit()
     
-    # Seed initial account balance if empty
-    cursor.execute("SELECT COUNT(*) FROM accounts")
-    if cursor.fetchone()[0] == 0:
-        # User starts with $100,000 USD buying power
-        cursor.execute("INSERT INTO accounts (asset, balance) VALUES ('USD', 100000.0)")
-        # Initialize zero balances for traded assets
-        for asset in ["BTC", "ETH", "AAPL", "TSLA", "MSFT"]:
-            cursor.execute("INSERT INTO accounts (asset, balance) VALUES (?, 0.0)", (asset,))
-        conn.commit()
+    # Seed/Migrate accounts individually to preserve existing data while adding new assets
+    assets_to_seed = [
+        ('USD', 100000.0),
+        ('USDT', 100000.0),
+        ('BTC', 0.0),
+        ('ETH', 0.0),
+        ('AAPL', 0.0),
+        ('TSLA', 0.0),
+        ('MSFT', 0.0)
+    ]
+    for asset, initial_balance in assets_to_seed:
+        cursor.execute("SELECT COUNT(*) FROM accounts WHERE asset = ?", (asset,))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)", (asset, initial_balance))
+    conn.commit()
         
     conn.close()
 

@@ -4,7 +4,7 @@
  * and ThinkOrSwim. Supports 1×1, 2×1, 2×2, 3×2, and 1+3 mosaic layouts.
  * Each cell is an independent MiniChartWidget with its own symbol selector.
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import MiniChartWidget from './MiniChartWidget';
 
@@ -86,20 +86,54 @@ const LAYOUTS = [
 
 // ── Component ──────────────────────────────────────────────────────────────
 export default function MultiChartGrid({ onSwitchToSingle }) {
-  const [layoutId, setLayoutId]       = useState('2x2');
-  const [focusedIdx, setFocusedIdx]   = useState(0);
-  const [symbols, setSymbols]         = useState(() => {
-    const layout = LAYOUTS.find(l => l.id === '2x2');
-    return [...layout.defaults];
+  const [layoutId, setLayoutId] = useState(() => {
+    try {
+      const saved = localStorage.getItem('terminal_multi_chart_layout_id');
+      if (saved && LAYOUTS.some(l => l.id === saved)) {
+        return saved;
+      }
+    } catch (_) {}
+    return '2x2';
   });
+
+  const [focusedIdx, setFocusedIdx]   = useState(0);
+  const [maximizedIdx, setMaximizedIdx] = useState(null);
+
+  const [symbols, setSymbols] = useState(() => {
+    try {
+      const saved = localStorage.getItem('terminal_multi_chart_symbols');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (_) {}
+    const layout = LAYOUTS.find(l => l.id === (layoutId || '2x2'));
+    return [...(layout ? layout.defaults : LAYOUTS[3].defaults)];
+  });
+
   const { setActiveSymbol } = useStore();
 
   const layout = LAYOUTS.find(l => l.id === layoutId);
 
+  // Sync state to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('terminal_multi_chart_layout_id', layoutId);
+    } catch (_) {}
+  }, [layoutId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('terminal_multi_chart_symbols', JSON.stringify(symbols));
+    } catch (_) {}
+  }, [symbols]);
+
   // When layout changes, reset symbols to defaults and expand array if needed
   const handleLayoutChange = (newLayout) => {
     setLayoutId(newLayout.id);
-    const count = newLayout.defaults.length;
+    setMaximizedIdx(null);
     // Preserve existing symbols where possible, fill remainder with defaults
     setSymbols(prev => {
       const next = [...newLayout.defaults];
@@ -120,29 +154,72 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   const renderCells = () => {
     const count = layout.defaults.length;
 
+    // Helper to get cell styles (passed directly to MiniChartWidget)
+    const getCellStyle = (idx, baseStyle = {}) => {
+      const isMaximized = maximizedIdx === idx;
+      const hasAnyMaximized = maximizedIdx !== null;
+      return {
+        ...baseStyle,
+        opacity: hasAnyMaximized && !isMaximized ? 0.15 : 1,
+        pointerEvents: hasAnyMaximized && !isMaximized ? 'none' : 'auto',
+        transition: 'opacity 0.2s ease-in-out',
+      };
+    };
+
     // Special layout: 1 large left + 2 stacked right
     if (layout.id === '1+2') {
       return (
-        <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gridTemplateRows: '1fr 1fr', gap: '4px', flex: 1, padding: '4px', minHeight: 0 }}>
-          <div style={{ gridRow: '1 / 3' }}>
-            <MiniChartWidget
-              key={`cell-0-${symbols[0]}`}
-              defaultSymbol={symbols[0]}
-              isFocused={focusedIdx === 0}
-              onFocus={(sym) => { symbols[0] = sym; handleFocus(0, sym); }}
-            />
-          </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1.6fr 1fr',
+          gridTemplateRows: '1fr 1fr',
+          gap: '4px',
+          flex: 1,
+          padding: '4px',
+          minHeight: 0,
+          position: 'relative',
+        }}>
+          <MiniChartWidget
+            key={`cell-0-${symbols[0]}`}
+            defaultSymbol={symbols[0]}
+            isFocused={focusedIdx === 0}
+            onFocus={(sym) => {
+              const next = [...symbols];
+              next[0] = sym;
+              setSymbols(next);
+              handleFocus(0, sym);
+            }}
+            isMaximized={maximizedIdx === 0}
+            onToggleMaximize={() => setMaximizedIdx(maximizedIdx === 0 ? null : 0)}
+            style={getCellStyle(0, { gridRow: '1 / 3' })}
+          />
           <MiniChartWidget
             key={`cell-1-${symbols[1]}`}
             defaultSymbol={symbols[1]}
             isFocused={focusedIdx === 1}
-            onFocus={(sym) => { symbols[1] = sym; handleFocus(1, sym); }}
+            onFocus={(sym) => {
+              const next = [...symbols];
+              next[1] = sym;
+              setSymbols(next);
+              handleFocus(1, sym);
+            }}
+            isMaximized={maximizedIdx === 1}
+            onToggleMaximize={() => setMaximizedIdx(maximizedIdx === 1 ? null : 1)}
+            style={getCellStyle(1)}
           />
           <MiniChartWidget
             key={`cell-2-${symbols[2]}`}
             defaultSymbol={symbols[2]}
             isFocused={focusedIdx === 2}
-            onFocus={(sym) => { symbols[2] = sym; handleFocus(2, sym); }}
+            onFocus={(sym) => {
+              const next = [...symbols];
+              next[2] = sym;
+              setSymbols(next);
+              handleFocus(2, sym);
+            }}
+            isMaximized={maximizedIdx === 2}
+            onToggleMaximize={() => setMaximizedIdx(maximizedIdx === 2 ? null : 2)}
+            style={getCellStyle(2)}
           />
         </div>
       );
@@ -159,6 +236,7 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
         padding: '4px',
         minHeight: 0,
         overflow: 'hidden',
+        position: 'relative',
       }}>
         {Array.from({ length: count }, (_, i) => (
           <MiniChartWidget
@@ -171,6 +249,9 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
               setSymbols(next);
               handleFocus(i, sym);
             }}
+            isMaximized={maximizedIdx === i}
+            onToggleMaximize={() => setMaximizedIdx(maximizedIdx === i ? null : i)}
+            style={getCellStyle(i)}
           />
         ))}
       </div>

@@ -10,20 +10,19 @@ import OrderBookWidget       from './components/OrderBookWidget';
 import OrderEntryWidget      from './components/OrderEntryWidget';
 import PositionManagerWidget from './components/PositionManagerWidget';
 import TradeHistoryPanel     from './components/TradeHistoryPanel';
+import AlgoTraderEngine      from './components/AlgoTraderEngine';
 
 import { TrendingUp, LayoutGrid, BarChart2, Clock } from 'lucide-react';
 
 export default function App() {
-  const { connectionStatus } = useStore();
+  const { connectionStatus, viewMode, setViewMode } = useStore();
   useWebSocket('ws://127.0.0.1:8765');
 
-  // 'single' = classic full-featured chart + indicators
-  // 'multi'  = multi-asset grid view
-  const [viewMode, setViewMode] = useState('single');
   const [showHistory, setShowHistory] = useState(false);
 
   return (
     <div className="dashboard-container">
+      <AlgoTraderEngine />
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <header className="terminal-header">

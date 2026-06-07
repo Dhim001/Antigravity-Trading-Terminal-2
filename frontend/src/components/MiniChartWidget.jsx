@@ -8,7 +8,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { useStore } from '../store/useStore';
 import { calcEMA } from '../utils/indicators';
-import { ChevronDown, Maximize2 } from 'lucide-react';
+import { ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA', 'MSFT'];
 
@@ -20,7 +20,14 @@ const SYMBOL_COLORS = {
   MSFT:    '#06b6d4',
 };
 
-export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused = false, onFocus }) {
+export default function MiniChartWidget({
+  defaultSymbol = 'BTCUSDT',
+  isFocused = false,
+  onFocus,
+  isMaximized = false,
+  onToggleMaximize,
+  style = {},
+}) {
   const containerRef  = useRef(null);
   const chartRef      = useRef(null);
   const candleRef     = useRef(null);
@@ -54,6 +61,7 @@ export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused =
         borderColor: 'rgba(255,255,255,0.06)',
         visible: true,
         scaleMargins: { top: 0.08, bottom: 0.08 },
+        minimumWidth: 80,
       },
       timeScale: {
         borderColor: 'rgba(255,255,255,0.06)',
@@ -158,10 +166,20 @@ export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused =
           : '1px solid rgba(255,255,255,0.06)',
         borderRadius: '6px',
         overflow: 'hidden',
-        transition: 'border-color 0.2s',
-        boxShadow: isFocused ? `0 0 12px ${accentCol}30` : 'none',
+        transition: 'border-color 0.2s, opacity 0.2s ease-in-out, transform 0.2s ease-in-out',
+        boxShadow: isMaximized
+          ? `0 12px 36px rgba(0,0,0,0.7)`
+          : (isFocused ? `0 0 12px ${accentCol}30` : 'none'),
         cursor: 'pointer',
-        position: 'relative',
+        position: isMaximized ? 'absolute' : 'relative',
+        width: isMaximized ? 'calc(100% - 8px)' : '100%',
+        height: isMaximized ? 'calc(100% - 8px)' : '100%',
+        zIndex: isMaximized ? 50 : 'auto',
+        ...(isMaximized && {
+          top: '4px',
+          left: '4px',
+        }),
+        ...style,
       }}
       onClick={handleFocusClick}
     >
@@ -170,11 +188,16 @@ export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused =
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '6px 10px', background: '#080d14', flexShrink: 0,
         borderBottom: '1px solid rgba(255,255,255,0.05)',
+        userSelect: 'none',
       }}
         onClick={e => e.stopPropagation()}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          if (onToggleMaximize) onToggleMaximize();
+        }}
       >
         {/* Symbol selector */}
-        <div style={{ position: 'relative' }}>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
           <button
             onClick={() => setDropdown(p => !p)}
             style={{
@@ -224,11 +247,15 @@ export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused =
 
         {/* Price + change */}
         {ticker ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '6px',
+            fontSize: '0.75rem', minWidth: 0, overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+          }}>
             <span
               className="num-mono"
               style={{
-                fontWeight: '700', fontSize: '0.82rem',
+                fontWeight: '700', fontSize: '0.8rem',
                 color: direction === 'up' ? 'var(--color-up)' : direction === 'down' ? 'var(--color-down)' : '#fff',
                 transition: 'color 0.3s',
               }}
@@ -237,26 +264,41 @@ export default function MiniChartWidget({ defaultSymbol = 'BTCUSDT', isFocused =
             </span>
             <span
               className="num-mono"
-              style={{ color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)', fontSize: '0.72rem' }}
+              style={{
+                color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)',
+                fontSize: '0.7rem',
+                display: 'inline',
+              }}
             >
               {ticker.change_24h >= 0 ? '+' : ''}{ticker.change_24h}%
             </span>
           </div>
         ) : (
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Loading…</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>Loading…</span>
         )}
 
         {/* Expand / focus icon */}
         <button
-          onClick={handleFocusClick}
-          title="Set as active symbol"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onToggleMaximize) {
+              onToggleMaximize();
+            } else {
+              handleFocusClick();
+            }
+          }}
+          title={isMaximized ? "Restore Grid Layout" : "Maximize Chart"}
           style={{
             background: 'transparent', border: 'none', cursor: 'pointer',
             color: 'var(--text-muted)', padding: '2px',
             display: 'flex', alignItems: 'center',
+            transition: 'color 0.2s',
+            flexShrink: 0,
           }}
+          onMouseEnter={e => e.currentTarget.style.color = '#fff'}
+          onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
         >
-          <Maximize2 size={12} />
+          {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
         </button>
       </div>
 
