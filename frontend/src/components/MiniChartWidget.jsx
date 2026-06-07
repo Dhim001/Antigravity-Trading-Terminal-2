@@ -61,7 +61,7 @@ export default function MiniChartWidget({
         borderColor: 'rgba(255,255,255,0.06)',
         visible: true,
         scaleMargins: { top: 0.08, bottom: 0.08 },
-        minimumWidth: 80,
+        minimumWidth: 90,
       },
       timeScale: {
         borderColor: 'rgba(255,255,255,0.06)',

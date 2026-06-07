@@ -100,22 +100,49 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   const [maximizedIdx, setMaximizedIdx] = useState(null);
 
   const [symbols, setSymbols] = useState(() => {
+    let savedLayoutId = '2x2';
+    try {
+      const savedL = localStorage.getItem('terminal_multi_chart_layout_id');
+      if (savedL && LAYOUTS.some(l => l.id === savedL)) {
+        savedLayoutId = savedL;
+      }
+    } catch (_) {}
+    
+    const layout = LAYOUTS.find(l => l.id === savedLayoutId);
+    const defaults = layout ? layout.defaults : ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'];
+
     try {
       const saved = localStorage.getItem('terminal_multi_chart_symbols');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const adjusted = [...defaults];
+          for (let i = 0; i < Math.min(parsed.length, adjusted.length); i++) {
+            if (parsed[i]) adjusted[i] = parsed[i];
+          }
+          return adjusted;
         }
       }
     } catch (_) {}
-    const layout = LAYOUTS.find(l => l.id === (layoutId || '2x2'));
-    return [...(layout ? layout.defaults : LAYOUTS[3].defaults)];
+    return [...defaults];
   });
 
-  const { setActiveSymbol } = useStore();
+  const { activeSymbol, setActiveSymbol } = useStore();
 
   const layout = LAYOUTS.find(l => l.id === layoutId);
+
+  // Sync activeSymbol from store to the focused grid cell
+  useEffect(() => {
+    if (activeSymbol && symbols[focusedIdx] !== activeSymbol) {
+      setSymbols(prev => {
+        const next = [...prev];
+        if (focusedIdx < next.length) {
+          next[focusedIdx] = activeSymbol;
+        }
+        return next;
+      });
+    }
+  }, [activeSymbol, focusedIdx]);
 
   // Sync state to localStorage
   useEffect(() => {
