@@ -25,8 +25,9 @@ export default function OrderEntryWidget() {
 
   // Asset helper details
   const getAssetDetails = () => {
-    const isCrypto = activeSymbol.includes("USDT");
-    const base = isCrypto ? activeSymbol.replace("USDT", "") : activeSymbol;
+    const sym = activeSymbol || 'BTCUSDT';
+    const isCrypto = sym.includes("USDT");
+    const base = isCrypto ? sym.replace("USDT", "") : sym;
     const quote = isCrypto ? "USDT" : "USD";
     return { base, quote };
   };

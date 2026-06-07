@@ -494,16 +494,19 @@ export default function ChartWidget() {
           {ticker && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.82rem' }}>
               <span className="num-mono" style={{ fontSize: '0.95rem', fontWeight: '700', color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)' }}>
-                {ticker.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                {ticker.price.toLocaleString(undefined, { 
+                  minimumFractionDigits: (activeSymbol.includes("XRP") || activeSymbol.includes("ADA") || activeSymbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2,
+                  maximumFractionDigits: (activeSymbol.includes("XRP") || activeSymbol.includes("ADA") || activeSymbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2
+                })}
               </span>
               <span className={`num-mono ${ticker.change_24h >= 0 ? 'text-up' : 'text-down'}`}>
                 {ticker.change_24h >= 0 ? '+' : ''}{ticker.change_24h}%
               </span>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.73rem' }}>
-                H:<span className="num-mono"> {ticker.high_24h?.toFixed(2)}</span>
+                H:<span className="num-mono"> {ticker.high_24h?.toFixed((activeSymbol.includes("XRP") || activeSymbol.includes("ADA") || activeSymbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2)}</span>
               </span>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.73rem' }}>
-                L:<span className="num-mono"> {ticker.low_24h?.toFixed(2)}</span>
+                L:<span className="num-mono"> {ticker.low_24h?.toFixed((activeSymbol.includes("XRP") || activeSymbol.includes("ADA") || activeSymbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2)}</span>
               </span>
             </div>
           )}

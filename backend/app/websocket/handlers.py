@@ -1,9 +1,9 @@
 import json
 import logging
-from app.services.oms import OrderManager
+from app.services.base_oms import BaseOMSService
 from app.websocket.connection_manager import ConnectionManager
 
-async def handle_client_message(websocket, message_str, oms: OrderManager, manager: ConnectionManager):
+async def handle_client_message(websocket, message_str, oms: BaseOMSService, manager: ConnectionManager):
     """Processes messages received from clients (order entries, cancellations, etc.)"""
     try:
         message = json.loads(message_str)
@@ -24,7 +24,15 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             if take_profit_percent is not None:
                 take_profit_percent = float(take_profit_percent)
                 
-            result = oms.place_order(symbol, order_type, side, price, quantity, stop_loss_percent, take_profit_percent)
+            result = await oms.place_order({
+                "symbol": symbol,
+                "type": order_type,
+                "side": side,
+                "price": price,
+                "quantity": quantity,
+                "stop_loss_percent": stop_loss_percent,
+                "take_profit_percent": take_profit_percent
+            })
             
             # Send result notification
             await manager.send_to(websocket, {
@@ -46,7 +54,7 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             
         elif action == "cancel_order":
             order_id = message.get("order_id")
-            result = oms.cancel_order(order_id)
+            result = await oms.cancel_order(order_id)
             
             await manager.send_to(websocket, {
                 "type": "order_result",
@@ -74,7 +82,7 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             if take_profit_percent is not None:
                 take_profit_percent = float(take_profit_percent)
                 
-            result = oms.update_position_sl_tp(symbol, stop_loss_percent, take_profit_percent)
+            result = await oms.update_position_sl_tp(symbol, stop_loss_percent, take_profit_percent)
             
             # Send result notification
             await manager.send_to(websocket, {
@@ -96,7 +104,7 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             })
 
         elif action == "get_history":
-            # Full trade history with FIFO realized P&L — sent only to requesting client
+            # Full trade history — sent only to requesting client
             await manager.send_to(websocket, {
                 "type": "trade_history",
                 "data": oms.get_trade_history()
@@ -108,20 +116,34 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             symbol = message.get("symbol")
             bias = message.get("bias")
             
-            if tick_interval is not None:
-                oms.simulator.tick_interval = float(tick_interval)
-            if volatility_multiplier is not None:
-                oms.simulator.volatility_multiplier = float(volatility_multiplier)
-            if symbol and bias:
-                oms.simulator.biases[symbol] = bias
-                logging.info(f"Admin override simulation for {symbol}: bias={bias}")
+            success = False
+            if hasattr(oms, "feed") and hasattr(oms.feed, "tick_interval"):
+                if tick_interval is not None:
+                    oms.feed.tick_interval = float(tick_interval)
+                if volatility_multiplier is not None:
+                    oms.feed.volatility_multiplier = float(volatility_multiplier)
+                if symbol and bias:
+                    oms.feed.biases[symbol] = bias
+                    logging.info(f"Admin override simulation for {symbol}: bias={bias}")
+                success = True
                 
             await manager.send_to(websocket, {
                 "type": "order_result",
-                "data": {"status": "success", "message": "Simulation settings updated"}
+                "data": {
+                    "status": "success" if success else "error", 
+                    "message": "Simulation settings updated" if success else "Simulation controls disabled in live trading mode"
+                }
             })
 
         elif action == "admin_seed_balance":
+            from app.config import TERMINAL_MODE
+            if TERMINAL_MODE != "SIMULATED":
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "error", "message": "Manual balance seeding is disabled in live trading mode."}
+                })
+                return
+
             asset = message.get("asset")
             amount = float(message.get("amount", 0.0))
             
@@ -154,12 +176,21 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
             })
 
         elif action == "admin_reset_system":
+            from app.config import TERMINAL_MODE
+            if TERMINAL_MODE != "SIMULATED":
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "error", "message": "System nuclear reset is disabled in live trading mode."}
+                })
+                return
+
             from app.database import reset_db
             try:
                 reset_db()
-                oms.simulator.tick_interval = 0.25
-                oms.simulator.volatility_multiplier = 1.0
-                oms.simulator.biases.clear()
+                if hasattr(oms, "feed"):
+                    oms.feed.tick_interval = 0.25
+                    oms.feed.volatility_multiplier = 1.0
+                    oms.feed.biases.clear()
                 msg = "System database reset successfully to defaults"
                 status = "success"
             except Exception as e:
@@ -179,11 +210,31 @@ async def handle_client_message(websocket, message_str, oms: OrderManager, manag
                 "data": oms.get_trade_history()
             })
 
+        elif action == "admin_emergency_stop":
+            result = await oms.emergency_stop()
+            await manager.send_to(websocket, {
+                "type": "order_result",
+                "data": result
+            })
+            await manager.broadcast({
+                "type": "account_update",
+                "data": oms.get_account_data()
+            })
+            await manager.broadcast({
+                "type": "trade_history",
+                "data": oms.get_trade_history()
+            })
+
         elif action == "admin_get_stats":
             from app.database import get_db_stats
             stats = get_db_stats()
-            stats["tick_interval"] = oms.simulator.tick_interval
-            stats["volatility_multiplier"] = oms.simulator.volatility_multiplier
+            if hasattr(oms, "feed") and hasattr(oms.feed, "tick_interval"):
+                stats["tick_interval"] = oms.feed.tick_interval
+                stats["volatility_multiplier"] = oms.feed.volatility_multiplier
+            else:
+                stats["tick_interval"] = 1.0
+                stats["volatility_multiplier"] = 1.0
+                
             await manager.send_to(websocket, {
                 "type": "system_stats",
                 "data": stats

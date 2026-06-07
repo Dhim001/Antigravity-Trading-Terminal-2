@@ -16,7 +16,7 @@ import SystemControlPanel    from './components/SystemControlPanel';
 import { TrendingUp, LayoutGrid, BarChart2, Clock, Settings } from 'lucide-react';
 
 export default function App() {
-  const { connectionStatus, viewMode, setViewMode } = useStore();
+  const { connectionStatus, viewMode, setViewMode, isLive, terminalMode } = useStore();
   useWebSocket('ws://127.0.0.1:8765');
 
   const [showHistory, setShowHistory] = useState(false);
@@ -32,6 +32,27 @@ export default function App() {
         <div className="brand-section">
           <TrendingUp size={22} className="logo-icon" />
           <span className="brand-title">ANTIGRAVITY LIVE TRADING TERMINAL</span>
+          {isLive && (
+            <span style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              color: '#ef4444',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              fontSize: '0.68rem',
+              fontWeight: '800',
+              padding: '4px 12px',
+              borderRadius: '4px',
+              marginLeft: '12px',
+              boxShadow: '0 0 15px rgba(239, 68, 68, 0.1)',
+              letterSpacing: '0.8px',
+              textTransform: 'uppercase',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444', animation: 'ping 1s cubic-bezier(0, 0, 0.2, 1) infinite' }} />
+              LIVE TRADING ACTIVE ({terminalMode})
+            </span>
+          )}
           <button
             onClick={() => setShowAdmin(true)}
             title="System Control & Admin Panel"
@@ -120,9 +141,12 @@ export default function App() {
 
         {/* ── Connection badge ─────────────────────────────────────────── */}
         <div className="connection-badge">
-          <span className={`status-dot ${connectionStatus}`} />
-          <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>
-            {connectionStatus === 'connected' ? 'Live' : 'Disconnected'}
+          <span className={`status-dot ${connectionStatus}`} style={{
+            background: isLive && connectionStatus === 'connected' ? '#f59e0b' : undefined,
+            boxShadow: isLive && connectionStatus === 'connected' ? '0 0 8px #f59e0b' : undefined
+          }} />
+          <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)', fontSize: '0.72rem', fontWeight: '600' }}>
+            {connectionStatus === 'connected' ? (isLive ? 'Live Broker' : 'Simulated') : 'Disconnected'}
           </span>
         </div>
       </header>

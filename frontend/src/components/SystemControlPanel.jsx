@@ -4,8 +4,21 @@ import { sendWebSocketAction } from '../services/websocket';
 import { X, Play, ShieldAlert, Cpu, Database, TrendingUp, Sliders, DollarSign, RefreshCw } from 'lucide-react';
 
 export default function SystemControlPanel({ isOpen, onClose }) {
-  const { systemStats, activeSymbol } = useStore();
+  const { systemStats, activeSymbol, isLive, symbolsList } = useStore();
   const [activeTab, setActiveTab] = useState('simulation'); // 'simulation' | 'account' | 'diagnostics'
+
+  // Helper to extract unique assets from symbols list
+  const getAvailableAssets = () => {
+    const assets = new Set(['USD', 'USDT']);
+    if (symbolsList && Array.isArray(symbolsList)) {
+      symbolsList.forEach(sym => {
+        const isCrypto = sym.includes("USDT");
+        const asset = isCrypto ? sym.replace("USDT", "") : sym;
+        assets.add(asset);
+      });
+    }
+    return Array.from(assets).sort();
+  };
   
   // Simulation tab states
   const [volatility, setVolatility] = useState(systemStats.volatility_multiplier || 1.0);
@@ -36,6 +49,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
 
   // Actions
   const handleUpdateSimulation = (updates = {}) => {
+    if (isLive) return; // Prevent simulated updates in live mode
     const payload = {
       tick_interval: updates.tickInterval !== undefined ? updates.tickInterval : tickInterval,
       volatility_multiplier: updates.volatility !== undefined ? updates.volatility : volatility,
@@ -65,6 +79,13 @@ export default function SystemControlPanel({ isOpen, onClose }) {
         setIsResetting(false);
         onClose();
       }, 1500);
+    }
+  };
+
+  const handleEmergencyStop = () => {
+    if (window.confirm("🚨 EMERGENCY LIQUIDATION: This will immediately cancel all open orders and close all active positions. Do you want to execute?")) {
+      sendWebSocketAction('admin_emergency_stop');
+      onClose();
     }
   };
 
@@ -140,180 +161,268 @@ export default function SystemControlPanel({ isOpen, onClose }) {
           
           {/* Tab 1: Simulation */}
           {activeTab === 'simulation' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              
-              {/* Drift/Bias override */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
-                  Drift Override for {activeSymbol}
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-                  {[
-                    { id: 'UP', label: 'Bullish (Pump)', color: '#10b981', bg: 'rgba(16,185,129,0.1)' },
-                    { id: 'DOWN', label: 'Bearish (Dump)', color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
-                    { id: 'RANDOM', label: 'Random Walk', color: '#94a3b8', bg: 'rgba(255,255,255,0.03)' },
-                  ].map(b => (
-                    <button
-                      key={b.id}
-                      onClick={() => { setBias(b.id); handleUpdateSimulation({ bias: b.id }); }}
-                      style={{
-                        padding: '10px', borderRadius: '6px', border: `1px solid ${bias === b.id ? b.color : 'rgba(255,255,255,0.08)'}`,
-                        background: bias === b.id ? b.bg : 'rgba(255,255,255,0.01)',
-                        color: bias === b.id ? b.color : 'var(--text-secondary)',
-                        fontSize: '0.75rem', fontWeight: '700', cursor: 'pointer',
-                        transition: 'all 0.15s'
-                      }}
-                    >
-                      {b.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Volatility Multiplier */}
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                    Volatility Multiplier
-                  </label>
-                  <span className="num-mono" style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: '700' }}>
-                    {volatility.toFixed(1)}x
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
+              {isLive && (
+                <div style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '8px',
+                  padding: '12px 14px',
+                  color: '#ef4444',
+                  fontSize: '0.74rem',
+                  fontWeight: '600',
+                  lineHeight: '1.4',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  animation: 'fade-in 0.2s ease-out'
+                }}>
+                  <ShieldAlert size={18} style={{ flexShrink: 0 }} />
+                  <span>
+                    Simulation drift controls are locked in live trading. Volatility and tick rates are governed entirely by real-time exchange feeds.
                   </span>
                 </div>
-                <input
-                  type="range" min="0.2" max="5.0" step="0.2"
-                  value={volatility}
-                  onChange={e => {
-                    const val = parseFloat(e.target.value);
-                    setVolatility(val);
-                    handleUpdateSimulation({ volatility: val });
-                  }}
-                  style={{ width: '100%', cursor: 'pointer' }}
-                />
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                  <span>0.2x (Stable)</span>
-                  <span>1.0x (Normal)</span>
-                  <span>5.0x (Highly Volatile)</span>
+              )}
+
+              <div style={{
+                opacity: isLive ? 0.35 : 1,
+                pointerEvents: isLive ? 'none' : 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '20px',
+                transition: 'opacity 0.2s'
+              }}>
+                {/* Drift/Bias override */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                    Drift Override for {activeSymbol}
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                    {[
+                      { id: 'UP', label: 'Bullish (Pump)', color: '#10b981', bg: 'rgba(16,185,129,0.1)' },
+                      { id: 'DOWN', label: 'Bearish (Dump)', color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
+                      { id: 'RANDOM', label: 'Random Walk', color: '#94a3b8', bg: 'rgba(255,255,255,0.03)' },
+                    ].map(b => (
+                      <button
+                        key={b.id}
+                        onClick={() => { setBias(b.id); handleUpdateSimulation({ bias: b.id }); }}
+                        style={{
+                          padding: '10px', borderRadius: '6px', border: `1px solid ${bias === b.id ? b.color : 'rgba(255,255,255,0.08)'}`,
+                          background: bias === b.id ? b.bg : 'rgba(255,255,255,0.01)',
+                          color: bias === b.id ? b.color : 'var(--text-secondary)',
+                          fontSize: '0.75rem', fontWeight: '700', cursor: 'pointer',
+                          transition: 'all 0.15s'
+                        }}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Volatility Multiplier */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Volatility Multiplier
+                    </label>
+                    <span className="num-mono" style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: '700' }}>
+                      {volatility.toFixed(1)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range" min="0.2" max="5.0" step="0.2"
+                    value={volatility}
+                    onChange={e => {
+                      const val = parseFloat(e.target.value);
+                      setVolatility(val);
+                      handleUpdateSimulation({ volatility: val });
+                    }}
+                    style={{ width: '100%', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    <span>0.2x (Stable)</span>
+                    <span>1.0x (Normal)</span>
+                    <span>5.0x (Highly Volatile)</span>
+                  </div>
+                </div>
+
+                {/* Tick interval / Server speed */}
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                    Tick Broadcast Speed
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '6px' }}>
+                    {[
+                      { val: 1.0, label: '1s (Slow)' },
+                      { val: 0.5, label: '500ms' },
+                      { val: 0.25, label: '250ms (Normal)' },
+                      { val: 0.1, label: '100ms (Fast)' },
+                    ].map(speed => (
+                      <button
+                        key={speed.val}
+                        onClick={() => { setTickInterval(speed.val); handleUpdateSimulation({ tickInterval: speed.val }); }}
+                        style={{
+                          padding: '8px 4px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)',
+                          background: tickInterval === speed.val ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.02)',
+                          color: tickInterval === speed.val ? '#60a5fa' : 'var(--text-secondary)',
+                          fontSize: '0.7rem', fontWeight: '600', cursor: 'pointer',
+                          borderColor: tickInterval === speed.val ? '#3b82f6' : 'rgba(255,255,255,0.08)',
+                          transition: 'all 0.15s'
+                        }}
+                      >
+                        {speed.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-
-              {/* Tick interval / Server speed */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
-                  Tick Broadcast Speed
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '6px' }}>
-                  {[
-                    { val: 1.0, label: '1s (Slow)' },
-                    { val: 0.5, label: '500ms' },
-                    { val: 0.25, label: '250ms (Normal)' },
-                    { val: 0.1, label: '100ms (Fast)' },
-                  ].map(speed => (
-                    <button
-                      key={speed.val}
-                      onClick={() => { setTickInterval(speed.val); handleUpdateSimulation({ tickInterval: speed.val }); }}
-                      style={{
-                        padding: '8px 4px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)',
-                        background: tickInterval === speed.val ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.02)',
-                        color: tickInterval === speed.val ? '#60a5fa' : 'var(--text-secondary)',
-                        fontSize: '0.7rem', fontWeight: '600', cursor: 'pointer',
-                        borderColor: tickInterval === speed.val ? '#3b82f6' : 'rgba(255,255,255,0.08)',
-                        transition: 'all 0.15s'
-                      }}
-                    >
-                      {speed.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
             </div>
           )}
 
           {/* Tab 2: Account seeding */}
           {activeTab === 'account' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              
-              {/* Seed balance */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
-                  Credit Account Balance
-                </label>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <select
-                    value={seedAsset}
-                    onChange={e => setSeedAsset(e.target.value)}
-                    style={{
-                      background: '#111827', border: '1px solid rgba(255,255,255,0.12)',
-                      color: '#fff', borderRadius: '6px', padding: '10px', fontSize: '0.8rem',
-                      outline: 'none', cursor: 'pointer'
-                    }}
-                  >
-                    {['USD', 'USDT', 'BTC', 'ETH', 'AAPL', 'TSLA', 'MSFT'].map(asset => (
-                      <option key={asset} value={asset}>{asset}</option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    value={seedAmount}
-                    onChange={e => setSeedAmount(e.target.value)}
-                    style={{
-                      flex: 1, background: '#111827', border: '1px solid rgba(255,255,255,0.12)',
-                      color: '#fff', borderRadius: '6px', padding: '10px 14px', fontSize: '0.82rem',
-                      outline: 'none', fontFamily: 'var(--font-mono)'
-                    }}
-                    placeholder="Amount to credit..."
-                  />
+              {isLive ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{
+                    background: 'rgba(245, 158, 11, 0.08)',
+                    border: '1px solid rgba(245, 158, 11, 0.2)',
+                    borderRadius: '8px',
+                    padding: '12px 14px',
+                    color: '#f59e0b',
+                    fontSize: '0.74rem',
+                    fontWeight: '600',
+                    lineHeight: '1.4',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}>
+                    <ShieldAlert size={18} style={{ flexShrink: 0 }} />
+                    <span>
+                      Manual balance seeding and database resets are disabled in live trading mode. Balances and positions are synced from the broker account.
+                    </span>
+                  </div>
+
                   <button
-                    onClick={handleSeedBalance}
+                    onClick={handleEmergencyStop}
                     style={{
-                      background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px',
-                      padding: '0 20px', fontWeight: '600', fontSize: '0.78rem', cursor: 'pointer',
-                      transition: 'background 0.15s'
+                      width: '100%',
+                      padding: '16px',
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      border: '1px solid #ef4444',
+                      borderRadius: '8px',
+                      color: '#ef4444',
+                      fontWeight: '800',
+                      fontSize: '0.85rem',
+                      letterSpacing: '0.5px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '10px',
+                      transition: 'all 0.15s',
+                      boxShadow: '0 0 15px rgba(239, 68, 68, 0.1)'
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#1d4ed8'}
-                    onMouseLeave={e => e.currentTarget.style.background = '#2563eb'}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)';
+                      e.currentTarget.style.boxShadow = '0 0 25px rgba(239, 68, 68, 0.3)';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                      e.currentTarget.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.1)';
+                    }}
                   >
-                    Credit Balance
+                    <ShieldAlert size={18} />
+                    🚨 EMERGENCY STOP: LIQUIDATE ALL POSITIONS & CANCEL ORDERS
                   </button>
+                  <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                    Warning: Immediately cancels all open limit orders and liquidates all active positions with market orders at the exchange.
+                  </span>
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Seed balance */}
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                      Credit Account Balance
+                    </label>
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <select
+                        value={seedAsset}
+                        onChange={e => setSeedAsset(e.target.value)}
+                        style={{
+                          background: '#111827', border: '1px solid rgba(255, 255, 255, 0.12)',
+                          color: '#fff', borderRadius: '6px', padding: '10px', fontSize: '0.8rem',
+                          outline: 'none', cursor: 'pointer'
+                        }}
+                      >
+                        {getAvailableAssets().map(asset => (
+                          <option key={asset} value={asset}>{asset}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        value={seedAmount}
+                        onChange={e => setSeedAmount(e.target.value)}
+                        style={{
+                          flex: 1, background: '#111827', border: '1px solid rgba(255, 255, 255, 0.12)',
+                          color: '#fff', borderRadius: '6px', padding: '10px 14px', fontSize: '0.82rem',
+                          outline: 'none', fontFamily: 'var(--font-mono)'
+                        }}
+                        placeholder="Amount to credit..."
+                      />
+                      <button
+                        onClick={handleSeedBalance}
+                        style={{
+                          background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px',
+                          padding: '0 20px', fontWeight: '600', fontSize: '0.78rem', cursor: 'pointer',
+                          transition: 'background 0.15s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#1d4ed8'}
+                        onMouseLeave={e => e.currentTarget.style.background = '#2563eb'}
+                      >
+                        Credit Balance
+                      </button>
+                    </div>
+                  </div>
 
-              <hr style={{ border: 'none', borderBottom: '1px solid rgba(255,255,255,0.06)' }} />
+                  <hr style={{ border: 'none', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }} />
 
-              {/* Reset simulator system */}
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
-                  System Reset Actions
-                </label>
-                <button
-                  onClick={handleNuclearReset}
-                  disabled={isResetting}
-                  style={{
-                    width: '100%', padding: '12px', background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid #ef4444', borderRadius: '6px', color: '#ef4444',
-                    fontWeight: '700', fontSize: '0.78rem', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                    transition: 'all 0.15s',
-                    boxShadow: '0 0 10px rgba(239,68,68,0.05)'
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-                    e.currentTarget.style.boxShadow = '0 0 15px rgba(239,68,68,0.15)';
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                    e.currentTarget.style.boxShadow = '0 0 10px rgba(239,68,68,0.05)';
-                  }}
-                >
-                  {isResetting ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
-                  {isResetting ? "RESETTING SYSTEM CONFIGURATIONS..." : "NUCLEAR RESET: WIPE SYSTEM DATABASE"}
-                </button>
-                <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '6px', textAlign: 'center' }}>
-                  Warning: Wipes active positions, cancels pending orders, and clears trade blotter logs.
-                </span>
-              </div>
-
+                  {/* Reset simulator system */}
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                      System Reset Actions
+                    </label>
+                    <button
+                      onClick={handleNuclearReset}
+                      disabled={isResetting}
+                      style={{
+                        width: '100%', padding: '12px', background: 'rgba(239, 68, 68, 0.1)',
+                        border: '1px solid #ef4444', borderRadius: '6px', color: '#ef4444',
+                        fontWeight: '700', fontSize: '0.78rem', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                        transition: 'all 0.15s',
+                        boxShadow: '0 0 10px rgba(239,68,68,0.05)'
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
+                        e.currentTarget.style.boxShadow = '0 0 15px rgba(239,68,68,0.15)';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                        e.currentTarget.style.boxShadow = '0 0 10px rgba(239,68,68,0.05)';
+                      }}
+                    >
+                      {isResetting ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
+                      {isResetting ? "RESETTING SYSTEM CONFIGURATIONS..." : "NUCLEAR RESET: WIPE SYSTEM DATABASE"}
+                    </button>
+                    <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '6px', textAlign: 'center' }}>
+                      Warning: Wipes active positions, cancels pending orders, and clears trade blotter logs.
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

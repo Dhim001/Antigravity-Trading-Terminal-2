@@ -1,30 +1,54 @@
 import asyncio
 import logging
 import websockets
-from app.config import WS_HOST, WS_PORT
+from app.config import WS_HOST, WS_PORT, TERMINAL_MODE
 from app.database import init_db
-from app.services.feed_simulator import FeedSimulator
-from app.services.oms import OrderManager
 from app.websocket.connection_manager import ConnectionManager
 from app.websocket.handlers import handle_client_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Global instances
-simulator = FeedSimulator()
-oms = OrderManager(simulator)
+# Global connection manager
 manager = ConnectionManager()
 
-async def broadcast_market_data():
-    """Background task that tick-updates market data and broadcasts to clients."""
-    logging.info("Starting market data broadcast loop...")
+# Dependency Injection Factory
+if TERMINAL_MODE == "LIVE_ALPACA":
+    logging.info("Initializing Live Alpaca Feed & OMS...")
+    from app.services.alpaca_feed import AlpacaFeedService
+    from app.services.alpaca_oms import AlpacaOMSService
+    feed = AlpacaFeedService()
+    oms = AlpacaOMSService(feed)
+elif TERMINAL_MODE == "LIVE_BINANCE":
+    logging.info("Initializing Live Binance Feed & OMS...")
+    from app.services.binance_feed import BinanceFeedService
+    from app.services.binance_oms import BinanceOMSService
+    feed = BinanceFeedService()
+    oms = BinanceOMSService(feed)
+else: # "SIMULATED"
+    logging.info("Initializing Simulated Feed & OMS...")
+    from app.services.sim_feed import SimulatedFeedService
+    from app.services.sim_oms import SimulatedOMSService
+    feed = SimulatedFeedService()
+    oms = SimulatedOMSService(feed)
+
+# Register a bridge to broadcast market updates directly to WebSocket clients
+async def broadcast_wrapper(payload: dict):
+    await manager.broadcast(payload)
+
+feed.register_broadcast_callback(broadcast_wrapper)
+if hasattr(oms, "register_broadcast_callback"):
+    oms.register_broadcast_callback(broadcast_wrapper)
+
+async def simulated_market_loop():
+    """Simulated broadcast loop, only running in SIMULATED mode."""
+    logging.info("Starting simulated market data broadcast loop...")
     tick_count = 0
     while True:
         try:
             # 1. Update prices and order books
             data = {}
-            for symbol in simulator.symbols:
-                data[symbol] = simulator.get_market_data(symbol)
+            for symbol in feed.symbols:
+                data[symbol] = feed.get_market_data(symbol)
                 
             # 2. Match any pending limit orders based on updated prices
             fills = oms.match_pending_orders()
@@ -36,11 +60,10 @@ async def broadcast_market_data():
             if sl_tp_logs:
                 for log_msg in sl_tp_logs:
                     logging.info(log_msg)
-                    log_payload = {
+                    await manager.broadcast({
                         "type": "bot_log",
                         "data": log_msg
-                    }
-                    await manager.broadcast(log_payload)
+                    })
             
             # Combine fills
             total_fills = fills + sl_tp_fills
@@ -50,74 +73,73 @@ async def broadcast_market_data():
                 "type": "market_update",
                 "data": data
             }
-            
-            # Broadcast market update to all connected clients
             await manager.broadcast(payload)
                 
             # If any limit orders or SL/TP got filled, broadcast the account state update
             if total_fills:
                 logging.info(f"Orders matched/filled: {total_fills}")
-                account_payload = {
+                await manager.broadcast({
                     "type": "account_update",
                     "data": oms.get_account_data()
-                }
-                history_payload = {
+                })
+                await manager.broadcast({
                     "type": "trade_history",
                     "data": oms.get_trade_history()
-                }
-                await manager.broadcast(account_payload)
-                await manager.broadcast(history_payload)
+                })
                 
-            # 5. Periodically broadcast diagnostics stats (every 12 ticks, ~3s at default speed)
+            # 5. Periodically broadcast diagnostics stats
             tick_count += 1
             if tick_count % 12 == 0:
                 from app.database import get_db_stats
                 stats = get_db_stats()
                 stats["clients"] = len(manager.connected_clients)
-                stats["tick_interval"] = simulator.tick_interval
-                stats["volatility_multiplier"] = simulator.volatility_multiplier
+                stats["tick_interval"] = feed.tick_interval
+                stats["volatility_multiplier"] = feed.volatility_multiplier
                 await manager.broadcast({
                     "type": "system_stats",
                     "data": stats
                 })
                 
         except Exception as e:
-            logging.error(f"Error in broadcast loop: {str(e)}")
+            logging.error(f"Error in simulated broadcast loop: {str(e)}")
             
-        await asyncio.sleep(simulator.tick_interval)
+        await asyncio.sleep(feed.tick_interval)
 
-# =====================================================================
-# Future Adaptation: Live API Feed Integration Interface
-# =====================================================================
-class LiveFeedAdapter:
-    """This class stub illustrates how to extend the server to connect 
-    to live WebSockets in production (e.g. Binance / Alpaca APIs).
-    """
-    def __init__(self, binance_ws_url="wss://stream.binance.com:9443/ws", alpaca_ws_url="wss://paper-api.alpaca.markets/stream"):
-        self.binance_ws_url = binance_ws_url
-        self.alpaca_ws_url = alpaca_ws_url
-        self.active = False
-        
-    async def connect_binance_stream(self, symbols):
-        """Connects to Binance WebSockets for live Level 1 and Level 2 streams."""
-        if not self.active:
-            logging.info("Binance stream adapter is ready. Configure API keys to activate.")
-            return
-                
-    def normalize_and_broadcast(self, raw_msg):
-        """Adapts Binance stream messages into internal market_update formats."""
-        pass
-# =====================================================================
+async def diagnostics_broadcast_loop():
+    """Periodic diagnostics updates for live/external feeds."""
+    while True:
+        try:
+            from app.database import get_db_stats
+            stats = get_db_stats()
+            stats["clients"] = len(manager.connected_clients)
+            stats["tick_interval"] = 1.0 # fixed L1 tick
+            stats["volatility_multiplier"] = 1.0
+            await manager.broadcast({
+                "type": "system_stats",
+                "data": stats
+            })
+        except Exception as e:
+            logging.error(f"Error in diagnostics loop: {str(e)}")
+        await asyncio.sleep(5)
 
 async def websocket_handler(websocket):
     """Manages WebSocket connection lifecycle."""
     logging.info("New client connected.")
     manager.register(websocket)
     
+    # Send terminal mode handshake configuration
+    await manager.send_to(websocket, {
+        "type": "terminal_config",
+        "data": {
+            "terminalMode": TERMINAL_MODE,
+            "symbols": list(feed.symbols)
+        }
+    })
+    
     # 1. Send initial historical candles to let chart pre-render
     history_payload = {
         "type": "history_update",
-        "data": {symbol: simulator.candles[symbol] for symbol in simulator.symbols}
+        "data": {symbol: feed.get_candles(symbol) for symbol in feed.symbols}
     }
     await manager.send_to(websocket, history_payload)
     
@@ -127,6 +149,13 @@ async def websocket_handler(websocket):
         "data": oms.get_account_data()
     }
     await manager.send_to(websocket, account_payload)
+    
+    # 3. Send initial trade history
+    history_payload = {
+        "type": "trade_history",
+        "data": oms.get_trade_history()
+    }
+    await manager.send_to(websocket, history_payload)
     
     try:
         async for message_str in websocket:
@@ -140,15 +169,22 @@ async def main():
     # Ensure database schema is set up
     init_db()
     
+    # Start the Feed and OMS engines
+    await feed.start()
+    await oms.initialize()
+    
     # Start WebSocket Server on defined host/port
     server = await websockets.serve(websocket_handler, WS_HOST, WS_PORT)
     logging.info(f"WebSocket Server listening on ws://{WS_HOST}:{WS_PORT}")
     
-    # Run the broadcast loop concurrently
-    await asyncio.gather(
-        server.wait_closed(),
-        broadcast_market_data()
-    )
+    # Run the feed listeners and WebSocket server concurrently
+    tasks = [server.wait_closed()]
+    if TERMINAL_MODE == "SIMULATED":
+        tasks.append(simulated_market_loop())
+    else:
+        tasks.append(diagnostics_broadcast_loop())
+        
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     try:

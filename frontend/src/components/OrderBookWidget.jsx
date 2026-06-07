@@ -41,8 +41,8 @@ export default function OrderBookWidget() {
   });
 
   const maxCumulative = Math.max(cumAsk, cumBid) || 1.0;
-  const priceDecimals = activeSymbol.includes("BTC") || activeSymbol.includes("ETH") ? 2 : 2;
-  const qtyDecimals = activeSymbol.includes("BTC") ? 4 : (activeSymbol.includes("ETH") ? 3 : 1);
+  const priceDecimals = (activeSymbol.includes("XRP") || activeSymbol.includes("ADA") || activeSymbol.includes("DOGE") || (ticker && ticker.price < 2.0)) ? 4 : 2;
+  const qtyDecimals = (activeSymbol.includes("USDT") || activeSymbol.includes("USD")) ? 4 : 2;
 
   // Spread calculation
   const bestBid = bids[0] ? bids[0][0] : 0;

@@ -489,7 +489,7 @@ export default function TradeHistoryPanel({ onClose }) {
                       {/* Fill Price */}
                       <td style={{ padding: '9px 12px', textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                         <span className="num-mono" style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
-                          {fp ? `$${fmt(fp)}` : '—'}
+                          {fp ? `$${fmt(fp, (trade.symbol.includes("XRP") || trade.symbol.includes("ADA") || trade.symbol.includes("DOGE") || fp < 2.0) ? 4 : 2)}` : '—'}
                         </span>
                       </td>
 
@@ -503,7 +503,7 @@ export default function TradeHistoryPanel({ onClose }) {
                       {/* Cost Basis */}
                       <td style={{ padding: '9px 12px', textAlign: 'right', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                         <span className="num-mono" style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                          {trade.cost_basis ? `$${fmt(trade.cost_basis)}` : '—'}
+                          {trade.cost_basis ? `$${fmt(trade.cost_basis, (trade.symbol.includes("XRP") || trade.symbol.includes("ADA") || trade.symbol.includes("DOGE") || trade.cost_basis < 2.0) ? 4 : 2)}` : '—'}
                         </span>
                       </td>
 

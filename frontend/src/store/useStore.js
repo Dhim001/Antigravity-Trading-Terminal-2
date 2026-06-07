@@ -19,6 +19,9 @@ export const useStore = create((set, get) => ({
   connectionStatus: 'disconnected',
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
+  terminalMode: 'SIMULATED',
+  isLive: false,
+  symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
   
   // Market data states
   tickerData: {},      // symbol -> { price, change_24h, volume_24h, high_24h, low_24h }
@@ -69,12 +72,73 @@ export const useStore = create((set, get) => ({
     orders: accountData.orders || []
   }),
 
-  setTradeHistory: (data) => set({
-    tradeHistory: data.trades || [],
-    tradeStats:   data.stats  || null,
-  }),
+  setTradeHistory: (data) => {
+    const rawTrades = Array.isArray(data) ? data : (data.trades || []);
+    const trades = rawTrades.map(t => {
+      let ts = t.timestamp;
+      if (typeof ts === 'number') {
+        ts = ts < 10000000000 ? ts * 1000 : ts;
+      } else if (typeof ts === 'string' && ts) {
+        const parsed = new Date(ts).getTime();
+        ts = isNaN(parsed) ? Date.now() : parsed;
+      } else {
+        ts = Date.now();
+      }
+      return { ...t, timestamp: ts };
+    });
+
+    const filledTrades = trades.filter(t => t.status === 'FILLED');
+    const sellsWithPnl = filledTrades.filter(t => t.side === 'SELL' && t.realized_pnl != null);
+    
+    const winsList = sellsWithPnl.filter(t => t.realized_pnl > 0);
+    const lossesList = sellsWithPnl.filter(t => t.realized_pnl < 0);
+    
+    const wins = winsList.length;
+    const losses = lossesList.length;
+    const total_sells = sellsWithPnl.length;
+    const win_rate = total_sells > 0 ? (wins / total_sells) * 100 : 0.0;
+    
+    const total_pnl = sellsWithPnl.reduce((sum, t) => sum + t.realized_pnl, 0);
+    
+    const totalWinPnl = winsList.reduce((sum, t) => sum + t.realized_pnl, 0);
+    const totalLossPnl = lossesList.reduce((sum, t) => sum + t.realized_pnl, 0);
+    const profit_factor = Math.abs(totalLossPnl) > 0 ? (totalWinPnl / Math.abs(totalLossPnl)) : (totalWinPnl > 0 ? 99.9 : 0.0);
+    
+    const best_trade = sellsWithPnl.reduce((max, t) => t.realized_pnl > max ? t.realized_pnl : max, 0.0);
+    const worst_trade = sellsWithPnl.reduce((min, t) => t.realized_pnl < min ? t.realized_pnl : min, 0.0);
+    
+    const avg_win = wins > 0 ? totalWinPnl / wins : 0.0;
+    const avg_loss = losses > 0 ? totalLossPnl / losses : 0.0;
+    
+    const total_fills = filledTrades.length;
+    const gross_volume = filledTrades.reduce((sum, t) => sum + (t.trade_value || 0), 0);
+    
+    const stats = {
+      total_pnl,
+      wins,
+      losses,
+      total_sells,
+      win_rate,
+      profit_factor,
+      best_trade,
+      worst_trade,
+      avg_win,
+      avg_loss,
+      total_fills,
+      gross_volume
+    };
+
+    set({
+      tradeHistory: trades,
+      tradeStats: stats,
+    });
+  },
 
   setSystemStats: (stats) => set({ systemStats: stats }),
+
+  setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
+
+  setSymbolsList: (list) => set({ symbolsList: list }),
 
   startBot: () => set({ isBotRunning: true }),
   stopBot: () => set({ isBotRunning: false }),

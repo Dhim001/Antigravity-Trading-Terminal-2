@@ -10,7 +10,7 @@ import { useStore } from '../store/useStore';
 import { calcEMA } from '../utils/indicators';
 import { ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
 
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA', 'MSFT'];
+// Symbols color catalog for accent indicators
 
 const SYMBOL_COLORS = {
   BTCUSDT: '#f59e0b',
@@ -38,7 +38,7 @@ export default function MiniChartWidget({
   const [symbol, setSymbol]         = useState(defaultSymbol);
   const [dropdownOpen, setDropdown] = useState(false);
 
-  const { candleData, tickerData, priceDirections, setActiveSymbol } = useStore();
+  const { candleData, tickerData, priceDirections, setActiveSymbol, symbolsList } = useStore();
 
   // ── Chart initialisation ────────────────────────────────────────────────
   useEffect(() => {
@@ -222,8 +222,9 @@ export default function MiniChartWidget({
               background: '#101827', border: '1px solid rgba(255,255,255,0.12)',
               borderRadius: '6px', minWidth: '130px',
               boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              maxHeight: '220px', overflowY: 'auto'
             }}>
-              {SYMBOLS.map(s => (
+              {symbolsList.map(s => (
                 <button
                   key={s}
                   onClick={() => { setSymbol(s); setDropdown(false); }}
@@ -231,13 +232,13 @@ export default function MiniChartWidget({
                     display: 'flex', alignItems: 'center', gap: '8px',
                     width: '100%', padding: '7px 12px', background: 'transparent',
                     border: 'none', cursor: 'pointer', textAlign: 'left',
-                    color: s === symbol ? SYMBOL_COLORS[s] : 'var(--text-secondary)',
+                    color: s === symbol ? (SYMBOL_COLORS[s] || '#6366f1') : 'var(--text-secondary)',
                     fontSize: '0.8rem', fontWeight: s === symbol ? '700' : '400',
                     fontFamily: 'var(--font-sans)',
                     borderBottom: '1px solid rgba(255,255,255,0.04)',
                   }}
                 >
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: SYMBOL_COLORS[s], flexShrink: 0 }} />
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: SYMBOL_COLORS[s] || '#6366f1', flexShrink: 0 }} />
                   {s}
                 </button>
               ))}
@@ -260,7 +261,10 @@ export default function MiniChartWidget({
                 transition: 'color 0.3s',
               }}
             >
-              {ticker.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {ticker.price.toLocaleString(undefined, { 
+                minimumFractionDigits: (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2,
+                maximumFractionDigits: (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2
+              })}
             </span>
             <span
               className="num-mono"

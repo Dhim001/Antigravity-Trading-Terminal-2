@@ -30,6 +30,12 @@ export const connectWebSocket = (url, storeActions) => {
       const { type, data } = payload;
 
       switch (type) {
+        case 'terminal_config':
+          storeActions.setTerminalMode(data.terminalMode);
+          if (data.symbols) {
+            storeActions.setSymbolsList(data.symbols);
+          }
+          break;
         case 'history_update':
           storeActions.updateHistory(data);
           break;

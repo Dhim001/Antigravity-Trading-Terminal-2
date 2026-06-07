@@ -143,7 +143,7 @@ export default function PositionManagerWidget() {
                   const uPnl = pos.size * (markPrice - pos.avg_price);
                   const isLong = pos.size >= 0;
                   
-                  const priceDecimals = symbol.includes("BTC") || symbol.includes("ETH") ? 2 : 2;
+                  const priceDecimals = (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || markPrice < 2.0 || pos.avg_price < 2.0) ? 4 : 2;
 
                   return (
                     <tr key={symbol}>
@@ -208,8 +208,8 @@ export default function PositionManagerWidget() {
                 </tr>
               ) : (
                 getActiveOrders().map((order) => {
-                  const priceDecimals = order.symbol.includes("BTC") || order.symbol.includes("ETH") ? 2 : 2;
-                  const qtyDecimals = order.symbol.includes("BTC") ? 4 : (order.symbol.includes("ETH") ? 3 : 1);
+                  const priceDecimals = (order.symbol.includes("XRP") || order.symbol.includes("ADA") || order.symbol.includes("DOGE") || (order.price && order.price < 2.0)) ? 4 : 2;
+                  const qtyDecimals = (order.symbol.includes("USDT") || order.symbol.includes("USD")) ? 4 : 2;
                   const isBuy = order.side === 'BUY';
                   
                   return (

@@ -1,5 +1,5 @@
 import sqlite3
-from app.config import DB_PATH
+from app.config import DB_PATH, EQUITY_SYMBOLS, CRYPTO_SYMBOLS
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -77,16 +77,19 @@ def init_db():
         pass
     conn.commit()
     
+    # Collect all unique base assets dynamically from config
+    assets = {"USD", "USDT"}
+    for info in EQUITY_SYMBOLS.values():
+        assets.add(info["asset"])
+    for info in CRYPTO_SYMBOLS.values():
+        assets.add(info["asset"])
+
     # Seed/Migrate accounts individually to preserve existing data while adding new assets
-    assets_to_seed = [
-        ('USD', 100000.0),
-        ('USDT', 100000.0),
-        ('BTC', 0.0),
-        ('ETH', 0.0),
-        ('AAPL', 0.0),
-        ('TSLA', 0.0),
-        ('MSFT', 0.0)
-    ]
+    assets_to_seed = []
+    for asset in sorted(list(assets)):
+        initial_balance = 100000.0 if asset in ("USD", "USDT") else 0.0
+        assets_to_seed.append((asset, initial_balance))
+
     for asset, initial_balance in assets_to_seed:
         cursor.execute("SELECT COUNT(*) FROM accounts WHERE asset = ?", (asset,))
         if cursor.fetchone()[0] == 0:
@@ -106,16 +109,19 @@ def reset_db():
     cursor.execute("DELETE FROM positions;")
     cursor.execute("DELETE FROM orders;")
     
+    # Collect all unique base assets dynamically from config
+    assets = {"USD", "USDT"}
+    for info in EQUITY_SYMBOLS.values():
+        assets.add(info["asset"])
+    for info in CRYPTO_SYMBOLS.values():
+        assets.add(info["asset"])
+
     # Reset account balances to defaults
-    assets_to_reset = [
-        ('USD', 100000.0),
-        ('USDT', 100000.0),
-        ('BTC', 0.0),
-        ('ETH', 0.0),
-        ('AAPL', 0.0),
-        ('TSLA', 0.0),
-        ('MSFT', 0.0)
-    ]
+    assets_to_reset = []
+    for asset in sorted(list(assets)):
+        initial_balance = 100000.0 if asset in ("USD", "USDT") else 0.0
+        assets_to_reset.append((asset, initial_balance))
+
     for asset, initial_balance in assets_to_reset:
         cursor.execute("INSERT OR REPLACE INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)", (asset, initial_balance))
         

@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore';
 import { Activity, ShieldAlert } from 'lucide-react';
 
 export default function WatchlistWidget() {
-  const { tickerData, priceDirections, activeSymbol, setActiveSymbol, connectionStatus } = useStore();
+  const { tickerData, priceDirections, activeSymbol, setActiveSymbol, connectionStatus, symbolsList } = useStore();
   const [flashStates, setFlashStates] = useState({});
 
   // Monitor price changes to trigger flash animations
@@ -23,7 +23,7 @@ export default function WatchlistWidget() {
     }
   }, [priceDirections]);
 
-  const symbols = ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"];
+  const symbols = symbolsList;
 
   return (
     <div className="widget-card">
@@ -59,7 +59,7 @@ export default function WatchlistWidget() {
                 );
               }
 
-              const priceDecimals = symbol.includes("BTC") || symbol.includes("ETH") ? 2 : 2;
+              const priceDecimals = (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || info.price < 2.0) ? 4 : 2;
               const isUp = info.change_24h >= 0;
 
               return (
