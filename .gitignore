@@ -35,6 +35,17 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Python test, lint, and type checking caches
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
 # Python Virtual Environments
 .venv/
 venv/
@@ -47,7 +58,6 @@ ENV/runtime/
 *.db
 *.sqlite
 *.sqlite3
-*.log
 
 # Logs & Debugging
 logs/
@@ -58,13 +68,19 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Environment and Local Config files
+# Environment, Local Config and Secrets
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 *.local
+*credentials*.json
+*secrets*.json
+*keys*.json
+*.pem
+*.key
+*.pub
 
 # IDEs, Editors and OS metadata
 .vscode/
