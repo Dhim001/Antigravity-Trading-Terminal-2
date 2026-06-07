@@ -18,6 +18,7 @@ manager = ConnectionManager()
 async def broadcast_market_data():
     """Background task that tick-updates market data and broadcasts to clients."""
     logging.info("Starting market data broadcast loop...")
+    tick_count = 0
     while True:
         try:
             # 1. Update prices and order books
@@ -67,10 +68,23 @@ async def broadcast_market_data():
                 await manager.broadcast(account_payload)
                 await manager.broadcast(history_payload)
                 
+            # 5. Periodically broadcast diagnostics stats (every 12 ticks, ~3s at default speed)
+            tick_count += 1
+            if tick_count % 12 == 0:
+                from app.database import get_db_stats
+                stats = get_db_stats()
+                stats["clients"] = len(manager.connected_clients)
+                stats["tick_interval"] = simulator.tick_interval
+                stats["volatility_multiplier"] = simulator.volatility_multiplier
+                await manager.broadcast({
+                    "type": "system_stats",
+                    "data": stats
+                })
+                
         except Exception as e:
             logging.error(f"Error in broadcast loop: {str(e)}")
             
-        await asyncio.sleep(0.25) # 4 ticks per second
+        await asyncio.sleep(simulator.tick_interval)
 
 # =====================================================================
 # Future Adaptation: Live API Feed Integration Interface

@@ -1,12 +1,15 @@
 import random
 import time
 import copy
-from app.config import SYMBOLS
+from app.config import SYMBOLS, DEFAULT_TICK_INTERVAL, DEFAULT_VOLATILITY_MULTIPLIER
 
 class FeedSimulator:
     def __init__(self):
         # Deep copy initial prices and parameters for the supported symbols from configuration
         self.symbols = copy.deepcopy(SYMBOLS)
+        self.tick_interval = DEFAULT_TICK_INTERVAL
+        self.volatility_multiplier = DEFAULT_VOLATILITY_MULTIPLIER
+        self.biases = {} # symbol -> 'UP' | 'DOWN' | 'RANDOM'
         
         # Historical candle state for each symbol (storing 1-minute candles)
         self.candles = {}
@@ -89,9 +92,21 @@ class FeedSimulator:
         info = self.symbols[symbol]
         decimals = info["decimals"]
         
-        # Update price using Random Walk
+        # Update price using Random Walk with Bias and Volatility Multiplier
         prev_price = info["price"]
-        change = prev_price * random.normalvariate(0, info["volatility"])
+        bias = self.biases.get(symbol, 'RANDOM')
+        vol = info["volatility"] * self.volatility_multiplier
+        
+        if bias == 'UP':
+            # Force positive change with upward drift
+            change = prev_price * abs(random.normalvariate(0.0003, vol))
+        elif bias == 'DOWN':
+            # Force negative change with downward drift
+            change = -prev_price * abs(random.normalvariate(0.0003, vol))
+        else:
+            # Standard random walk
+            change = prev_price * random.normalvariate(0, vol)
+            
         new_price = round(prev_price + change, decimals)
         info["price"] = new_price
         

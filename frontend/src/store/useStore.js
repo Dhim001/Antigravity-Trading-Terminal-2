@@ -36,6 +36,9 @@ export const useStore = create((set, get) => ({
   tradeHistory: [],    // full enriched trade list with realized P&L
   tradeStats:   null,  // aggregate statistics object
 
+  // Diagnostics and Admin Panel Stats
+  systemStats: { clients: 1, positions_count: 0, pending_orders_count: 0, filled_trades_count: 0, tick_interval: 0.25, volatility_multiplier: 1.0 },
+
   // Algorithmic Auto-Trading States
   isBotRunning: false,
   botStrategy: getLocal('terminal_bot_strategy', 'EMA_CROSS'), // 'EMA_CROSS', 'RSI_MEAN_REV', 'MACD_TREND'
@@ -70,6 +73,8 @@ export const useStore = create((set, get) => ({
     tradeHistory: data.trades || [],
     tradeStats:   data.stats  || null,
   }),
+
+  setSystemStats: (stats) => set({ systemStats: stats }),
 
   startBot: () => set({ isBotRunning: true }),
   stopBot: () => set({ isBotRunning: false }),

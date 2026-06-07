@@ -14,6 +14,10 @@ WS_PORT = 8765
 # Pre-Trade Risk Limits
 MAX_ORDER_VALUE = 50000.0
 
+# Simulation Settings Defaults
+DEFAULT_TICK_INTERVAL = 0.25
+DEFAULT_VOLATILITY_MULTIPLIER = 1.0
+
 # Supported Trading Symbols & Properties
 SYMBOLS = {
     "BTCUSDT": {"price": 68500.0, "volatility": 0.00015, "decimals": 2, "asset": "BTC", "quote": "USDT"},

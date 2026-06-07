@@ -11,24 +11,40 @@ import OrderEntryWidget      from './components/OrderEntryWidget';
 import PositionManagerWidget from './components/PositionManagerWidget';
 import TradeHistoryPanel     from './components/TradeHistoryPanel';
 import AlgoTraderEngine      from './components/AlgoTraderEngine';
+import SystemControlPanel    from './components/SystemControlPanel';
 
-import { TrendingUp, LayoutGrid, BarChart2, Clock } from 'lucide-react';
+import { TrendingUp, LayoutGrid, BarChart2, Clock, Settings } from 'lucide-react';
 
 export default function App() {
   const { connectionStatus, viewMode, setViewMode } = useStore();
   useWebSocket('ws://127.0.0.1:8765');
 
   const [showHistory, setShowHistory] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   return (
     <div className="dashboard-container">
       <AlgoTraderEngine />
+      <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <header className="terminal-header">
         <div className="brand-section">
           <TrendingUp size={22} className="logo-icon" />
           <span className="brand-title">ANTIGRAVITY LIVE TRADING TERMINAL</span>
+          <button
+            onClick={() => setShowAdmin(true)}
+            title="System Control & Admin Panel"
+            style={{
+              background: 'transparent', border: 'none', color: 'var(--text-muted)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', marginLeft: '10px',
+              transition: 'color 0.15s'
+            }}
+            onMouseEnter={e => e.currentTarget.style.color = '#3b82f6'}
+            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+          >
+            <Settings size={16} />
+          </button>
         </div>
 
         {/* ── Controls Group ───────────────────────────────────────────── */}

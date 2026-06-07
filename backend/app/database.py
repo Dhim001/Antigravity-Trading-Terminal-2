@@ -94,3 +94,59 @@ def init_db():
     conn.commit()
         
     conn.close()
+
+def reset_db():
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Enable foreign keys
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    
+    # Clear active data tables
+    cursor.execute("DELETE FROM positions;")
+    cursor.execute("DELETE FROM orders;")
+    
+    # Reset account balances to defaults
+    assets_to_reset = [
+        ('USD', 100000.0),
+        ('USDT', 100000.0),
+        ('BTC', 0.0),
+        ('ETH', 0.0),
+        ('AAPL', 0.0),
+        ('TSLA', 0.0),
+        ('MSFT', 0.0)
+    ]
+    for asset, initial_balance in assets_to_reset:
+        cursor.execute("INSERT OR REPLACE INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)", (asset, initial_balance))
+        
+    conn.commit()
+    conn.close()
+
+def get_db_stats():
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    stats = {}
+    try:
+        # Number of open positions
+        cursor.execute("SELECT COUNT(*) FROM positions WHERE size != 0.0")
+        stats["positions_count"] = cursor.fetchone()[0]
+        
+        # Number of pending orders
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'PENDING'")
+        stats["pending_orders_count"] = cursor.fetchone()[0]
+        
+        # Number of historical filled trades
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'FILLED'")
+        stats["filled_trades_count"] = cursor.fetchone()[0]
+    except Exception:
+        stats = {
+            "positions_count": 0,
+            "pending_orders_count": 0,
+            "filled_trades_count": 0
+        }
+    finally:
+        conn.close()
+        
+    return stats
+

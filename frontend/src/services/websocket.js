@@ -48,6 +48,9 @@ export const connectWebSocket = (url, storeActions) => {
         case 'bot_log':
           storeActions.addBotLog(data);
           break;
+        case 'system_stats':
+          storeActions.setSystemStats(data);
+          break;
         case 'error':
           console.error("Server execution error:", payload.message);
           break;
