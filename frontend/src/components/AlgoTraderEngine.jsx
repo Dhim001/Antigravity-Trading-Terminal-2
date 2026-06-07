@@ -47,6 +47,7 @@ export default function AlgoTraderEngine() {
     const isCrypto = activeSymbol.includes("USDT");
     const quote = isCrypto ? "USDT" : "USD";
     const base  = isCrypto ? activeSymbol.replace("USDT", "") : activeSymbol;
+    const pos   = positions[activeSymbol];
 
     let signal = null; // 'BUY', 'SELL', or null
 

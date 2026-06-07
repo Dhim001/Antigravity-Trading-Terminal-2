@@ -1,17 +1,12 @@
-import asyncio
 import random
 import time
+import copy
+from app.config import SYMBOLS
 
 class FeedSimulator:
     def __init__(self):
-        # Initial prices for the supported symbols
-        self.symbols = {
-            "BTCUSDT": {"price": 68500.0, "volatility": 0.00015, "decimals": 2, "asset": "BTC", "quote": "USDT"},
-            "ETHUSDT": {"price": 3520.0, "volatility": 0.0002, "decimals": 2, "asset": "ETH", "quote": "USDT"},
-            "AAPL": {"price": 182.50, "volatility": 0.0001, "decimals": 2, "asset": "AAPL", "quote": "USD"},
-            "TSLA": {"price": 178.20, "volatility": 0.0003, "decimals": 2, "asset": "TSLA", "quote": "USD"},
-            "MSFT": {"price": 420.10, "volatility": 0.00008, "decimals": 2, "asset": "MSFT", "quote": "USD"}
-        }
+        # Deep copy initial prices and parameters for the supported symbols from configuration
+        self.symbols = copy.deepcopy(SYMBOLS)
         
         # Historical candle state for each symbol (storing 1-minute candles)
         self.candles = {}

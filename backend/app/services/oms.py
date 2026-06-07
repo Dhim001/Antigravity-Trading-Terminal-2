@@ -1,6 +1,7 @@
 import uuid
 import time
-from database import get_connection
+from app.database import get_connection
+from app.config import MAX_ORDER_VALUE
 
 class OrderManager:
     def __init__(self, simulator):
@@ -170,8 +171,7 @@ class OrderManager:
         # Total order cost estimate
         order_value = order_price * quantity
         
-        # Pre-Trade Risk Check 1: Max Order Value limit ($50,000 USD/USDT)
-        MAX_ORDER_VALUE = 50000.0
+        # Pre-Trade Risk Check 1: Max Order Value limit
         if order_value > MAX_ORDER_VALUE:
             return {"status": "error", "message": f"Order value exceeds maximum risk limit of ${MAX_ORDER_VALUE}"}
             

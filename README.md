@@ -13,18 +13,20 @@ graph TD
     end
 
     subgraph Backend [Python WebSocket Server]
-        WS_Server[server.py] <--> WS_Client
-        WS_Server <--> OMS[Order Manager - oms.py]
-        WS_Server <--> FeedSim[Feed Simulator - feed_simulator.py]
-        OMS <--> DB[(SQLite - database.py)]
+        WS_Server[app/server.py] <--> WS_Client
+        WS_Server <--> OMS[Order Manager - app/services/oms.py]
+        WS_Server <--> FeedSim[Feed Simulator - app/services/feed_simulator.py]
+        OMS <--> DB[(SQLite - app/database.py)]
     end
 ```
 
 ### 1. Backend (Python + WebSockets)
-- **`server.py`**: The WebSocket server running on `ws://localhost:8765`. It handles client connection lifecycles, messages (placing/canceling orders, requests for account data or trade history), and broadcasts market updates.
-- **`oms.py`**: The Order Management System (OMS). It tracks account balances, manages active order books, executes market orders, tracks limit orders, matches orders against market updates, and computes FIFO realized P&L.
-- **`feed_simulator.py`**: Simulates real-time price feeds, order books, and OHLCV candlestick data for multiple trading symbols.
-- **`database.py`**: Sets up and manages the local SQLite database (`trading.db`) to persist trade executions and history.
+- **`main.py`**: The entry point to start the WebSocket application.
+- **`app/config.py`**: Centralizes system configuration, pre-trade risk limits, and symbol parameters.
+- **`app/database.py`**: Sets up and manages the local SQLite database (`trading.db`) to persist trade executions and history.
+- **`app/services/oms.py`**: The Order Management System (OMS). It tracks account balances, manages active order books, executes market orders, tracks limit orders, matches orders against market updates, and computes FIFO realized P&L.
+- **`app/services/feed_simulator.py`**: Simulates real-time price feeds, order books, and OHLCV candlestick data for multiple trading symbols.
+- **`app/websocket/`**: Houses the `ConnectionManager` and WebSocket client message routing handlers.
 
 ### 2. Frontend (React + Vite)
 - Built on React with Vite for hot-module reloading (HMR) and fast build execution.
@@ -64,7 +66,7 @@ graph TD
 
 4. Start the WebSocket server:
    ```bash
-   python server.py
+   python main.py
    ```
    The server will start listening on `ws://localhost:8765`.
 

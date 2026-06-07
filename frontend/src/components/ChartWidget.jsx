@@ -16,6 +16,7 @@ const INDICATORS = [
   { key: 'sma200', label: 'SMA 200', color: '#f97316', pane: 'main' },
   { key: 'bb',     label: 'BB 20',   color: '#6366f1', pane: 'main' },
   { key: 'vwap',   label: 'VWAP',    color: '#ec4899', pane: 'main' },
+  { key: 'volume', label: 'Volume',  color: '#00b0ff', pane: 'main' },
   { key: 'rsi',    label: 'RSI 14',  color: '#fbbf24', pane: 'rsi'  },
   { key: 'macd',   label: 'MACD',    color: '#34d399', pane: 'macd' },
   { key: 'atr',    label: 'ATR 14',  color: '#94a3b8', pane: 'atr'  },
@@ -71,7 +72,11 @@ function syncCharts(charts) {
     src.timeScale().subscribeVisibleLogicalRangeChange(range => {
       if (!range) return;
       charts.forEach((dst, di) => {
-        if (di !== si) dst.timeScale().setVisibleLogicalRange(range);
+        if (di !== si) {
+          try {
+            dst.timeScale().setVisibleLogicalRange(range);
+          } catch (_) {}
+        }
       });
     });
   });
@@ -135,6 +140,7 @@ export default function ChartWidget() {
       ema9: true, ema21: true, ema50: false,
       sma200: false, bb: true, vwap: false,
       rsi: true, macd: true, atr: false,
+      volume: true,
     };
   });
   const [signal, setSignal]             = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
@@ -178,6 +184,21 @@ export default function ChartWidget() {
     const bbMidLine   = mainChart.addSeries(LineSeries, { color: '#6366f160', lineWidth: 1, lineStyle: 3, priceLineVisible: false, lastValueVisible: false });
     const bbLowerLine = mainChart.addSeries(LineSeries, { color: '#6366f1', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
     const vwapLine    = mainChart.addSeries(LineSeries, { color: '#ec4899', lineWidth: 2, lineStyle: 1, priceLineVisible: false, lastValueVisible: false });
+    const volumeSeries = mainChart.addSeries(HistogramSeries, {
+      color: '#00b0ff',
+      priceFormat: {
+        type: 'volume',
+      },
+      priceScaleId: 'volume',
+    });
+
+    mainChart.priceScale('volume').applyOptions({
+      scaleMargins: {
+        top: 0.8, // Position at the bottom 20% of the chart
+        bottom: 0,
+      },
+      visible: false,
+    });
 
     // RSI pane
     const rsiLine = rsiChart.addSeries(LineSeries, {
@@ -214,6 +235,7 @@ export default function ChartWidget() {
       rsi: rsiLine, rsi70, rsi50, rsi30,
       macdLine, macdSig, macdHist, macdZero,
       atr: atrLine,
+      volume: volumeSeries,
     };
 
     syncCharts([mainChart, rsiChart, macdChart, atrChart]);
@@ -227,9 +249,9 @@ export default function ChartWidget() {
       const w = mainRef.current?.clientWidth;
       if (!w) return;
       mainChart.resize(w, mainRef.current.clientHeight  || 420);
-      rsiChart.resize(w,  rsiRef.current.clientHeight   || 130);
-      macdChart.resize(w, macdRef.current.clientHeight  || 130);
-      atrChart.resize(w,  atrRef.current.clientHeight   || 130);
+      if (rsiRef.current) rsiChart.resize(w, rsiRef.current.clientHeight || 130);
+      if (macdRef.current) macdChart.resize(w, macdRef.current.clientHeight || 130);
+      if (atrRef.current) atrChart.resize(w, atrRef.current.clientHeight || 130);
     };
     const ro = new ResizeObserver(() => requestAnimationFrame(handleResize));
     if (mainRef.current) ro.observe(mainRef.current);
@@ -250,14 +272,27 @@ export default function ChartWidget() {
     const s = series.current;
     const cur = activeRef.current; // always fresh, no stale closure
 
-    // 1. Candlestick
+    // 1. Candlestick & Volume
     const isSymbolChange = activeSymbolRef.current !== sym;
+    const volumeData = candles.map(c => ({
+      time: c.time,
+      value: c.volume || 0,
+      color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)',
+    }));
+
     if (isSymbolChange) {
       s.candle.setData(candles);
+      s.volume.setData(volumeData);
       activeSymbolRef.current = sym;
       charts.current.main?.timeScale().fitContent();
     } else {
-      s.candle.update(candles[candles.length - 1]);
+      const lastCandle = candles[candles.length - 1];
+      s.candle.update(lastCandle);
+      s.volume.update({
+        time: lastCandle.time,
+        value: lastCandle.volume || 0,
+        color: lastCandle.close >= lastCandle.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.35)',
+      });
     }
 
     // 2. Overlay indicators (always setData for correctness at this tick frequency)
@@ -287,6 +322,7 @@ export default function ChartWidget() {
     vis('sma200', [s.sma200]);
     vis('bb',     [s.bbUpper, s.bbMid, s.bbLower]);
     vis('vwap',   [s.vwap]);
+    vis('volume', [s.volume]);
 
     // 3. RSI
     const rsiData = calcRSI(candles, 14);
@@ -330,6 +366,7 @@ export default function ChartWidget() {
       macdSig: macdData.signalLine[macdData.signalLine.length - 1]?.value?.toFixed(4),
       vwap:    vwapD[vwapD.length - 1]?.value?.toFixed(2),
       atr:     atrData[atrData.length - 1]?.value?.toFixed(4),
+      volume:  candles[candles.length - 1]?.volume?.toLocaleString(undefined, { maximumFractionDigits: 0 }),
     });
   }, []); // no deps — uses refs for fresh values
 
@@ -574,33 +611,40 @@ export default function ChartWidget() {
         <div ref={mainRef} style={{ flex: 1, minHeight: 0 }} />
 
         {/* RSI sub-pane */}
-        {showRsi && (
-          <div style={{ flexShrink: 0, position: 'relative', borderTop: '1px solid var(--border-color)' }}>
-            <span className="chart-pane-label" style={{ color: '#fbbf24' }}>RSI(14)</span>
-            <div ref={rsiRef} style={{ height: `${subPaneH}px` }} />
-          </div>
-        )}
+        <div style={{
+          flexShrink: 0,
+          position: 'relative',
+          borderTop: showRsi ? '1px solid var(--border-color)' : 'none',
+          height: showRsi ? `${subPaneH}px` : '0px',
+          overflow: 'hidden'
+        }}>
+          <span className="chart-pane-label" style={{ color: '#fbbf24' }}>RSI(14)</span>
+          <div ref={rsiRef} style={{ height: `${subPaneH}px` }} />
+        </div>
 
         {/* MACD sub-pane */}
-        {showMacd && (
-          <div style={{ flexShrink: 0, position: 'relative', borderTop: '1px solid var(--border-color)' }}>
-            <span className="chart-pane-label" style={{ color: '#34d399' }}>MACD(12,26,9)</span>
-            <div ref={macdRef} style={{ height: `${subPaneH}px` }} />
-          </div>
-        )}
+        <div style={{
+          flexShrink: 0,
+          position: 'relative',
+          borderTop: showMacd ? '1px solid var(--border-color)' : 'none',
+          height: showMacd ? `${subPaneH}px` : '0px',
+          overflow: 'hidden'
+        }}>
+          <span className="chart-pane-label" style={{ color: '#34d399' }}>MACD(12,26,9)</span>
+          <div ref={macdRef} style={{ height: `${subPaneH}px` }} />
+        </div>
 
         {/* ATR sub-pane */}
-        {showAtr && (
-          <div style={{ flexShrink: 0, position: 'relative', borderTop: '1px solid var(--border-color)' }}>
-            <span className="chart-pane-label" style={{ color: '#94a3b8' }}>ATR(14)</span>
-            <div ref={atrRef} style={{ height: `${subPaneH}px` }} />
-          </div>
-        )}
-
-        {/* Hidden DOM nodes keep refs alive when panes are toggled off */}
-        {!showRsi  && <div ref={rsiRef}  style={{ height: 0, overflow: 'hidden' }} />}
-        {!showMacd && <div ref={macdRef} style={{ height: 0, overflow: 'hidden' }} />}
-        {!showAtr  && <div ref={atrRef}  style={{ height: 0, overflow: 'hidden' }} />}
+        <div style={{
+          flexShrink: 0,
+          position: 'relative',
+          borderTop: showAtr ? '1px solid var(--border-color)' : 'none',
+          height: showAtr ? `${subPaneH}px` : '0px',
+          overflow: 'hidden'
+        }}>
+          <span className="chart-pane-label" style={{ color: '#94a3b8' }}>ATR(14)</span>
+          <div ref={atrRef} style={{ height: `${subPaneH}px` }} />
+        </div>
       </div>
     </div>
   );
