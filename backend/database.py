@@ -50,6 +50,34 @@ def init_db():
     """)
     
     conn.commit()
+
+    # Run migrations to add Stop Loss & Take Profit support if missing
+    try:
+        cursor.execute("ALTER TABLE orders ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE orders ADD COLUMN take_profit_percent REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        cursor.execute("ALTER TABLE positions ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE positions ADD COLUMN take_profit_percent REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
     
     # Seed/Migrate accounts individually to preserve existing data while adding new assets
     assets_to_seed = [

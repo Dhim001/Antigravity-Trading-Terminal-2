@@ -164,7 +164,13 @@ export default function PositionManagerWidget() {
                         {Math.abs(pos.size).toLocaleString(undefined, { minimumFractionDigits: 4 })}
                       </td>
                       <td className="num-mono" style={{ textAlign: 'right' }}>
-                        {pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals })}
+                        <div>{pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals })}</div>
+                        {(pos.stop_loss_price || pos.take_profit_price) && (
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                            {pos.stop_loss_price && <span style={{ color: 'var(--color-down)' }}>SL: {pos.stop_loss_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}</span>}
+                            {pos.take_profit_price && <span style={{ color: 'var(--color-up)' }}>TP: {pos.take_profit_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}</span>}
+                          </div>
+                        )}
                       </td>
                       <td className="num-mono" style={{ textAlign: 'right' }}>
                         {markPrice.toLocaleString(undefined, { minimumFractionDigits: priceDecimals })}
@@ -364,7 +370,17 @@ export default function PositionManagerWidget() {
                     step="0.1"
                     value={botConfig?.stopLossPercent || ''}
                     disabled={isBotRunning}
-                    onChange={e => updateBotConfig({ stopLossPercent: parseFloat(e.target.value) || 0 })}
+                    onChange={e => {
+                      const val = parseFloat(e.target.value) || 0;
+                      updateBotConfig({ stopLossPercent: val });
+                      if (positions[activeSymbol] && positions[activeSymbol].size !== 0) {
+                        sendWebSocketAction("update_position_sl_tp", {
+                          symbol: activeSymbol,
+                          stop_loss_percent: val,
+                          take_profit_percent: botConfig.takeProfitPercent
+                        });
+                      }
+                    }}
                     className="terminal-input"
                     style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
                   />
@@ -381,7 +397,17 @@ export default function PositionManagerWidget() {
                     step="0.1"
                     value={botConfig?.takeProfitPercent || ''}
                     disabled={isBotRunning}
-                    onChange={e => updateBotConfig({ takeProfitPercent: parseFloat(e.target.value) || 0 })}
+                    onChange={e => {
+                      const val = parseFloat(e.target.value) || 0;
+                      updateBotConfig({ takeProfitPercent: val });
+                      if (positions[activeSymbol] && positions[activeSymbol].size !== 0) {
+                        sendWebSocketAction("update_position_sl_tp", {
+                          symbol: activeSymbol,
+                          stop_loss_percent: botConfig.stopLossPercent,
+                          take_profit_percent: val
+                        });
+                      }
+                    }}
                     className="terminal-input"
                     style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
                   />

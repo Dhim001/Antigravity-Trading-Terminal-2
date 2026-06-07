@@ -45,6 +45,9 @@ export const connectWebSocket = (url, storeActions) => {
         case 'trade_history':
           storeActions.setTradeHistory(data);
           break;
+        case 'bot_log':
+          storeActions.addBotLog(data);
+          break;
         case 'error':
           console.error("Server execution error:", payload.message);
           break;

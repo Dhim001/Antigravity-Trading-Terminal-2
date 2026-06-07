@@ -375,34 +375,30 @@ export default function ChartWidget() {
       });
 
       // Stop Loss level line
-      if (botConfig?.stopLossPercent > 0) {
-        const slPrice = isLong 
-          ? entryPrice * (1 - botConfig.stopLossPercent / 100)
-          : entryPrice * (1 + botConfig.stopLossPercent / 100);
-        
+      const slPrice = pos.stop_loss_price;
+      if (slPrice !== undefined && slPrice !== null && slPrice > 0) {
+        const pctLabel = pos.stop_loss_percent !== undefined && pos.stop_loss_percent !== null ? ` (${pos.stop_loss_percent}%)` : '';
         slLineRef.current = candleSeries.createPriceLine({
           price: slPrice,
           color: '#ef4444', // Red
           lineWidth: 1.5,
           lineStyle: 2, // Dashed
           axisLabelVisible: true,
-          title: `SL (${botConfig.stopLossPercent}%)`,
+          title: `SL${pctLabel}`,
         });
       }
 
       // Take Profit level line
-      if (botConfig?.takeProfitPercent > 0) {
-        const tpPrice = isLong 
-          ? entryPrice * (1 + botConfig.takeProfitPercent / 100)
-          : entryPrice * (1 - botConfig.takeProfitPercent / 100);
-        
+      const tpPrice = pos.take_profit_price;
+      if (tpPrice !== undefined && tpPrice !== null && tpPrice > 0) {
+        const pctLabel = pos.take_profit_percent !== undefined && pos.take_profit_percent !== null ? ` (${pos.take_profit_percent}%)` : '';
         tpLineRef.current = candleSeries.createPriceLine({
           price: tpPrice,
           color: '#10b981', // Green
           lineWidth: 1.5,
           lineStyle: 2, // Dashed
           axisLabelVisible: true,
-          title: `TP (${botConfig.takeProfitPercent}%)`,
+          title: `TP${pctLabel}`,
         });
       }
     }

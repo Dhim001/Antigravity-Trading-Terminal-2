@@ -29,7 +29,27 @@ async def broadcast_market_data():
             # 2. Match any pending limit orders based on updated prices
             fills = oms.match_pending_orders()
             
-            # 3. Formulate the update payload
+            # 3. Check for server-side SL/TP triggers
+            sl_tp_fills, sl_tp_logs = oms.check_sl_tp_triggers()
+            
+            # Broadcast any triggered SL/TP log actions
+            if sl_tp_logs and connected_clients:
+                for log_msg in sl_tp_logs:
+                    logging.info(log_msg)
+                    log_payload = {
+                        "type": "bot_log",
+                        "data": log_msg
+                    }
+                    log_message = json.dumps(log_payload)
+                    await asyncio.gather(
+                        *[client.send(log_message) for client in connected_clients],
+                        return_exceptions=True
+                    )
+            
+            # Combine fills
+            total_fills = fills + sl_tp_fills
+            
+            # 4. Formulate the update payload
             payload = {
                 "type": "market_update",
                 "data": data
@@ -43,9 +63,9 @@ async def broadcast_market_data():
                     return_exceptions=True
                 )
                 
-            # If any limit orders got filled, broadcast the account state update
-            if fills and connected_clients:
-                logging.info(f"Limit orders matched: {fills}")
+            # If any limit orders or SL/TP got filled, broadcast the account state update
+            if total_fills and connected_clients:
+                logging.info(f"Orders matched/filled: {total_fills}")
                 account_payload = {
                     "type": "account_update",
                     "data": oms.get_account_data()
@@ -81,7 +101,14 @@ async def handle_client_message(websocket, message_str):
             price = float(message.get("price")) if message.get("price") is not None else None
             quantity = float(message.get("quantity"))
             
-            result = oms.place_order(symbol, order_type, side, price, quantity)
+            stop_loss_percent = message.get("stop_loss_percent")
+            take_profit_percent = message.get("take_profit_percent")
+            if stop_loss_percent is not None:
+                stop_loss_percent = float(stop_loss_percent)
+            if take_profit_percent is not None:
+                take_profit_percent = float(take_profit_percent)
+                
+            result = oms.place_order(symbol, order_type, side, price, quantity, stop_loss_percent, take_profit_percent)
             
             # Send result notification
             await websocket.send(json.dumps({
@@ -120,6 +147,29 @@ async def handle_client_message(websocket, message_str):
             await websocket.send(json.dumps({
                 "type": "trade_history",
                 "data": oms.get_trade_history()
+            }))
+            
+        elif action == "update_position_sl_tp":
+            symbol = message.get("symbol")
+            stop_loss_percent = message.get("stop_loss_percent")
+            take_profit_percent = message.get("take_profit_percent")
+            if stop_loss_percent is not None:
+                stop_loss_percent = float(stop_loss_percent)
+            if take_profit_percent is not None:
+                take_profit_percent = float(take_profit_percent)
+                
+            result = oms.update_position_sl_tp(symbol, stop_loss_percent, take_profit_percent)
+            
+            # Send result notification
+            await websocket.send(json.dumps({
+                "type": "order_result",
+                "data": result
+            }))
+            
+            # Push account update on change
+            await websocket.send(json.dumps({
+                "type": "account_update",
+                "data": oms.get_account_data()
             }))
             
         elif action == "get_account":

@@ -32,37 +32,7 @@ export default function AlgoTraderEngine() {
     const curPrice     = latestCandle.close;
     const activeCandleTime = latestCandle.time;
 
-    // 1. Stop Loss & Take Profit Checks (evaluated on EVERY single tick of live price)
-    const pos = positions[activeSymbol];
-    if (pos && pos.size > 0) {
-      const entryPrice = pos.avg_price;
-      const slPrice    = entryPrice * (1 - botConfig.stopLossPercent / 100);
-      const tpPrice    = entryPrice * (1 + botConfig.takeProfitPercent / 100);
-
-      if (curPrice <= slPrice) {
-        addBotLog(`🚨 STOP LOSS TRIGGERED for ${activeSymbol} at $${curPrice.toFixed(2)} (Avg Entry: $${entryPrice.toFixed(2)}, SL limit: $${slPrice.toFixed(2)}). Exiting...`);
-        const success = sendWebSocketAction("place_order", {
-          symbol: activeSymbol,
-          type: "MARKET",
-          side: "SELL",
-          quantity: pos.size
-        });
-        if (success) lastEvaluatedTimeRef.current = activeCandleTime;
-        return;
-      } else if (curPrice >= tpPrice) {
-        addBotLog(`🎯 TAKE PROFIT TRIGGERED for ${activeSymbol} at $${curPrice.toFixed(2)} (Avg Entry: $${entryPrice.toFixed(2)}, TP limit: $${tpPrice.toFixed(2)}). Exiting...`);
-        const success = sendWebSocketAction("place_order", {
-          symbol: activeSymbol,
-          type: "MARKET",
-          side: "SELL",
-          quantity: pos.size
-        });
-        if (success) lastEvaluatedTimeRef.current = activeCandleTime;
-        return;
-      }
-    }
-
-    // 2. Prevent repainting: Only run strategy logic once per candle close (on candle boundary change)
+    // 1. Prevent repainting: Only run strategy logic once per candle close (on candle boundary change)
     if (lastEvaluatedTimeRef.current === activeCandleTime) {
       return;
     }
@@ -148,7 +118,9 @@ export default function AlgoTraderEngine() {
         symbol: activeSymbol,
         type: "MARKET",
         side: "BUY",
-        quantity: botConfig.quantity
+        quantity: botConfig.quantity,
+        stop_loss_percent: botConfig.stopLossPercent,
+        take_profit_percent: botConfig.takeProfitPercent
       });
     }
 
