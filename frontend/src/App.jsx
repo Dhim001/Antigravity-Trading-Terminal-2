@@ -1,187 +1,150 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useStore } from './store/useStore';
 import { useWebSocket } from './hooks/useWebSocket';
 
-// Components
+// Core components
 import WatchlistWidget       from './components/WatchlistWidget';
 import ChartWidget           from './components/ChartWidget';
 import MultiChartGrid        from './components/MultiChartGrid';
 import OrderBookWidget       from './components/OrderBookWidget';
 import OrderEntryWidget      from './components/OrderEntryWidget';
-import PositionManagerWidget from './components/PositionManagerWidget';
-import TradeHistoryPanel     from './components/TradeHistoryPanel';
 import AlgoTraderEngine      from './components/AlgoTraderEngine';
 import SystemControlPanel    from './components/SystemControlPanel';
+import MarketOverviewStrip   from './components/MarketOverviewStrip';
+import ResizableDock         from './components/ResizableDock';
 
-import { TrendingUp, LayoutGrid, BarChart2, Clock, Settings } from 'lucide-react';
+import {
+  TrendingUp, LayoutGrid, BarChart2, Settings,
+} from 'lucide-react';
+
+const DOCK_DEFAULT = 320;
 
 export default function App() {
   const { connectionStatus, viewMode, setViewMode, isLive, terminalMode } = useStore();
   useWebSocket('ws://127.0.0.1:8765');
 
-  const [showHistory, setShowHistory] = useState(false);
-  const [showAdmin, setShowAdmin] = useState(false);
+  const [showAdmin, setShowAdmin]   = useState(false);
+  const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
+
+  // Callback from ResizableDock so grid row can be kept in sync
+  const handleDockHeightChange = useCallback(h => setDockHeight(h), []);
 
   return (
-    <div className="dashboard-container">
+    <div
+      className="dashboard-container"
+      style={{
+        '--dock-h': `${dockHeight}px`,
+      }}
+    >
+      {/* Headless engines */}
       <AlgoTraderEngine />
       <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
 
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* ── Header ───────────────────────────────────────────────────────── */}
       <header className="terminal-header">
         <div className="brand-section">
-          <TrendingUp size={22} className="logo-icon" />
-          <span className="brand-title">ANTIGRAVITY LIVE TRADING TERMINAL</span>
+          <TrendingUp size={20} className="logo-icon" />
+          <span className="brand-title">ANTIGRAVITY</span>
+
+          {/* Live mode badge */}
           {isLive && (
             <span style={{
-              background: 'rgba(239, 68, 68, 0.15)',
-              color: '#ef4444',
-              border: '1px solid rgba(239, 68, 68, 0.4)',
-              fontSize: '0.68rem',
-              fontWeight: '800',
-              padding: '4px 12px',
-              borderRadius: '4px',
-              marginLeft: '12px',
-              boxShadow: '0 0 15px rgba(239, 68, 68, 0.1)',
-              letterSpacing: '0.8px',
-              textTransform: 'uppercase',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px'
+              background: 'rgba(239,68,68,0.12)', color: '#ef4444',
+              border: '1px solid rgba(239,68,68,0.35)',
+              fontSize: 'var(--fs-2xs)', fontWeight: 800, padding: '3px 10px',
+              borderRadius: 'var(--r-sm)', letterSpacing: '0.8px',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
             }}>
-              <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444', animation: 'ping 1s cubic-bezier(0, 0, 0.2, 1) infinite' }} />
-              LIVE TRADING ACTIVE ({terminalMode})
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#ef4444', animation: 'ping 1s cubic-bezier(0,0,0.2,1) infinite' }} />
+              LIVE · {terminalMode}
             </span>
           )}
+
+          {/* Simulated badge (shown when not live) */}
+          {!isLive && (
+            <span style={{
+              background: 'rgba(148,163,184,0.08)', color: '#94a3b8',
+              border: '1px solid rgba(148,163,184,0.15)',
+              fontSize: 'var(--fs-2xs)', fontWeight: 700, padding: '3px 10px',
+              borderRadius: 'var(--r-sm)', letterSpacing: '0.5px',
+            }}>
+              SIMULATED
+            </span>
+          )}
+
+          {/* Admin / settings */}
           <button
             onClick={() => setShowAdmin(true)}
             title="System Control & Admin Panel"
             style={{
-              background: 'transparent', border: 'none', color: 'var(--text-muted)',
-              cursor: 'pointer', display: 'flex', alignItems: 'center', marginLeft: '10px',
-              transition: 'color 0.15s'
+              background: 'transparent', border: 'none',
+              color: 'var(--text-muted)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', marginLeft: 6,
+              transition: 'color 0.15s', padding: 4, borderRadius: 'var(--r-sm)',
             }}
-            onMouseEnter={e => e.currentTarget.style.color = '#3b82f6'}
-            onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+            onMouseEnter={e => { e.currentTarget.style.color = '#3b82f6'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
           >
-            <Settings size={16} />
+            <Settings size={15} />
           </button>
         </div>
 
-        {/* ── Controls Group ───────────────────────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* View-mode toggle */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '2px',
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: '8px', padding: '3px',
-          }}>
-            <button
-              onClick={() => setViewMode('single')}
-              title="Single chart with indicators"
-              style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                padding: '5px 12px', borderRadius: '5px', cursor: 'pointer',
-                border: 'none', fontFamily: 'var(--font-sans)',
-                background: viewMode === 'single' ? 'rgba(37,99,235,0.3)' : 'transparent',
-                color: viewMode === 'single' ? '#60a5fa' : 'var(--text-muted)',
-                fontSize: '0.78rem', fontWeight: '600',
-                transition: 'all 0.15s',
-              }}
-            >
-              <BarChart2 size={14} />
-              Chart
-            </button>
-            <button
-              onClick={() => setViewMode('multi')}
-              title="Multi-asset grid view"
-              style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                padding: '5px 12px', borderRadius: '5px', cursor: 'pointer',
-                border: 'none', fontFamily: 'var(--font-sans)',
-                background: viewMode === 'multi' ? 'rgba(37,99,235,0.3)' : 'transparent',
-                color: viewMode === 'multi' ? '#60a5fa' : 'var(--text-muted)',
-                fontSize: '0.78rem', fontWeight: '600',
-                transition: 'all 0.15s',
-              }}
-            >
-              <LayoutGrid size={14} />
-              Multi-Chart
-            </button>
-          </div>
-
-          {/* History Toggle Button */}
+        {/* Center: View mode toggle */}
+        <div className="view-toggle">
           <button
-            onClick={() => setShowHistory(true)}
-            title="Open Transaction & Trade History Blotter"
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              padding: '6px 12px', borderRadius: '8px', cursor: 'pointer',
-              border: '1px solid rgba(255,255,255,0.1)',
-              background: 'rgba(255,255,255,0.03)',
-              color: 'var(--text-secondary)',
-              fontSize: '0.78rem', fontWeight: '600',
-              fontFamily: 'var(--font-sans)',
-              transition: 'all 0.15s',
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
-              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)';
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
-              e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)';
-            }}
+            className={`view-toggle-btn${viewMode === 'single' ? ' active' : ''}`}
+            onClick={() => setViewMode('single')}
+            title="Single chart with indicators"
           >
-            <Clock size={14} />
-            History
+            <BarChart2 size={13} /> Chart
+          </button>
+          <button
+            className={`view-toggle-btn${viewMode === 'multi' ? ' active' : ''}`}
+            onClick={() => setViewMode('multi')}
+            title="Multi-asset grid view"
+          >
+            <LayoutGrid size={13} /> Multi-Chart
           </button>
         </div>
 
-        {/* ── Connection badge ─────────────────────────────────────────── */}
+        {/* Right: Connection badge */}
         <div className="connection-badge">
           <span className={`status-dot ${connectionStatus}`} style={{
             background: isLive && connectionStatus === 'connected' ? '#f59e0b' : undefined,
-            boxShadow: isLive && connectionStatus === 'connected' ? '0 0 8px #f59e0b' : undefined
+            boxShadow: isLive && connectionStatus === 'connected' ? '0 0 8px #f59e0b' : undefined,
           }} />
-          <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)', fontSize: '0.72rem', fontWeight: '600' }}>
-            {connectionStatus === 'connected' ? (isLive ? 'Live Broker' : 'Simulated') : 'Disconnected'}
+          <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
+            {connectionStatus === 'connected'
+              ? (isLive ? 'Live Broker' : 'Simulated')
+              : 'Disconnected'}
           </span>
         </div>
       </header>
 
-      {/* ── Watchlist sidebar (always visible) ─────────────────────────── */}
-      <aside className="watchlist-sidebar">
+      {/* ── Market Overview Strip ──────────────────────────────────────────── */}
+      <MarketOverviewStrip />
+
+      {/* ── Watchlist Sidebar (left column, spans rows 3+4) ───────────────── */}
+      <aside className="watchlist-sidebar" style={{ gridRow: '3 / 5' }}>
         <WatchlistWidget />
       </aside>
 
-      {/* ── Main workspace ─────────────────────────────────────────────── */}
+      {/* ── Main Workspace (chart area, row 3) ────────────────────────────── */}
       <main className="workspace-main">
-        {viewMode === 'single' ? (
-          // Classic single chart + position manager below
-          <>
-            <ChartWidget />
-            <div style={{ background: 'var(--bg-secondary)', overflow: 'hidden' }}>
-              <PositionManagerWidget />
-            </div>
-          </>
-        ) : (
-          // Multi-chart grid takes full height (no position manager below in grid mode)
-          <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
-        )}
+        {viewMode === 'single'
+          ? <ChartWidget />
+          : <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
+        }
       </main>
 
-      {/* ── Right execution panel (always visible) ─────────────────────── */}
-      <section className="trading-panel" style={{ display: 'grid', gridTemplateRows: '340px 1fr' }}>
+      {/* ── Right Trading Panel (order entry + order book, spans rows 3+4) ── */}
+      <section className="trading-panel" style={{ gridRow: '3 / 5', display: 'grid', gridTemplateRows: '380px 1fr' }}>
         <OrderEntryWidget />
         <OrderBookWidget />
       </section>
 
-      {/* ── Trade History Slide-up Blotter ─────────────────────────────── */}
-      {showHistory && (
-        <TradeHistoryPanel onClose={() => setShowHistory(false)} />
-      )}
+      {/* ── Bottom Dock (row 4, center column) ───────────────────────────── */}
+      <ResizableDock setDockHeight={handleDockHeightChange} />
     </div>
   );
 }

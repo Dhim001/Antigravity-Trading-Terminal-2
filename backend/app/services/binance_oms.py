@@ -7,6 +7,7 @@ import time
 from typing import Dict, List
 import requests
 from app.config import BINANCE_API_KEY, BINANCE_SECRET_KEY, BINANCE_BASE_URL, SYMBOLS
+from app.database import get_connection
 from app.services.base_oms import BaseOMSService
 from app.services.sim_oms import SimulatedOMSService
 

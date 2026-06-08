@@ -1,0 +1,8 @@
+# WebSockets server and client streams
+websockets>=12.0
+
+# HTTP requests for REST APIs (Alpaca/Binance integrations)
+requests>=2.31.0
+
+# Environment variable configuration
+python-dotenv>=1.0.1
