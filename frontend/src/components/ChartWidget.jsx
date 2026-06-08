@@ -252,7 +252,9 @@ export default function ChartWidget() {
   const symbolPosition = useStore(state => state.positions[activeSymbol]);
   const tradeHistory = useStore(state => state.tradeHistory);
   const botConfig = useStore(state => state.botConfig);
-
+  const chartInteractionMode = useStore(state => state.chartInteractionMode);
+  const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
+  
   // ── State ────────────────────────────────────────────────────────────────
   const [active, setActive] = useState(() => {
     try {
@@ -398,6 +400,15 @@ export default function ChartWidget() {
         const data = param.seriesData.get(candleSeries);
         if (data) setHoveredBar(data);
       } catch (_) {}
+    });
+
+    mainChart.subscribeClick((param) => {
+      if (!param.point) return;
+      const price = candleSeries.coordinateToPrice(param.point.y);
+      if (price !== null) {
+        // Dispatch custom event to handle it outside or rely on a mutable ref
+        window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+      }
     });
 
     // ResizeObserver
@@ -717,6 +728,42 @@ export default function ChartWidget() {
     try { cs.setMarkers(markers); } catch (_) {}
   }, [activeSymbol, symbolPosition, tradeHistory, botConfig]);
 
+  // ── Chart Click Handling for SL/TP ───────────────────────────────────────
+  useEffect(() => {
+    const handleChartClick = (e) => {
+      if (chartInteractionMode === 'normal') return;
+      const price = e.detail;
+      
+      // Update SL or TP
+      if (chartInteractionMode === 'edit_sl') {
+        import('../services/websocket').then(({ sendWebSocketAction }) => {
+           sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, stop_loss_price: price });
+        });
+      } else if (chartInteractionMode === 'edit_tp') {
+        import('../services/websocket').then(({ sendWebSocketAction }) => {
+           sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, take_profit_price: price });
+        });
+      }
+      
+      // Revert to normal mode
+      setChartInteractionMode('normal');
+    };
+    
+    window.addEventListener('chart-click', handleChartClick);
+    return () => window.removeEventListener('chart-click', handleChartClick);
+  }, [chartInteractionMode, activeSymbol, setChartInteractionMode]);
+
+  // Handle ESC key to cancel interaction mode
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && chartInteractionMode !== 'normal') {
+        setChartInteractionMode('normal');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [chartInteractionMode, setChartInteractionMode]);
+
   // ─── Render ───────────────────────────────────────────────────────────────
   const ticker   = symbolTicker;
   const sigStyle = SIGNAL_STYLES[signal.signal] || SIGNAL_STYLES.NEUTRAL;
@@ -736,7 +783,19 @@ export default function ChartWidget() {
     sym?.includes('XRP') || sym?.includes('ADA') || sym?.includes('DOGE') || (price != null && price < 2) ? 4 : 2;
 
   return (
-    <div className="widget-card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className={`widget-card ${chartInteractionMode !== 'normal' ? 'chart-interactive-mode' : ''}`} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      
+      {chartInteractionMode !== 'normal' && (
+        <div style={{
+          position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)', zIndex: 100,
+          background: 'rgba(59,130,246,0.9)', padding: '6px 12px', borderRadius: '20px',
+          color: '#fff', fontSize: 'var(--fs-xs)', fontWeight: 700, boxShadow: '0 0 15px rgba(59,130,246,0.5)',
+          display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none'
+        }}>
+          <span>Click on chart to set {chartInteractionMode === 'edit_sl' ? 'Stop Loss' : 'Take Profit'}</span>
+          <span style={{ fontSize: '10px', opacity: 0.8 }}>(ESC to cancel)</span>
+        </div>
+      )}
 
       {/* ── Row 1: Symbol + Price + Signal ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 14px', borderBottom: '1px solid var(--border-color)', background: '#080d14', flexShrink: 0, gap: 10 }}>
@@ -843,6 +902,18 @@ export default function ChartWidget() {
             animation: 'pulse-glow 2s ease-in-out infinite',
           }}>
             ▶▶ Live
+          </button>
+        )}
+        
+        {chartInteractionMode !== 'normal' && (
+          <button onClick={() => setChartInteractionMode('normal')} style={{
+            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
+            padding: '3px 9px', borderRadius: 'var(--r-sm)',
+            border: '1px solid rgba(239,68,68,0.5)', cursor: 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-2xs)', fontWeight: 700,
+            background: 'rgba(239,68,68,0.15)', color: '#fca5a5',
+          }}>
+            Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
           </button>
         )}
       </div>

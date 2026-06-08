@@ -254,6 +254,8 @@ function AlgoTab() {
   const {
     activeBots, botStrategy, botConfig, activeSymbol, symbolsList,
     setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
+    strategyTemplates, backtestResults, setChartInteractionMode,
+    selectedBotId, setSelectedBotId,
   } = useStore();
 
   const handleCreateBot = () => {
@@ -269,6 +271,19 @@ function AlgoTab() {
       allocation: botConfig.allocation,
       config: botConfig
     });
+  };
+
+  const handleRunBacktest = () => {
+    sendWebSocketAction("run_backtest", {
+      strategy: botStrategy,
+      symbol: activeSymbol,
+      config: botConfig
+    });
+  };
+
+  const selectTemplate = (template) => {
+    setBotStrategy(template.strategy);
+    updateBotConfig({ ...template.config, allocation: template.allocation });
   };
 
   const handleStopBot = (bot_id) => {
@@ -288,17 +303,24 @@ function AlgoTab() {
           <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Deploy Bot</span>
         </div>
 
-        <div className="terminal-input-group" style={{ margin: 0 }}>
-          <label className="terminal-label">Select Strategy</label>
-          <select
-            value={botStrategy} onChange={e => setBotStrategy(e.target.value)}
-            style={{ width: '100%', background: '#0a0f1d', border: '1px solid var(--border-color)', color: '#fff', borderRadius: 'var(--r-md)', padding: '7px 10px', fontSize: 'var(--fs-xs)', cursor: 'pointer', fontFamily: 'var(--font-sans)', colorScheme: 'dark' }}
-          >
-            <option value="MACD_RSI" style={{ background: '#0a0f1d', color: '#fff' }}>MACD + RSI + Mean Rev</option>
-            <option value="BRS_SCALPING" style={{ background: '#0a0f1d', color: '#fff' }}>Bollinger + RSI Scalper</option>
-            <option value="SUPERTREND_ADX" style={{ background: '#0a0f1d', color: '#fff' }}>SuperTrend + ADX</option>
-            <option value="VWAP_PULLBACK" style={{ background: '#0a0f1d', color: '#fff' }}>VWAP Pullback</option>
-          </select>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label className="terminal-label">Strategy Templates</label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
+            {strategyTemplates.map(t => (
+              <div 
+                key={t.id} 
+                onClick={() => selectTemplate(t)}
+                style={{
+                  padding: '8px 10px', background: botStrategy === t.strategy ? 'rgba(37,99,235,0.1)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${botStrategy === t.strategy ? 'rgba(59,130,246,0.5)' : 'rgba(255,255,255,0.05)'}`,
+                  borderRadius: 'var(--r-md)', cursor: 'pointer', transition: 'var(--transition)'
+                }}
+              >
+                <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: botStrategy === t.strategy ? '#93c5fd' : '#e2e8f0' }}>{t.name}</div>
+                <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>Alloc: ${t.allocation} • Trail SL: {t.config.trailing_stop_percent || 0}%</div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="terminal-input-group" style={{ margin: 0 }}>
@@ -318,20 +340,40 @@ function AlgoTab() {
           </span>
         </div>
 
-        <button
-          onClick={handleCreateBot}
-          className="terminal-btn"
-          style={{
-            marginTop: 'auto',
-            background: 'rgba(16,185,129,0.12)',
-            border: '1px solid rgba(16,185,129,0.4)',
-            color: 'var(--color-up)',
-            boxShadow: '0 0 12px rgba(16,185,129,0.15)',
-            fontWeight: 700, padding: '9px', display: 'flex', justifyContent: 'center', gap: '8px'
-          }}
-        >
-          <Play size={13} fill="currentColor" /> DEPLOY TO {activeSymbol}
-        </button>
+        {backtestResults && (
+          <div style={{ padding: '8px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 'var(--r-md)', fontSize: 'var(--fs-2xs)' }}>
+            <div style={{ fontWeight: 700, color: '#10b981', marginBottom: 4 }}>7-Day Backtest Preview</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+              <div>Win Rate: <span style={{ color: '#fff' }}>{backtestResults.win_rate}%</span></div>
+              <div>Est PnL: <span style={{ color: backtestResults.total_pnl >= 0 ? '#10b981' : '#ef4444' }}>${backtestResults.total_pnl}</span></div>
+              <div>Max DD: <span style={{ color: '#ef4444' }}>{backtestResults.max_drawdown}%</span></div>
+              <div>Trades: <span style={{ color: '#fff' }}>{backtestResults.trade_count}</span></div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
+          <button
+            onClick={handleRunBacktest}
+            className="terminal-btn"
+            style={{
+              flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+              color: '#e2e8f0', fontSize: 'var(--fs-xs)'
+            }}
+          >
+            <Activity size={13} style={{ marginRight: 4 }} /> BACKTEST
+          </button>
+          <button
+            onClick={handleCreateBot}
+            className="terminal-btn"
+            style={{
+              flex: 1.5, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.4)',
+              color: 'var(--color-up)', boxShadow: '0 0 12px rgba(16,185,129,0.15)', fontWeight: 700
+            }}
+          >
+            <Play size={13} style={{ marginRight: 4 }} /> DEPLOY
+          </button>
+        </div>
       </div>
 
       {/* Center: Active Bots Table */}
@@ -370,9 +412,21 @@ function AlgoTab() {
                   </td>
                   <td style={{ textAlign: 'center' }}>
                     {bot.status === 'RUNNING' && (
-                      <button onClick={() => handleStopBot(bot.id)} style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}>
-                        STOP
-                      </button>
+                      <div style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+                        <button 
+                          onClick={() => setChartInteractionMode('edit_sl')} 
+                          title="Click to set SL on chart"
+                          style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)', color: '#60a5fa', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}
+                        >
+                          SET SL
+                        </button>
+                        <button 
+                          onClick={() => handleStopBot(bot.id)} 
+                          style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}
+                        >
+                          STOP
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>

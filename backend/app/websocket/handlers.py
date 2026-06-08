@@ -5,7 +5,7 @@ from app.websocket.connection_manager import ConnectionManager
 
 from app.services.bots.manager import BotManagerService
 
-async def handle_client_message(websocket, message_str, oms: BaseOMSService, manager: ConnectionManager, bot_manager: BotManagerService):
+async def handle_client_message(websocket, message_str, oms: BaseOMSService, manager: ConnectionManager, bot_manager: BotManagerService, backtester_service=None):
     """Processes messages received from clients (order entries, cancellations, etc.)"""
     try:
         message = json.loads(message_str)
@@ -93,12 +93,25 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
             symbol = message.get("symbol")
             stop_loss_percent = message.get("stop_loss_percent")
             take_profit_percent = message.get("take_profit_percent")
+            stop_loss_price = message.get("stop_loss_price")
+            take_profit_price = message.get("take_profit_price")
+
             if stop_loss_percent is not None:
                 stop_loss_percent = float(stop_loss_percent)
             if take_profit_percent is not None:
                 take_profit_percent = float(take_profit_percent)
+            if stop_loss_price is not None:
+                stop_loss_price = float(stop_loss_price)
+            if take_profit_price is not None:
+                take_profit_price = float(take_profit_price)
                 
-            result = await oms.update_position_sl_tp(symbol, stop_loss_percent, take_profit_percent)
+            result = await oms.update_position_sl_tp(
+                symbol, 
+                stop_loss_percent=stop_loss_percent, 
+                take_profit_percent=take_profit_percent,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price
+            )
             
             # Send result notification
             await manager.send_to(websocket, {
@@ -304,6 +317,25 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
                 "type": "bots_update",
                 "data": list(bot_manager.active_bots.values())
             })
+
+        elif action == "run_backtest":
+            symbol = message.get("symbol")
+            strategy = message.get("strategy")
+            config = message.get("config", {})
+            
+            if backtester_service and hasattr(oms, "feed"):
+                candles = oms.feed.get_candles(symbol)
+                results = backtester_service.run_backtest(symbol, strategy, config, candles)
+                
+                await manager.send_to(websocket, {
+                    "type": "backtest_result",
+                    "data": {"status": "success", "results": results}
+                })
+            else:
+                await manager.send_to(websocket, {
+                    "type": "backtest_result",
+                    "data": {"status": "error", "message": "Backtester not available in current mode"}
+                })
 
         else:
             await manager.send_to(websocket, {

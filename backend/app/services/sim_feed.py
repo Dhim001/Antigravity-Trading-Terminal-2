@@ -76,7 +76,7 @@ class SimulatedFeedService(BaseFeedService):
                 "volume": round(random.uniform(1, 10), 2)
             }
             active_candles.append(new_candle)
-            if len(active_candles) > 500:
+            if len(active_candles) > 10080:
                 active_candles.pop(0)
         else:
             candle = active_candles[-1]
@@ -101,11 +101,11 @@ class SimulatedFeedService(BaseFeedService):
 
     def _generate_initial_candles(self, symbol, start_price):
         candles = []
-        current_time = int(time.time()) - (100 * 60)
+        current_time = int(time.time()) - (10080 * 60)
         price = start_price
         info = self._symbols[symbol]
         
-        for i in range(100):
+        for i in range(10080):
             change = price * random.normalvariate(0, info["volatility"] * 10)
             open_price = price
             close_price = price + change

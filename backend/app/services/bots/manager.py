@@ -44,6 +44,14 @@ class BotManagerService:
     def get_account_balance(self):
         return self.oms.get_account_data().get('USD', {}).get('balance', 0)
 
+    def get_recent_logs(self, limit: int = 100):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT bot_id, level, message, timestamp FROM bot_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     async def process_market_tick(self, symbol: str, ohlcv_data: list):
         """Called by the main loop whenever new candles arrive"""
         # 1. Screen indicators
@@ -113,12 +121,21 @@ class BotManagerService:
         
         # Submit to OMS
         try:
-            order_id = self.oms.place_order(symbol, side, "MARKET", position_size)
-            if order_id:
+            result = await self.oms.place_order({
+                "symbol": symbol,
+                "type": "MARKET",
+                "side": side,
+                "quantity": position_size,
+                "stop_loss_percent": bot.get('config', {}).get('trailing_stop_percent') or bot.get('config', {}).get('stop_loss_percent'),
+                "take_profit_percent": bot.get('config', {}).get('take_profit_percent')
+            })
+            if result.get("status") == "success":
+                order_id = result.get("order_id")
                 await self.log_bot_event(bot_id, "SUCCESS", f"Placed {side} order {order_id}.")
-                # Here we could set up the SL/TP tracking in the OMS if the OMS supports it.
+            else:
+                await self.log_bot_event(bot_id, "ERROR", f"Order failed: {result.get('message')}")
         except Exception as e:
-            await self.log_bot_event(bot_id, "ERROR", f"Order failed: {str(e)}")
+            await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
 
     async def create_bot(self, strategy: str, symbol: str, timeframe: str, allocation: float, config: dict):
         bot_id = str(uuid.uuid4())

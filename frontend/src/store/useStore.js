@@ -50,6 +50,16 @@ export const useStore = create((set, get) => ({
     allocation: 1000,      // Default capital allocation
   }),
   botLogs: [],             // array of bot operation log strings
+  
+  // Advanced UX States
+  backtestResults: null,
+  chartInteractionMode: 'normal', // 'normal' | 'edit_sl' | 'edit_tp'
+  strategyTemplates: [
+    { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5 } },
+    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3 } },
+    { id: 't3', name: 'Mean Reversion', strategy: 'BB_STOCH', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1 } },
+  ],
+  selectedBotId: null,     // For chart overlays
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   
@@ -158,7 +168,18 @@ export const useStore = create((set, get) => ({
     if (newLogs.length > 100) newLogs.pop(); // Cap log size
     return { botLogs: newLogs };
   }),
+  setBotLogs: (logsArray) => set({
+    botLogs: logsArray.map(log => {
+      // The backend returns { bot_id, level, message, timestamp }
+      const time = new Date(log.timestamp + "Z").toLocaleTimeString(); // SQLite timestamp is UTC
+      return `[${time}] ${log.level || 'INFO'} - ${log.message}`;
+    })
+  }),
   clearBotLogs: () => set({ botLogs: [] }),
+
+  setBacktestResults: (results) => set({ backtestResults: results }),
+  setChartInteractionMode: (mode) => set({ chartInteractionMode: mode }),
+  setSelectedBotId: (id) => set({ selectedBotId: id }),
 
   setOrderResult: (result) => {
     set({ orderResult: result });

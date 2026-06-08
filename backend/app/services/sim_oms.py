@@ -378,11 +378,11 @@ class SimulatedOMSService(BaseOMSService):
                 WHERE symbol = ?
             """, (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, symbol))
 
-    async def update_position_sl_tp(self, symbol: str, stop_loss_percent: float, take_profit_percent: float) -> dict:
+    async def update_position_sl_tp(self, symbol: str, stop_loss_percent: float=None, take_profit_percent: float=None, stop_loss_price: float=None, take_profit_price: float=None) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT size, avg_price FROM positions WHERE symbol = ?", (symbol,))
+        cursor.execute("SELECT size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price FROM positions WHERE symbol = ?", (symbol,))
         pos_row = cursor.fetchone()
         
         if not pos_row or pos_row["size"] == 0.0:
@@ -393,15 +393,31 @@ class SimulatedOMSService(BaseOMSService):
             size = pos_row["size"]
             avg_price = pos_row["avg_price"]
             
-            sl_price = None
-            tp_price = None
+            # Use provided explicit price, OR calculate from percent, OR keep existing price
+            sl_price = stop_loss_price
+            tp_price = take_profit_price
             
-            if size > 0: # Long
-                sl_price = avg_price * (1 - stop_loss_percent / 100) if stop_loss_percent is not None else None
-                tp_price = avg_price * (1 + take_profit_percent / 100) if take_profit_percent is not None else None
-            elif size < 0: # Short
-                sl_price = avg_price * (1 + stop_loss_percent / 100) if stop_loss_percent is not None else None
-                tp_price = avg_price * (1 - take_profit_percent / 100) if take_profit_percent is not None else None
+            # If percent provided, calculate new price
+            if stop_loss_percent is not None:
+                if size > 0: sl_price = avg_price * (1 - stop_loss_percent / 100)
+                elif size < 0: sl_price = avg_price * (1 + stop_loss_percent / 100)
+            elif stop_loss_price is not None:
+                stop_loss_percent = None # Hard stop loss disables trailing
+
+            if take_profit_percent is not None:
+                if size > 0: tp_price = avg_price * (1 + take_profit_percent / 100)
+                elif size < 0: tp_price = avg_price * (1 - take_profit_percent / 100)
+            elif take_profit_price is not None:
+                take_profit_percent = None
+                
+            # If neither were provided in the request, keep existing DB values
+            if stop_loss_price is None and stop_loss_percent is None:
+                sl_price = pos_row["stop_loss_price"]
+                stop_loss_percent = pos_row["stop_loss_percent"]
+                
+            if take_profit_price is None and take_profit_percent is None:
+                tp_price = pos_row["take_profit_price"]
+                take_profit_percent = pos_row["take_profit_percent"]
                 
             cursor.execute("""
                 UPDATE positions 
@@ -448,11 +464,23 @@ class SimulatedOMSService(BaseOMSService):
             trigger_type = None
             
             if size > 0: # Long
+                if pos["stop_loss_percent"] is not None:
+                    potential_sl = market_price * (1 - pos["stop_loss_percent"] / 100)
+                    if sl_price is None or potential_sl > sl_price:
+                        sl_price = potential_sl
+                        cursor.execute("UPDATE positions SET stop_loss_price = ? WHERE symbol = ?", (sl_price, symbol))
+
                 if sl_price is not None and market_price <= sl_price:
                     trigger_type = 'SL'
                 elif tp_price is not None and market_price >= tp_price:
                     trigger_type = 'TP'
             elif size < 0: # Short
+                if pos["stop_loss_percent"] is not None:
+                    potential_sl = market_price * (1 + pos["stop_loss_percent"] / 100)
+                    if sl_price is None or potential_sl < sl_price:
+                        sl_price = potential_sl
+                        cursor.execute("UPDATE positions SET stop_loss_price = ? WHERE symbol = ?", (sl_price, symbol))
+
                 if sl_price is not None and market_price >= sl_price:
                     trigger_type = 'SL'
                 elif tp_price is not None and market_price <= tp_price:

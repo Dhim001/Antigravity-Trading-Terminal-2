@@ -65,14 +65,20 @@ class MarketScreenerService:
             if adx is not None:
                 df = pd.concat([df, adx], axis=1)
                 
-            # 8. VWAP (Requires timestamp index for proper session grouping, but simple is fine here)
-            # VWAP usually requires a datetime index
-            if 'time' in df.columns:
-                df['datetime'] = pd.to_datetime(df['time'], unit='s')
-                df.set_index('datetime', inplace=False)
-                vwap = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
-                if vwap is not None:
-                    df['VWAP'] = vwap.values
+            # 8. VWAP (Requires timestamp index for proper session grouping)
+            if 'time' in df.columns and len(df) > 0:
+                try:
+                    df_temp = df.copy()
+                    first_ts = df_temp['time'].iloc[0]
+                    unit = 'ms' if first_ts > 1e11 else 's'
+                    df_temp['datetime'] = pd.to_datetime(df_temp['time'], unit=unit)
+                    df_temp.set_index('datetime', inplace=True)
+                    df_temp.sort_index(inplace=True)
+                    vwap = ta.vwap(df_temp['high'], df_temp['low'], df_temp['close'], df_temp['volume'])
+                    if vwap is not None:
+                        df['VWAP'] = vwap.values
+                except Exception as vwap_err:
+                    self.logger.warning(f"VWAP calculation skipped: {vwap_err}")
 
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {e}")

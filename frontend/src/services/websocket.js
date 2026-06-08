@@ -54,11 +54,21 @@ export const connectWebSocket = (url, storeActions) => {
         case 'bot_log':
           storeActions.addBotLog(data);
           break;
+        case 'bot_logs_history':
+          storeActions.setBotLogs(data);
+          break;
         case 'bots_update':
           storeActions.setBots(data);
           break;
         case 'system_stats':
           storeActions.setSystemStats(data);
+          break;
+        case 'backtest_result':
+          if (data.status === 'success') {
+            storeActions.setBacktestResults(data.results);
+          } else {
+            console.error("Backtest failed:", data.message);
+          }
           break;
         case 'error':
           console.error("Server execution error:", payload.message);

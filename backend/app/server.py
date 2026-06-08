@@ -7,6 +7,7 @@ from app.websocket.connection_manager import ConnectionManager
 from app.websocket.handlers import handle_client_message
 from app.services.bots.screener import MarketScreenerService
 from app.services.bots.manager import BotManagerService
+from app.services.bots.backtester import BacktesterService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -43,6 +44,7 @@ if hasattr(oms, "register_broadcast_callback"):
 
 # Initialize Bot Engine
 screener_service = MarketScreenerService()
+backtester_service = BacktesterService(screener_service)
 bot_manager = BotManagerService(oms, screener_service, broadcast_wrapper)
 
 async def simulated_market_loop():
@@ -169,9 +171,16 @@ async def websocket_handler(websocket):
     }
     await manager.send_to(websocket, history_payload)
     
+    # 4. Send bot logs history
+    logs_payload = {
+        "type": "bot_logs_history",
+        "data": bot_manager.get_recent_logs(100)
+    }
+    await manager.send_to(websocket, logs_payload)
+    
     try:
         async for message_str in websocket:
-            await handle_client_message(websocket, message_str, oms, manager, bot_manager)
+            await handle_client_message(websocket, message_str, oms, manager, bot_manager, backtester_service)
     except websockets.exceptions.ConnectionClosed:
         logging.info("Client connection closed.")
     finally:
