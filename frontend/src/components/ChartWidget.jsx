@@ -218,6 +218,8 @@ function fmtVol(v) {
   return v.toFixed(2);
 }
 
+const EMPTY_ARRAY = [];
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function ChartWidget() {
   const mainRef = useRef(null);
@@ -244,7 +246,12 @@ export default function ChartWidget() {
   const slLineRef    = useRef(null);
   const tpLineRef    = useRef(null);
 
-  const { activeSymbol, candleData, tickerData, positions, tradeHistory, botConfig } = useStore();
+  const activeSymbol = useStore(state => state.activeSymbol);
+  const symbolCandles = useStore(state => state.candleData[activeSymbol] || EMPTY_ARRAY);
+  const symbolTicker = useStore(state => state.tickerData[activeSymbol]);
+  const symbolPosition = useStore(state => state.positions[activeSymbol]);
+  const tradeHistory = useStore(state => state.tradeHistory);
+  const botConfig = useStore(state => state.botConfig);
 
   // ── State ────────────────────────────────────────────────────────────────
   const [active, setActive] = useState(() => {
@@ -275,11 +282,11 @@ export default function ChartWidget() {
 
   // ── Aggregated candle data ────────────────────────────────────────────────
   const aggregatedCandles = useMemo(() => {
-    const raw = candleData[activeSymbol];
+    const raw = symbolCandles;
     if (!raw || raw.length === 0) return [];
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
     return aggregateCandles(raw, cfg.secs);
-  }, [candleData, activeSymbol, timeframe]);
+  }, [symbolCandles, timeframe]);
 
   // ── Centralised resize (debounced via rAF) ────────────────────────────────
   const doResize = useCallback(() => {
@@ -675,7 +682,7 @@ export default function ChartWidget() {
     [entryLineRef, slLineRef, tpLineRef].forEach(ref => {
       if (ref.current) { try { cs.removePriceLine(ref.current); } catch (_) {} ref.current = null; }
     });
-    const pos = positions[activeSymbol];
+    const pos = symbolPosition;
     if (pos && pos.size !== 0) {
       const isLong = pos.size > 0;
       entryLineRef.current = cs.createPriceLine({
@@ -708,10 +715,10 @@ export default function ChartWidget() {
       }))
       .sort((a, b) => a.time - b.time);
     try { cs.setMarkers(markers); } catch (_) {}
-  }, [activeSymbol, positions, tradeHistory, botConfig, candleData]);
+  }, [activeSymbol, symbolPosition, tradeHistory, botConfig]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
-  const ticker   = tickerData[activeSymbol];
+  const ticker   = symbolTicker;
   const sigStyle = SIGNAL_STYLES[signal.signal] || SIGNAL_STYLES.NEUTRAL;
   const isStrong = signal.signal.startsWith('STRONG');
   const showRsi  = active.rsi;

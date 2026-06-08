@@ -54,6 +54,9 @@ export const connectWebSocket = (url, storeActions) => {
         case 'bot_log':
           storeActions.addBotLog(data);
           break;
+        case 'bots_update':
+          storeActions.setBots(data);
+          break;
         case 'system_stats':
           storeActions.setSystemStats(data);
           break;

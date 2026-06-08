@@ -47,6 +47,32 @@ def init_db():
         )
     """)
     
+    # Create bots table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bots (
+            id TEXT PRIMARY KEY,
+            strategy TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            status TEXT NOT NULL,
+            allocation REAL NOT NULL,
+            config TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create bot_logs table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    
     conn.commit()
 
     # Run migrations to add Stop Loss & Take Profit support if missing

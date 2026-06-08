@@ -1,3 +1,4 @@
+import importlib.metadata
 import asyncio
 import logging
 from app.server import main

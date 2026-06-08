@@ -15,7 +15,11 @@ import { PlusCircle, ShieldAlert, CheckCircle, Target, TrendingDown, TrendingUp 
 const fmtDec = (n, dec) => n?.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
 export default function OrderEntryWidget() {
-  const { activeSymbol, tickerData, balances, positions, orderResult } = useStore();
+  const activeSymbol = useStore(state => state.activeSymbol);
+  const ticker       = useStore(state => state.tickerData[activeSymbol]);
+  const balances     = useStore(state => state.balances);
+  const positions    = useStore(state => state.positions);
+  const orderResult  = useStore(state => state.orderResult);
 
   const [side,      setSide]      = useState('BUY');
   const [orderType, setOrderType] = useState('LIMIT');
@@ -23,15 +27,13 @@ export default function OrderEntryWidget() {
   const [quantity,  setQuantity]  = useState('');
   const [slPrice,   setSlPrice]   = useState('');
   const [tpPrice,   setTpPrice]   = useState('');
-  const [slMode,    setSlMode]     = useState('%');  // '%' or '$'
-  const [tpMode,    setTpMode]     = useState('%');  // '%' or '$'
+  const [slMode,    setSlMode]    = useState('%');  // '%' or '$'
+  const [tpMode,    setTpMode]    = useState('%');  // '%' or '$'
   const [errorMsg,  setErrorMsg]  = useState(null);
   const [showSLTP,  setShowSLTP]  = useState(false);
   const buyBtnRef  = useRef(null);
   const sellBtnRef = useRef(null);
   const formRef    = useRef(null);
-
-  const ticker = tickerData[activeSymbol];
 
   // Keyboard shortcuts
   useEffect(() => {

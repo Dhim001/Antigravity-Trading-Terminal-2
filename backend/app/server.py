@@ -5,6 +5,8 @@ from app.config import WS_HOST, WS_PORT, TERMINAL_MODE
 from app.database import init_db
 from app.websocket.connection_manager import ConnectionManager
 from app.websocket.handlers import handle_client_message
+from app.services.bots.screener import MarketScreenerService
+from app.services.bots.manager import BotManagerService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -39,6 +41,10 @@ feed.register_broadcast_callback(broadcast_wrapper)
 if hasattr(oms, "register_broadcast_callback"):
     oms.register_broadcast_callback(broadcast_wrapper)
 
+# Initialize Bot Engine
+screener_service = MarketScreenerService()
+bot_manager = BotManagerService(oms, screener_service, broadcast_wrapper)
+
 async def simulated_market_loop():
     """Simulated broadcast loop, only running in SIMULATED mode."""
     logging.info("Starting simulated market data broadcast loop...")
@@ -48,7 +54,13 @@ async def simulated_market_loop():
             # 1. Update prices and order books
             data = {}
             for symbol in feed.symbols:
-                data[symbol] = feed.get_market_data(symbol)
+                market_data = feed.get_market_data(symbol)
+                data[symbol] = market_data
+                
+                # Feed new data to bot manager
+                candles = feed.get_candles(symbol)
+                if candles:
+                    await bot_manager.process_market_tick(symbol, candles)
                 
             # 2. Match any pending limit orders based on updated prices
             fills = oms.match_pending_orders()
@@ -159,7 +171,7 @@ async def websocket_handler(websocket):
     
     try:
         async for message_str in websocket:
-            await handle_client_message(websocket, message_str, oms, manager)
+            await handle_client_message(websocket, message_str, oms, manager, bot_manager)
     except websockets.exceptions.ConnectionClosed:
         logging.info("Client connection closed.")
     finally:
@@ -169,22 +181,27 @@ async def main():
     # Ensure database schema is set up
     init_db()
     
+    # Load active bots now that the db schema is guaranteed to exist
+    bot_manager.load_bots_from_db()
+    
     # Start the Feed and OMS engines
     await feed.start()
     await oms.initialize()
     
     # Start WebSocket Server on defined host/port
-    server = await websockets.serve(websocket_handler, WS_HOST, WS_PORT)
     logging.info(f"WebSocket Server listening on ws://{WS_HOST}:{WS_PORT}")
     
-    # Run the feed listeners and WebSocket server concurrently
-    tasks = [server.wait_closed()]
-    if TERMINAL_MODE == "SIMULATED":
-        tasks.append(simulated_market_loop())
-    else:
-        tasks.append(diagnostics_broadcast_loop())
+    async with websockets.serve(websocket_handler, WS_HOST, WS_PORT) as server:
+        tasks = []
+        if TERMINAL_MODE == "SIMULATED":
+            tasks.append(asyncio.create_task(simulated_market_loop()))
+        else:
+            tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
         
-    await asyncio.gather(*tasks)
+        # Keep the server running forever and print heartbeat
+        while True:
+            await asyncio.sleep(10)
+            logging.info("Heartbeat: Server is running...")
 
 if __name__ == "__main__":
     try:

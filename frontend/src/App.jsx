@@ -20,7 +20,11 @@ import {
 const DOCK_DEFAULT = 320;
 
 export default function App() {
-  const { connectionStatus, viewMode, setViewMode, isLive, terminalMode } = useStore();
+  const connectionStatus = useStore(state => state.connectionStatus);
+  const viewMode         = useStore(state => state.viewMode);
+  const setViewMode      = useStore(state => state.setViewMode);
+  const isLive           = useStore(state => state.isLive);
+  const terminalMode     = useStore(state => state.terminalMode);
   useWebSocket('ws://127.0.0.1:8765');
 
   const [showAdmin, setShowAdmin]   = useState(false);

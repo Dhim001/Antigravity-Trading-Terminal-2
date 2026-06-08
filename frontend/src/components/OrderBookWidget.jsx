@@ -3,10 +3,9 @@ import { useStore } from '../store/useStore';
 import { AlignLeft } from 'lucide-react';
 
 export default function OrderBookWidget() {
-  const { activeSymbol, orderBooks, tickerData } = useStore();
-
-  const ob = orderBooks[activeSymbol];
-  const ticker = tickerData[activeSymbol];
+  const activeSymbol = useStore(state => state.activeSymbol);
+  const ob           = useStore(state => state.orderBooks[activeSymbol]);
+  const ticker       = useStore(state => state.tickerData[activeSymbol]);
 
   if (!ob || !ob.bids || !ob.asks) {
     return (

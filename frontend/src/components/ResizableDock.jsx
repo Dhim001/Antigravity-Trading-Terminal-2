@@ -252,13 +252,32 @@ function BalancesTab() {
 // ── Algo Bot Tab ──────────────────────────────────────────────────
 function AlgoTab() {
   const {
-    isBotRunning, botStrategy, botConfig, activeSymbol,
-    positions, startBot, stopBot, setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
+    activeBots, botStrategy, botConfig, activeSymbol, symbolsList,
+    setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
   } = useStore();
 
+  const handleCreateBot = () => {
+    if (!botConfig.allocation || botConfig.allocation <= 0) {
+      alert("Please enter a valid capital allocation amount.");
+      return;
+    }
+    
+    sendWebSocketAction("bot_create", {
+      strategy: botStrategy,
+      symbol: activeSymbol,
+      timeframe: "1m",
+      allocation: botConfig.allocation,
+      config: botConfig
+    });
+  };
+
+  const handleStopBot = (bot_id) => {
+    sendWebSocketAction("bot_stop", { bot_id });
+  };
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 12, padding: 12, height: '100%', overflow: 'hidden', minHeight: 0 }}>
-      {/* Left: config */}
+    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 300px', gap: 12, padding: 12, height: '100%', overflow: 'hidden', minHeight: 0 }}>
+      {/* Left: Creator */}
       <div style={{
         display: 'flex', flexDirection: 'column', gap: 10,
         background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)',
@@ -266,69 +285,115 @@ function AlgoTab() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.07)', paddingBottom: 6 }}>
           <Settings size={13} style={{ color: 'var(--color-accent-light)' }} />
-          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Bot Parameters</span>
+          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Deploy Bot</span>
         </div>
 
         <div className="terminal-input-group" style={{ margin: 0 }}>
           <label className="terminal-label">Select Strategy</label>
           <select
-            value={botStrategy} onChange={e => setBotStrategy(e.target.value)} disabled={isBotRunning}
-            style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-color)', color: '#fff', borderRadius: 'var(--r-md)', padding: '7px 10px', fontSize: 'var(--fs-xs)', cursor: isBotRunning ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)', colorScheme: 'dark' }}
+            value={botStrategy} onChange={e => setBotStrategy(e.target.value)}
+            style={{ width: '100%', background: '#0a0f1d', border: '1px solid var(--border-color)', color: '#fff', borderRadius: 'var(--r-md)', padding: '7px 10px', fontSize: 'var(--fs-xs)', cursor: 'pointer', fontFamily: 'var(--font-sans)', colorScheme: 'dark' }}
           >
-            <option value="EMA_CROSS">EMA Crossover (9/21)</option>
-            <option value="RSI_MEAN_REV">RSI Mean Reversion (14)</option>
-            <option value="MACD_TREND">MACD Trend Follower</option>
+            <option value="MACD_RSI" style={{ background: '#0a0f1d', color: '#fff' }}>MACD + RSI + Mean Rev</option>
+            <option value="BRS_SCALPING" style={{ background: '#0a0f1d', color: '#fff' }}>Bollinger + RSI Scalper</option>
+            <option value="SUPERTREND_ADX" style={{ background: '#0a0f1d', color: '#fff' }}>SuperTrend + ADX</option>
+            <option value="VWAP_PULLBACK" style={{ background: '#0a0f1d', color: '#fff' }}>VWAP Pullback</option>
           </select>
         </div>
 
-        {[
-          { label: 'Order Size (Qty)', key: 'quantity', suffix: 'units', step: 'any' },
-          { label: 'Auto Stop Loss', key: 'stopLossPercent', suffix: '%', step: '0.1' },
-          { label: 'Auto Take Profit', key: 'takeProfitPercent', suffix: '%', step: '0.1' },
-        ].map(({ label, key, suffix, step }) => (
-          <div className="terminal-input-group" key={key} style={{ margin: 0 }}>
-            <label className="terminal-label">{label}</label>
-            <div className="terminal-input-wrapper">
-              <input
-                type="number" step={step} disabled={isBotRunning}
-                value={botConfig?.[key] || ''}
-                onChange={e => updateBotConfig({ [key]: parseFloat(e.target.value) || 0 })}
-                className="terminal-input"
-                style={{ padding: '6px 36px 6px 10px', fontSize: 'var(--fs-xs)', height: 'auto' }}
-              />
-              <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)' }}>{suffix}</span>
-            </div>
+        <div className="terminal-input-group" style={{ margin: 0 }}>
+          <label className="terminal-label">Capital Allocation (USD/USDT)</label>
+          <div className="terminal-input-wrapper">
+            <input
+              type="number" step="any"
+              value={botConfig?.allocation || ''}
+              onChange={e => updateBotConfig({ allocation: parseFloat(e.target.value) || 0 })}
+              className="terminal-input"
+              style={{ padding: '6px 36px 6px 10px', fontSize: 'var(--fs-xs)', height: 'auto' }}
+            />
+            <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)' }}>$</span>
           </div>
-        ))}
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 4 }}>
+            Risk is dynamically managed at 1% of total account balance using ATR stops.
+          </span>
+        </div>
 
         <button
-          onClick={() => isBotRunning ? stopBot() : startBot()}
+          onClick={handleCreateBot}
           className="terminal-btn"
           style={{
             marginTop: 'auto',
-            background: isBotRunning ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)',
-            border: `1px solid ${isBotRunning ? 'rgba(239,68,68,0.4)' : 'rgba(16,185,129,0.4)'}`,
-            color: isBotRunning ? 'var(--color-down)' : 'var(--color-up)',
-            boxShadow: isBotRunning ? '0 0 12px rgba(239,68,68,0.15)' : '0 0 12px rgba(16,185,129,0.15)',
-            fontWeight: 700, padding: '9px',
+            background: 'rgba(16,185,129,0.12)',
+            border: '1px solid rgba(16,185,129,0.4)',
+            color: 'var(--color-up)',
+            boxShadow: '0 0 12px rgba(16,185,129,0.15)',
+            fontWeight: 700, padding: '9px', display: 'flex', justifyContent: 'center', gap: '8px'
           }}
         >
-          {isBotRunning ? <><Square size={13} fill="currentColor" /> STOP BOT</> : <><Play size={13} fill="currentColor" /> START BOT</>}
+          <Play size={13} fill="currentColor" /> DEPLOY TO {activeSymbol}
         </button>
       </div>
 
-      {/* Right: console */}
+      {/* Center: Active Bots Table */}
+      <div style={{
+        display: 'flex', flexDirection: 'column',
+        background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 'var(--r-lg)', overflow: 'hidden', minHeight: 0,
+      }}>
+        <table className="terminal-table" style={{ margin: 0 }}>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Strategy</th>
+              <th style={{ textAlign: 'right' }}>Allocation</th>
+              <th style={{ textAlign: 'center' }}>Status</th>
+              <th style={{ textAlign: 'center' }}>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeBots.length === 0 ? (
+              <tr>
+                <td colSpan="5" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
+                  No active bots.
+                </td>
+              </tr>
+            ) : (
+              activeBots.map(bot => (
+                <tr key={bot.id}>
+                  <td style={{ fontWeight: 700, color: '#fff' }}>{bot.symbol}</td>
+                  <td style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{bot.strategy}</td>
+                  <td className="num-mono" style={{ textAlign: 'right' }}>${bot.allocation.toLocaleString()}</td>
+                  <td style={{ textAlign: 'center' }}>
+                    <span className="badge" style={{ background: bot.status === 'RUNNING' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: bot.status === 'RUNNING' ? '#10b981' : '#ef4444', border: '1px solid', borderColor: bot.status === 'RUNNING' ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)' }}>
+                      {bot.status}
+                    </span>
+                  </td>
+                  <td style={{ textAlign: 'center' }}>
+                    {bot.status === 'RUNNING' && (
+                      <button onClick={() => handleStopBot(bot.id)} style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}>
+                        STOP
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Right: Console */}
       <div style={{ display: 'flex', flexDirection: 'column', background: 'rgba(2,5,10,0.9)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 'var(--r-lg)', padding: 12, overflow: 'hidden', minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.07)', paddingBottom: 6, flexShrink: 0, marginBottom: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Cpu size={13} style={{ color: isBotRunning ? '#10b981' : 'var(--text-muted)' }} />
+            <Cpu size={13} style={{ color: activeBots.length > 0 ? '#10b981' : 'var(--text-muted)' }} />
             <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Bot Log</span>
             <span style={{
               fontSize: 'var(--fs-2xs)', padding: '1px 7px', borderRadius: 'var(--r-sm)',
-              background: isBotRunning ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.04)',
-              color: isBotRunning ? '#10b981' : 'var(--text-muted)', fontWeight: 600,
+              background: activeBots.length > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.04)',
+              color: activeBots.length > 0 ? '#10b981' : 'var(--text-muted)', fontWeight: 600,
             }}>
-              {isBotRunning ? `SCANNING ${activeSymbol}` : 'IDLE'}
+              {activeBots.length > 0 ? `${activeBots.length} ACTIVE` : 'IDLE'}
             </span>
           </div>
           <button className="btn-icon" onClick={clearBotLogs} title="Clear log"><Trash2 size={12} /></button>
@@ -342,9 +407,10 @@ function AlgoTab() {
               </div>
             : botLogs.map((log, i) => {
                 let c = '#64748b';
-                if (log.includes('BUY') || log.includes('Profit')) c = '#10b981';
-                else if (log.includes('SELL') || log.includes('Loss') || log.includes('Stop')) c = '#ef4444';
-                else if (log.includes('ACTIVATED') || log.includes('Config') || log.includes('Running')) c = '#60a5fa';
+                if (log.includes('BUY') || log.includes('SUCCESS')) c = '#10b981';
+                else if (log.includes('SELL') || log.includes('ERROR') || log.includes('STOP')) c = '#ef4444';
+                else if (log.includes('WARN')) c = '#f59e0b';
+                else if (log.includes('INFO') || log.includes('started')) c = '#60a5fa';
                 return <div key={i} style={{ color: c, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{log}</div>;
               })
           }

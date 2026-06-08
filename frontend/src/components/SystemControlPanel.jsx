@@ -358,7 +358,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                         }}
                       >
                         {getAvailableAssets().map(asset => (
-                          <option key={asset} value={asset}>{asset}</option>
+                          <option key={asset} value={asset} style={{ background: '#111827', color: '#fff' }}>{asset}</option>
                         ))}
                       </select>
                       <input

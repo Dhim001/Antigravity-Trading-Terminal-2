@@ -3,7 +3,9 @@ import logging
 from app.services.base_oms import BaseOMSService
 from app.websocket.connection_manager import ConnectionManager
 
-async def handle_client_message(websocket, message_str, oms: BaseOMSService, manager: ConnectionManager):
+from app.services.bots.manager import BotManagerService
+
+async def handle_client_message(websocket, message_str, oms: BaseOMSService, manager: ConnectionManager, bot_manager: BotManagerService):
     """Processes messages received from clients (order entries, cancellations, etc.)"""
     try:
         message = json.loads(message_str)
@@ -252,6 +254,55 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
             await manager.send_to(websocket, {
                 "type": "system_stats",
                 "data": stats
+            })
+
+        elif action == "bot_create":
+            strategy = message.get("strategy")
+            symbol = message.get("symbol")
+            timeframe = message.get("timeframe", "1m")
+            allocation = float(message.get("allocation", 1000))
+            config = message.get("config", {})
+            
+            try:
+                bot_id = await bot_manager.create_bot(strategy, symbol, timeframe, allocation, config)
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "success", "message": f"Bot {bot_id} created successfully"}
+                })
+                # Broadcast updated bot list
+                await manager.broadcast({
+                    "type": "bots_update",
+                    "data": list(bot_manager.active_bots.values())
+                })
+            except Exception as e:
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "error", "message": str(e)}
+                })
+                
+        elif action == "bot_stop":
+            bot_id = message.get("bot_id")
+            try:
+                await bot_manager.stop_bot(bot_id)
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "success", "message": "Bot stopped successfully"}
+                })
+                # Broadcast updated bot list
+                await manager.broadcast({
+                    "type": "bots_update",
+                    "data": list(bot_manager.active_bots.values())
+                })
+            except Exception as e:
+                await manager.send_to(websocket, {
+                    "type": "order_result",
+                    "data": {"status": "error", "message": str(e)}
+                })
+
+        elif action == "bot_get_all":
+            await manager.send_to(websocket, {
+                "type": "bots_update",
+                "data": list(bot_manager.active_bots.values())
             })
 
         else:

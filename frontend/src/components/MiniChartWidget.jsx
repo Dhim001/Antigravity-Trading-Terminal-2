@@ -20,6 +20,8 @@ const SYMBOL_COLORS = {
   MSFT:    '#06b6d4',
 };
 
+const EMPTY_ARRAY = [];
+
 export default function MiniChartWidget({
   defaultSymbol = 'BTCUSDT',
   isFocused = false,
@@ -38,7 +40,11 @@ export default function MiniChartWidget({
   const [symbol, setSymbol]         = useState(defaultSymbol);
   const [dropdownOpen, setDropdown] = useState(false);
 
-  const { candleData, tickerData, priceDirections, setActiveSymbol, symbolsList } = useStore();
+  const symbolCandles = useStore(state => state.candleData[symbol] || EMPTY_ARRAY);
+  const symbolTicker = useStore(state => state.tickerData[symbol]);
+  const symbolDirection = useStore(state => state.priceDirections[symbol]);
+  const setActiveSymbol = useStore(state => state.setActiveSymbol);
+  const symbolsList = useStore(state => state.symbolsList);
 
   // ── Chart initialisation ────────────────────────────────────────────────
   useEffect(() => {
@@ -114,7 +120,7 @@ export default function MiniChartWidget({
 
   // ── Data rendering ──────────────────────────────────────────────────────
   const renderData = useCallback((sym) => {
-    const candles = candleData[sym];
+    const candles = symbolCandles;
     if (!candles || candles.length === 0 || !candleRef.current) return;
 
     // Full reload on symbol change
@@ -135,11 +141,11 @@ export default function MiniChartWidget({
       if (e9.length)  try { ema9Ref.current?.update(e9[e9.length - 1]);   } catch (_) {}
       if (e21.length) try { ema21Ref.current?.update(e21[e21.length - 1]); } catch (_) {}
     }
-  }, [candleData]);
+  }, [symbolCandles]);
 
   useEffect(() => {
     renderData(symbol);
-  }, [candleData, symbol, renderData]);
+  }, [symbolCandles, symbol, renderData]);
 
   // ── Reset chart on symbol change ────────────────────────────────────────
   useEffect(() => {
@@ -147,8 +153,8 @@ export default function MiniChartWidget({
   }, [symbol]);
 
   // ── Ticker data ─────────────────────────────────────────────────────────
-  const ticker    = tickerData[symbol];
-  const direction = priceDirections[symbol];
+  const ticker    = symbolTicker;
+  const direction = symbolDirection;
   const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
 
   const handleFocusClick = () => {

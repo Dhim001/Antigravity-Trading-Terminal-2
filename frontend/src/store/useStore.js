@@ -43,12 +43,11 @@ export const useStore = create((set, get) => ({
   systemStats: { clients: 1, positions_count: 0, pending_orders_count: 0, filled_trades_count: 0, tick_interval: 0.25, volatility_multiplier: 1.0 },
 
   // Algorithmic Auto-Trading States
+  activeBots: [],          // array of bots from backend
   isBotRunning: false,
-  botStrategy: getLocal('terminal_bot_strategy', 'EMA_CROSS'), // 'EMA_CROSS', 'RSI_MEAN_REV', 'MACD_TREND'
+  botStrategy: getLocal('terminal_bot_strategy', 'MACD_RSI'),
   botConfig: getLocal('terminal_bot_config', {
-    quantity: 0.1,         // default quantity (BTC/ETH/Shares)
-    stopLossPercent: 1.5,  // default SL %
-    takeProfitPercent: 3.0,// default TP %
+    allocation: 1000,      // Default capital allocation
   }),
   botLogs: [],             // array of bot operation log strings
 
@@ -140,6 +139,7 @@ export const useStore = create((set, get) => ({
 
   setSymbolsList: (list) => set({ symbolsList: list }),
 
+  setBots: (bots) => set({ activeBots: bots }),
   startBot: () => set({ isBotRunning: true }),
   stopBot: () => set({ isBotRunning: false }),
   setBotStrategy: (strategy) => {
@@ -153,7 +153,7 @@ export const useStore = create((set, get) => ({
   }),
   addBotLog: (log) => set((state) => {
     const time = new Date().toLocaleTimeString();
-    const entry = `[${time}] ${log}`;
+    const entry = `[${time}] ${log.message || log}`;
     const newLogs = [entry, ...state.botLogs];
     if (newLogs.length > 100) newLogs.pop(); // Cap log size
     return { botLogs: newLogs };

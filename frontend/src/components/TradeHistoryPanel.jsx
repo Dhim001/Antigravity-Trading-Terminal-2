@@ -263,7 +263,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
 
         {/* Symbol */}
         <select value={symFilter} onChange={e => setSymFilter(e.target.value)} style={{ background: '#0f172a', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-secondary)', borderRadius: 'var(--r-sm)', padding: '3px 8px', fontSize: 'var(--fs-2xs)', cursor: 'pointer', fontFamily: 'var(--font-sans)', colorScheme: 'dark' }}>
-          {symbols.map(s => <option key={s} value={s}>{s === 'ALL' ? 'All Symbols' : s}</option>)}
+          {symbols.map(s => <option key={s} value={s} style={{ background: '#0f172a', color: '#fff' }}>{s === 'ALL' ? 'All Symbols' : s}</option>)}
         </select>
 
         {/* Side */}
