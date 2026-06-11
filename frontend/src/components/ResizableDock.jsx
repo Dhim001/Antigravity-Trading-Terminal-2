@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
-import { WidgetEmpty } from './WidgetShell';
+import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -68,7 +68,7 @@ const PositionRow = React.memo(function PositionRow({ sym, pos }) {
       <td>
         <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
         {(pos.stop_loss_price || pos.take_profit_price) && (
-          <div className="mt-0.5 flex gap-1.5 text-[0.62rem] text-muted-foreground">
+          <div className="mt-0.5 icon-label-tight text-[0.62rem] text-muted-foreground">
             {pos.stop_loss_price && (
               <span className="text-trading-down">SL:{pos.stop_loss_price.toFixed(dec)}</span>
             )}
@@ -115,7 +115,7 @@ function PositionsTab() {
   }
 
   return (
-    <table className="terminal-table">
+    <table className="terminal-table min-w-[880px]">
       <thead>
         <tr>
           <th>Symbol</th>
@@ -147,7 +147,7 @@ function OrdersTab() {
   }
 
   return (
-    <table className="terminal-table">
+    <table className="terminal-table min-w-[640px]">
       <thead>
         <tr>
           <th>Symbol</th>
@@ -282,11 +282,11 @@ function AlgoTab() {
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[320px_1fr_300px] gap-3 overflow-hidden p-3">
-      <Card size="sm" className="flex min-h-0 flex-col gap-2.5 overflow-y-auto rounded-lg py-3 shadow-none">
+    <div className="scroll-panel-y scroll-panel-y-0 grid h-full min-h-0 grid-cols-1 gap-3 p-3 xl:grid-cols-[minmax(240px,320px)_1fr_minmax(220px,300px)] xl:overflow-hidden">
+      <Card size="sm" className="flex min-h-0 flex-col gap-2.5 rounded-lg py-3 shadow-none xl:scroll-panel-y xl:scroll-panel-y-0">
         <CardHeader className="border-b border-border pb-2">
-          <CardTitle className="flex items-center gap-2 text-xs uppercase tracking-wide">
-            <Settings size={13} className="text-primary" />
+          <CardTitle className="icon-label-loose text-xs uppercase tracking-wide">
+            <Settings size={13} className="text-primary" aria-hidden />
             Deploy Bot
           </CardTitle>
         </CardHeader>
@@ -348,19 +348,22 @@ function AlgoTab() {
           </div>
         )}
 
-        <div className="mt-auto flex gap-1.5">
+        <div className="mt-auto flex gap-[var(--icon-gap-loose)]">
           <Button variant="outline" size="sm" className="flex-1 text-xs" onClick={handleRunBacktest}>
-            <Activity /> BACKTEST
+            <Activity data-icon="inline-start" />
+            BACKTEST
           </Button>
           <Button variant="buy" size="sm" className="flex-[1.5] text-xs font-bold" onClick={handleCreateBot}>
-            <Play /> DEPLOY
+            <Play data-icon="inline-start" />
+            DEPLOY
           </Button>
         </div>
         </CardContent>
       </Card>
 
-      <Card size="sm" className="flex min-h-0 flex-col overflow-hidden rounded-lg py-0 shadow-none">
-        <table className="terminal-table m-0">
+      <Card size="sm" className="flex min-h-[200px] flex-col overflow-hidden rounded-lg py-0 shadow-none xl:min-h-0">
+        <ScrollTablePanel>
+        <table className="terminal-table m-0 min-w-[560px]">
           <thead>
             <tr>
               <th>Symbol</th>
@@ -408,12 +411,13 @@ function AlgoTab() {
             )}
           </tbody>
         </table>
+        </ScrollTablePanel>
       </Card>
 
-      <Card size="sm" className="flex min-h-0 flex-col overflow-hidden rounded-lg bg-background/80 py-3 shadow-none">
+      <Card size="sm" className="flex min-h-[160px] flex-col overflow-hidden rounded-lg bg-background/80 py-3 shadow-none xl:min-h-0">
         <div className="mb-2 flex shrink-0 items-center justify-between border-b border-border px-3 pb-2">
-          <div className="flex items-center gap-2">
-            <Cpu size={13} className={activeBots.length > 0 ? 'text-trading-up' : 'text-muted-foreground'} />
+          <div className="icon-label-loose">
+            <Cpu size={13} className={activeBots.length > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
             <span className="text-xs font-bold uppercase tracking-wide">Bot Log</span>
             <Badge variant={activeBots.length > 0 ? 'buy' : 'secondary'}>
               {activeBots.length > 0 ? `${activeBots.length} ACTIVE` : 'IDLE'}
@@ -511,13 +515,14 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
           <div className="flex shrink-0 items-center border-b border-border bg-muted/20 pr-1 pt-1">
-            <TabsList variant="line" className="h-9 min-w-0 flex-1 justify-start overflow-x-auto rounded-none border-0 bg-transparent px-1">
+          <div className="scroll-fade-x flex min-w-0 flex-1 items-center">
+            <TabsList variant="line" className="scroll-panel-x no-scrollbar h-9 min-w-0 flex-1 justify-start rounded-none border-0 bg-transparent px-1">
               {TABS.map(tab => {
                 const Icon = tab.icon;
                 return (
-                  <TabsTrigger key={tab.id} value={tab.id} className="gap-1.5 px-3 text-xs">
+                  <TabsTrigger key={tab.id} value={tab.id} className="shrink-0 px-2 text-xs xl:px-3" title={tab.label}>
                     <Icon data-icon="inline-start" />
-                    {tab.label}
+                    <span className="header-label">{tab.label}</span>
                     {tab.badge != null && (
                       <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-bold">
                         {tab.badge}
@@ -530,6 +535,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
                 );
               })}
             </TabsList>
+          </div>
             {activeTab === 'history' && (
               <Button
                 variant="ghost"
@@ -543,22 +549,28 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
             )}
           </div>
 
-          <TabsContent value="positions" className="mt-0 min-h-0 flex-1 overflow-y-auto">
-            <PositionsTab />
+          <TabsContent value="positions" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ScrollTablePanel>
+              <PositionsTab />
+            </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="orders" className="mt-0 min-h-0 flex-1 overflow-y-auto">
-            <OrdersTab />
+          <TabsContent value="orders" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ScrollTablePanel>
+              <OrdersTab />
+            </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="balances" className="mt-0 min-h-0 flex-1 overflow-y-auto">
-            <BalancesTab />
+          <TabsContent value="balances" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ScrollTablePanel>
+              <BalancesTab />
+            </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="algo" className="mt-0 min-h-0 flex-1 overflow-hidden">
+          <TabsContent value="algo" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
             <AlgoTab />
           </TabsContent>
-          <TabsContent value="equity" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+          <TabsContent value="equity" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
             <EquityCurveTab />
           </TabsContent>
-          <TabsContent value="history" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+          <TabsContent value="history" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
             {!historyFullscreen && <TradeHistoryContent embedded />}
           </TabsContent>
         </Tabs>

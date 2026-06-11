@@ -182,7 +182,7 @@ function ChartHeaderPrice({ symbol }) {
   const dec = getPriceDecimals(ticker.price);
 
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm">
+    <div className="flex min-w-0 items-center gap-[var(--icon-gap-loose)] overflow-hidden text-sm">
       <span className={cn(
         'num-mono shrink-0 text-lg font-extrabold transition-colors',
         direction === 'up' ? 'text-trading-up' : direction === 'down' ? 'text-trading-down' : 'text-foreground'
@@ -946,7 +946,7 @@ export default function ChartWidget() {
 
   const chartToolbar = (
     <>
-      <WidgetToolbar className="h-8 flex-nowrap py-0">
+      <WidgetToolbar className="scroll-panel-x no-scrollbar h-8 flex-nowrap py-0">
         <ToggleGroup type="single" value={timeframe} onValueChange={(v) => v && setTimeframe(v)} spacing={0}>
           {TF_CONFIGS.map(tf => (
             <ToggleGroupItem key={tf.label} value={tf.label} size="sm" className="px-2 text-[0.68rem] font-bold">
@@ -956,11 +956,13 @@ export default function ChartWidget() {
         </ToggleGroup>
         <WidgetToolbarDivider />
         <ToggleGroup type="single" value={chartType} onValueChange={(v) => v && setChartType(v)} spacing={0}>
-          <ToggleGroupItem value="candle" size="sm" className="gap-1 px-2 text-[0.68rem] font-bold">
-            <AreaChart data-icon="inline-start" />Candle
+          <ToggleGroupItem value="candle" size="sm" className="px-2 text-[0.68rem] font-bold">
+            <AreaChart data-icon="inline-start" />
+            Candle
           </ToggleGroupItem>
-          <ToggleGroupItem value="line" size="sm" className="gap-1 px-2 text-[0.68rem] font-bold">
-            <TrendingUp data-icon="inline-start" />Line
+          <ToggleGroupItem value="line" size="sm" className="px-2 text-[0.68rem] font-bold">
+            <TrendingUp data-icon="inline-start" />
+            Line
           </ToggleGroupItem>
         </ToggleGroup>
         {chartInteractionMode !== 'normal' && (
@@ -974,20 +976,20 @@ export default function ChartWidget() {
           </Button>
         )}
       </WidgetToolbar>
-      <WidgetToolbar className="min-h-8 flex-wrap py-1">
+      <WidgetToolbar className="scroll-panel-x no-scrollbar min-h-8 flex-nowrap py-1">
         <ToggleGroup
           type="multiple"
           value={activeIndicatorKeys}
           onValueChange={handleIndicatorsChange}
-          className="flex flex-wrap gap-0.5"
-          spacing={0}
+          className="flex flex-nowrap gap-[var(--icon-gap)]"
+          spacing={1}
         >
           {Object.entries(INDICATORS).map(([key, ind]) => (
             <ToggleGroupItem
               key={key}
               value={key}
               size="sm"
-              className="gap-1 text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+              className="gap-[var(--icon-gap)] text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
               style={{ '--ind-c': ind.color }}
             >
               <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
@@ -1005,7 +1007,7 @@ export default function ChartWidget() {
       icon={AreaChart}
       title={activeSymbol}
       headerRight={
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
           <ChartHeaderPrice symbol={activeSymbol} />
           <ChartSignalBadge symbol={activeSymbol} />
         </div>
@@ -1014,26 +1016,26 @@ export default function ChartWidget() {
       contentClassName="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0"
     >
       {chartInteractionMode !== 'normal' && (
-        <Badge className="pointer-events-none absolute top-2 left-1/2 z-[100] -translate-x-1/2 gap-1.5 border-primary/40 bg-primary/90 px-3 py-1 text-[0.68rem] font-bold text-primary-foreground shadow-[0_0_15px_var(--color-accent-bg)]">
+        <Badge className="icon-label pointer-events-none absolute top-2 left-1/2 z-[100] -translate-x-1/2 border-primary/40 bg-primary/90 px-3 py-1 text-[0.68rem] font-bold text-primary-foreground shadow-[0_0_15px_var(--color-accent-bg)]">
           Click chart to set {chartInteractionMode === 'edit_sl' ? 'Stop Loss' : 'Take Profit'}
           <span className="font-normal opacity-80">(ESC to cancel)</span>
         </Badge>
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute top-1.5 left-2.5 z-10 flex select-none items-center gap-3 font-mono text-[11px]">
+        <div className="pointer-events-none absolute top-1.5 left-2.5 z-10 flex select-none items-center gap-[var(--icon-gap-loose)] font-mono text-[11px]">
           {[
             ['O', 'o'],
             ['H', 'h'],
             ['L', 'l'],
             ['C', 'c'],
           ].map(([label, id]) => (
-            <span key={label} className="flex gap-1">
+            <span key={label} className="icon-label-tight">
               <span className="font-normal text-muted-foreground">{label}</span>
               <span id={`chart-legend-${id}`} className="font-bold">—</span>
             </span>
           ))}
-          <span className="flex gap-1">
+          <span className="icon-label-tight">
             <span className="font-normal text-muted-foreground">V</span>
             <span id="chart-legend-v" className="font-bold text-trading-accent">—</span>
           </span>

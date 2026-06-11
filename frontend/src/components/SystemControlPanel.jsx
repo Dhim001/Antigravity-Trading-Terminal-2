@@ -5,6 +5,7 @@ import { sendWebSocketAction } from '../services/websocket';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -22,11 +23,9 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Slider } from '@/components/ui/slider';
-import { Separator } from '@/components/ui/separator';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Select,
@@ -37,10 +36,47 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { Cpu, Database, DollarSign, RefreshCw, ShieldAlert, Sliders } from 'lucide-react';
+import { FieldGroup } from '@/components/ui/field';
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupText,
+} from '@/components/ui/input-group';
+import {
+  AdminSection,
+  AdminFieldRow,
+  AdminDangerZone,
+  AdminLockedOverlay,
+} from './AdminPanelShell';
+import { StatCard } from './StatCard';
+import {
+  Activity,
+  Briefcase,
+  Cpu,
+  Database,
+  DollarSign,
+  RefreshCw,
+  ShieldAlert,
+  Sliders,
+  Zap,
+} from 'lucide-react';
+
+const ADMIN_TABS = [
+  { id: 'simulation', label: 'Market Simulation', icon: Sliders, title: 'Market simulation controls' },
+  { id: 'account', label: 'Account Admin', icon: DollarSign, title: 'Account seeding and reset' },
+  { id: 'diagnostics', label: 'Diagnostics', icon: Database, title: 'System diagnostics' },
+];
+
+const TICK_SPEEDS = [
+  { val: 1.0, label: '1s', sub: 'Slow' },
+  { val: 0.5, label: '500ms', sub: 'Medium' },
+  { val: 0.25, label: '250ms', sub: 'Normal' },
+  { val: 0.1, label: '100ms', sub: 'Fast' },
+];
 
 export default function SystemControlPanel({ isOpen, onClose }) {
-  const { systemStats, activeSymbol, isLive, symbolsList } = useStore();
+  const { systemStats, activeSymbol, isLive, terminalMode, symbolsList } = useStore();
   const [activeTab, setActiveTab] = useState('simulation');
 
   const getAvailableAssets = () => {
@@ -61,6 +97,8 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   const [seedAsset, setSeedAsset] = useState('USD');
   const [seedAmount, setSeedAmount] = useState('10000');
   const [isResetting, setIsResetting] = useState(false);
+
+  const tickRate = (1.0 / (systemStats.tick_interval || tickInterval || 0.25)).toFixed(1);
 
   useEffect(() => {
     if (systemStats) {
@@ -109,36 +147,77 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     onClose();
   };
 
+  const handleRefreshStats = () => {
+    sendWebSocketAction('admin_get_stats');
+    toast.success('Diagnostics refreshed');
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[540px]" showCloseButton>
-        <DialogHeader className="border-b border-border bg-muted/20 px-5 py-4">
-          <DialogTitle className="flex items-center gap-2.5 text-sm font-bold tracking-wide">
-            <Cpu className="size-4 text-primary" />
-            SYSTEM ADMIN CONTROL PANEL
-          </DialogTitle>
+      <DialogContent
+        className="admin-panel gap-0 overflow-hidden p-0 sm:max-w-[560px]"
+        overlayClassName="admin-panel-overlay"
+        closeButtonClassName="admin-panel-close"
+        showCloseButton
+        aria-busy={isResetting}
+        aria-describedby="admin-panel-desc"
+      >
+        <DialogHeader className="admin-panel-header">
+          <div className="admin-panel-header-row">
+            <DialogTitle className="icon-label-loose min-w-0 text-sm font-bold tracking-wide">
+              <Cpu className="size-4 shrink-0 text-primary" aria-hidden />
+              <span className="truncate">System Admin</span>
+            </DialogTitle>
+            {isLive ? (
+              <Badge
+                variant="live"
+                className="icon-label shrink-0 px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider"
+                aria-label={`Live trading mode: ${terminalMode}`}
+              >
+                <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                LIVE · {terminalMode}
+              </Badge>
+            ) : (
+              <Badge
+                variant="secondary"
+                className="shrink-0 px-2 py-0.5 text-[0.62rem] font-bold tracking-wide"
+                aria-label="Simulated trading mode"
+              >
+                SIMULATED
+              </Badge>
+            )}
+          </div>
+          <DialogDescription id="admin-panel-desc" className="sr-only">
+            Configure market simulation, account balances, and view system diagnostics.
+            Press Escape to close.
+          </DialogDescription>
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-0">
-          <TabsList variant="line" className="h-auto w-full justify-start rounded-none border-b border-border bg-transparent px-2">
-            <TabsTrigger value="simulation" className="gap-1.5 px-4 py-3 text-xs">
-              <Sliders data-icon="inline-start" />
-              Market Simulation
-            </TabsTrigger>
-            <TabsTrigger value="account" className="gap-1.5 px-4 py-3 text-xs">
-              <DollarSign data-icon="inline-start" />
-              Account Admin
-            </TabsTrigger>
-            <TabsTrigger value="diagnostics" className="gap-1.5 px-4 py-3 text-xs">
-              <Database data-icon="inline-start" />
-              Diagnostics
-            </TabsTrigger>
-          </TabsList>
+          <div className="admin-panel-tabs-wrap scroll-panel-x no-scrollbar">
+            <TabsList variant="line" className="admin-panel-tabs" aria-label="Admin panel sections">
+              {ADMIN_TABS.map(tab => {
+                const Icon = tab.icon;
+                return (
+                  <TabsTrigger
+                    key={tab.id}
+                    value={tab.id}
+                    className="flex-none shadow-none"
+                    title={tab.title}
+                    aria-label={tab.label}
+                  >
+                    <Icon className="admin-tab-icon" strokeWidth={2} aria-hidden />
+                    <span className="admin-tab-label">{tab.label}</span>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </div>
 
-          <div className="min-h-[260px] px-5 py-6">
-            <TabsContent value="simulation" className="mt-0 flex flex-col gap-5">
+          <div className="admin-panel-body scroll-panel-y scroll-panel-y-0 px-5 py-5">
+            <TabsContent value="simulation" className="mt-0">
               {isLive && (
-                <Alert variant="destructive">
+                <Alert variant="destructive" className="mb-4">
                   <ShieldAlert data-icon="inline-start" />
                   <AlertDescription className="text-xs leading-relaxed">
                     Simulation drift controls are locked in live trading. Volatility and tick rates are governed entirely by real-time exchange feeds.
@@ -146,160 +225,195 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                 </Alert>
               )}
 
-              <div className={isLive ? 'pointer-events-none flex flex-col gap-5 opacity-35' : 'flex flex-col gap-5'}>
-                <div>
-                  <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
-                    Drift Override for {activeSymbol}
-                  </Label>
-                  <ToggleGroup
-                    type="single"
-                    value={bias}
-                    onValueChange={(v) => { if (v) { setBias(v); handleUpdateSimulation({ bias: v }); } }}
-                    className="grid w-full grid-cols-3 gap-1"
-                    spacing={0}
+              <AdminLockedOverlay
+                locked={isLive}
+                message="Simulation controls locked — live broker feed active"
+              >
+                <FieldGroup className="gap-4">
+                  <AdminSection
+                    title="Price Drift"
+                    description={`Bias override for ${activeSymbol} in the simulated feed.`}
                   >
-                    <ToggleGroupItem value="UP" variant="buy" className="text-xs font-bold">
-                      Bullish (Pump)
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="DOWN" variant="sell" className="text-xs font-bold">
-                      Bearish (Dump)
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="RANDOM" variant="outline" className="text-xs font-bold">
-                      Random Walk
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </div>
-
-                <div>
-                  <div className="mb-2 flex justify-between">
-                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">Volatility Multiplier</Label>
-                    <span className="num-mono text-sm font-bold text-trading-accent">{volatility.toFixed(1)}x</span>
-                  </div>
-                  <Slider
-                    min={0.2}
-                    max={5}
-                    step={0.2}
-                    value={[volatility]}
-                    onValueChange={([val]) => {
-                      setVolatility(val);
-                      handleUpdateSimulation({ volatility: val });
-                    }}
-                  />
-                  <div className="mt-1 flex justify-between text-[0.65rem] text-muted-foreground">
-                    <span>0.2x (Stable)</span>
-                    <span>1.0x (Normal)</span>
-                    <span>5.0x (Highly Volatile)</span>
-                  </div>
-                </div>
-
-                <div>
-                  <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
-                    Tick Broadcast Speed
-                  </Label>
-                  <ToggleGroup
-                    type="single"
-                    value={String(tickInterval)}
-                    onValueChange={(v) => {
-                      if (!v) return;
-                      const val = parseFloat(v);
-                      setTickInterval(val);
-                      handleUpdateSimulation({ tickInterval: val });
-                    }}
-                    className="grid w-full grid-cols-4 gap-1"
-                    spacing={0}
-                  >
-                    {[
-                      { val: 1.0, label: '1s (Slow)' },
-                      { val: 0.5, label: '500ms' },
-                      { val: 0.25, label: '250ms' },
-                      { val: 0.1, label: '100ms' },
-                    ].map(speed => (
-                      <ToggleGroupItem key={speed.val} value={String(speed.val)} className="h-8 text-[0.7rem] font-semibold">
-                        {speed.label}
+                    <ToggleGroup
+                      type="single"
+                      value={bias}
+                      onValueChange={(v) => { if (v) { setBias(v); handleUpdateSimulation({ bias: v }); } }}
+                      className="admin-toggle-grid admin-toggle-grid-3"
+                      spacing={0}
+                      aria-label="Price drift bias"
+                    >
+                      <ToggleGroupItem value="UP" variant="buy" className="h-8 text-xs font-bold">
+                        Bullish
                       </ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
-                </div>
-              </div>
+                      <ToggleGroupItem value="DOWN" variant="sell" className="h-8 text-xs font-bold">
+                        Bearish
+                      </ToggleGroupItem>
+                      <ToggleGroupItem value="RANDOM" variant="outline" className="h-8 text-xs font-bold">
+                        Random
+                      </ToggleGroupItem>
+                    </ToggleGroup>
+                  </AdminSection>
+
+                  <AdminSection
+                    title="Volatility Multiplier"
+                    description="Scales random price movement amplitude across all symbols."
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="admin-section-desc">Current multiplier</span>
+                      <span className="admin-slider-value">{volatility.toFixed(1)}×</span>
+                    </div>
+                    <Slider
+                      className="admin-slider"
+                      min={0.2}
+                      max={5}
+                      step={0.2}
+                      value={[volatility]}
+                      disabled={isLive}
+                      aria-label="Volatility multiplier"
+                      aria-valuetext={`${volatility.toFixed(1)} times normal volatility`}
+                      onValueChange={([val]) => {
+                        setVolatility(val);
+                        handleUpdateSimulation({ volatility: val });
+                      }}
+                    />
+                    <div className="admin-slider-labels">
+                      <span>0.2× Stable</span>
+                      <span>1.0× Normal</span>
+                      <span>5.0× Volatile</span>
+                    </div>
+                  </AdminSection>
+
+                  <AdminSection
+                    title="Tick Broadcast Speed"
+                    description="How often market_update payloads are pushed to clients."
+                  >
+                    <ToggleGroup
+                      type="single"
+                      value={String(tickInterval)}
+                      onValueChange={(v) => {
+                        if (!v) return;
+                        const val = parseFloat(v);
+                        setTickInterval(val);
+                        handleUpdateSimulation({ tickInterval: val });
+                      }}
+                      className="admin-toggle-grid admin-toggle-grid-speed"
+                      spacing={0}
+                      aria-label="Tick broadcast interval"
+                    >
+                      {TICK_SPEEDS.map(speed => (
+                        <ToggleGroupItem
+                          key={speed.val}
+                          value={String(speed.val)}
+                          className="flex h-9 flex-col gap-0 py-1 text-[0.68rem] font-semibold leading-tight"
+                        >
+                          <span className="num-mono">{speed.label}</span>
+                          <span className="text-[0.58rem] font-normal text-muted-foreground">{speed.sub}</span>
+                        </ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
+                  </AdminSection>
+                </FieldGroup>
+              </AdminLockedOverlay>
             </TabsContent>
 
-            <TabsContent value="account" className="mt-0 flex flex-col gap-6">
+            <TabsContent value="account" className="mt-0 flex flex-col gap-5">
               {isLive ? (
                 <>
-                  <Alert className="border-amber-500/30 bg-amber-500/10">
-                    <ShieldAlert data-icon="inline-start" className="text-amber-500" />
-                    <AlertDescription className="text-xs leading-relaxed text-amber-200/90">
+                  <Alert className="border-trading-warn/30 bg-trading-warn/10">
+                    <ShieldAlert data-icon="inline-start" className="text-trading-warn" />
+                    <AlertDescription className="text-xs leading-relaxed text-foreground/90">
                       Manual balance seeding and database resets are disabled in live trading mode. Balances and positions are synced from the broker account.
                     </AlertDescription>
                   </Alert>
 
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button variant="destructive" className="h-auto w-full py-4 text-xs font-extrabold tracking-wide">
-                        <ShieldAlert data-icon="inline-start" />
-                        EMERGENCY STOP: LIQUIDATE ALL POSITIONS & CANCEL ORDERS
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Emergency liquidation?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will immediately cancel all open limit orders and close all active positions with market orders at the exchange.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction variant="destructive" onClick={handleEmergencyStop}>
-                          Execute
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
+                  <AdminDangerZone
+                    title="Emergency Actions"
+                    description="Immediately cancel all open orders and close every position at market."
+                  >
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="outline" className="admin-danger-btn h-auto py-3">
+                          <ShieldAlert data-icon="inline-start" />
+                          Emergency Stop — Liquidate All
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Emergency liquidation?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will immediately cancel all open limit orders and close all active positions with market orders at the exchange.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction variant="destructive" onClick={handleEmergencyStop}>
+                            Execute
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </AdminDangerZone>
                 </>
               ) : (
                 <>
-                  <div>
-                    <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
-                      Credit Account Balance
-                    </Label>
-                    <div className="flex gap-2">
-                      <Select value={seedAsset} onValueChange={setSeedAsset}>
-                        <SelectTrigger className="w-[100px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            {getAvailableAssets().map(asset => (
-                              <SelectItem key={asset} value={asset}>{asset}</SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number"
-                        value={seedAmount}
-                        onChange={e => setSeedAmount(e.target.value)}
-                        placeholder="Amount to credit…"
-                        className="num-mono flex-1"
-                      />
-                      <Button onClick={handleSeedBalance}>Credit Balance</Button>
-                    </div>
-                  </div>
+                  <AdminSection
+                    title="Credit Account Balance"
+                    description="Add funds to a simulated account asset for paper trading."
+                  >
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleSeedBalance();
+                      }}
+                    >
+                      <AdminFieldRow hint="Credits apply immediately to the selected asset balance.">
+                        <div className="admin-credit-row">
+                          <Select value={seedAsset} onValueChange={setSeedAsset}>
+                            <SelectTrigger aria-label="Asset to credit">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {getAvailableAssets().map(asset => (
+                                  <SelectItem key={asset} value={asset}>{asset}</SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          <InputGroup className="min-w-[120px] flex-1">
+                            <InputGroupInput
+                              id="admin-seed-amount"
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={seedAmount}
+                              onChange={e => setSeedAmount(e.target.value)}
+                              placeholder="Amount"
+                              className="num-mono"
+                              aria-label="Credit amount"
+                            />
+                            <InputGroupAddon align="inline-end">
+                              <InputGroupText className="text-xs">{seedAsset}</InputGroupText>
+                            </InputGroupAddon>
+                          </InputGroup>
+                          <Button type="submit">Credit</Button>
+                        </div>
+                      </AdminFieldRow>
+                    </form>
+                  </AdminSection>
 
-                  <Separator />
-
-                  <div>
-                    <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
-                      System Reset Actions
-                    </Label>
+                  <AdminDangerZone
+                    title="Destructive Actions"
+                    description="These operations cannot be undone. All positions, orders, and trade history will be wiped."
+                  >
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="destructive" className="w-full" disabled={isResetting}>
+                        <Button variant="outline" className="admin-danger-btn" disabled={isResetting}>
                           {isResetting
                             ? <RefreshCw data-icon="inline-start" className="animate-spin" />
                             : <ShieldAlert data-icon="inline-start" />
                           }
-                          {isResetting ? 'RESETTING SYSTEM…' : 'NUCLEAR RESET: WIPE SYSTEM DATABASE'}
+                          {isResetting ? 'Resetting System…' : 'Nuclear Reset — Wipe Database'}
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
@@ -317,58 +431,86 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
-                    <p className="mt-2 text-center text-[0.66rem] text-muted-foreground">
-                      Warning: Wipes active positions, cancels pending orders, and clears trade blotter logs.
-                    </p>
-                  </div>
+                  </AdminDangerZone>
                 </>
               )}
             </TabsContent>
 
             <TabsContent value="diagnostics" className="mt-0 flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-3">
-                <Card className="border-border/60 bg-muted/20 py-0">
-                  <CardContent className="p-3.5">
-                    <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Active Client Sockets
-                    </p>
-                    <p className="num-mono text-2xl font-bold text-trading-accent">{systemStats.clients || 1}</p>
-                  </CardContent>
-                </Card>
-                <Card className="border-border/60 bg-muted/20 py-0">
-                  <CardContent className="p-3.5">
-                    <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Active Tick Rate
-                    </p>
-                    <p className="num-mono text-2xl font-bold text-trading-up">
-                      {(1.0 / (systemStats.tick_interval || 0.25)).toFixed(1)}
-                      <span className="ml-1 text-sm font-normal text-muted-foreground">ticks/sec</span>
-                    </p>
-                  </CardContent>
-                </Card>
-              </div>
+              <AdminSection
+                title="Runtime Metrics"
+                description="Live server stats from the WebSocket backend."
+                action={
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={handleRefreshStats}
+                    aria-label="Refresh diagnostics statistics"
+                  >
+                    <RefreshCw data-icon="inline-start" aria-hidden />
+                    Refresh
+                  </Button>
+                }
+              >
+                <div className="flex flex-wrap gap-2">
+                  <StatCard
+                    label="Client Sockets"
+                    icon={Activity}
+                    value={systemStats.clients ?? 1}
+                    tone="accent"
+                    sub="Connected WebSocket clients"
+                  />
+                  <StatCard
+                    label="Tick Rate"
+                    icon={Zap}
+                    value={`${tickRate}/s`}
+                    tone="up"
+                    sub={`${(systemStats.tick_interval || tickInterval || 0.25) * 1000}ms interval`}
+                  />
+                  <StatCard
+                    label="Open Positions"
+                    icon={Briefcase}
+                    value={systemStats.positions_count ?? 0}
+                    tone="neutral"
+                    sub="Active in database"
+                  />
+                </div>
+              </AdminSection>
 
-              <Card className="border-border/60 bg-muted/20 py-0">
-                <CardContent className="flex flex-col gap-2.5 p-4">
-                  <p className="border-b border-border/60 pb-1.5 text-xs font-bold">Database Row Counts</p>
-                  {[
-                    ['Open Positions count', systemStats.positions_count || 0],
-                    ['Pending Orders count', systemStats.pending_orders_count || 0],
-                    ['Filled Trades count', systemStats.filled_trades_count || 0],
-                  ].map(([label, count]) => (
-                    <div key={label} className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">{label}:</span>
-                      <span className="num-mono font-semibold">{count}</span>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
+              <AdminSection title="Database Row Counts" description="Persistent store record totals.">
+                <Card className="admin-panel-card py-0 shadow-none">
+                  <CardContent className="p-0">
+                    <table className="terminal-table text-xs" aria-label="Database row counts">
+                      <caption className="sr-only">Counts of positions, orders, and trades in the database</caption>
+                      <tbody>
+                        {[
+                          ['Open Positions', systemStats.positions_count ?? 0],
+                          ['Pending Orders', systemStats.pending_orders_count ?? 0],
+                          ['Filled Trades', systemStats.filled_trades_count ?? 0],
+                        ].map(([label, count]) => (
+                          <tr key={label}>
+                            <td className="text-muted-foreground">{label}</td>
+                            <td className="num-mono text-right font-semibold">{count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </CardContent>
+                </Card>
+              </AdminSection>
             </TabsContent>
           </div>
         </Tabs>
 
-        <DialogFooter className="border-t border-border bg-muted/20 px-5 py-3">
-          <Button variant="outline" size="sm" onClick={onClose}>Close Panel</Button>
+        <DialogFooter className="admin-panel-footer sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[0.65rem] text-muted-foreground">
+            {isLive ? `Live broker · ${terminalMode}` : 'Simulated environment'}
+            {' · '}
+            <span className="admin-panel-kbd">Esc</span> to close
+          </p>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={isResetting}>
+            Close Panel
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

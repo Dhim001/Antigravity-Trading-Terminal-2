@@ -8,7 +8,7 @@ import { AlignLeft } from 'lucide-react';
 function DepthRow({ side, price, qty, cumulative, pct, priceDecimals, qtyDecimals }) {
   const isAsk = side === 'ask';
   return (
-    <div className="relative grid grid-cols-3 px-3 py-0.5 text-xs">
+    <div className="relative grid grid-cols-3 px-3 py-1 text-xs">
       <div
         className={cn('absolute inset-y-0 right-0', isAsk ? 'bg-trading-down/10' : 'bg-trading-up/10')}
         style={{ width: `${pct}%` }}
@@ -109,7 +109,7 @@ export default function OrderBookWidget() {
       toolbar={imbalanceToolbar}
       contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
     >
-      <div className="grid shrink-0 grid-cols-3 border-b border-border/60 px-3 py-1 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="sticky top-0 z-[1] grid shrink-0 grid-cols-3 border-b border-border/60 bg-background/95 px-3 py-1 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
         <div>Price</div>
         <div className="text-right">Size</div>
         <div className="text-right">Total</div>
@@ -133,7 +133,7 @@ export default function OrderBookWidget() {
           </div>
         </ScrollArea>
 
-        <div className="flex shrink-0 items-center justify-between border-y border-border bg-muted/20 px-3 py-1.5">
+        <div className="sticky z-[2] flex shrink-0 items-center justify-between border-y border-border bg-muted/30 px-3 py-1.5 backdrop-blur-sm">
           <div className={cn(
             'num-mono text-lg font-extrabold tracking-tight',
             ticker?.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down',

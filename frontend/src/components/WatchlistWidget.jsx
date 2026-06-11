@@ -3,7 +3,7 @@
  */
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
-import { WidgetShell, WidgetToolbar, WidgetEmpty } from './WidgetShell';
+import { WidgetShell, WidgetToolbar, WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -85,8 +85,8 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
         isActive ? 'border-l-primary bg-primary/10' : 'border-l-transparent',
       )}
     >
-      <td className="py-1 pl-2 pr-1">
-        <div className="flex items-center gap-1.5">
+      <td className="py-1.5 pl-2 pr-1">
+        <div className="icon-label-tight">
           <span
             className={cn(
               'size-1.5 shrink-0 rounded-full',
@@ -101,13 +101,13 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
           </span>
         </div>
       </td>
-      <td className="px-0.5 py-0.5">
+      <td className="px-0.5 py-1.5">
         <MiniSparkline points={sparkData} isUp={isUp} />
       </td>
       <td
         key={flashState?.key}
         className={cn(
-          'num-mono px-1.5 py-1 text-right text-xs font-semibold',
+          'num-mono px-1.5 py-1.5 text-right text-xs font-semibold',
           flashCls,
           flashState
             ? flashState.dir === 'up' ? 'text-trading-up' : 'text-trading-down'
@@ -116,10 +116,10 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
       >
         {info ? info.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }) : '…'}
       </td>
-      <td className={cn('num-mono px-1.5 py-1 text-right text-[0.62rem] font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
+      <td className={cn('num-mono px-1.5 py-1.5 text-right text-[0.62rem] font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {info ? `${isUp ? '+' : ''}${Number(info.change_24h).toFixed(2)}%` : '—'}
       </td>
-      <td className="num-mono py-1 pl-1 pr-2 text-right text-[0.62rem] text-muted-foreground">
+      <td className="num-mono py-1.5 pl-1 pr-2 text-right text-[0.62rem] text-muted-foreground">
         {info ? fmtVol(info.volume_24h) : '—'}
       </td>
     </tr>
@@ -166,20 +166,20 @@ export default function WatchlistWidget() {
   const toolbar = (
     <>
       <div className="relative w-full shrink-0 border-b border-border px-2.5 py-1.5">
-        <Search size={11} className="pointer-events-none absolute top-1/2 left-5 -translate-y-1/2 text-muted-foreground" />
+        <Search size={12} className="pointer-events-none absolute top-1/2 left-[calc(0.625rem+var(--icon-gap))] -translate-y-1/2 shrink-0 text-muted-foreground" aria-hidden />
         <Input
           type="text"
           placeholder="Filter symbols…"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="h-7 pl-7 text-xs"
+          className="h-7 pl-8 text-xs"
         />
       </div>
       <WidgetToolbar className="py-0.5">
         <Tabs value={cat} onValueChange={setCat} className="w-full">
-          <TabsList variant="line" className="h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
+          <TabsList variant="line" className="scroll-panel-x no-scrollbar h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
             {[['ALL', 'All'], ['CRYPTO', 'Crypto'], ['EQUITY', 'Equity'], ['ETF', 'ETF']].map(([key, label]) => (
-              <TabsTrigger key={key} value={key} className="gap-1 px-2 text-[0.68rem]">
+              <TabsTrigger key={key} value={key} className="px-2 text-[0.68rem]">
                 {label}
                 <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-semibold">
                   {counts[key]}
@@ -193,8 +193,9 @@ export default function WatchlistWidget() {
   );
 
   return (
-    <WidgetShell icon={Activity} title="Watchlist" toolbar={toolbar} contentClassName="overflow-y-auto p-0">
-      <table className="w-full border-collapse text-xs">
+    <WidgetShell icon={Activity} title="Watchlist" toolbar={toolbar} contentClassName="flex min-h-0 flex-col overflow-hidden p-0">
+      <ScrollTablePanel>
+        <table className="w-full min-w-[280px] border-collapse text-xs">
         <thead>
           <tr>
             {[
@@ -227,10 +228,11 @@ export default function WatchlistWidget() {
             <WatchlistRow key={symbol} symbol={symbol} />
           ))}
         </tbody>
-      </table>
-      {displaySymbols.length === 0 && (
-        <WidgetEmpty message="No symbols match your filter" />
-      )}
+        </table>
+        {displaySymbols.length === 0 && (
+          <WidgetEmpty message="No symbols match your filter" />
+        )}
+      </ScrollTablePanel>
     </WidgetShell>
   );
 }

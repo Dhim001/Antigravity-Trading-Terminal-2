@@ -72,16 +72,17 @@ export default function App() {
 
       <header className="terminal-header">
         <div className="brand-section">
-          <TrendingUp size={20} className="logo-icon" />
+          <TrendingUp size={20} className="logo-icon shrink-0" aria-hidden />
           <span className="brand-title">ANTIGRAVITY</span>
 
           {isLive ? (
-            <Badge variant="live" className="gap-1.5 px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider">
+            <Badge variant="live" className="icon-label px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider">
               <span className="size-1.5 animate-ping rounded-full bg-current" />
-              LIVE · {terminalMode}
+              <span>LIVE</span>
+              <span className="header-live-detail">· {terminalMode}</span>
             </Badge>
           ) : (
-            <Badge variant="secondary" className="px-2 py-0.5 text-[0.62rem] font-bold tracking-wide">
+            <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-[0.62rem] font-bold tracking-wide">
               SIMULATED
             </Badge>
           )}
@@ -92,9 +93,9 @@ export default function App() {
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => setShowAdmin(true)}
-                className="ml-1 text-muted-foreground hover:text-trading-accent"
+                className="text-muted-foreground hover:text-trading-accent"
               >
-                <Settings data-icon="inline-start" />
+                <Settings aria-hidden />
                 <span className="sr-only">System Control & Admin Panel</span>
               </Button>
             </TooltipTrigger>
@@ -102,50 +103,61 @@ export default function App() {
           </Tooltip>
         </div>
 
-        <Tabs value={viewMode} onValueChange={setViewMode}>
-          <TabsList className="h-[var(--control-h)] border border-border bg-muted/40">
-            <TabsTrigger value="single" className="gap-1">
-              <BarChart2 data-icon="inline-start" />
-              Chart
-            </TabsTrigger>
-            <TabsTrigger value="multi" className="gap-1">
-              <LayoutGrid data-icon="inline-start" />
-              Multi-Chart
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="header-controls">
+          <Tabs value={viewMode} onValueChange={setViewMode}>
+            <TabsList className="header-view-switch">
+              <TabsTrigger value="single" className="header-view-tab flex-none shadow-none" title="Chart view (⌘1)">
+                <BarChart2 className="header-view-icon" strokeWidth={2} aria-hidden />
+                <span className="header-label">Chart</span>
+              </TabsTrigger>
+              <TabsTrigger value="multi" className="header-view-tab flex-none shadow-none" title="Multi-chart grid (⌘2)">
+                <LayoutGrid className="header-view-icon" strokeWidth={2} aria-hidden />
+                <span className="header-label">Multi-Chart</span>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-[var(--control-h)] gap-1.5 px-2.5 text-xs text-muted-foreground"
-              onClick={() => setPaletteOpen(true)}
-            >
-              <Search />
-              <span className="hidden sm:inline">Search</span>
-              <kbd className="pointer-events-none hidden rounded border border-border bg-muted px-1 font-mono text-[0.6rem] sm:inline">
-                ⌘K
-              </kbd>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Symbol search & quick actions (⌘K)</TooltipContent>
-        </Tooltip>
+        <div className="header-actions">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-[var(--control-h)] px-2.5 text-xs text-muted-foreground"
+                onClick={() => setPaletteOpen(true)}
+                title="Symbol search (⌘K)"
+              >
+                <Search data-icon="inline-start" />
+                <span className="header-label">Search</span>
+                <kbd className="header-search-kbd pointer-events-none rounded border border-border bg-muted px-1 font-mono text-[0.6rem]">
+                  ⌘K
+                </kbd>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Symbol search & quick actions (⌘K)</TooltipContent>
+          </Tooltip>
 
-        <Badge variant="outline" className="gap-1.5 px-2 py-0.5 text-[0.75rem] font-semibold">
-          <span
-            className={cn(
-              'size-1.5 rounded-full',
-              connected
-                ? isLive
-                  ? 'bg-trading-warn shadow-[0_0_6px_var(--color-crypto)]'
-                  : 'bg-trading-up shadow-[0_0_6px_var(--color-up)]'
-                : 'bg-trading-down shadow-[0_0_6px_var(--color-down)]'
-            )}
-          />
-          {connected ? (isLive ? 'Live Broker' : 'Simulated') : 'Disconnected'}
-        </Badge>
+          <Badge
+            variant="outline"
+            className="icon-label px-2 py-0.5 text-[0.75rem] font-semibold"
+            title={connected ? (isLive ? 'Live broker connected' : 'Simulated feed connected') : 'WebSocket disconnected'}
+          >
+            <span
+              className={cn(
+                'size-1.5 shrink-0 rounded-full',
+                connected
+                  ? isLive
+                    ? 'bg-trading-warn shadow-[0_0_6px_var(--color-crypto)]'
+                    : 'bg-trading-up shadow-[0_0_6px_var(--color-up)]'
+                  : 'bg-trading-down shadow-[0_0_6px_var(--color-down)]'
+              )}
+            />
+            <span className="header-label">
+              {connected ? (isLive ? 'Live Broker' : 'Simulated') : 'Disconnected'}
+            </span>
+          </Badge>
+        </div>
       </header>
 
       <MarketOverviewStrip />

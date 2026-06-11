@@ -155,7 +155,7 @@ export default function EquityCurveTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-muted/20 p-2">
+      <div className="scroll-panel-x no-scrollbar flex shrink-0 flex-nowrap items-center gap-[var(--icon-gap)] border-b border-border bg-muted/20 p-2">
         <StatCard
           label="Total P&L"
           icon={isPos ? TrendingUp : TrendingDown}

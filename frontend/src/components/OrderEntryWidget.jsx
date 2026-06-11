@@ -162,8 +162,11 @@ export default function OrderEntryWidget() {
       className="border-b border-border"
       icon={PlusCircle}
       title="Order Entry"
+      scrollable
+      scrollPad={false}
+      contentClassName="p-3 pb-2"
       headerRight={
-        <div className="flex items-center gap-1.5">
+        <div className="icon-label">
           <span className={cn('text-[0.62rem] font-bold tracking-wide', isBuy ? 'text-trading-up' : 'text-trading-down')}>
             {activeSymbol}
           </span>
@@ -174,7 +177,6 @@ export default function OrderEntryWidget() {
           )}
         </div>
       }
-      contentClassName="p-3 pb-2"
     >
         <ToggleGroup
           type="single"
@@ -291,7 +293,7 @@ export default function OrderEntryWidget() {
                 size="sm"
                 className={cn('mb-2 w-full justify-between', showSLTP && 'border-primary/30 bg-primary/10 text-trading-accent')}
               >
-                <span className="flex items-center gap-1.5">
+                <span className="icon-label">
                   <Target data-icon="inline-start" />
                   Stop Loss / Take Profit
                 </span>

@@ -235,7 +235,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         </div>
       )}
 
-      <WidgetToolbar className="flex-wrap">
+      <WidgetToolbar className="scroll-panel-x no-scrollbar flex-nowrap">
         <Filter size={11} className="shrink-0 text-muted-foreground" />
         <ToggleGroup
           type="single"

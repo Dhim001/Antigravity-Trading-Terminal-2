@@ -48,14 +48,14 @@ function MarketStripItem({ sym }) {
       )}
       onClick={() => setActiveSymbol(sym)}
     >
-      <span className={cn('size-1 shrink-0 rounded-full', DOT_CLASS[kind])} />
+      <span className={cn('size-1.5 shrink-0 rounded-full', DOT_CLASS[kind])} />
       <span className={cn('text-xs font-bold tracking-wide', isActive ? 'text-foreground' : 'text-secondary-foreground')}>
         {sym.replace('USDT', '')}
       </span>
       <span className={cn('num-mono text-xs font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {info.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
       </span>
-      <span className={cn('num-mono text-[0.62rem]', isUp ? 'text-trading-up' : 'text-trading-down')}>
+      <span className={cn('num-mono text-[0.62rem] strip-item-change', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {isUp ? '▲' : '▼'}{Math.abs(info.change_24h).toFixed(2)}%
       </span>
     </div>

@@ -79,14 +79,16 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }
                   onSelect={() => run(() => setActiveSymbol(sym))}
                 >
                   {kind === 'crypto' ? (
-                    <Bitcoin className={cn(KIND_CLASS[kind])} />
+                    <Bitcoin className={cn('shrink-0', KIND_CLASS[kind])} aria-hidden />
                   ) : (
-                    <LineChart className={cn(KIND_CLASS[kind])} />
+                    <LineChart className={cn('shrink-0', KIND_CLASS[kind])} aria-hidden />
                   )}
-                  <span className="font-semibold">{sym.replace('USDT', '')}</span>
-                  {sym.includes('USDT') && (
-                    <span className="text-[0.62rem] text-muted-foreground">USDT</span>
-                  )}
+                  <span className="icon-label-tight min-w-0">
+                    <span className="font-semibold">{sym.replace('USDT', '')}</span>
+                    {sym.includes('USDT') && (
+                      <span className="text-[0.62rem] text-muted-foreground">USDT</span>
+                    )}
+                  </span>
                   {price != null && (
                     <span className="ml-auto num-mono text-xs text-muted-foreground">{price}</span>
                   )}
@@ -107,17 +109,17 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }
 
           <CommandGroup heading="Navigation">
             <CommandItem value="single chart view" onSelect={() => run(() => setViewMode('single'))}>
-              <BarChart2 />
+              <BarChart2 aria-hidden />
               Single Chart View
               <CommandShortcut>⌘1</CommandShortcut>
             </CommandItem>
             <CommandItem value="multi chart grid" onSelect={() => run(() => setViewMode('multi'))}>
-              <LayoutGrid />
+              <LayoutGrid aria-hidden />
               Multi-Chart Grid
               <CommandShortcut>⌘2</CommandShortcut>
             </CommandItem>
             <CommandItem value="system settings admin" onSelect={() => run(() => onOpenAdmin?.())}>
-              <Settings />
+              <Settings aria-hidden />
               System Control Panel
             </CommandItem>
           </CommandGroup>
