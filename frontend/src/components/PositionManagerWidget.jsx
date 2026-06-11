@@ -1,371 +1,266 @@
 import React, { useState } from 'react';
 import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
-import { Briefcase, List, Landmark, XSquare, Cpu, Play, Square, Trash2, Settings } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import {
+  Briefcase, List, Landmark, XSquare, Cpu, Play, Square, Trash2, Settings,
+} from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { WidgetEmpty } from './WidgetShell';
+
+const priceDecimals = (sym, price) =>
+  (sym?.includes('XRP') || sym?.includes('ADA') || sym?.includes('DOGE') || (price != null && price < 2.0)) ? 4 : 2;
 
 export default function PositionManagerWidget() {
   const {
     positions, orders, balances, tickerData, activeSymbol,
     isBotRunning, botStrategy, botConfig, botLogs,
-    startBot, stopBot, setBotStrategy, updateBotConfig, clearBotLogs
+    startBot, stopBot, setBotStrategy, updateBotConfig, clearBotLogs,
   } = useStore();
 
-  const [activeTab, setActiveTab] = useState('positions'); // positions, orders, balances, algo
+  const [activeTab, setActiveTab] = useState('positions');
 
   const handleCancelOrder = (orderId) => {
-    sendWebSocketAction("cancel_order", { order_id: orderId });
+    sendWebSocketAction('cancel_order', { order_id: orderId });
   };
 
-  const getActiveOrders = () => {
-    return orders.filter(o => o.status === 'PENDING');
-  };
+  const activeOrders = orders.filter(o => o.status === 'PENDING');
+  const positionEntries = Object.entries(positions);
 
   return (
-    <div className="widget-card" style={{ height: '100%' }}>
-      {/* Tabs Header */}
-      <div className="widget-header" style={{ borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', padding: '0 16px', height: '48px', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: '4px', height: '100%' }}>
-          <button 
-            onClick={() => setActiveTab('positions')}
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '6px',
-              padding: '0 16px', 
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === 'positions' ? '2px solid var(--color-accent)' : '2px solid transparent',
-              color: activeTab === 'positions' ? '#fff' : 'var(--text-muted)',
-              fontSize: '0.8rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              height: '100%'
-            }}
-          >
-            <Briefcase size={14} />
-            Positions ({Object.keys(positions).length})
-          </button>
-          <button 
-            onClick={() => setActiveTab('orders')}
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '6px',
-              padding: '0 16px', 
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === 'orders' ? '2px solid var(--color-accent)' : '2px solid transparent',
-              color: activeTab === 'orders' ? '#fff' : 'var(--text-muted)',
-              fontSize: '0.8rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              height: '100%'
-            }}
-          >
-            <List size={14} />
-            Active Orders ({getActiveOrders().length})
-          </button>
-          <button 
-            onClick={() => setActiveTab('balances')}
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '6px',
-              padding: '0 16px', 
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === 'balances' ? '2px solid var(--color-accent)' : '2px solid transparent',
-              color: activeTab === 'balances' ? '#fff' : 'var(--text-muted)',
-              fontSize: '0.8rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              height: '100%'
-            }}
-          >
-            <Landmark size={14} />
+    <div className="widget-card flex h-full flex-col overflow-hidden">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
+        <TabsList variant="line" className="h-10 shrink-0 justify-start rounded-none border-b border-border bg-muted/20 px-2">
+          <TabsTrigger value="positions" className="gap-1.5 px-3 text-xs">
+            <Briefcase data-icon="inline-start" />
+            Positions
+            <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem]">
+              {positionEntries.length}
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="orders" className="gap-1.5 px-3 text-xs">
+            <List data-icon="inline-start" />
+            Orders
+            <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem]">
+              {activeOrders.length}
+            </Badge>
+          </TabsTrigger>
+          <TabsTrigger value="balances" className="gap-1.5 px-3 text-xs">
+            <Landmark data-icon="inline-start" />
             Balances
-          </button>
-          <button 
-            onClick={() => setActiveTab('algo')}
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '6px',
-              padding: '0 16px', 
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === 'algo' ? '2px solid var(--color-accent)' : '2px solid transparent',
-              color: activeTab === 'algo' ? '#fff' : 'var(--text-muted)',
-              fontSize: '0.8rem',
-              fontWeight: '600',
-              cursor: 'pointer',
-              height: '100%'
-            }}
-          >
-            <Cpu size={14} style={{ color: isBotRunning ? '#10b981' : 'inherit' }} />
+          </TabsTrigger>
+          <TabsTrigger value="algo" className="gap-1.5 px-3 text-xs">
+            <Cpu data-icon="inline-start" className={isBotRunning ? 'text-trading-up' : ''} />
             Algo Trading
             {isBotRunning && (
-              <span style={{
-                width: '6px', height: '6px', borderRadius: '50%', background: '#10b981',
-                boxShadow: '0 0 6px #10b981', marginLeft: '2px', display: 'inline-block'
-              }} />
+              <span className="size-1.5 rounded-full bg-trading-up shadow-[0_0_5px_var(--color-up)]" />
             )}
-          </button>
-        </div>
-      </div>
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Tab Content */}
-      <div className="widget-content" style={{ height: 'calc(100% - 48px)', overflowY: 'auto' }}>
-        
-        {/* Positions Tab */}
-        {activeTab === 'positions' && (
-          <table className="terminal-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th style={{ textAlign: 'right' }}>Size</th>
-                <th style={{ textAlign: 'right' }}>Avg Price</th>
-                <th style={{ textAlign: 'right' }}>Mark Price</th>
-                <th style={{ textAlign: 'right' }}>Unrealized PnL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.keys(positions).length === 0 ? (
+        <TabsContent value="positions" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+          {positionEntries.length === 0 ? (
+            <WidgetEmpty icon={Briefcase} message="No active positions" />
+          ) : (
+            <table className="terminal-table">
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>
-                    No active positions
-                  </td>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th className="text-right">Size</th>
+                  <th className="text-right">Avg Price</th>
+                  <th className="text-right">Mark Price</th>
+                  <th className="text-right">Unrealized PnL</th>
                 </tr>
-              ) : (
-                Object.entries(positions).map(([symbol, pos]) => {
+              </thead>
+              <tbody>
+                {positionEntries.map(([symbol, pos]) => {
                   const markPrice = tickerData[symbol]?.price || pos.avg_price;
                   const uPnl = pos.size * (markPrice - pos.avg_price);
                   const isLong = pos.size >= 0;
-                  
-                  const priceDecimals = (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || markPrice < 2.0 || pos.avg_price < 2.0) ? 4 : 2;
+                  const dec = priceDecimals(symbol, Math.max(markPrice, pos.avg_price));
 
                   return (
                     <tr key={symbol}>
-                      <td style={{ fontWeight: '600' }}>{symbol}</td>
+                      <td className="font-semibold">{symbol}</td>
                       <td>
-                        <span style={{ 
-                          fontSize: '0.75rem', 
-                          padding: '2px 6px', 
-                          borderRadius: '4px',
-                          fontWeight: '600',
-                          backgroundColor: isLong ? 'var(--color-up-bg)' : 'var(--color-down-bg)',
-                          color: isLong ? 'var(--color-up)' : 'var(--color-down)'
-                        }}>
-                          {isLong ? 'LONG' : 'SHORT'}
-                        </span>
+                        <Badge variant={isLong ? 'buy' : 'sell'}>{isLong ? 'LONG' : 'SHORT'}</Badge>
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
+                      <td className="num-mono text-right">
                         {Math.abs(pos.size).toLocaleString(undefined, { minimumFractionDigits: 4 })}
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
-                        <div>{pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals })}</div>
+                      <td className="num-mono text-right">
+                        <div>{pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</div>
                         {(pos.stop_loss_price || pos.take_profit_price) && (
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                            {pos.stop_loss_price && <span style={{ color: 'var(--color-down)' }}>SL: {pos.stop_loss_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}</span>}
-                            {pos.take_profit_price && <span style={{ color: 'var(--color-up)' }}>TP: {pos.take_profit_price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals, maximumFractionDigits: priceDecimals })}</span>}
+                          <div className="mt-0.5 flex justify-end gap-2 text-[0.68rem] text-muted-foreground">
+                            {pos.stop_loss_price && (
+                              <span className="text-trading-down">
+                                SL: {pos.stop_loss_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+                              </span>
+                            )}
+                            {pos.take_profit_price && (
+                              <span className="text-trading-up">
+                                TP: {pos.take_profit_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+                              </span>
+                            )}
                           </div>
                         )}
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
-                        {markPrice.toLocaleString(undefined, { minimumFractionDigits: priceDecimals })}
+                      <td className="num-mono text-right">
+                        {markPrice.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
                       </td>
-                      <td className={`num-mono ${uPnl >= 0 ? 'text-up' : 'text-down'}`} style={{ textAlign: 'right', fontWeight: '600' }}>
+                      <td className={cn(
+                        'num-mono text-right font-semibold',
+                        uPnl >= 0 ? 'text-trading-up' : 'text-trading-down',
+                      )}>
                         {uPnl >= 0 ? '+' : ''}{uPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        )}
+                })}
+              </tbody>
+            </table>
+          )}
+        </TabsContent>
 
-        {/* Orders Tab */}
-        {activeTab === 'orders' && (
-          <table className="terminal-table">
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Type</th>
-                <th>Side</th>
-                <th style={{ textAlign: 'right' }}>Price</th>
-                <th style={{ textAlign: 'right' }}>Quantity</th>
-                <th style={{ textAlign: 'right' }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {getActiveOrders().length === 0 ? (
+        <TabsContent value="orders" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+          {activeOrders.length === 0 ? (
+            <WidgetEmpty icon={List} message="No active pending orders" />
+          ) : (
+            <table className="terminal-table">
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>
-                    No active pending orders
-                  </td>
+                  <th>Symbol</th>
+                  <th>Type</th>
+                  <th>Side</th>
+                  <th className="text-right">Price</th>
+                  <th className="text-right">Quantity</th>
+                  <th className="text-center">Action</th>
                 </tr>
-              ) : (
-                getActiveOrders().map((order) => {
-                  const priceDecimals = (order.symbol.includes("XRP") || order.symbol.includes("ADA") || order.symbol.includes("DOGE") || (order.price && order.price < 2.0)) ? 4 : 2;
-                  const qtyDecimals = (order.symbol.includes("USDT") || order.symbol.includes("USD")) ? 4 : 2;
+              </thead>
+              <tbody>
+                {activeOrders.map((order) => {
+                  const dec = priceDecimals(order.symbol, order.price);
+                  const qtyDecimals = order.symbol.includes('USDT') || order.symbol.includes('USD') ? 4 : 2;
                   const isBuy = order.side === 'BUY';
-                  
+
                   return (
                     <tr key={order.id}>
-                      <td style={{ fontWeight: '600' }}>{order.symbol}</td>
-                      <td style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{order.type}</td>
-                      <td>
-                        <span style={{ 
-                          fontSize: '0.75rem', 
-                          padding: '2px 6px', 
-                          borderRadius: '4px',
-                          fontWeight: '600',
-                          backgroundColor: isBuy ? 'var(--color-up-bg)' : 'var(--color-down-bg)',
-                          color: isBuy ? 'var(--color-up)' : 'var(--color-down)'
-                        }}>
-                          {order.side}
-                        </span>
+                      <td className="font-semibold">{order.symbol}</td>
+                      <td className="text-xs text-secondary-foreground">{order.type}</td>
+                      <td><Badge variant={isBuy ? 'buy' : 'sell'}>{order.side}</Badge></td>
+                      <td className="num-mono text-right">
+                        {order.price ? order.price.toLocaleString(undefined, { minimumFractionDigits: dec }) : 'MKT'}
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
-                        {order.price ? order.price.toLocaleString(undefined, { minimumFractionDigits: priceDecimals }) : 'MKT'}
-                      </td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
-                        {order.quantity.toFixed(qtyDecimals)}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <button 
+                      <td className="num-mono text-right">{order.quantity.toFixed(qtyDecimals)}</td>
+                      <td className="text-center">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
                           onClick={() => handleCancelOrder(order.id)}
-                          style={{ 
-                            background: 'transparent', 
-                            border: 'none', 
-                            cursor: 'pointer',
-                            color: 'var(--color-down)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            padding: '4px'
-                          }}
-                          title="Cancel Order"
+                          title="Cancel order"
+                          className="text-trading-down hover:text-trading-down"
                         >
-                          <XSquare size={16} />
-                        </button>
+                          <XSquare />
+                        </Button>
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        )}
+                })}
+              </tbody>
+            </table>
+          )}
+        </TabsContent>
 
-        {/* Balances Tab */}
-        {activeTab === 'balances' && (
-          <table className="terminal-table">
-            <thead>
-              <tr>
-                <th>Asset</th>
-                <th style={{ textAlign: 'right' }}>Total Balance</th>
-                <th style={{ textAlign: 'right' }}>Locked in Orders</th>
-                <th style={{ textAlign: 'right' }}>Available</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.keys(balances).length === 0 ? (
+        <TabsContent value="balances" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+          {Object.keys(balances).length === 0 ? (
+            <WidgetEmpty message="Loading balances…" />
+          ) : (
+            <table className="terminal-table">
+              <thead>
                 <tr>
-                  <td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>
-                    Loading balances...
-                  </td>
+                  <th>Asset</th>
+                  <th className="text-right">Total Balance</th>
+                  <th className="text-right">Locked in Orders</th>
+                  <th className="text-right">Available</th>
                 </tr>
-              ) : (
-                Object.entries(balances).map(([asset, bal]) => {
+              </thead>
+              <tbody>
+                {Object.entries(balances).map(([asset, bal]) => {
                   const available = bal.balance - bal.locked;
                   const decimalPlaces = asset === 'USD' || asset === 'USDT' ? 2 : 4;
-                  
+
                   return (
                     <tr key={asset}>
-                      <td style={{ fontWeight: '600' }}>{asset}</td>
-                      <td className="num-mono" style={{ textAlign: 'right' }}>
+                      <td className="font-semibold">{asset}</td>
+                      <td className="num-mono text-right">
                         {bal.balance.toLocaleString(undefined, { minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces })}
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
+                      <td className="num-mono text-right text-muted-foreground">
                         {bal.locked.toLocaleString(undefined, { minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces })}
                       </td>
-                      <td className="num-mono" style={{ textAlign: 'right', fontWeight: '600', color: '#fff' }}>
+                      <td className={cn(
+                        'num-mono text-right font-semibold',
+                        available > 0 ? 'text-foreground' : 'text-muted-foreground',
+                      )}>
                         {available.toLocaleString(undefined, { minimumFractionDigits: decimalPlaces, maximumFractionDigits: decimalPlaces })}
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        )}
+                })}
+              </tbody>
+            </table>
+          )}
+        </TabsContent>
 
-        {/* Algo Trading Tab */}
-        {activeTab === 'algo' && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '320px 1fr',
-            gap: '16px',
-            padding: '16px',
-            height: '100%',
-            overflow: 'hidden',
-            minHeight: 0,
-          }}>
-            {/* Left: Settings Panel */}
-            <div style={{
-              display: 'flex', flexDirection: 'column', gap: '12px',
-              background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)',
-              borderRadius: '8px', padding: '14px', overflowY: 'auto'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }}>
-                <Settings size={14} style={{ color: 'var(--color-accent)' }} />
-                <span style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Bot Parameters</span>
-              </div>
+        <TabsContent value="algo" className="mt-0 min-h-0 flex-1 overflow-hidden p-3">
+          <div className="grid h-full min-h-0 grid-cols-[320px_1fr] gap-3 overflow-hidden">
+            <Card size="sm" className="flex min-h-0 flex-col overflow-y-auto rounded-lg py-3 shadow-none">
+              <CardHeader className="border-b border-border pb-2">
+                <CardTitle className="flex items-center gap-2 text-xs uppercase tracking-wide">
+                  <Settings size={14} className="text-primary" />
+                  Bot Parameters
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3 px-3">
+                <div className="space-y-1.5">
+                  <Label className="text-[0.7rem]">Select Strategy</Label>
+                  <Select value={botStrategy} onValueChange={setBotStrategy} disabled={isBotRunning}>
+                    <SelectTrigger size="sm" className="w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="EMA_CROSS">EMA Crossover (9/21)</SelectItem>
+                      <SelectItem value="RSI_MEAN_REV">RSI Mean Reversion (14)</SelectItem>
+                      <SelectItem value="MACD_TREND">MACD Trend Follower</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              {/* Strategy Select */}
-              <div className="terminal-input-group" style={{ margin: 0 }}>
-                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Select Strategy</label>
-                <select
-                  value={botStrategy}
-                  onChange={e => setBotStrategy(e.target.value)}
-                  disabled={isBotRunning}
-                  style={{
-                    width: '100%', background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)',
-                    color: '#fff', borderRadius: '5px', padding: '6px 10px',
-                    fontSize: '0.75rem', cursor: isBotRunning ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-sans)',
-                    colorScheme: 'dark',
-                  }}
-                >
-                  <option value="EMA_CROSS" style={{ background: '#0f172a', color: '#fff' }}>EMA Crossover (9/21)</option>
-                  <option value="RSI_MEAN_REV" style={{ background: '#0f172a', color: '#fff' }}>RSI Mean Reversion (14)</option>
-                  <option value="MACD_TREND" style={{ background: '#0f172a', color: '#fff' }}>MACD Trend Follower</option>
-                </select>
-              </div>
-
-              {/* Quantity Input */}
-              <div className="terminal-input-group" style={{ margin: 0 }}>
-                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Order Size (Quantity)</label>
-                <div className="terminal-input-wrapper">
-                  <input
+                <div className="space-y-1.5">
+                  <Label className="text-[0.7rem]">Order Size (Quantity)</Label>
+                  <Input
                     type="number"
                     step="any"
                     value={botConfig?.quantity || ''}
                     disabled={isBotRunning}
                     onChange={e => updateBotConfig({ quantity: parseFloat(e.target.value) || 0 })}
-                    className="terminal-input"
-                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                    className="h-8 text-xs"
                   />
-                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>Units</span>
                 </div>
-              </div>
 
-              {/* Stop Loss Input */}
-              <div className="terminal-input-group" style={{ margin: 0 }}>
-                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Auto Stop Loss</label>
-                <div className="terminal-input-wrapper">
-                  <input
+                <div className="space-y-1.5">
+                  <Label className="text-[0.7rem]">Auto Stop Loss (%)</Label>
+                  <Input
                     type="number"
                     step="0.1"
                     value={botConfig?.stopLossPercent || ''}
@@ -373,26 +268,21 @@ export default function PositionManagerWidget() {
                     onChange={e => {
                       const val = parseFloat(e.target.value) || 0;
                       updateBotConfig({ stopLossPercent: val });
-                      if (positions[activeSymbol] && positions[activeSymbol].size !== 0) {
-                        sendWebSocketAction("update_position_sl_tp", {
+                      if (positions[activeSymbol]?.size) {
+                        sendWebSocketAction('update_position_sl_tp', {
                           symbol: activeSymbol,
                           stop_loss_percent: val,
-                          take_profit_percent: botConfig.takeProfitPercent
+                          take_profit_percent: botConfig.takeProfitPercent,
                         });
                       }
                     }}
-                    className="terminal-input"
-                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                    className="h-8 text-xs"
                   />
-                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>%</span>
                 </div>
-              </div>
 
-              {/* Take Profit Input */}
-              <div className="terminal-input-group" style={{ margin: 0 }}>
-                <label className="terminal-label" style={{ fontSize: '0.7rem' }}>Auto Take Profit</label>
-                <div className="terminal-input-wrapper">
-                  <input
+                <div className="space-y-1.5">
+                  <Label className="text-[0.7rem]">Auto Take Profit (%)</Label>
+                  <Input
                     type="number"
                     step="0.1"
                     value={botConfig?.takeProfitPercent || ''}
@@ -400,119 +290,63 @@ export default function PositionManagerWidget() {
                     onChange={e => {
                       const val = parseFloat(e.target.value) || 0;
                       updateBotConfig({ takeProfitPercent: val });
-                      if (positions[activeSymbol] && positions[activeSymbol].size !== 0) {
-                        sendWebSocketAction("update_position_sl_tp", {
+                      if (positions[activeSymbol]?.size) {
+                        sendWebSocketAction('update_position_sl_tp', {
                           symbol: activeSymbol,
                           stop_loss_percent: botConfig.stopLossPercent,
-                          take_profit_percent: val
+                          take_profit_percent: val,
                         });
                       }
                     }}
-                    className="terminal-input"
-                    style={{ padding: '6px 10px', fontSize: '0.75rem', height: 'auto' }}
+                    className="h-8 text-xs"
                   />
-                  <span className="terminal-input-suffix" style={{ fontSize: '0.68rem', padding: '0 8px' }}>%</span>
                 </div>
-              </div>
 
-              {/* Start / Stop Toggle Button */}
-              <button
-                onClick={() => {
-                  if (isBotRunning) {
-                    stopBot();
-                  } else {
-                    startBot();
-                  }
-                }}
-                className="terminal-btn"
-                style={{
-                  marginTop: 'auto',
-                  background: isBotRunning ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)',
-                  border: `1px solid ${isBotRunning ? 'var(--color-down)' : 'var(--color-up)'}`,
-                  color: isBotRunning ? 'var(--color-down)' : 'var(--color-up)',
-                  boxShadow: isBotRunning ? '0 0 10px rgba(239,68,68,0.2)' : '0 0 10px rgba(16,185,129,0.2)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                  fontWeight: '700', padding: '10px', fontSize: '0.82rem',
-                }}
-              >
-                {isBotRunning ? (
-                  <>
-                    <Square size={14} fill="currentColor" />
-                    STOP ALGO BOT
-                  </>
-                ) : (
-                  <>
-                    <Play size={14} fill="currentColor" />
-                    START ALGO BOT
-                  </>
-                )}
-              </button>
-            </div>
-
-            {/* Right: Console Log */}
-            <div style={{
-              display: 'flex', flexDirection: 'column', gap: '8px',
-              background: '#04060a', border: '1px solid rgba(255,255,255,0.06)',
-              borderRadius: '8px', padding: '14px', overflow: 'hidden', minHeight: 0,
-            }}>
-              {/* Header */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyRules: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', flexShrink: 0, justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fff' }}>
-                  <Cpu size={14} style={{ color: isBotRunning ? '#10b981' : 'var(--text-muted)' }} />
-                  <span style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Bot Operation Log</span>
-                  <span style={{
-                    fontSize: '0.65rem', padding: '2px 8px', borderRadius: '4px',
-                    background: isBotRunning ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.05)',
-                    color: isBotRunning ? '#10b981' : 'var(--text-muted)', fontWeight: 600,
-                  }}>
-                    {isBotRunning ? `SCANNING ${activeSymbol}` : 'IDLE'}
-                  </span>
-                </div>
-                <button
-                  onClick={clearBotLogs}
-                  title="Clear Console"
-                  style={{
-                    background: 'transparent', border: 'none', cursor: 'pointer',
-                    color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: '4px',
-                    borderRadius: '4px', transition: 'color 0.2s',
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.color = '#fff'}
-                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+                <Button
+                  variant={isBotRunning ? 'destructive' : 'buy'}
+                  className="mt-auto w-full font-bold"
+                  onClick={() => (isBotRunning ? stopBot() : startBot())}
                 >
-                  <Trash2 size={13} />
-                </button>
+                  {isBotRunning ? (
+                    <><Square data-icon="inline-start" fill="currentColor" /> STOP ALGO BOT</>
+                  ) : (
+                    <><Play data-icon="inline-start" fill="currentColor" /> START ALGO BOT</>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card size="sm" className="flex min-h-0 flex-col overflow-hidden rounded-lg bg-background/80 py-3 shadow-none">
+              <div className="mb-2 flex shrink-0 items-center justify-between border-b border-border px-3 pb-2">
+                <div className="flex items-center gap-2">
+                  <Cpu size={14} className={isBotRunning ? 'text-trading-up' : 'text-muted-foreground'} />
+                  <span className="text-xs font-bold uppercase tracking-wide">Bot Operation Log</span>
+                  <Badge variant={isBotRunning ? 'buy' : 'secondary'}>
+                    {isBotRunning ? `SCANNING ${activeSymbol}` : 'IDLE'}
+                  </Badge>
+                </div>
+                <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear console">
+                  <Trash2 />
+                </Button>
               </div>
 
-              {/* Monospace Output */}
-              <div style={{
-                flex: 1, overflowY: 'auto', fontFamily: 'var(--font-mono)',
-                fontSize: '0.72rem', color: '#94a3b8', display: 'flex', flexDirection: 'column-reverse',
-                gap: '4px', paddingRight: '4px', scrollBehavior: 'smooth'
-              }}>
-                {botLogs.length === 0 ? (
-                  <div style={{ margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', opacity: 0.5 }}>
-                    <Cpu size={24} />
-                    <span>Bot console output is empty. Activate the bot to see logs.</span>
-                  </div>
-                ) : (
-                  botLogs.map((log, idx) => {
-                    let logColor = '#94a3b8'; // Neutral
-                    if (log.includes('BUY') || log.includes('Profit') || log.includes('Success')) logColor = '#10b981'; // Green
-                    if (log.includes('SELL') || log.includes('Loss') || log.includes('Stop Loss') || log.includes('Error')) logColor = '#ef4444'; // Red
-                    if (log.includes('Running') || log.includes('Config')) logColor = '#60a5fa'; // Blue
-                    return (
-                      <div key={idx} style={{ color: logColor, whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
-                        {log}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
+              <ScrollArea className="min-h-0 flex-1 px-3">
+                <div className="flex flex-col-reverse gap-1 font-mono text-[0.72rem]">
+                  {botLogs.length === 0 ? (
+                    <WidgetEmpty icon={Cpu} message="Bot console is empty. Activate the bot to see logs." className="min-h-[100px]" />
+                  ) : botLogs.map((log, idx) => {
+                    let c = 'text-muted-foreground';
+                    if (log.includes('BUY') || log.includes('Profit') || log.includes('Success')) c = 'text-trading-up';
+                    else if (log.includes('SELL') || log.includes('Loss') || log.includes('Stop Loss') || log.includes('Error')) c = 'text-trading-down';
+                    else if (log.includes('Running') || log.includes('Config')) c = 'text-primary';
+                    return <div key={idx} className={cn(c, 'whitespace-pre-wrap leading-snug')}>{log}</div>;
+                  })}
+                </div>
+              </ScrollArea>
+            </Card>
           </div>
-        )}
-
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

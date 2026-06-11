@@ -1,26 +1,34 @@
 /**
- * ChartWidget.jsx — Professional Trading Chart (TradingView-style)
- *
- * Fixes applied (Changes 1–6):
- *  1. Removed shiftVisibleRangeOnNewBar + rightBarStaysOnScroll → eliminates rightward drift
- *  2. isProgrammaticRef guard → breaks the scrollToRealTime feedback loop
- *  3. setVisibleLogicalRange deferred to rAF + from clamped ≥ 0 + autoScale reset → fixes TF-switch scaling
- *  4. Indicator setData skipped on intra-bar live ticks → no per-tick flicker
- *  5. lastBarTimeRef + isAtRightRef reset on every full reload → clean state handoff
- *  6a. lastValueVisible + priceLineVisible + dynamic priceFormat per asset → TV-style right-axis chip
- *  6b. tickMarkFormatter → TV-style time labels (09:30 / 21 May / Jun / 2024)
- *  6c. OHLCV legend overlay top-left → TV-style status line
- *  6d. Dynamic time-axis visibility on lowest visible pane
+ * ChartWidget.jsx — Professional Trading Chart using Apache ECharts
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from 'lightweight-charts';
+import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import {
   calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcVWAP, calcATR, generateSignal
 } from '../utils/indicators';
-import { AreaChart, TrendingUp } from 'lucide-react';
+import { AreaChart, TrendingUp, Activity } from 'lucide-react';
+import { WidgetShell, WidgetToolbar, WidgetToolbarDivider } from './WidgetShell';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger,
+} from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
 
-// ─── Timeframe configs ────────────────────────────────────────────────────────
+const INDICATORS = {
+  ema9:   { label: 'EMA 9',  color: '#f59e0b' },
+  ema21:  { label: 'EMA 21', color: '#8b5cf6' },
+  ema50:  { label: 'EMA 50', color: '#06b6d4' },
+  bb:     { label: 'BB 20',  color: '#6366f1' },
+  vwap:   { label: 'VWAP',   color: '#ec4899' },
+  volume: { label: 'Volume', color: '#00b0ff' },
+  rsi:    { label: 'RSI 14', color: '#fbbf24' },
+  macd:   { label: 'MACD',   color: '#34d399' },
+  atr:    { label: 'ATR 14', color: '#94a3b8' },
+};
+
 const TF_CONFIGS = [
   { label: '1m',  secs: 60    },
   { label: '5m',  secs: 300   },
@@ -28,66 +36,6 @@ const TF_CONFIGS = [
   { label: '1H',  secs: 3600  },
   { label: '4H',  secs: 14400 },
   { label: '1D',  secs: 86400 },
-];
-
-// Aggregate 1-min candles into higher-TF buckets (handles gaps correctly)
-function aggregateCandles(raw, bucketSecs) {
-  if (!raw || raw.length === 0) return [];
-  if (bucketSecs <= 60) return raw;
-  const buckets = new Map();
-  for (const c of raw) {
-    const t = Math.floor(c.time / bucketSecs) * bucketSecs;
-    if (!buckets.has(t)) {
-      buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
-    } else {
-      const b = buckets.get(t);
-      b.high   = Math.max(b.high, c.high);
-      b.low    = Math.min(b.low,  c.low);
-      b.close  = c.close;
-      b.volume = b.volume + (c.volume || 0);
-    }
-  }
-  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-}
-
-// ─── Dynamic price precision (Change 6a) ─────────────────────────────────────
-function getPriceFormat(price) {
-  if (!price || price <= 0) return { precision: 2, minMove: 0.01 };
-  if (price < 0.0001)  return { precision: 8, minMove: 0.00000001 };
-  if (price < 0.001)   return { precision: 6, minMove: 0.000001   };
-  if (price < 0.1)     return { precision: 5, minMove: 0.00001    };
-  if (price < 1)       return { precision: 4, minMove: 0.0001     };
-  if (price < 10)      return { precision: 3, minMove: 0.001      };
-  return                      { precision: 2, minMove: 0.01       };
-}
-
-// ─── TradingView-style time axis formatter (Change 6b) ────────────────────────
-// tickMarkType: 0=Year 1=Month 2=DayOfMonth 3=Time 4=TimeWithSeconds
-const pad = (n) => String(n).padStart(2, '0');
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function tvTickFormatter(unixSeconds, tickMarkType) {
-  const d = new Date(unixSeconds * 1000);
-  switch (tickMarkType) {
-    case 0:  return String(d.getUTCFullYear());
-    case 1:  return MONTHS[d.getUTCMonth()];
-    case 2:  return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]}`;
-    case 3:  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-    default: return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-  }
-}
-
-// ─── Indicator definitions ────────────────────────────────────────────────────
-const INDICATORS = [
-  { key: 'ema9',   label: 'EMA 9',   color: '#f59e0b' },
-  { key: 'ema21',  label: 'EMA 21',  color: '#8b5cf6' },
-  { key: 'ema50',  label: 'EMA 50',  color: '#06b6d4' },
-  { key: 'sma200', label: 'SMA 200', color: '#f97316' },
-  { key: 'bb',     label: 'BB 20',   color: '#6366f1' },
-  { key: 'vwap',   label: 'VWAP',    color: '#ec4899' },
-  { key: 'volume', label: 'Volume',  color: '#00b0ff' },
-  { key: 'rsi',    label: 'RSI 14',  color: '#fbbf24' },
-  { key: 'macd',   label: 'MACD',    color: '#34d399' },
-  { key: 'atr',    label: 'ATR 14',  color: '#94a3b8' },
 ];
 
 const SIGNAL_STYLES = {
@@ -98,119 +46,9 @@ const SIGNAL_STYLES = {
   'STRONG SELL': { bg: 'rgba(239,68,68,0.2)',   border: '#ef4444', color: '#ef4444', dot: '#ef4444' },
 };
 
-// Bars of right-side breathing room after the latest candle
-const RIGHT_BARS = 30;
-// Default visible bar count on full reload
-const VISIBLE_BARS = 120;
+const pad = (n) => String(n).padStart(2, '0');
 
-// ─── Chart factory ────────────────────────────────────────────────────────────
-function makeChart(container, showTimeAxis = false) {
-  return createChart(container, {
-    width:  container.clientWidth  || 800,
-    height: container.clientHeight || 400,
-    layout: {
-      background: { type: 'solid', color: '#080d14' },
-      textColor:  '#9ca3af',
-      fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-      fontSize:   11,
-    },
-    grid: {
-      vertLines: { color: 'rgba(255,255,255,0.04)' },
-      horzLines: { color: 'rgba(255,255,255,0.04)' },
-    },
-    rightPriceScale: {
-      borderColor:    'rgba(255,255,255,0.08)',
-      visible:        true,
-      scaleMargins:   { top: 0.08, bottom: 0.08 },
-      minimumWidth:   72,
-      entireTextOnly: true,
-      autoScale:      true,
-    },
-    leftPriceScale: { visible: false },
-    timeScale: {
-      borderColor:      'rgba(255,255,255,0.08)',
-      timeVisible:      true,
-      secondsVisible:   false,
-      visible:          showTimeAxis,
-      fixLeftEdge:      false,
-      fixRightEdge:     false,
-      shiftVisibleRangeOnNewBar: true, // Native right-edge tracking for live ticks
-      rightOffset:      RIGHT_BARS,    // Native right-side breathing room
-      tickMarkFormatter: tvTickFormatter, // Change 6b
-    },
-    crosshair: {
-      mode: 1,
-      vertLine: { color: 'rgba(100,140,220,0.6)', width: 1, style: 2, labelBackgroundColor: '#1d4ed8' },
-      horzLine: { color: 'rgba(100,140,220,0.6)', width: 1, style: 2, labelBackgroundColor: '#1d4ed8' },
-    },
-    kineticScroll: { touch: true, mouse: false },
-    handleScroll:  { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
-    handleScale:   { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
-  });
-}
-
-// ─── Sync visible time range across all panes ─────────────────────────────────
-function syncCharts(chartList) {
-  let isSyncing = false;
-  chartList.forEach((src, si) => {
-    src.timeScale().subscribeVisibleLogicalRangeChange(range => {
-      if (isSyncing || !range) return;
-      isSyncing = true;
-      chartList.forEach((dst, di) => {
-        if (di !== si) try { dst.timeScale().setVisibleLogicalRange(range); } catch (_) {}
-      });
-      isSyncing = false;
-    });
-  });
-}
-
-// ─── Sync crosshair cursor across panes ──────────────────────────────────────
-function syncCrosshairs(chartList, seriesList) {
-  let isSyncing = false;
-  chartList.forEach((src, si) => {
-    src.subscribeCrosshairMove(param => {
-      if (isSyncing) return;
-      isSyncing = true;
-      try {
-        chartList.forEach((dst, di) => {
-          if (di !== si) {
-            if (!param.time || !param.point) {
-              try { dst.setCrosshairPosition(NaN, null, seriesList[di]); } catch (_) {}
-            } else {
-              try { dst.setCrosshairPosition(null, param.time, seriesList[di]); } catch (_) {}
-            }
-          }
-        });
-      } finally { isSyncing = false; }
-    });
-  });
-}
-
-// ─── Update which pane shows the time axis (lowest visible) ──────────────────
-// Change 6d
-function updateTimeAxisVisibility(charts, active) {
-  const order = [
-    { chart: charts.atr,  visible: active.atr  },
-    { chart: charts.macd, visible: active.macd },
-    { chart: charts.rsi,  visible: active.rsi  },
-    { chart: charts.main, visible: true         },
-  ];
-  const bottom = order.find(p => p.visible) ?? order[3];
-  Object.values(charts).forEach(c => {
-    if (!c) return;
-    try { c.applyOptions({ timeScale: { visible: c === bottom.chart } }); } catch (_) {}
-  });
-}
-
-// ─── Volume bar colour helper ─────────────────────────────────────────────────
-const volColor = (c) => c.close >= c.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)';
-
-// ─── Format a price value for the OHLCV legend (Change 6c) ───────────────────
-function fmtPrice(val, fmt) {
-  if (val == null) return '—';
-  return val.toFixed(fmt?.precision ?? 2);
-}
-function fmtVol(v) {
+function formatVol(v) {
   if (!v) return '—';
   if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
   if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
@@ -218,540 +56,736 @@ function fmtVol(v) {
   return v.toFixed(2);
 }
 
+function getPriceDecimals(price) {
+  if (!price || price <= 0) return 2;
+  if (price < 0.0001)  return 8;
+  if (price < 0.001)   return 6;
+  if (price < 0.1)     return 5;
+  if (price < 1)       return 4;
+  if (price < 10)      return 3;
+  return 2;
+}
+
+// ─── Child Component: Header Ticker ──────────────────────────────────
+function ChartHeaderPrice({ symbol }) {
+  const ticker = useStore(state => state.tickerData[symbol]);
+  const direction = useStore(state => state.priceDirections[symbol]);
+
+  if (!ticker) return null;
+  const dec = getPriceDecimals(ticker.price);
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm">
+      <span className={cn(
+        'num-mono shrink-0 text-lg font-extrabold transition-colors',
+        direction === 'up' ? 'text-trading-up' : direction === 'down' ? 'text-trading-down' : 'text-foreground'
+      )}>
+        {ticker.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+      </span>
+      <span className={cn('num-mono shrink-0 font-bold', ticker.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+        {ticker.change_24h >= 0 ? '+' : ''}{Number(ticker.change_24h).toFixed(2)}%
+      </span>
+      <span className="hidden whitespace-nowrap text-xs text-muted-foreground xl:inline">
+        H:<span className="num-mono"> {ticker.high_24h?.toFixed(dec)}</span>
+        {' '}L:<span className="num-mono"> {ticker.low_24h?.toFixed(dec)}</span>
+        {' '}V:<span className="num-mono"> {ticker.volume_24h ? formatVol(ticker.volume_24h) : '—'}</span>
+      </span>
+    </div>
+  );
+}
+
+// ─── Child Component: Signal Badge ───────────────────────────────────
+function ChartSignalBadge({ symbol }) {
+  const [signal, setSignal] = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
+  const lastCandleTime = useStore(state => {
+    const candles = state.candleData[symbol];
+    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
+  });
+
+  useEffect(() => {
+    const candles = useStore.getState().candleData[symbol] || [];
+    if (candles.length > 0) {
+      setSignal(generateSignal(candles));
+    }
+  }, [lastCandleTime, symbol]);
+
+  const sigStyle = SIGNAL_STYLES[signal.signal] || SIGNAL_STYLES.NEUTRAL;
+  const isStrong = signal.signal.startsWith('STRONG');
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-bold tracking-wide"
+          style={{
+            borderColor: sigStyle.border,
+            color: sigStyle.color,
+            backgroundColor: sigStyle.bg,
+          }}
+        >
+          <span
+            className={cn('size-1.5 rounded-full', isStrong && 'animate-pulse')}
+            style={{
+              background: sigStyle.dot,
+              boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : undefined,
+            }}
+          />
+          {signal.signal}
+          <span className="text-[0.62rem] opacity-70">
+            ({signal.score > 0 ? '+' : ''}{signal.score})
+          </span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-60 p-3" style={{ borderColor: sigStyle.border }}>
+        <PopoverHeader className="gap-1">
+          <PopoverTitle className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">
+            Signal Analysis
+          </PopoverTitle>
+        </PopoverHeader>
+        {signal.reasons.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No detailed reasons available.</p>
+        ) : (
+          <ul className="space-y-1 text-xs">
+            {signal.reasons.map((r, i) => (
+              <li key={i} className="flex gap-2" style={{ color: sigStyle.color }}>
+                <span className="opacity-40">•</span>
+                <span>{r}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 const EMPTY_ARRAY = [];
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Main Component ──────────────────────────────────────────────────
 export default function ChartWidget() {
-  const mainRef = useRef(null);
-  const rsiRef  = useRef(null);
-  const macdRef = useRef(null);
-  const atrRef  = useRef(null);
-
-  const charts = useRef({});
-  const series = useRef({});
-
-  // Change 1+2+3+4+5: all stability refs
-  const activeKeyRef      = useRef('');      // composite key — change forces full setData
-  const activeRef         = useRef({});      // mirrors `active` state without stale closure
-  const chartTypeRef      = useRef('candle');
-  const isAtRightRef      = useRef(true);    // true = user is at the right edge
-  const isProgrammaticRef = useRef(false);   // Change 2: suppresses range subscription on our own scrolls
-  const lastBarTimeRef    = useRef(0);       // Change 4+5: tracks last completed bar timestamp
-  const candlesLengthRef  = useRef(0);
-  const resizeRafRef      = useRef(null);
-  const priceFormatRef    = useRef({ precision: 2, minMove: 0.01 }); // Change 6a
-
-  // Position price lines
-  const entryLineRef = useRef(null);
-  const slLineRef    = useRef(null);
-  const tpLineRef    = useRef(null);
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const candlesRef = useRef([]);
 
   const activeSymbol = useStore(state => state.activeSymbol);
-  const symbolCandles = useStore(state => state.candleData[activeSymbol] || EMPTY_ARRAY);
-  const symbolTicker = useStore(state => state.tickerData[activeSymbol]);
+  const lastCandleTime = useStore(state => {
+    const candles = state.candleData[activeSymbol];
+    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
+  });
   const symbolPosition = useStore(state => state.positions[activeSymbol]);
   const tradeHistory = useStore(state => state.tradeHistory);
-  const botConfig = useStore(state => state.botConfig);
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
-  
-  // ── State ────────────────────────────────────────────────────────────────
+
+  const [timeframe, setTimeframe] = useState(() => { try { return localStorage.getItem('terminal_tf') || '1m'; } catch { return '1m'; } });
+  const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
+  const [chartType, setChartType] = useState('candle');
   const [active, setActive] = useState(() => {
     try {
       const s = localStorage.getItem('terminal_chart_indicators_active');
       if (s) return JSON.parse(s);
     } catch (_) {}
-    return { ema9: true, ema21: true, ema50: false, sma200: false, bb: true, vwap: false, rsi: true, macd: true, atr: false, volume: true };
+    return { ema9: true, ema21: true, ema50: false, bb: true, vwap: false, rsi: true, macd: true, atr: false, volume: true };
   });
 
-  const [signal, setSignal]           = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
-  const [showReasons, setShowReasons] = useState(false);
-  const [indicatorValues, setIndicatorValues] = useState({});
-  const [timeframe, setTimeframe]     = useState(() => { try { return localStorage.getItem('terminal_tf') || '1m'; } catch { return '1m'; } });
-  const [chartType, setChartType]     = useState('candle');
-  const [hoveredBar, setHoveredBar]   = useState(null); // Change 6c: OHLCV legend
-  const [isLiveBtn, setIsLiveBtn]     = useState(false); // show ▶▶ Live button
 
-  // Keep refs in sync
-  activeRef.current    = active;
-  chartTypeRef.current = chartType;
-
-  // Persist preferences
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
   useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
 
-  const toggle = useCallback((key) => setActive(prev => ({ ...prev, [key]: !prev[key] })), []);
+  const activeIndicatorKeys = useMemo(
+    () => Object.entries(active).filter(([, on]) => on).map(([k]) => k),
+    [active]
+  );
 
-  // ── Aggregated candle data ────────────────────────────────────────────────
-  const aggregatedCandles = useMemo(() => {
-    const raw = symbolCandles;
-    if (!raw || raw.length === 0) return [];
-    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    return aggregateCandles(raw, cfg.secs);
-  }, [symbolCandles, timeframe]);
-
-  // ── Centralised resize (debounced via rAF) ────────────────────────────────
-  const doResize = useCallback(() => {
-    if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
-    resizeRafRef.current = requestAnimationFrame(() => {
-      const c = charts.current;
-      if (!c.main) return;
-      const w = mainRef.current?.clientWidth;
-      if (!w || w < 10) return;
-      const mh = mainRef.current?.clientHeight || 400;
-      try { c.main.resize(w, mh, true); } catch (_) {}
-      if (c.rsi  && rsiRef.current)  try { c.rsi.resize(w,  rsiRef.current.clientHeight  || 130, true); } catch (_) {}
-      if (c.macd && macdRef.current) try { c.macd.resize(w, macdRef.current.clientHeight || 130, true); } catch (_) {}
-      if (c.atr  && atrRef.current)  try { c.atr.resize(w,  atrRef.current.clientHeight  || 130, true); } catch (_) {}
+  const handleIndicatorsChange = useCallback((vals) => {
+    setActive(prev => {
+      const next = { ...prev };
+      for (const k of Object.keys(INDICATORS)) next[k] = vals.includes(k);
+      return next;
     });
   }, []);
 
-  // ── Chart Init ────────────────────────────────────────────────────────────
+  // Aggregate candles based on timeframe
+  const aggregatedCandles = useMemo(() => {
+    const raw = useStore.getState().candleData[activeSymbol] || EMPTY_ARRAY;
+    if (!raw || raw.length === 0) return [];
+    
+    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+    if (cfg.secs <= 60) return raw;
+
+    const buckets = new Map();
+    for (const c of raw) {
+      const t = Math.floor(c.time / cfg.secs) * cfg.secs;
+      if (!buckets.has(t)) {
+        buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
+      } else {
+        const b = buckets.get(t);
+        b.high = Math.max(b.high, c.high);
+        b.low = Math.min(b.low, c.low);
+        b.close = c.close;
+        b.volume += (c.volume || 0);
+      }
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+  }, [timeframe, activeSymbol, lastCandleTime]);
+
   useEffect(() => {
-    if (!mainRef.current || !rsiRef.current || !macdRef.current || !atrRef.current) return;
+    candlesRef.current = aggregatedCandles;
+  }, [aggregatedCandles]);
 
-    // Change 6d: all panes start with timeAxis hidden; updateTimeAxisVisibility picks the right one
-    const mainChart = makeChart(mainRef.current,  false);
-    const rsiChart  = makeChart(rsiRef.current,   false);
-    const macdChart = makeChart(macdRef.current,  false);
-    const atrChart  = makeChart(atrRef.current,   false);
+  // Direct DOM Legend update
+  const updateLegendDOM = useCallback((bar) => {
+    const openEl = document.getElementById('chart-legend-o');
+    const highEl = document.getElementById('chart-legend-h');
+    const lowEl  = document.getElementById('chart-legend-l');
+    const closeEl = document.getElementById('chart-legend-c');
+    const volEl   = document.getElementById('chart-legend-v');
+    const pctEl   = document.getElementById('chart-legend-pct');
+    if (!openEl || !bar) return;
 
-    // Main series
-    const candleSeries = mainChart.addSeries(CandlestickSeries, {
-      upColor: '#10b981', downColor: '#ef4444',
-      borderUpColor: '#10b981', borderDownColor: '#ef4444',
-      wickUpColor: '#10b981', wickDownColor: '#ef4444',
-      lastValueVisible: true,   // Change 6a: floating price chip on right axis
-      priceLineVisible: true,   // Change 6a: dashed last-price line
-      priceLineStyle:   2,
-      priceLineWidth:   1,
-      priceLineColor:   '#3b82f6',
+    const isBull = bar.close >= bar.open;
+    const color = isBull ? 'var(--color-up)' : 'var(--color-down)';
+    const dec = getPriceDecimals(bar.close);
+
+    openEl.textContent = bar.open.toFixed(dec);
+    openEl.style.color = color;
+    highEl.textContent = bar.high.toFixed(dec);
+    highEl.style.color = color;
+    lowEl.textContent  = bar.low.toFixed(dec);
+    lowEl.style.color  = color;
+    closeEl.textContent = bar.close.toFixed(dec);
+    closeEl.style.color = color;
+    volEl.textContent   = formatVol(bar.volume);
+    
+    if (bar.open > 0) {
+      const pct = ((bar.close - bar.open) / bar.open) * 100;
+      pctEl.textContent = `${isBull ? '+' : ''}${pct.toFixed(2)}%`;
+      pctEl.style.color = color;
+    } else {
+      pctEl.textContent = '';
+    }
+  }, []);
+
+  // Set up chart options
+  const configureChart = useCallback(() => {
+    if (!chartRef.current || aggregatedCandles.length === 0) return;
+
+    const candles = aggregatedCandles;
+    const dec = getPriceDecimals(candles[candles.length - 1]?.close);
+
+    // Categories (time labels) with future padding — must exist before zoom math
+    const categoryData = candles.map(c => {
+      const d = new Date(c.time * 1000);
+      return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
     });
-    chartTypeRef.current = 'candle';
+    const futurePadding = 15;
+    for (let i = 0; i < futurePadding; i++) {
+      categoryData.push("");
+    }
 
-    // Overlay series helper
-    const mkLine = (chart, color, w = 1, style = 0) =>
-      chart.addSeries(LineSeries, { color, lineWidth: w, lineStyle: style, priceLineVisible: false, lastValueVisible: false });
+    // Dynamic Zoom preservation using absolute indices
+    let startVal = null;
+    let endVal = null;
+    const totalCount = categoryData.length;
 
-    const ema9Line    = mkLine(mainChart, '#f59e0b');
-    const ema21Line   = mkLine(mainChart, '#8b5cf6');
-    const ema50Line   = mkLine(mainChart, '#06b6d4');
-    const sma200Line  = mkLine(mainChart, '#f97316');
-    const bbUpperLine = mkLine(mainChart, '#6366f1', 1, 2);
-    const bbMidLine   = mkLine(mainChart, '#6366f160', 1, 3);
-    const bbLowerLine = mkLine(mainChart, '#6366f1', 1, 2);
-    const vwapLine    = mkLine(mainChart, '#ec4899', 2, 1);
+    if (prevConfigRef.current.symbol === activeSymbol && prevConfigRef.current.timeframe === timeframe && chartRef.current) {
+      try {
+        const currentOption = chartRef.current.getOption();
+        if (currentOption && currentOption.dataZoom && currentOption.dataZoom[0]) {
+          const prevStart = currentOption.dataZoom[0].startValue;
+          const prevEnd = currentOption.dataZoom[0].endValue;
+          
+          if (prevStart !== undefined && prevEnd !== undefined && prevStart !== null && prevEnd !== null) {
+            const prevTotal = currentOption.xAxis[0].data.length;
+            const diff = totalCount - prevTotal;
+            if (diff > 0) {
+              // If the user was looking at the end of the chart, auto-scroll to the right
+              const wasAtEnd = prevEnd >= prevTotal - 2;
+              if (wasAtEnd) {
+                startVal = prevStart + diff;
+                endVal = prevEnd + diff;
+              } else {
+                // Keep the view fixed at the same historical candles (indices)
+                startVal = prevStart;
+                endVal = prevEnd;
+              }
+            } else {
+              startVal = prevStart;
+              endVal = prevEnd;
+            }
+          }
+        }
+      } catch (_) {}
+    }
 
-    const volumeSeries = mainChart.addSeries(HistogramSeries, {
-      priceFormat: { type: 'volume' }, priceScaleId: 'volume',
+    if (startVal === null || endVal === null || startVal === undefined || endVal === undefined) {
+      // Default view: show last 50 candles (including future padding)
+      startVal = Math.max(0, totalCount - 50);
+      endVal = totalCount - 1;
+    }
+    prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
+
+    const candlestickData = candles.map(c => [c.open, c.close, c.low, c.high]);
+
+    // Position SL/TP marklines
+    const markLineData = [];
+    if (symbolPosition && symbolPosition.size !== 0) {
+      markLineData.push({
+        yAxis: symbolPosition.avg_price,
+        lineStyle: { color: '#3b82f6', width: 2, type: 'solid' },
+        label: {
+          show: true,
+          position: 'end',
+          formatter: `ENTRY ${symbolPosition.size > 0 ? 'LONG' : 'SHORT'} (${Math.abs(symbolPosition.size).toFixed(4)})`
+        }
+      });
+      if (symbolPosition.stop_loss_price > 0) {
+        markLineData.push({
+          yAxis: symbolPosition.stop_loss_price,
+          lineStyle: { color: '#ef4444', width: 1, type: 'dashed' },
+          label: { show: true, position: 'end', formatter: `SL: ${symbolPosition.stop_loss_price.toFixed(dec)}` }
+        });
+      }
+      if (symbolPosition.take_profit_price > 0) {
+        markLineData.push({
+          yAxis: symbolPosition.take_profit_price,
+          lineStyle: { color: '#10b981', width: 1, type: 'dashed' },
+          label: { show: true, position: 'end', formatter: `TP: ${symbolPosition.take_profit_price.toFixed(dec)}` }
+        });
+      }
+    }
+
+    // Trade execution markers
+    const tradeMarkers = tradeHistory
+      .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
+      .map(t => {
+        const timeVal = Math.floor(new Date(t.timestamp).getTime() / 1000);
+        // Find nearest index
+        let categoryIndex = candles.findIndex(c => c.time >= timeVal);
+        if (categoryIndex === -1) categoryIndex = candles.length - 1;
+        
+        return {
+          coord: [categoryData[categoryIndex], t.average_fill_price || t.price],
+          value: `${t.side} ${(t.filled_quantity ?? t.quantity)?.toFixed(4)}`,
+          symbol: t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z',
+          symbolSize: 10,
+          itemStyle: { color: t.side === 'BUY' ? '#10b981' : '#ef4444' }
+        };
+      });
+
+    // ── Grid Configurations ──
+    const showVol = active.volume;
+    const showRsi = active.rsi;
+    const showMacd = active.macd;
+    const showAtr = active.atr;
+
+    const subPanes = [];
+    if (showVol) subPanes.push('volume');
+    if (showRsi) subPanes.push('rsi');
+    if (showMacd) subPanes.push('macd');
+    if (showAtr) subPanes.push('atr');
+
+    const totalSubPanes = subPanes.length;
+    const subPaneHeightPct = 9;
+    const gapPct = 3;
+    const mainHeightPct = 83 - (totalSubPanes * (subPaneHeightPct + gapPct));
+
+    const grids = [{
+      left: '3%', right: '5%', top: '5%',
+      height: `${mainHeightPct}%`
+    }];
+
+    let currentTop = 5 + mainHeightPct + gapPct;
+    const paneGridMap = {};
+    subPanes.forEach(pane => {
+      grids.push({
+        left: '3%', right: '5%',
+        top: `${currentTop}%`,
+        height: `${subPaneHeightPct}%`
+      });
+      paneGridMap[pane] = grids.length - 1;
+      currentTop += subPaneHeightPct + gapPct;
     });
-    mainChart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
 
-    // RSI pane
-    const rsiLine = rsiChart.addSeries(LineSeries, {
-      color: '#fbbf24', lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
-      autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+    // Axes
+    const xAxes = [];
+    const yAxes = [];
+    
+    // Main grid axis
+    xAxes.push({
+      type: 'category',
+      data: categoryData,
+      gridIndex: 0,
+      scale: true,
+      boundaryGap: false,
+      axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+      splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+      axisLabel: { show: grids.length === 1, color: '#9ca3af' }
     });
-    const rsi70 = mkLine(rsiChart, 'rgba(239,68,68,0.4)',   1, 3);
-    const rsi50 = mkLine(rsiChart, 'rgba(148,163,184,0.3)', 1, 3);
-    const rsi30 = mkLine(rsiChart, 'rgba(16,185,129,0.4)',  1, 3);
 
-    // MACD pane
-    const macdLine = macdChart.addSeries(LineSeries, { color: '#34d399', lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
-    const macdSig  = macdChart.addSeries(LineSeries, { color: '#f87171', lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
-    const macdHist = macdChart.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false });
-    const macdZero = mkLine(macdChart, 'rgba(148,163,184,0.3)', 1, 3);
+    yAxes.push({
+      scale: true,
+      gridIndex: 0,
+      position: 'right',
+      splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+      axisLabel: { color: '#9ca3af', formatter: val => val.toFixed(dec) }
+    });
 
-    // ATR pane
-    const atrLine = atrChart.addSeries(LineSeries, { color: '#94a3b8', lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    // Sub grids axes
+    const gridCount = grids.length;
+    subPanes.forEach((pane, idx) => {
+      const gIdx = paneGridMap[pane];
+      const isLowest = gIdx === gridCount - 1;
 
-    charts.current = { main: mainChart, rsi: rsiChart, macd: macdChart, atr: atrChart };
-    series.current = {
-      candle: candleSeries,
-      ema9: ema9Line, ema21: ema21Line, ema50: ema50Line, sma200: sma200Line,
-      bbUpper: bbUpperLine, bbMid: bbMidLine, bbLower: bbLowerLine, vwap: vwapLine,
-      rsi: rsiLine, rsi70, rsi50, rsi30,
-      macdLine, macdSig, macdHist, macdZero,
-      atr: atrLine, volume: volumeSeries,
+      xAxes.push({
+        type: 'category',
+        data: categoryData,
+        gridIndex: gIdx,
+        scale: true,
+        boundaryGap: false,
+        axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+        axisLabel: { show: isLowest, color: '#9ca3af' },
+        axisTick: { show: isLowest }
+      });
+
+      let yAxisOpt = {
+        scale: true,
+        gridIndex: gIdx,
+        position: 'right',
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        axisLabel: { color: '#9ca3af', fontSize: 9 }
+      };
+
+      if (pane === 'volume') {
+        yAxisOpt.axisLabel.formatter = val => formatVol(val);
+      } else if (pane === 'rsi') {
+        yAxisOpt.min = 0;
+        yAxisOpt.max = 100;
+        yAxisOpt.interval = 30;
+      }
+      yAxes.push(yAxisOpt);
+    });
+
+    // Series
+    const series = [];
+
+    // Main Candlestick / Line Series
+    if (chartType === 'line') {
+      series.push({
+        name: activeSymbol,
+        type: 'line',
+        data: candles.map(c => c.close),
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        showSymbol: false,
+        lineStyle: { color: '#3b82f6', width: 2 },
+        markLine: {
+          symbol: ['none', 'none'],
+          data: markLineData
+        },
+        markPoint: {
+          data: tradeMarkers,
+          label: { show: false }
+        }
+      });
+    } else {
+      series.push({
+        name: activeSymbol,
+        type: 'candlestick',
+        data: candlestickData,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        itemStyle: {
+          color: '#10b981',
+          color0: '#ef4444',
+          borderColor: '#10b981',
+          borderColor0: '#ef4444'
+        },
+        markLine: {
+          symbol: ['none', 'none'],
+          data: markLineData
+        },
+        markPoint: {
+          data: tradeMarkers,
+          label: { show: false }
+        }
+      });
+    }
+
+    // Overlay indicators
+    if (active.ema9) {
+      const ema9 = calcEMA(candles, 9);
+      const ema9Data = candles.map((c, i) => i >= 8 ? ema9[i - 8]?.value : null);
+      series.push({
+        name: 'EMA 9', type: 'line', data: ema9Data, xAxisIndex: 0, yAxisIndex: 0,
+        showSymbol: false, lineStyle: { color: '#f59e0b', width: 1, opacity: 0.85 }
+      });
+    }
+    if (active.ema21) {
+      const ema21 = calcEMA(candles, 21);
+      const ema21Data = candles.map((c, i) => i >= 20 ? ema21[i - 20]?.value : null);
+      series.push({
+        name: 'EMA 21', type: 'line', data: ema21Data, xAxisIndex: 0, yAxisIndex: 0,
+        showSymbol: false, lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.85 }
+      });
+    }
+    if (active.ema50) {
+      const ema50 = calcEMA(candles, 50);
+      const ema50Data = candles.map((c, i) => i >= 49 ? ema50[i - 49]?.value : null);
+      series.push({
+        name: 'EMA 50', type: 'line', data: ema50Data, xAxisIndex: 0, yAxisIndex: 0,
+        showSymbol: false, lineStyle: { color: '#06b6d4', width: 1, opacity: 0.85 }
+      });
+    }
+    if (active.bb) {
+      const bb = calcBollingerBands(candles, 20, 2);
+      const mapper = (bbList) => candles.map((c, i) => i >= 19 ? bbList[i - 19]?.value : null);
+      series.push(
+        { name: 'BB Upper', type: 'line', data: mapper(bb.upper), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } },
+        { name: 'BB Mid', type: 'line', data: mapper(bb.middle), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: 'rgba(99,102,241,0.3)', width: 1, type: 'dotted' } },
+        { name: 'BB Lower', type: 'line', data: mapper(bb.lower), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }
+      );
+    }
+    if (active.vwap) {
+      const vwap = calcVWAP(candles);
+      const vwapData = candles.map((c, i) => vwap[i]?.value ?? null);
+      series.push({
+        name: 'VWAP', type: 'line', data: vwapData, xAxisIndex: 0, yAxisIndex: 0,
+        showSymbol: false, lineStyle: { color: '#ec4899', width: 1.5 }
+      });
+    }
+
+    // Sub grids series
+    if (showVol) {
+      const gIdx = paneGridMap.volume;
+      series.push({
+        name: 'Volume',
+        type: 'bar',
+        xAxisIndex: gIdx,
+        yAxisIndex: gIdx,
+        data: candles.map(c => ({
+          value: c.volume || 0,
+          itemStyle: { color: c.close >= c.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' }
+        }))
+      });
+    }
+
+    if (showRsi) {
+      const gIdx = paneGridMap.rsi;
+      const rsi = calcRSI(candles, 14);
+      const rsiData = candles.map((c, i) => i >= 14 ? rsi[i - 14]?.value : null);
+      series.push({
+        name: 'RSI', type: 'line', data: rsiData, xAxisIndex: gIdx, yAxisIndex: gIdx,
+        showSymbol: false, lineStyle: { color: '#fbbf24', width: 1.5 }
+      });
+    }
+
+    if (showMacd) {
+      const gIdx = paneGridMap.macd;
+      const macd = calcMACD(candles, 12, 26, 9);
+      const mapper = (mList) => candles.map((c, i) => i >= 33 ? mList[i - 33]?.value : null);
+
+      series.push(
+        { name: 'MACD', type: 'line', data: mapper(macd.macdLine), xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#34d399', width: 1.2 } },
+        { name: 'Signal', type: 'line', data: mapper(macd.signalLine), xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#f87171', width: 1.2 } },
+        {
+          name: 'Hist',
+          type: 'bar',
+          xAxisIndex: gIdx,
+          yAxisIndex: gIdx,
+          data: candles.map((c, i) => {
+            if (i < 33) return null;
+            const item = macd.histogram[i - 33];
+            return item ? {
+              value: item.value,
+              itemStyle: { color: item.value >= 0 ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)' }
+            } : null;
+          })
+        }
+      );
+    }
+
+    if (showAtr) {
+      const gIdx = paneGridMap.atr;
+      const atr = calcATR(candles, 14);
+      const atrData = candles.map((c, i) => i >= 14 ? atr[i - 14]?.value : null);
+      series.push({
+        name: 'ATR', type: 'line', data: atrData, xAxisIndex: gIdx, yAxisIndex: gIdx,
+        showSymbol: false, lineStyle: { color: '#94a3b8', width: 1.5 }
+      });
+    }
+
+    // Zoom and pan links
+    const zoomXIndices = grids.map((_, i) => i);
+
+    const option = {
+      backgroundColor: '#080d14',
+      axisPointer: {
+        link: [{ xAxisIndex: 'all' }],
+        label: { backgroundColor: '#1d4ed8' }
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        show: false // we use our own legend instead
+      },
+      grid: grids,
+      xAxis: xAxes,
+      yAxis: yAxes,
+      dataZoom: [
+        { type: 'inside', xAxisIndex: zoomXIndices, startValue: startVal, endValue: endVal },
+        { type: 'slider', xAxisIndex: zoomXIndices, startValue: startVal, endValue: endVal, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: 'rgba(37,99,235,0.12)', textStyle: { color: '#9ca3af' } }
+      ],
+      series: series
     };
 
-    // Cross-pane sync
-    syncCharts([mainChart, rsiChart, macdChart, atrChart]);
-    syncCrosshairs(
-      [mainChart, rsiChart, macdChart, atrChart],
-      [candleSeries, rsiLine, macdLine, atrLine]
-    );
+    chartRef.current.setOption(option, { notMerge: true });
+    
+    // Initial legend display
+    const lastBar = candles[candles.length - 1];
+    updateLegendDOM(lastBar);
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, symbolPosition, tradeHistory, updateLegendDOM]);
 
-    mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-      if (isProgrammaticRef.current || !range) return;
-      const dataLength = candlesLengthRef.current;
-      const atRight = range.to >= (dataLength - 1 - 2); // 2 bars buffer
-      isAtRightRef.current = atRight;
-      setIsLiveBtn(!atRight);
-    });
+  // Init ECharts Instance
+  useEffect(() => {
+    if (!containerRef.current) return;
 
-    // Change 6c: OHLCV crosshair subscription on main chart
-    mainChart.subscribeCrosshairMove((param) => {
-      if (!param.time || !param.point) {
-        setHoveredBar(null);
-        return;
-      }
-      try {
-        const data = param.seriesData.get(candleSeries);
-        if (data) setHoveredBar(data);
-      } catch (_) {}
-    });
+    const chart = echarts.init(containerRef.current, 'dark');
+    chartRef.current = chart;
 
-    mainChart.subscribeClick((param) => {
-      if (!param.point) return;
-      const price = candleSeries.coordinateToPrice(param.point.y);
-      if (price !== null) {
-        // Dispatch custom event to handle it outside or rely on a mutable ref
-        window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+    // Crosshair Hover / axisPointer listener to update legend DOM dynamically
+    chart.on('updateAxisPointer', (event) => {
+      const axesInfo = event.axesInfo;
+      if (axesInfo && axesInfo[0]) {
+        const dataIndex = axesInfo[0].value;
+        const candles = candlesRef.current;
+        if (candles && candles[dataIndex]) {
+          updateLegendDOM(candles[dataIndex]);
+        }
+      } else {
+        const candles = candlesRef.current;
+        if (candles && candles.length > 0) {
+          updateLegendDOM(candles[candles.length - 1]);
+        }
       }
     });
 
-    // ResizeObserver
-    const ro = new ResizeObserver(doResize);
-    [mainRef, rsiRef, macdRef, atrRef].forEach(r => { if (r.current) ro.observe(r.current); });
-    window.addEventListener('resize', doResize);
+    // Click coordinate to price conversion for interactive mode
+    chart.getZr().on('click', (params) => {
+      const mode = useStore.getState().chartInteractionMode;
+      if (mode === 'normal') return;
 
-    // Tab/focus visibility fix
-    const onVisibility = () => { if (!document.hidden) doResize(); };
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('focus', doResize);
+      const pointInPixel = [params.offsetX, params.offsetY];
+      if (chart.containPoint({ gridIndex: 0 }, pointInPixel)) {
+        const pointInValue = chart.convertFromPixel({ gridIndex: 0 }, pointInPixel);
+        const price = pointInValue[1];
+        if (price !== null && price > 0) {
+          window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+        }
+      }
+    });
 
-    doResize();
+    // Resize observer
+    const ro = new ResizeObserver(() => {
+      chart.resize();
+    });
+    ro.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener('resize', doResize);
-      window.removeEventListener('focus', doResize);
-      document.removeEventListener('visibilitychange', onVisibility);
       ro.disconnect();
-      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
-      [mainChart, rsiChart, macdChart, atrChart].forEach(c => { try { c.remove(); } catch (_) {} });
-      charts.current  = {};
-      series.current  = {};
-      activeKeyRef.current   = '';
-      lastBarTimeRef.current = 0;
+      chart.dispose();
+      chartRef.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [updateLegendDOM]);
 
-  // ── Re-trigger resize + time axis update when sub-panes show/hide ─────────
+  // Redraw when aggregated candles or configurations modify
   useEffect(() => {
-    const id = setTimeout(() => {
-      doResize();
-      // Change 6d: update which pane shows the time axis
-      updateTimeAxisVisibility(charts.current, activeRef.current);
-    }, 60);
-    return () => clearTimeout(id);
-  }, [active.rsi, active.macd, active.atr, doResize]);
+    configureChart();
+  }, [configureChart]);
 
-  // ── Programmatic scroll helper ────────────────────────────────────────────
-  const programmaticScroll = useCallback((fn) => {
-    isProgrammaticRef.current = true;
-    try { fn(); } catch (_) {}
-    requestAnimationFrame(() => { isProgrammaticRef.current = false; });
-  }, []);
+  // Subscribe to real-time price updates (Intra-bar updates)
+  useEffect(() => {
+    const symbol = activeSymbol;
+    const unsubscribe = useStore.subscribe(
+      state => state.candleData[symbol],
+      (candles) => {
+        if (!candles || candles.length === 0 || !chartRef.current) return;
+        const last = candles[candles.length - 1];
 
-  // ── Main render ───────────────────────────────────────────────────────────
-  const renderAll = useCallback((candles, compositeKey) => {
-    if (!candles || candles.length === 0) return; // Allow rendering with just 1 candle
-    if (!series.current.candle || !charts.current.main) return;
+        // Format for timeframe aggregation
+        const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+        const t = Math.floor(last.time / cfg.secs) * cfg.secs;
 
-    candlesLengthRef.current = candles.length;
-    const s        = series.current;
-    const cur      = activeRef.current;
-    const reqType  = chartTypeRef.current;
-    const prevKey  = activeKeyRef.current;
-    const isFullReload = prevKey !== compositeKey;
-    const prevSym  = prevKey ? prevKey.split('::')[0] : '';
-    const curSym   = compositeKey.split('::')[0];
-    const isSymbolChange = prevSym !== curSym;
+        // Get live bucket candles
+        const raw = useStore.getState().candleData[symbol] || EMPTY_ARRAY;
+        const bucketCandles = raw.filter(c => c.time >= t);
 
-    let preservedBars = null;
-    let preservedRightTime = null;
+        if (bucketCandles.length > 0) {
+          const aggregatedLive = {
+            time: t,
+            open: bucketCandles[0].open,
+            high: Math.max(...bucketCandles.map(c => c.high)),
+            low: Math.min(...bucketCandles.map(c => c.low)),
+            close: bucketCandles[bucketCandles.length - 1].close,
+            volume: bucketCandles.reduce((sum, c) => sum + (c.volume || 0), 0)
+          };
 
-    // ── Change 5: Reset state on full reload ──────────────────────────────
-    if (isFullReload) {
-      lastBarTimeRef.current = 0;
-      if (isSymbolChange) {
-        isAtRightRef.current = true;
-        setIsLiveBtn(false);
-      } else {
-        if (charts.current.main) {
           try {
-            const timeRange = charts.current.main.timeScale().getVisibleTimeRange();
-            const logicalRange = charts.current.main.timeScale().getVisibleLogicalRange();
-            if (timeRange && logicalRange) {
-              preservedRightTime = timeRange.to;
-              preservedBars = logicalRange.to - logicalRange.from;
+            const option = chartRef.current.getOption();
+            const lastIdx = candlesRef.current.length - 1;
+            if (lastIdx < 0) return;
+
+            // Only update if it represents the same bar
+            if (candlesRef.current[lastIdx] && aggregatedLive.time === candlesRef.current[lastIdx].time) {
+              // Mutate the local ref in-place to avoid jump-back on subsequent component updates
+              candlesRef.current[lastIdx] = {
+                ...candlesRef.current[lastIdx],
+                open: aggregatedLive.open,
+                high: aggregatedLive.high,
+                low: aggregatedLive.low,
+                close: aggregatedLive.close,
+                volume: aggregatedLive.volume
+              };
+
+              // 1. Candlestick/Line Series Update
+              const mainSeries = option.series[0];
+              if (mainSeries) {
+                if (mainSeries.type === 'candlestick') {
+                  mainSeries.data[lastIdx] = [aggregatedLive.open, aggregatedLive.close, aggregatedLive.low, aggregatedLive.high];
+                } else {
+                  mainSeries.data[lastIdx] = aggregatedLive.close;
+                }
+              }
+
+              // 2. Volume Series Update
+              const showVol = active.volume;
+              if (showVol) {
+                const volSeriesIdx = option.series.findIndex(s => s.name === 'Volume');
+                if (volSeriesIdx !== -1) {
+                  option.series[volSeriesIdx].data[lastIdx] = {
+                    value: aggregatedLive.volume,
+                    itemStyle: { color: aggregatedLive.close >= aggregatedLive.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' }
+                  };
+                }
+              }
+
+              // Lightweight option update targeting only the updated series to avoid interrupting user gestures
+              chartRef.current.setOption({
+                series: option.series
+              });
+              updateLegendDOM(aggregatedLive);
             }
           } catch (_) {}
         }
       }
-    }
-
-    // ── Series type swap (candle ↔ line) ──────────────────────────────────
-    if (isFullReload && s.candle._seriesType !== reqType) {
-      try { charts.current.main.removeSeries(s.candle); } catch (_) {}
-      let newS;
-      if (reqType === 'line') {
-        newS = charts.current.main.addSeries(LineSeries, {
-          color: '#3b82f6', lineWidth: 2,
-          lastValueVisible: true, priceLineVisible: true,
-          priceLineStyle: 2, priceLineWidth: 1, priceLineColor: '#3b82f6',
-        });
-      } else {
-        newS = charts.current.main.addSeries(CandlestickSeries, {
-          upColor: '#10b981', downColor: '#ef4444',
-          borderUpColor: '#10b981', borderDownColor: '#ef4444',
-          wickUpColor: '#10b981', wickDownColor: '#ef4444',
-          lastValueVisible: true, priceLineVisible: true,
-          priceLineStyle: 2, priceLineWidth: 1, priceLineColor: '#3b82f6',
-        });
-      }
-      newS._seriesType = reqType;
-      s.candle = newS;
-      series.current.candle = newS;
-    }
-
-    const volumeData = candles.map(c => ({ time: c.time, value: c.volume || 0, color: volColor(c) }));
-
-    // ── Change 6a: Dynamic price format per asset ─────────────────────────
-    const lastClose = candles[candles.length - 1]?.close;
-    const fmt = getPriceFormat(lastClose);
-    priceFormatRef.current = fmt;
-
-    // ── Full reload path ──────────────────────────────────────────────────
-    if (isFullReload) {
-      const chartData = reqType === 'line'
-        ? candles.map(c => ({ time: c.time, value: c.close }))
-        : candles;
-      try { s.candle.setData(chartData); } catch (_) {}
-      try { s.volume.setData(volumeData); } catch (_) {}
-
-      // Apply dynamic price format to the series (Change 6a)
-      try { s.candle.applyOptions({ priceFormat: { type: 'price', ...fmt } }); } catch (_) {}
-
-      activeKeyRef.current = compositeKey;
-
-      // Change 3: Force native layout via barSpacing to prevent left-corner clamping!
-      // If dataset is sparse, center it dynamically using rightOffset.
-      // If historical panning, use setVisibleLogicalRange to anchor exactly.
-      requestAnimationFrame(() => {
-        programmaticScroll(() => {
-          const n = candles.length;
-          let chartWidth = 800;
-          try { chartWidth = charts.current.main.timeScale().width() || mainRef.current?.clientWidth || 800; } catch (_) {}
-          const targetBarSpacing = chartWidth / VISIBLE_BARS;
-
-          if (n < VISIBLE_BARS) {
-            // Sparse timeframe (e.g. 1D with only 5 days of data). Center the candles gracefully!
-            const pad = (VISIBLE_BARS - n) / 2;
-            charts.current.main.timeScale().applyOptions({ barSpacing: targetBarSpacing, rightOffset: pad });
-            try { charts.current.main.timeScale().scrollToRealTime(); } catch (_) {}
-          } else {
-            // Full timeframe.
-            if (isSymbolChange || !preservedRightTime || isAtRightRef.current) {
-              charts.current.main.timeScale().applyOptions({ barSpacing: targetBarSpacing, rightOffset: RIGHT_BARS });
-              try { charts.current.main.timeScale().scrollToRealTime(); } catch (_) {}
-            } else {
-              // Historical panning anchored to exact time!
-              let newRightIndex = n - 1;
-              for (let i = n - 1; i >= 0; i--) {
-                if (candles[i].time <= preservedRightTime) {
-                  newRightIndex = i;
-                  break;
-                }
-              }
-              const to = newRightIndex;
-              const from = to - VISIBLE_BARS;
-              try { charts.current.main.timeScale().setVisibleLogicalRange({ from, to }); } catch (_) {}
-            }
-          }
-          
-          // Force price-scale autoscale reset on all active charts
-          Object.values(charts.current).forEach(c => {
-            if (c) {
-              try { c.priceScale('right').applyOptions({ autoScale: true }); } catch (_) {}
-            }
-          });
-        });
-      });
-
-    } else {
-      // ── Change 4: Live tick path ──────────────────────────────────────
-      const last     = candles[candles.length - 1];
-      const isNewBar = last.time !== lastBarTimeRef.current;
-
-      try {
-        if (reqType === 'line') {
-          s.candle.update({ time: last.time, value: last.close });
-        } else {
-          s.candle.update(last);
-        }
-        s.volume.update({ time: last.time, value: last.volume || 0, color: volColor(last) });
-      } catch (_) {}
-
-      // Change 6a: update price-line colour to match last candle direction
-      const plColor = last.close >= last.open ? '#10b981' : '#ef4444';
-      try { s.candle.applyOptions({ priceLineColor: plColor }); } catch (_) {}
-
-      // Native shiftVisibleRangeOnNewBar tracks right edge smoothly without drifting!
-
-      // Change 4: only run full indicator setData when a new bar closes
-      if (!isNewBar) {
-        // Intra-bar tick: skip expensive indicator setData — just update visibility
-        const vis = (key, refs) => refs.forEach(r => { try { r?.applyOptions({ visible: cur[key] }); } catch (_) {} });
-        vis('ema9', [s.ema9]); vis('ema21', [s.ema21]); vis('ema50', [s.ema50]);
-        vis('sma200', [s.sma200]); vis('bb', [s.bbUpper, s.bbMid, s.bbLower]);
-        vis('vwap', [s.vwap]); vis('volume', [s.volume]);
-        vis('rsi',  [s.rsi, s.rsi70, s.rsi50, s.rsi30]);
-        vis('macd', [s.macdLine, s.macdSig, s.macdHist, s.macdZero]);
-        vis('atr',  [s.atr]);
-        return; // early exit — no indicator recalculation
-      }
-      lastBarTimeRef.current = last.time;
-    }
-
-    // ── Full indicator recalculation (on full reload OR new bar close) ────
-    const setIfData = (ser, data) => { if (data?.length) try { ser.setData(data); } catch (_) {} };
-
-    const ema9d   = calcEMA(candles, 9);
-    const ema21d  = calcEMA(candles, 21);
-    const ema50d  = calcEMA(candles, 50);
-    const sma200d = calcSMA(candles, 200);
-    const bbData  = calcBollingerBands(candles, 20, 2);
-    const vwapD   = calcVWAP(candles);
-
-    setIfData(s.ema9,    ema9d);
-    setIfData(s.ema21,   ema21d);
-    setIfData(s.ema50,   ema50d);
-    setIfData(s.sma200,  sma200d);
-    setIfData(s.bbUpper, bbData.upper);
-    setIfData(s.bbMid,   bbData.middle);
-    setIfData(s.bbLower, bbData.lower);
-    setIfData(s.vwap,    vwapD);
-
-    const vis = (key, refs) => refs.forEach(r => { try { r?.applyOptions({ visible: cur[key] }); } catch (_) {} });
-    vis('ema9',   [s.ema9]);   vis('ema21', [s.ema21]); vis('ema50', [s.ema50]);
-    vis('sma200', [s.sma200]); vis('bb',    [s.bbUpper, s.bbMid, s.bbLower]);
-    vis('vwap',   [s.vwap]);   vis('volume',[s.volume]);
-
-    const rsiData = calcRSI(candles, 14);
-    if (rsiData.length > 0) {
-      const refLine = (v) => rsiData.map(p => ({ time: p.time, value: v }));
-      setIfData(s.rsi,   rsiData);
-      setIfData(s.rsi70, refLine(70));
-      setIfData(s.rsi50, refLine(50));
-      setIfData(s.rsi30, refLine(30));
-    }
-    vis('rsi', [s.rsi, s.rsi70, s.rsi50, s.rsi30]);
-
-    const macdData = calcMACD(candles, 12, 26, 9);
-    if (macdData.macdLine.length > 0) {
-      setIfData(s.macdLine, macdData.macdLine);
-      setIfData(s.macdSig,  macdData.signalLine);
-      setIfData(s.macdHist, macdData.histogram);
-      setIfData(s.macdZero, macdData.macdLine.map(p => ({ time: p.time, value: 0 })));
-    }
-    vis('macd', [s.macdLine, s.macdSig, s.macdHist, s.macdZero]);
-
-    const atrData = calcATR(candles, 14);
-    setIfData(s.atr, atrData);
-    vis('atr', [s.atr]);
-
-    setSignal(generateSignal(candles));
-    setIndicatorValues({
-      ema9:    ema9d.at(-1)?.value?.toFixed(fmt.precision),
-      ema21:   ema21d.at(-1)?.value?.toFixed(fmt.precision),
-      ema50:   ema50d.at(-1)?.value?.toFixed(fmt.precision),
-      sma200:  sma200d.at(-1)?.value?.toFixed(fmt.precision),
-      bbUpper: bbData.upper.at(-1)?.value?.toFixed(fmt.precision),
-      bbLower: bbData.lower.at(-1)?.value?.toFixed(fmt.precision),
-      rsi:     rsiData.at(-1)?.value?.toFixed(1),
-      macd:    macdData.macdLine.at(-1)?.value?.toFixed(4),
-      macdSig: macdData.signalLine.at(-1)?.value?.toFixed(4),
-      vwap:    vwapD.at(-1)?.value?.toFixed(fmt.precision),
-      atr:     atrData.at(-1)?.value?.toFixed(4),
-      volume:  fmtVol(candles.at(-1)?.volume),
-    });
-  }, []); // no React deps — reads everything through refs
-
-  // ── Trigger render on data / symbol / TF / type / indicator changes ───────
-  useEffect(() => {
-    if (!aggregatedCandles || aggregatedCandles.length === 0) return;
-    const key = `${activeSymbol}::${timeframe}::${chartType}`;
-    renderAll(aggregatedCandles, key);
-  }, [aggregatedCandles, activeSymbol, timeframe, chartType, active, renderAll]);
-
-  // ── Position lines + execution markers ───────────────────────────────────
-  useEffect(() => {
-    const cs = series.current.candle;
-    if (!cs) return;
-    [entryLineRef, slLineRef, tpLineRef].forEach(ref => {
-      if (ref.current) { try { cs.removePriceLine(ref.current); } catch (_) {} ref.current = null; }
-    });
-    const pos = symbolPosition;
-    if (pos && pos.size !== 0) {
-      const isLong = pos.size > 0;
-      entryLineRef.current = cs.createPriceLine({
-        price: pos.avg_price, color: '#3b82f6', lineWidth: 2, lineStyle: 0,
-        axisLabelVisible: true,
-        title: `ENTRY ${isLong ? '▲ LONG' : '▼ SHORT'} (${Math.abs(pos.size).toFixed(4)})`,
-      });
-      if (pos.stop_loss_price > 0) {
-        slLineRef.current = cs.createPriceLine({
-          price: pos.stop_loss_price, color: '#ef4444', lineWidth: 1, lineStyle: 2,
-          axisLabelVisible: true, title: 'SL',
-        });
-      }
-      if (pos.take_profit_price > 0) {
-        tpLineRef.current = cs.createPriceLine({
-          price: pos.take_profit_price, color: '#10b981', lineWidth: 1, lineStyle: 2,
-          axisLabelVisible: true, title: 'TP',
-        });
-      }
-    }
-    const markers = tradeHistory
-      .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
-      .map(t => ({
-        time:     Math.floor(new Date(t.timestamp).getTime() / 1000),
-        position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
-        color:    t.side === 'BUY' ? '#10b981'  : '#ef4444',
-        shape:    t.side === 'BUY' ? 'arrowUp'  : 'arrowDown',
-        text:     `${t.side} ${(t.filled_quantity ?? t.quantity)?.toFixed(4)} @ ${(t.average_fill_price || t.price)?.toLocaleString()}`,
-        size: 1.2,
-      }))
-      .sort((a, b) => a.time - b.time);
-    try { cs.setMarkers(markers); } catch (_) {}
-  }, [activeSymbol, symbolPosition, tradeHistory, botConfig]);
-
-  // ── Chart Click Handling for SL/TP ───────────────────────────────────────
-  useEffect(() => {
-    const handleChartClick = (e) => {
-      if (chartInteractionMode === 'normal') return;
-      const price = e.detail;
-      
-      // Update SL or TP
-      if (chartInteractionMode === 'edit_sl') {
-        import('../services/websocket').then(({ sendWebSocketAction }) => {
-           sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, stop_loss_price: price });
-        });
-      } else if (chartInteractionMode === 'edit_tp') {
-        import('../services/websocket').then(({ sendWebSocketAction }) => {
-           sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, take_profit_price: price });
-        });
-      }
-      
-      // Revert to normal mode
-      setChartInteractionMode('normal');
-    };
-    
-    window.addEventListener('chart-click', handleChartClick);
-    return () => window.removeEventListener('chart-click', handleChartClick);
-  }, [chartInteractionMode, activeSymbol, setChartInteractionMode]);
+    );
+    return unsubscribe;
+  }, [activeSymbol, timeframe, active.volume, updateLegendDOM]);
 
   // Handle ESC key to cancel interaction mode
   useEffect(() => {
@@ -764,255 +798,127 @@ export default function ChartWidget() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [chartInteractionMode, setChartInteractionMode]);
 
-  // ─── Render ───────────────────────────────────────────────────────────────
-  const ticker   = symbolTicker;
-  const sigStyle = SIGNAL_STYLES[signal.signal] || SIGNAL_STYLES.NEUTRAL;
-  const isStrong = signal.signal.startsWith('STRONG');
-  const showRsi  = active.rsi;
-  const showMacd = active.macd;
-  const showAtr  = active.atr;
-  const subPaneH = 130;
-  const fmt      = priceFormatRef.current;
+  // Handle Chart Click for SL/TP
+  useEffect(() => {
+    const handleChartClick = (e) => {
+      if (chartInteractionMode === 'normal') return;
+      const price = e.detail;
+      
+      if (chartInteractionMode === 'edit_sl') {
+        import('../services/websocket').then(({ sendWebSocketAction }) => {
+          sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, stop_loss_price: price });
+        });
+      } else if (chartInteractionMode === 'edit_tp') {
+        import('../services/websocket').then(({ sendWebSocketAction }) => {
+          sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, take_profit_price: price });
+        });
+      }
+      
+      setChartInteractionMode('normal');
+    };
+    
+    window.addEventListener('chart-click', handleChartClick);
+    return () => window.removeEventListener('chart-click', handleChartClick);
+  }, [chartInteractionMode, activeSymbol, setChartInteractionMode]);
 
-  // Change 6c: bar to display in OHLCV legend (hovered or last)
-  const lastCandle = aggregatedCandles?.at(-1) ?? null;
-  const legendBar  = hoveredBar ?? lastCandle;
-  const legendBull = legendBar ? legendBar.close >= legendBar.open : true;
-
-  const pDec = (sym, price) =>
-    sym?.includes('XRP') || sym?.includes('ADA') || sym?.includes('DOGE') || (price != null && price < 2) ? 4 : 2;
+  const chartToolbar = (
+    <>
+      <WidgetToolbar className="h-8 flex-nowrap py-0">
+        <ToggleGroup type="single" value={timeframe} onValueChange={(v) => v && setTimeframe(v)} spacing={0}>
+          {TF_CONFIGS.map(tf => (
+            <ToggleGroupItem key={tf.label} value={tf.label} size="sm" className="px-2 text-[0.68rem] font-bold">
+              {tf.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <WidgetToolbarDivider />
+        <ToggleGroup type="single" value={chartType} onValueChange={(v) => v && setChartType(v)} spacing={0}>
+          <ToggleGroupItem value="candle" size="sm" className="gap-1 px-2 text-[0.68rem] font-bold">
+            <AreaChart data-icon="inline-start" />Candle
+          </ToggleGroupItem>
+          <ToggleGroupItem value="line" size="sm" className="gap-1 px-2 text-[0.68rem] font-bold">
+            <TrendingUp data-icon="inline-start" />Line
+          </ToggleGroupItem>
+        </ToggleGroup>
+        {chartInteractionMode !== 'normal' && (
+          <Button
+            variant="destructive"
+            size="sm"
+            className="ml-auto h-6 text-[0.62rem]"
+            onClick={() => setChartInteractionMode('normal')}
+          >
+            Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
+          </Button>
+        )}
+      </WidgetToolbar>
+      <WidgetToolbar className="min-h-8 flex-wrap py-1">
+        <ToggleGroup
+          type="multiple"
+          value={activeIndicatorKeys}
+          onValueChange={handleIndicatorsChange}
+          className="flex flex-wrap gap-0.5"
+          spacing={0}
+        >
+          {Object.entries(INDICATORS).map(([key, ind]) => (
+            <ToggleGroupItem
+              key={key}
+              value={key}
+              size="sm"
+              className="gap-1 text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+              style={{ '--ind-c': ind.color }}
+            >
+              <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
+              {ind.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </WidgetToolbar>
+    </>
+  );
 
   return (
-    <div className={`widget-card ${chartInteractionMode !== 'normal' ? 'chart-interactive-mode' : ''}`} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-      
-      {chartInteractionMode !== 'normal' && (
-        <div style={{
-          position: 'absolute', top: 60, left: '50%', transform: 'translateX(-50%)', zIndex: 100,
-          background: 'rgba(59,130,246,0.9)', padding: '6px 12px', borderRadius: '20px',
-          color: '#fff', fontSize: 'var(--fs-xs)', fontWeight: 700, boxShadow: '0 0 15px rgba(59,130,246,0.5)',
-          display: 'flex', alignItems: 'center', gap: 8, pointerEvents: 'none'
-        }}>
-          <span>Click on chart to set {chartInteractionMode === 'edit_sl' ? 'Stop Loss' : 'Take Profit'}</span>
-          <span style={{ fontSize: '10px', opacity: 0.8 }}>(ESC to cancel)</span>
+    <WidgetShell
+      className={cn(chartInteractionMode !== 'normal' && 'chart-interactive-mode relative')}
+      icon={AreaChart}
+      title={activeSymbol}
+      headerRight={
+        <div className="flex min-w-0 items-center gap-2">
+          <ChartHeaderPrice symbol={activeSymbol} />
+          <ChartSignalBadge symbol={activeSymbol} />
         </div>
+      }
+      toolbar={chartToolbar}
+      contentClassName="relative flex min-h-0 flex-1 flex-col overflow-hidden p-0"
+    >
+      {chartInteractionMode !== 'normal' && (
+        <Badge className="pointer-events-none absolute top-2 left-1/2 z-[100] -translate-x-1/2 gap-1.5 border-primary/40 bg-primary/90 px-3 py-1 text-[0.68rem] font-bold text-primary-foreground shadow-[0_0_15px_var(--color-accent-bg)]">
+          Click chart to set {chartInteractionMode === 'edit_sl' ? 'Stop Loss' : 'Take Profit'}
+          <span className="font-normal opacity-80">(ESC to cancel)</span>
+        </Badge>
       )}
 
-      {/* ── Row 1: Symbol + Price + Signal ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 14px', borderBottom: '1px solid var(--border-color)', background: '#080d14', flexShrink: 0, gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <AreaChart size={15} className="logo-icon" style={{ flexShrink: 0 }} />
-          <span style={{ fontWeight: 800, color: '#fff', fontSize: 'var(--fs-md)', letterSpacing: '0.5px', flexShrink: 0 }}>
-            {activeSymbol}
-          </span>
-
-          {ticker && (() => {
-            const dec = pDec(activeSymbol, ticker.price);
-            return (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 'var(--fs-sm)', minWidth: 0, overflow: 'hidden' }}>
-                <span className="num-mono" style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)', flexShrink: 0 }}>
-                  {ticker.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-                </span>
-                <span className={`num-mono ${ticker.change_24h >= 0 ? 'text-up' : 'text-down'}`} style={{ fontWeight: 700, flexShrink: 0 }}>
-                  {ticker.change_24h >= 0 ? '+' : ''}{Number(ticker.change_24h).toFixed(2)}%
-                </span>
-                <span style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}>
-                  H:<span className="num-mono"> {ticker.high_24h?.toFixed(dec)}</span>
-                  {' '}L:<span className="num-mono"> {ticker.low_24h?.toFixed(dec)}</span>
-                  {' '}V:<span className="num-mono"> {ticker.volume_24h ? fmtVol(ticker.volume_24h) : '—'}</span>
-                </span>
-              </div>
-            );
-          })()}
-        </div>
-
-        {/* Signal badge */}
-        <div style={{ position: 'relative', flexShrink: 0 }}>
-          <button onClick={() => setShowReasons(p => !p)} style={{
-            display: 'flex', alignItems: 'center', gap: 7, padding: '4px 12px',
-            borderRadius: 20, cursor: 'pointer',
-            background: sigStyle.bg, border: `1px solid ${sigStyle.border}`,
-            color: sigStyle.color, fontWeight: 700, fontSize: 'var(--fs-xs)',
-            letterSpacing: '0.5px', fontFamily: 'var(--font-sans)',
-          }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%', background: sigStyle.dot,
-              boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : 'none',
-              animation: isStrong ? 'pulse-glow 1.5s ease-in-out infinite' : 'none',
-            }} />
-            {signal.signal}
-            <span style={{ fontSize: 'var(--fs-2xs)', opacity: 0.7 }}>
-              ({signal.score > 0 ? '+' : ''}{signal.score})
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="pointer-events-none absolute top-1.5 left-2.5 z-10 flex select-none items-center gap-3 font-mono text-[11px]">
+          {[
+            ['O', 'o'],
+            ['H', 'h'],
+            ['L', 'l'],
+            ['C', 'c'],
+          ].map(([label, id]) => (
+            <span key={label} className="flex gap-1">
+              <span className="font-normal text-muted-foreground">{label}</span>
+              <span id={`chart-legend-${id}`} className="font-bold">—</span>
             </span>
-          </button>
-          {showReasons && signal.reasons.length > 0 && (
-            <div style={{
-              position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 300,
-              background: '#101827', border: `1px solid ${sigStyle.border}`,
-              borderRadius: 8, padding: '10px 14px', minWidth: 230,
-              boxShadow: '0 16px 48px rgba(0,0,0,0.75)', fontSize: 'var(--fs-xs)',
-            }}>
-              <div style={{ color: 'var(--text-muted)', marginBottom: 6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', fontSize: 'var(--fs-2xs)' }}>Signal Analysis</div>
-              {signal.reasons.map((r, i) => (
-                <div key={i} style={{ color: sigStyle.color, marginBottom: 3, display: 'flex', gap: 7 }}>
-                  <span style={{ opacity: 0.4 }}>•</span><span>{r}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Row 2: Timeframe + Chart Type + Live button ── */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '0 12px', background: 'rgba(6,10,18,0.98)', borderBottom: '1px solid var(--border-color)', flexShrink: 0, height: 33 }}>
-        <div className="timeframe-tabs">
-          {TF_CONFIGS.map(tf => (
-            <button key={tf.label} className={`tf-btn${timeframe === tf.label ? ' active' : ''}`} onClick={() => setTimeframe(tf.label)}>
-              {tf.label}
-            </button>
           ))}
+          <span className="flex gap-1">
+            <span className="font-normal text-muted-foreground">V</span>
+            <span id="chart-legend-v" className="font-bold text-trading-accent">—</span>
+          </span>
+          <span id="chart-legend-pct" className="text-[10px] font-bold opacity-90">—</span>
         </div>
-        <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.08)', margin: '0 8px', flexShrink: 0 }} />
-        {[{ key: 'candle', label: 'Candle', Icon: AreaChart }, { key: 'line', label: 'Line', Icon: TrendingUp }].map(({ key, label, Icon }) => (
-          <button key={key} onClick={() => setChartType(key)} style={{
-            display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px',
-            borderRadius: 'var(--r-sm)', border: 'none', cursor: 'pointer',
-            fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-2xs)', fontWeight: 700,
-            background: chartType === key ? 'rgba(37,99,235,0.25)' : 'transparent',
-            color: chartType === key ? '#60a5fa' : 'var(--text-muted)',
-            transition: 'all 0.15s',
-          }}>
-            <Icon size={11} />{label}
-          </button>
-        ))}
 
-        {/* ▶▶ Live button — appears when user has panned left */}
-        {isLiveBtn && (
-          <button onClick={() => {
-            isAtRightRef.current = true;
-            setIsLiveBtn(false);
-            programmaticScroll(() => {
-              try { charts.current.main?.timeScale().scrollToRealTime(); } catch (_) {}
-            });
-          }} style={{
-            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
-            padding: '3px 9px', borderRadius: 'var(--r-sm)',
-            border: '1px solid rgba(37,99,235,0.5)', cursor: 'pointer',
-            fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-2xs)', fontWeight: 700,
-            background: 'rgba(37,99,235,0.15)', color: '#60a5fa',
-            animation: 'pulse-glow 2s ease-in-out infinite',
-          }}>
-            ▶▶ Live
-          </button>
-        )}
-        
-        {chartInteractionMode !== 'normal' && (
-          <button onClick={() => setChartInteractionMode('normal')} style={{
-            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4,
-            padding: '3px 9px', borderRadius: 'var(--r-sm)',
-            border: '1px solid rgba(239,68,68,0.5)', cursor: 'pointer',
-            fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-2xs)', fontWeight: 700,
-            background: 'rgba(239,68,68,0.15)', color: '#fca5a5',
-          }}>
-            Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
-          </button>
-        )}
+        <div ref={containerRef} className="h-full w-full" />
       </div>
-
-      {/* ── Row 3: Indicator Toggles ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 12px', flexWrap: 'wrap', background: 'rgba(8,13,20,0.95)', borderBottom: '1px solid var(--border-color)', flexShrink: 0 }}>
-        {INDICATORS.map(ind => (
-          <button key={ind.key} onClick={() => toggle(ind.key)} style={{
-            display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px',
-            borderRadius: 4, cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 600,
-            whiteSpace: 'nowrap', fontFamily: 'var(--font-sans)',
-            background: active[ind.key] ? `${ind.color}18` : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${active[ind.key] ? ind.color + '99' : 'rgba(255,255,255,0.07)'}`,
-            color: active[ind.key] ? ind.color : 'var(--text-muted)',
-            transition: 'all 0.15s',
-          }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: active[ind.key] ? ind.color : 'rgba(255,255,255,0.2)', flexShrink: 0 }} />
-            {ind.label}
-            {indicatorValues[ind.key] && active[ind.key] && (
-              <span className="num-mono" style={{ opacity: 0.75, fontSize: 'var(--fs-2xs)' }}> {indicatorValues[ind.key]}</span>
-            )}
-          </button>
-        ))}
-        {/* Quick chip readouts */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, fontSize: 'var(--fs-2xs)' }}>
-          {active.rsi  && indicatorValues.rsi  && <span style={{ color: parseFloat(indicatorValues.rsi) > 70 ? 'var(--color-down)' : parseFloat(indicatorValues.rsi) < 30 ? 'var(--color-up)' : '#fbbf24' }}>RSI <span className="num-mono">{indicatorValues.rsi}</span></span>}
-          {active.macd && indicatorValues.macd  && <span style={{ color: '#34d399' }}>MACD <span className="num-mono">{indicatorValues.macd}</span></span>}
-          {active.vwap && indicatorValues.vwap  && <span style={{ color: '#ec4899' }}>VWAP <span className="num-mono">{indicatorValues.vwap}</span></span>}
-          {active.atr  && indicatorValues.atr   && <span style={{ color: '#94a3b8' }}>ATR  <span className="num-mono">{indicatorValues.atr}</span></span>}
-        </div>
-      </div>
-
-      {/* ── Chart Panes ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-
-        {/* Main chart */}
-        <div ref={mainRef} style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-
-          {/* ── Change 6c: OHLCV Legend (top-left, TradingView-style) ── */}
-          {legendBar && (
-            <div style={{
-              position: 'absolute', top: 7, left: 10, zIndex: 10,
-              display: 'flex', alignItems: 'center', gap: 12,
-              pointerEvents: 'none', userSelect: 'none',
-              fontSize: 11, fontFamily: 'var(--font-mono)',
-            }}>
-              {[
-                ['O', legendBar.open],
-                ['H', legendBar.high],
-                ['L', legendBar.low],
-                ['C', legendBar.close],
-              ].map(([label, val]) => (
-                <span key={label} style={{ display: 'flex', gap: 3 }}>
-                  <span style={{ color: 'rgba(148,163,184,0.7)', fontWeight: 400 }}>{label}</span>
-                  <span style={{
-                    color: legendBull ? '#10b981' : '#ef4444',
-                    fontWeight: 700,
-                  }}>
-                    {fmtPrice(val, fmt)}
-                  </span>
-                </span>
-              ))}
-              <span style={{ display: 'flex', gap: 3 }}>
-                <span style={{ color: 'rgba(148,163,184,0.7)', fontWeight: 400 }}>V</span>
-                <span style={{ color: '#60a5fa', fontWeight: 700 }}>{fmtVol(legendBar.volume)}</span>
-              </span>
-              {/* Candle delta % */}
-              {legendBar.open > 0 && (
-                <span style={{
-                  color: legendBull ? '#10b981' : '#ef4444',
-                  fontWeight: 700,
-                  fontSize: 10,
-                  opacity: 0.9,
-                }}>
-                  {legendBull ? '+' : ''}{(((legendBar.close - legendBar.open) / legendBar.open) * 100).toFixed(2)}%
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* RSI */}
-        <div style={{ flexShrink: 0, position: 'relative', borderTop: showRsi ? '1px solid var(--border-color)' : 'none', height: showRsi ? `${subPaneH}px` : 0, overflow: 'hidden', transition: 'height 0.15s ease' }}>
-          <span className="chart-pane-label" style={{ color: '#fbbf24' }}>RSI(14)</span>
-          <div ref={rsiRef} style={{ height: `${subPaneH}px` }} />
-        </div>
-
-        {/* MACD */}
-        <div style={{ flexShrink: 0, position: 'relative', borderTop: showMacd ? '1px solid var(--border-color)' : 'none', height: showMacd ? `${subPaneH}px` : 0, overflow: 'hidden', transition: 'height 0.15s ease' }}>
-          <span className="chart-pane-label" style={{ color: '#34d399' }}>MACD(12,26,9)</span>
-          <div ref={macdRef} style={{ height: `${subPaneH}px` }} />
-        </div>
-
-        {/* ATR */}
-        <div style={{ flexShrink: 0, position: 'relative', borderTop: showAtr ? '1px solid var(--border-color)' : 'none', height: showAtr ? `${subPaneH}px` : 0, overflow: 'hidden', transition: 'height 0.15s ease' }}>
-          <span className="chart-pane-label" style={{ color: '#94a3b8' }}>ATR(14)</span>
-          <div ref={atrRef} style={{ height: `${subPaneH}px` }} />
-        </div>
-      </div>
-    </div>
+    </WidgetShell>
   );
 }

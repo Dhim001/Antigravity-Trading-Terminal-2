@@ -1,22 +1,31 @@
 import random
+import math
 import time
 import copy
+import asyncio
 from typing import Callable, Awaitable, List
 from app.config import SYMBOLS, DEFAULT_TICK_INTERVAL, DEFAULT_VOLATILITY_MULTIPLIER
 from app.services.base_feed import BaseFeedService
+from app.services.synthetic_data import SBBSGenerator
 
 class SimulatedFeedService(BaseFeedService):
-    def __init__(self):
+    def __init__(self, tick_interval=1.0):
         self._symbols = copy.deepcopy(SYMBOLS)
-        self.tick_interval = DEFAULT_TICK_INTERVAL
+        self.tick_interval = tick_interval
         self.volatility_multiplier = DEFAULT_VOLATILITY_MULTIPLIER
         self.biases = {} # symbol -> 'UP' | 'DOWN' | 'RANDOM'
         
         self.candles = {}
         self.order_books = {}
         self.broadcast_callback = None
+        self._generators = {}
+        self._target_candles = {}
         
         for symbol, info in self._symbols.items():
+            try:
+                self._generators[symbol] = SBBSGenerator(symbol)
+            except Exception as e:
+                print(f"Warning: Could not initialize SBBS for {symbol}: {e}")
             self.candles[symbol] = self._generate_initial_candles(symbol, info["price"])
             self.order_books[symbol] = self._generate_order_book(symbol, info["price"])
 
@@ -46,45 +55,108 @@ class SimulatedFeedService(BaseFeedService):
         info = self._symbols[symbol]
         decimals = info["decimals"]
         
-        # Update price using Random Walk with Bias and Volatility Multiplier
-        prev_price = info["price"]
-        bias = self.biases.get(symbol, 'RANDOM')
-        vol = info["volatility"] * self.volatility_multiplier
+        now = time.time()
+        current_minute = int(now // 60) * 60
+        active_candles = self.candles[symbol]
         
-        if bias == 'UP':
-            change = prev_price * abs(random.normalvariate(0.0003, vol))
-        elif bias == 'DOWN':
-            change = -prev_price * abs(random.normalvariate(0.0003, vol))
-        else:
-            change = prev_price * random.normalvariate(0, vol)
+        # 1. Determine if we need to draw a new target candle from SBBS for this minute
+        if symbol not in self._target_candles or self._target_candles[symbol]['minute'] < current_minute:
+            gen = self._generators.get(symbol)
+            if gen and gen.empirical_data is not None and not gen.empirical_data.empty:
+                O_ret, H_ret, L_ret, C_ret, Vol = gen.get_next()
+                
+                # If we just rolled over, the prev_close is the last candle's close
+                prev_close = active_candles[-1]["close"] if active_candles else info["price"]
+                
+                target_open = prev_close * (1 + O_ret)
+                target_close = target_open * (1 + C_ret)
+                target_high = target_open * (1 + H_ret)
+                target_low = target_open * (1 + L_ret)
+                
+                self._target_candles[symbol] = {
+                    'minute': current_minute,
+                    'open': target_open,
+                    'high': target_high,
+                    'low': target_low,
+                    'close': target_close,
+                    'volume': Vol,
+                    'start_price': prev_close,
+                    'vol_accumulated': 0.0
+                }
+            else:
+                self._target_candles[symbol] = None
+
+        target = self._target_candles.get(symbol)
+        
+        if target:
+            # 2. Brownian Bridge Interpolation for live ticks within the minute
+            seconds_passed = now - current_minute
+            progress = min(seconds_passed / 60.0, 1.0)
             
-        new_price = round(prev_price + change, decimals)
-        info["price"] = new_price
+            # Linear interpolation for base path
+            base_price = target['start_price'] + (target['close'] - target['start_price']) * progress
+            
+            # Add constrained noise (vanishes at t=0 and t=60)
+            noise_scale = target['open'] * 0.001 * math.sqrt(progress * (1 - progress))
+            new_price = round(base_price + random.normalvariate(0, noise_scale), decimals)
+            
+            # Bound the price strictly by the target high/low
+            new_price = min(max(new_price, target['low']), target['high'])
+            
+            info["price"] = new_price
+            
+            # Distribute volume linearly across the minute
+            target_vol = target['volume']
+            vol_tick = (target_vol / (60.0 / self.tick_interval)) * random.uniform(0.5, 1.5)
+            target['vol_accumulated'] += vol_tick
+        else:
+            # Fallback Random Walk
+            prev_price = info["price"]
+            vol = info["volatility"] * self.volatility_multiplier
+            new_price = round(prev_price + prev_price * random.normalvariate(0, vol), decimals)
+            info["price"] = new_price
+            vol_tick = round(random.uniform(0.1, 1.5), 2)
         
         self.order_books[symbol] = self._generate_order_book(symbol, new_price)
         
-        active_candles = self.candles[symbol]
-        current_minute = int(time.time() // 60) * 60
-        
         if not active_candles or active_candles[-1]["time"] < current_minute:
+            # Initialize the new candle — time in UNIX SECONDS
+            op = target['open'] if target else new_price
+            hi = target['high'] if target else max(info["price"], new_price)
+            lo = target['low'] if target else min(info["price"], new_price)
+            
             new_candle = {
-                "time": current_minute,
-                "open": prev_price,
-                "high": max(prev_price, new_price),
-                "low": min(prev_price, new_price),
+                "time": current_minute,  # seconds
+                "open": round(op, decimals),
+                "high": round(hi, decimals),
+                "low": round(lo, decimals),
                 "close": new_price,
-                "volume": round(random.uniform(1, 10), 2)
+                "volume": round(vol_tick, 2)
             }
             active_candles.append(new_candle)
             if len(active_candles) > 10080:
                 active_candles.pop(0)
         else:
+            # Update the current candle
             candle = active_candles[-1]
-            candle["high"] = round(max(candle["high"], new_price), decimals)
-            candle["low"] = round(min(candle["low"], new_price), decimals)
+            if target:
+                # Let the Brownian bridge reveal the true high/low as it hits them
+                candle["high"] = round(max(candle["high"], new_price), decimals)
+                candle["low"] = round(min(candle["low"], new_price), decimals)
+            else:
+                candle["high"] = round(max(candle["high"], new_price), decimals)
+                candle["low"] = round(min(candle["low"], new_price), decimals)
+                
             candle["close"] = new_price
-            candle["volume"] = round(candle["volume"] + random.uniform(0.1, 1.5), 2)
+            candle["volume"] = round(candle["volume"] + vol_tick, 2)
             
+            # Ensure at the end of the minute, we force it to match exactly
+            if target and progress >= 0.99:
+                candle["close"] = round(target["close"], decimals)
+                candle["high"] = round(target["high"], decimals)
+                candle["low"] = round(target["low"], decimals)
+                candle["volume"] = round(target["volume"], 2)
+                
         return {
             "symbol": symbol,
             "price": new_price,
@@ -99,31 +171,45 @@ class SimulatedFeedService(BaseFeedService):
     def get_candles(self, symbol: str) -> List[dict]:
         return self.candles.get(symbol, [])
 
-    def _generate_initial_candles(self, symbol, start_price):
+    def _generate_initial_candles(self, symbol, start_price, count=10080):
+        gen = self._generators.get(symbol)
+        if not gen or not hasattr(gen, 'empirical_data') or gen.empirical_data is None or gen.empirical_data.empty:
+            candles = []
+            current_time = int(time.time()) - (count * 60)
+            price = start_price
+            info = self._symbols[symbol]
+            for i in range(count):
+                change = price * random.normalvariate(0, info["volatility"] * 10)
+                open_price = price
+                close_price = price + change
+                high_price = max(open_price, close_price) + abs(random.normalvariate(0, info["volatility"] * 5))
+                low_price = min(open_price, close_price) - abs(random.normalvariate(0, info["volatility"] * 5))
+                volume = random.uniform(10, 100) if "USDT" in symbol else random.uniform(100, 1000)
+                candles.append({"time": current_time, "open": round(open_price, info["decimals"]), "high": round(high_price, info["decimals"]), "low": round(low_price, info["decimals"]), "close": round(close_price, info["decimals"]), "volume": round(volume, 2)})
+                price = close_price
+                current_time += 60
+            return candles
+
+        current_close = gen.empirical_data.iloc[-1]['Close']
+        now = int(time.time())
+        start_time = now - (count * 60)
         candles = []
-        current_time = int(time.time()) - (10080 * 60)
-        price = start_price
-        info = self._symbols[symbol]
-        
-        for i in range(10080):
-            change = price * random.normalvariate(0, info["volatility"] * 10)
-            open_price = price
-            close_price = price + change
-            high_price = max(open_price, close_price) + abs(random.normalvariate(0, info["volatility"] * 5))
-            low_price = min(open_price, close_price) - abs(random.normalvariate(0, info["volatility"] * 5))
-            volume = random.uniform(10, 100) if "USDT" in symbol else random.uniform(100, 1000)
-            
+        for i in range(count):
+            candle_time = start_time + (i * 60)
+            O_ret, H_ret, L_ret, C_ret, Vol = gen.get_next()
+            op = current_close * (1 + O_ret)
+            hi = op * (1 + H_ret)
+            lo = op * (1 + L_ret)
+            cl = op * (1 + C_ret)
             candles.append({
-                "time": current_time,
-                "open": round(open_price, info["decimals"]),
-                "high": round(high_price, info["decimals"]),
-                "low": round(low_price, info["decimals"]),
-                "close": round(close_price, info["decimals"]),
-                "volume": round(volume, 2)
+                "time": candle_time,
+                "open": round(op, 2),
+                "high": round(hi, 2),
+                "low": round(lo, 2),
+                "close": round(cl, 2),
+                "volume": round(Vol, 2)
             })
-            price = close_price
-            current_time += 60
-            
+            current_close = cl
         return candles
 
     def _generate_order_book(self, symbol, mid_price):

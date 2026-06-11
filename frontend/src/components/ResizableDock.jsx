@@ -8,17 +8,28 @@
  *  - History tab can be expanded to full-screen overlay
  *  - Badge counts on Positions and Orders tabs
  */
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
-  Play, Square, Settings, Trash2, XSquare, Maximize2, Minimize2,
-  RefreshCw, Download, Filter, X, CheckCircle2, XCircle, Clock,
-  ChevronUp, ChevronDown, ChevronsUpDown, Award, Target, BarChart2,
+  Play, Settings, Trash2, XSquare, Maximize2, Minimize2,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
+import { WidgetEmpty } from './WidgetShell';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import {
+  InputGroup, InputGroupAddon, InputGroupInput, InputGroupText,
+} from '@/components/ui/input-group';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { cn } from '@/lib/utils';
 
 const DOCK_MIN = 160;
 const DOCK_MAX = 560;
@@ -32,22 +43,12 @@ const priceDecimals = (sym, price) =>
 const fmtP = (n, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
-function PnlSpan({ value }) {
-  if (value == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
-  const pos = value >= 0;
-  return (
-    <span className="num-mono" style={{ color: pos ? 'var(--color-up)' : 'var(--color-down)', fontWeight: 700 }}>
-      {pos ? '+' : ''}${fmtP(value)}
-    </span>
-  );
-}
+// ── Position Row ──────────────────────────────────────────────────
+const PositionRow = React.memo(function PositionRow({ sym, pos }) {
+  const mark = useStore(state => state.tickerData[sym]?.price ?? pos.avg_price);
+  const activeSymbol = useStore(state => state.activeSymbol);
 
-// ── Positions Tab ─────────────────────────────────────────────────
-function PositionsTab() {
-  const { positions, tickerData, activeSymbol } = useStore();
-  const entries = Object.entries(positions);
-
-  const handleClose = (sym, pos) => {
+  const handleClose = () => {
     sendWebSocketAction('place_order', {
       symbol: sym,
       type: 'MARKET',
@@ -56,13 +57,61 @@ function PositionsTab() {
     });
   };
 
+  const uPnl = pos.size * (mark - pos.avg_price);
+  const pct  = pos.avg_price > 0 ? ((mark - pos.avg_price) / pos.avg_price) * 100 : 0;
+  const isLong = pos.size >= 0;
+  const dec = priceDecimals(sym, Math.max(mark, pos.avg_price));
+  const isActive = sym === activeSymbol;
+
+  return (
+    <tr className={cn(isActive && 'row-active')}>
+      <td>
+        <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
+        {(pos.stop_loss_price || pos.take_profit_price) && (
+          <div className="mt-0.5 flex gap-1.5 text-[0.62rem] text-muted-foreground">
+            {pos.stop_loss_price && (
+              <span className="text-trading-down">SL:{pos.stop_loss_price.toFixed(dec)}</span>
+            )}
+            {pos.take_profit_price && (
+              <span className="text-trading-up">TP:{pos.take_profit_price.toFixed(dec)}</span>
+            )}
+          </div>
+        )}
+      </td>
+      <td>
+        <Badge variant={isLong ? 'buy' : 'sell'}>{isLong ? 'LONG' : 'SHORT'}</Badge>
+      </td>
+      <td className="num-mono text-right">
+        {Math.abs(pos.size).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+      </td>
+      <td className="num-mono text-right">
+        {pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+      </td>
+      <td className="num-mono text-right">
+        {mark.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+      </td>
+      <td className={cn('num-mono text-right font-bold', uPnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+        {uPnl >= 0 ? '+' : ''}{fmtP(uPnl)}
+      </td>
+      <td className={cn('num-mono text-right font-semibold', pct >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+        {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+      </td>
+      <td className="text-center">
+        <Button variant="destructive" size="xs" onClick={handleClose} title={`Close ${sym} position`}>
+          CLOSE
+        </Button>
+      </td>
+    </tr>
+  );
+});
+
+// ── Positions Tab ─────────────────────────────────────────────────
+function PositionsTab() {
+  const positions = useStore(state => state.positions);
+  const entries = Object.entries(positions);
+
   if (entries.length === 0) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 8, color: 'var(--text-muted)' }}>
-        <Briefcase size={24} style={{ opacity: 0.3 }} />
-        <span style={{ fontSize: 'var(--fs-sm)' }}>No open positions</span>
-      </div>
-    );
+    return <WidgetEmpty icon={Briefcase} message="No open positions" />;
   }
 
   return (
@@ -71,73 +120,18 @@ function PositionsTab() {
         <tr>
           <th>Symbol</th>
           <th>Side</th>
-          <th style={{ textAlign: 'right' }}>Size</th>
-          <th style={{ textAlign: 'right' }}>Avg Entry</th>
-          <th style={{ textAlign: 'right' }}>Mark Price</th>
-          <th style={{ textAlign: 'right' }}>Unrealized P&L</th>
-          <th style={{ textAlign: 'right' }}>% Return</th>
-          <th style={{ textAlign: 'center' }}>Close</th>
+          <th className="text-right">Size</th>
+          <th className="text-right">Avg Entry</th>
+          <th className="text-right">Mark Price</th>
+          <th className="text-right">Unrealized P&L</th>
+          <th className="text-right">% Return</th>
+          <th className="text-center">Close</th>
         </tr>
       </thead>
       <tbody>
-        {entries.map(([sym, pos]) => {
-          const mark = tickerData[sym]?.price ?? pos.avg_price;
-          const uPnl = pos.size * (mark - pos.avg_price);
-          const pct  = pos.avg_price > 0 ? ((mark - pos.avg_price) / pos.avg_price) * 100 : 0;
-          const isLong = pos.size >= 0;
-          const dec = priceDecimals(sym, Math.max(mark, pos.avg_price));
-          const isActive = sym === activeSymbol;
-
-          return (
-            <tr key={sym} style={{ background: isActive ? 'rgba(37,99,235,0.05)' : undefined }}>
-              <td>
-                <span style={{ fontWeight: 700, color: isActive ? '#93c5fd' : '#fff' }}>{sym}</span>
-                {(pos.stop_loss_price || pos.take_profit_price) && (
-                  <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2, display: 'flex', gap: 6 }}>
-                    {pos.stop_loss_price && <span style={{ color: '#ef4444' }}>SL:{pos.stop_loss_price.toFixed(dec)}</span>}
-                    {pos.take_profit_price && <span style={{ color: '#10b981' }}>TP:{pos.take_profit_price.toFixed(dec)}</span>}
-                  </div>
-                )}
-              </td>
-              <td>
-                <span className={`badge ${isLong ? 'badge-buy' : 'badge-sell'}`}>
-                  {isLong ? 'LONG' : 'SHORT'}
-                </span>
-              </td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
-                {Math.abs(pos.size).toLocaleString(undefined, { minimumFractionDigits: 4 })}
-              </td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
-                {pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-              </td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
-                {mark.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-              </td>
-              <td className="num-mono" style={{ textAlign: 'right', fontWeight: 700, color: uPnl >= 0 ? 'var(--color-up)' : 'var(--color-down)' }}>
-                {uPnl >= 0 ? '+' : ''}{fmtP(uPnl)}
-              </td>
-              <td className="num-mono" style={{ textAlign: 'right', fontWeight: 600, color: pct >= 0 ? 'var(--color-up)' : 'var(--color-down)' }}>
-                {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
-              </td>
-              <td style={{ textAlign: 'center' }}>
-                <button
-                  onClick={() => handleClose(sym, pos)}
-                  title={`Close ${sym} position`}
-                  style={{
-                    padding: '3px 10px', borderRadius: 'var(--r-sm)', border: '1px solid rgba(239,68,68,0.4)',
-                    background: 'rgba(239,68,68,0.1)', color: '#f87171', fontSize: 'var(--fs-2xs)',
-                    fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-sans)',
-                    transition: 'var(--transition)', letterSpacing: '0.3px',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.25)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; }}
-                >
-                  CLOSE
-                </button>
-              </td>
-            </tr>
-          );
-        })}
+        {entries.map(([sym, pos]) => (
+          <PositionRow key={sym} sym={sym} pos={pos} />
+        ))}
       </tbody>
     </table>
   );
@@ -145,16 +139,11 @@ function PositionsTab() {
 
 // ── Orders Tab ────────────────────────────────────────────────────
 function OrdersTab() {
-  const { orders } = useStore();
+  const orders = useStore(state => state.orders);
   const active = orders.filter(o => o.status === 'PENDING');
 
   if (active.length === 0) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 8, color: 'var(--text-muted)' }}>
-        <List size={24} style={{ opacity: 0.3 }} />
-        <span style={{ fontSize: 'var(--fs-sm)' }}>No pending orders</span>
-      </div>
-    );
+    return <WidgetEmpty icon={List} message="No pending orders" />;
   }
 
   return (
@@ -164,10 +153,10 @@ function OrdersTab() {
           <th>Symbol</th>
           <th>Type</th>
           <th>Side</th>
-          <th style={{ textAlign: 'right' }}>Price</th>
-          <th style={{ textAlign: 'right' }}>Qty</th>
-          <th style={{ textAlign: 'right' }}>Value</th>
-          <th style={{ textAlign: 'center' }}>Cancel</th>
+          <th className="text-right">Price</th>
+          <th className="text-right">Qty</th>
+          <th className="text-right">Value</th>
+          <th className="text-center">Cancel</th>
         </tr>
       </thead>
       <tbody>
@@ -177,22 +166,28 @@ function OrdersTab() {
           const value = (ord.price || 0) * ord.quantity;
           return (
             <tr key={ord.id}>
-              <td style={{ fontWeight: 700 }}>{ord.symbol}</td>
-              <td style={{ color: 'var(--text-secondary)', fontSize: 'var(--fs-xs)' }}>{ord.type}</td>
-              <td><span className={`badge ${isBuy ? 'badge-buy' : 'badge-sell'}`}>{ord.side}</span></td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
+              <td className="font-bold">{ord.symbol}</td>
+              <td className="text-xs text-secondary-foreground">{ord.type}</td>
+              <td><Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge></td>
+              <td className="num-mono text-right">
                 {ord.price ? ord.price.toFixed(dec) : 'MKT'}
               </td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
+              <td className="num-mono text-right">
                 {ord.quantity.toLocaleString(undefined, { minimumFractionDigits: 4 })}
               </td>
-              <td className="num-mono" style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>
+              <td className="num-mono text-right text-secondary-foreground">
                 ${fmtP(value)}
               </td>
-              <td style={{ textAlign: 'center' }}>
-                <button className="btn-icon" onClick={() => sendWebSocketAction('cancel_order', { order_id: ord.id })} title="Cancel order">
-                  <XSquare size={15} style={{ color: 'var(--color-down)' }} />
-                </button>
+              <td className="text-center">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => sendWebSocketAction('cancel_order', { order_id: ord.id })}
+                  title="Cancel order"
+                  className="text-trading-down hover:text-trading-down"
+                >
+                  <XSquare />
+                </Button>
               </td>
             </tr>
           );
@@ -204,15 +199,11 @@ function OrdersTab() {
 
 // ── Balances Tab ──────────────────────────────────────────────────
 function BalancesTab() {
-  const { balances } = useStore();
+  const balances = useStore(state => state.balances);
   const entries = Object.entries(balances);
 
   if (entries.length === 0) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
-        Loading balances…
-      </div>
-    );
+    return <WidgetEmpty message="Loading balances…" />;
   }
 
   return (
@@ -220,9 +211,9 @@ function BalancesTab() {
       <thead>
         <tr>
           <th>Asset</th>
-          <th style={{ textAlign: 'right' }}>Total Balance</th>
-          <th style={{ textAlign: 'right' }}>Locked</th>
-          <th style={{ textAlign: 'right' }}>Available</th>
+          <th className="text-right">Total Balance</th>
+          <th className="text-right">Locked</th>
+          <th className="text-right">Available</th>
         </tr>
       </thead>
       <tbody>
@@ -231,14 +222,14 @@ function BalancesTab() {
           const dec = asset === 'USD' || asset === 'USDT' ? 2 : 6;
           return (
             <tr key={asset}>
-              <td style={{ fontWeight: 700 }}>{asset}</td>
-              <td className="num-mono" style={{ textAlign: 'right' }}>
+              <td className="font-bold">{asset}</td>
+              <td className="num-mono text-right">
                 {bal.balance.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
               </td>
-              <td className="num-mono" style={{ textAlign: 'right', color: 'var(--text-muted)' }}>
+              <td className="num-mono text-right text-muted-foreground">
                 {bal.locked.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
               </td>
-              <td className="num-mono" style={{ textAlign: 'right', fontWeight: 700, color: avail > 0 ? '#fff' : 'var(--text-muted)' }}>
+              <td className={cn('num-mono text-right font-bold', avail > 0 ? 'text-foreground' : 'text-muted-foreground')}>
                 {avail.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
               </td>
             </tr>
@@ -260,7 +251,7 @@ function AlgoTab() {
 
   const handleCreateBot = () => {
     if (!botConfig.allocation || botConfig.allocation <= 0) {
-      alert("Please enter a valid capital allocation amount.");
+      toast.error('Enter a valid capital allocation amount');
       return;
     }
     
@@ -291,141 +282,124 @@ function AlgoTab() {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr 300px', gap: 12, padding: 12, height: '100%', overflow: 'hidden', minHeight: 0 }}>
-      {/* Left: Creator */}
-      <div style={{
-        display: 'flex', flexDirection: 'column', gap: 10,
-        background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)',
-        borderRadius: 'var(--r-lg)', padding: 12, overflowY: 'auto',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.07)', paddingBottom: 6 }}>
-          <Settings size={13} style={{ color: 'var(--color-accent-light)' }} />
-          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Deploy Bot</span>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label className="terminal-label">Strategy Templates</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
+    <div className="grid h-full min-h-0 grid-cols-[320px_1fr_300px] gap-3 overflow-hidden p-3">
+      <Card size="sm" className="flex min-h-0 flex-col gap-2.5 overflow-y-auto rounded-lg py-3 shadow-none">
+        <CardHeader className="border-b border-border pb-2">
+          <CardTitle className="flex items-center gap-2 text-xs uppercase tracking-wide">
+            <Settings size={13} className="text-primary" />
+            Deploy Bot
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2.5 px-3">
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">Strategy Templates</Label>
+          <div className="grid grid-cols-1 gap-1.5">
             {strategyTemplates.map(t => (
-              <div 
-                key={t.id} 
+              <button
+                key={t.id}
+                type="button"
                 onClick={() => selectTemplate(t)}
-                style={{
-                  padding: '8px 10px', background: botStrategy === t.strategy ? 'rgba(37,99,235,0.1)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${botStrategy === t.strategy ? 'rgba(59,130,246,0.5)' : 'rgba(255,255,255,0.05)'}`,
-                  borderRadius: 'var(--r-md)', cursor: 'pointer', transition: 'var(--transition)'
-                }}
+                className={cn(
+                  'rounded-md border px-2.5 py-2 text-left transition-colors',
+                  botStrategy === t.strategy
+                    ? 'border-primary/50 bg-primary/10'
+                    : 'border-border bg-muted/20 hover:bg-muted/40',
+                )}
               >
-                <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: botStrategy === t.strategy ? '#93c5fd' : '#e2e8f0' }}>{t.name}</div>
-                <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', marginTop: 2 }}>Alloc: ${t.allocation} • Trail SL: {t.config.trailing_stop_percent || 0}%</div>
-              </div>
+                <div className={cn('text-xs font-bold', botStrategy === t.strategy ? 'text-primary' : 'text-foreground')}>
+                  {t.name}
+                </div>
+                <div className="mt-0.5 text-[0.62rem] text-muted-foreground">
+                  Alloc: ${t.allocation} • Trail SL: {t.config.trailing_stop_percent || 0}%
+                </div>
+              </button>
             ))}
           </div>
         </div>
 
-        <div className="terminal-input-group" style={{ margin: 0 }}>
-          <label className="terminal-label">Capital Allocation (USD/USDT)</label>
-          <div className="terminal-input-wrapper">
-            <input
-              type="number" step="any"
+        <div className="space-y-1.5">
+          <Label className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">Capital Allocation (USD/USDT)</Label>
+          <InputGroup className="h-8">
+            <InputGroupInput
+              type="number"
+              step="any"
               value={botConfig?.allocation || ''}
               onChange={e => updateBotConfig({ allocation: parseFloat(e.target.value) || 0 })}
-              className="terminal-input"
-              style={{ padding: '6px 36px 6px 10px', fontSize: 'var(--fs-xs)', height: 'auto' }}
+              className="text-xs"
             />
-            <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)' }}>$</span>
-          </div>
-          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 4 }}>
+            <InputGroupAddon align="inline-end">
+              <InputGroupText className="text-xs">$</InputGroupText>
+            </InputGroupAddon>
+          </InputGroup>
+          <span className="block text-[0.65rem] text-muted-foreground">
             Risk is dynamically managed at 1% of total account balance using ATR stops.
           </span>
         </div>
 
         {backtestResults && (
-          <div style={{ padding: '8px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 'var(--r-md)', fontSize: 'var(--fs-2xs)' }}>
-            <div style={{ fontWeight: 700, color: '#10b981', marginBottom: 4 }}>7-Day Backtest Preview</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-              <div>Win Rate: <span style={{ color: '#fff' }}>{backtestResults.win_rate}%</span></div>
-              <div>Est PnL: <span style={{ color: backtestResults.total_pnl >= 0 ? '#10b981' : '#ef4444' }}>${backtestResults.total_pnl}</span></div>
-              <div>Max DD: <span style={{ color: '#ef4444' }}>{backtestResults.max_drawdown}%</span></div>
-              <div>Trades: <span style={{ color: '#fff' }}>{backtestResults.trade_count}</span></div>
+          <div className="rounded-md border border-trading-up/25 bg-trading-up/5 p-2 text-[0.62rem]">
+            <div className="mb-1 font-bold text-trading-up">7-Day Backtest Preview</div>
+            <div className="grid grid-cols-2 gap-1">
+              <div>Win Rate: <span className="text-foreground">{backtestResults.win_rate}%</span></div>
+              <div>Est PnL: <span className={backtestResults.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${backtestResults.total_pnl}</span></div>
+              <div>Max DD: <span className="text-trading-down">{backtestResults.max_drawdown}%</span></div>
+              <div>Trades: <span className="text-foreground">{backtestResults.trade_count}</span></div>
             </div>
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
-          <button
-            onClick={handleRunBacktest}
-            className="terminal-btn"
-            style={{
-              flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#e2e8f0', fontSize: 'var(--fs-xs)'
-            }}
-          >
-            <Activity size={13} style={{ marginRight: 4 }} /> BACKTEST
-          </button>
-          <button
-            onClick={handleCreateBot}
-            className="terminal-btn"
-            style={{
-              flex: 1.5, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.4)',
-              color: 'var(--color-up)', boxShadow: '0 0 12px rgba(16,185,129,0.15)', fontWeight: 700
-            }}
-          >
-            <Play size={13} style={{ marginRight: 4 }} /> DEPLOY
-          </button>
+        <div className="mt-auto flex gap-1.5">
+          <Button variant="outline" size="sm" className="flex-1 text-xs" onClick={handleRunBacktest}>
+            <Activity /> BACKTEST
+          </Button>
+          <Button variant="buy" size="sm" className="flex-[1.5] text-xs font-bold" onClick={handleCreateBot}>
+            <Play /> DEPLOY
+          </Button>
         </div>
-      </div>
+        </CardContent>
+      </Card>
 
-      {/* Center: Active Bots Table */}
-      <div style={{
-        display: 'flex', flexDirection: 'column',
-        background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)',
-        borderRadius: 'var(--r-lg)', overflow: 'hidden', minHeight: 0,
-      }}>
-        <table className="terminal-table" style={{ margin: 0 }}>
+      <Card size="sm" className="flex min-h-0 flex-col overflow-hidden rounded-lg py-0 shadow-none">
+        <table className="terminal-table m-0">
           <thead>
             <tr>
               <th>Symbol</th>
               <th>Strategy</th>
-              <th style={{ textAlign: 'right' }}>Allocation</th>
-              <th style={{ textAlign: 'center' }}>Status</th>
-              <th style={{ textAlign: 'center' }}>Action</th>
+              <th className="text-right">Allocation</th>
+              <th className="text-center">Status</th>
+              <th className="text-center">Action</th>
             </tr>
           </thead>
           <tbody>
             {activeBots.length === 0 ? (
               <tr>
-                <td colSpan="5" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
+                <td colSpan="5" className="py-5 text-center text-muted-foreground">
                   No active bots.
                 </td>
               </tr>
             ) : (
               activeBots.map(bot => (
                 <tr key={bot.id}>
-                  <td style={{ fontWeight: 700, color: '#fff' }}>{bot.symbol}</td>
-                  <td style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>{bot.strategy}</td>
-                  <td className="num-mono" style={{ textAlign: 'right' }}>${bot.allocation.toLocaleString()}</td>
-                  <td style={{ textAlign: 'center' }}>
-                    <span className="badge" style={{ background: bot.status === 'RUNNING' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', color: bot.status === 'RUNNING' ? '#10b981' : '#ef4444', border: '1px solid', borderColor: bot.status === 'RUNNING' ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)' }}>
-                      {bot.status}
-                    </span>
+                  <td className="font-bold">{bot.symbol}</td>
+                  <td className="text-xs text-secondary-foreground">{bot.strategy}</td>
+                  <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
+                  <td className="text-center">
+                    <Badge variant={bot.status === 'RUNNING' ? 'buy' : 'sell'}>{bot.status}</Badge>
                   </td>
-                  <td style={{ textAlign: 'center' }}>
+                  <td className="text-center">
                     {bot.status === 'RUNNING' && (
-                      <div style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
-                        <button 
-                          onClick={() => setChartInteractionMode('edit_sl')} 
+                      <div className="flex justify-center gap-1">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setChartInteractionMode('edit_sl')}
                           title="Click to set SL on chart"
-                          style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)', color: '#60a5fa', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}
                         >
                           SET SL
-                        </button>
-                        <button 
-                          onClick={() => handleStopBot(bot.id)} 
-                          style={{ padding: '4px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', cursor: 'pointer', fontSize: 'var(--fs-2xs)', fontWeight: 700 }}
-                        >
+                        </Button>
+                        <Button variant="destructive" size="xs" onClick={() => handleStopBot(bot.id)}>
                           STOP
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </td>
@@ -434,49 +408,47 @@ function AlgoTab() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
-      {/* Right: Console */}
-      <div style={{ display: 'flex', flexDirection: 'column', background: 'rgba(2,5,10,0.9)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 'var(--r-lg)', padding: 12, overflow: 'hidden', minHeight: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.07)', paddingBottom: 6, flexShrink: 0, marginBottom: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Cpu size={13} style={{ color: activeBots.length > 0 ? '#10b981' : 'var(--text-muted)' }} />
-            <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: '#fff' }}>Bot Log</span>
-            <span style={{
-              fontSize: 'var(--fs-2xs)', padding: '1px 7px', borderRadius: 'var(--r-sm)',
-              background: activeBots.length > 0 ? 'rgba(16,185,129,0.12)' : 'rgba(255,255,255,0.04)',
-              color: activeBots.length > 0 ? '#10b981' : 'var(--text-muted)', fontWeight: 600,
-            }}>
+      <Card size="sm" className="flex min-h-0 flex-col overflow-hidden rounded-lg bg-background/80 py-3 shadow-none">
+        <div className="mb-2 flex shrink-0 items-center justify-between border-b border-border px-3 pb-2">
+          <div className="flex items-center gap-2">
+            <Cpu size={13} className={activeBots.length > 0 ? 'text-trading-up' : 'text-muted-foreground'} />
+            <span className="text-xs font-bold uppercase tracking-wide">Bot Log</span>
+            <Badge variant={activeBots.length > 0 ? 'buy' : 'secondary'}>
               {activeBots.length > 0 ? `${activeBots.length} ACTIVE` : 'IDLE'}
-            </span>
+            </Badge>
           </div>
-          <button className="btn-icon" onClick={clearBotLogs} title="Clear log"><Trash2 size={12} /></button>
+          <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log">
+            <Trash2 />
+          </Button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-2xs)', color: '#64748b', display: 'flex', flexDirection: 'column-reverse', gap: 3 }}>
-          {botLogs.length === 0
-            ? <div style={{ margin: 'auto', opacity: 0.4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <Cpu size={20} />
-                <span>Bot console is empty</span>
-              </div>
-            : botLogs.map((log, i) => {
-                let c = '#64748b';
-                if (log.includes('BUY') || log.includes('SUCCESS')) c = '#10b981';
-                else if (log.includes('SELL') || log.includes('ERROR') || log.includes('STOP')) c = '#ef4444';
-                else if (log.includes('WARN')) c = '#f59e0b';
-                else if (log.includes('INFO') || log.includes('started')) c = '#60a5fa';
-                return <div key={i} style={{ color: c, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{log}</div>;
-              })
-          }
-        </div>
-      </div>
+        <ScrollArea className="min-h-0 flex-1 px-3">
+          <div className="flex flex-col-reverse gap-1 font-mono text-[0.62rem] text-muted-foreground">
+            {botLogs.length === 0 ? (
+              <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
+            ) : botLogs.map((log, i) => {
+              let c = 'text-muted-foreground';
+              if (log.includes('BUY') || log.includes('SUCCESS')) c = 'text-trading-up';
+              else if (log.includes('SELL') || log.includes('ERROR') || log.includes('STOP')) c = 'text-trading-down';
+              else if (log.includes('WARN')) c = 'text-trading-warn';
+              else if (log.includes('INFO') || log.includes('started')) c = 'text-primary';
+              return <div key={i} className={cn(c, 'whitespace-pre-wrap leading-relaxed')}>{log}</div>;
+            })}
+          </div>
+        </ScrollArea>
+      </Card>
     </div>
   );
 }
 
 // ── Main ResizableDock ────────────────────────────────────────────
 export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
-  const { positions, orders, tradeHistory, isBotRunning } = useStore();
+  const positions = useStore(state => state.positions);
+  const orders = useStore(state => state.orders);
+  const tradeHistory = useStore(state => state.tradeHistory);
+  const isBotRunning = useStore(state => state.isBotRunning);
   const [activeTab, setActiveTab] = useState('positions');
   const [dockH, setDockH]   = useState(() => {
     try { return parseInt(localStorage.getItem(STORAGE_KEY)) || DOCK_DEFAULT; }
@@ -534,73 +506,74 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
 
   return (
     <>
-      <div className="bottom-dock" style={{ gridArea: 'dock', height: dockH }}>
-        {/* Drag handle */}
+      <div className="bottom-dock flex flex-col" style={{ gridArea: 'dock', height: dockH }}>
         <div className="dock-resize-handle" onMouseDown={onMouseDown} />
 
-        {/* Tab navigation */}
-        <div className="dock-tabs" style={{ paddingTop: 4 }}>
-          {TABS.map(tab => {
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                className={`dock-tab-btn${activeTab === tab.id ? ' active' : ''}`}
-                onClick={() => setActiveTab(tab.id)}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
+          <div className="flex shrink-0 items-center border-b border-border bg-muted/20 pr-1 pt-1">
+            <TabsList variant="line" className="h-9 min-w-0 flex-1 justify-start overflow-x-auto rounded-none border-0 bg-transparent px-1">
+              {TABS.map(tab => {
+                const Icon = tab.icon;
+                return (
+                  <TabsTrigger key={tab.id} value={tab.id} className="gap-1.5 px-3 text-xs">
+                    <Icon data-icon="inline-start" />
+                    {tab.label}
+                    {tab.badge != null && (
+                      <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-bold">
+                        {tab.badge}
+                      </Badge>
+                    )}
+                    {tab.id === 'algo' && isBotRunning && (
+                      <span className="size-1.5 rounded-full bg-trading-up shadow-[0_0_5px_var(--color-up)]" />
+                    )}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+            {activeTab === 'history' && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0"
+                onClick={() => setHistoryFullscreen(f => !f)}
+                title={historyFullscreen ? 'Collapse' : 'Expand to fullscreen'}
               >
-                <Icon size={13} />
-                {tab.label}
-                {tab.badge != null && (
-                  <span style={{
-                    background: activeTab === tab.id ? 'rgba(37,99,235,0.3)' : 'rgba(255,255,255,0.08)',
-                    color: activeTab === tab.id ? '#93c5fd' : 'var(--text-muted)',
-                    borderRadius: 'var(--r-full)', padding: '1px 6px',
-                    fontSize: 'var(--fs-2xs)', fontWeight: 700, minWidth: 18, textAlign: 'center',
-                  }}>
-                    {tab.badge}
-                  </span>
-                )}
-                {/* Algo running indicator */}
-                {tab.id === 'algo' && isBotRunning && (
-                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 5px #10b981' }} />
-                )}
-              </button>
-            );
-          })}
+                {historyFullscreen ? <Minimize2 /> : <Maximize2 />}
+              </Button>
+            )}
+          </div>
 
-          {/* Fullscreen toggle for history */}
-          {activeTab === 'history' && (
-            <button
-              className="btn-icon"
-              style={{ marginLeft: 'auto', marginRight: 8 }}
-              onClick={() => setHistoryFullscreen(f => !f)}
-              title={historyFullscreen ? 'Collapse' : 'Expand to fullscreen'}
-            >
-              {historyFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            </button>
-          )}
-        </div>
-
-        {/* Tab content */}
-        <div className="dock-tab-content">
-          {activeTab === 'positions' && <PositionsTab />}
-          {activeTab === 'orders'    && <OrdersTab />}
-          {activeTab === 'balances'  && <BalancesTab />}
-          {activeTab === 'algo'      && <AlgoTab />}
-          {activeTab === 'equity'    && <EquityCurveTab />}
-          {activeTab === 'history'   && !historyFullscreen && <TradeHistoryContent embedded />}
-        </div>
+          <TabsContent value="positions" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            <PositionsTab />
+          </TabsContent>
+          <TabsContent value="orders" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            <OrdersTab />
+          </TabsContent>
+          <TabsContent value="balances" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            <BalancesTab />
+          </TabsContent>
+          <TabsContent value="algo" className="mt-0 min-h-0 flex-1 overflow-hidden">
+            <AlgoTab />
+          </TabsContent>
+          <TabsContent value="equity" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            <EquityCurveTab />
+          </TabsContent>
+          <TabsContent value="history" className="mt-0 min-h-0 flex-1 overflow-y-auto">
+            {!historyFullscreen && <TradeHistoryContent embedded />}
+          </TabsContent>
+        </Tabs>
       </div>
 
-      {/* Fullscreen history overlay */}
-      {historyFullscreen && activeTab === 'history' && (
-        <>
-          <div className="history-overlay-backdrop" onClick={() => setHistoryFullscreen(false)} />
-          <div className="history-overlay-panel">
-            <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
-          </div>
-        </>
-      )}
+      {/* Expanded history sheet */}
+      <Sheet open={historyFullscreen && activeTab === 'history'} onOpenChange={setHistoryFullscreen}>
+        <SheetContent
+          side="bottom"
+          showCloseButton={false}
+          className="h-[72vh] max-h-[85vh] gap-0 rounded-t-xl border-t p-0 sm:max-w-full"
+        >
+          <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

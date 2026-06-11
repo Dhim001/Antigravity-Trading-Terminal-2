@@ -15,13 +15,15 @@ if os.path.exists(env_path):
                 os.environ[key.strip()] = val.strip()
 
 # Features & Integration Flags
-# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE"
+# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO"
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
 USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
 # WebSocket Server Settings
 WS_HOST = "localhost"
 WS_PORT = 8765
+# 7-day 1m history payloads exceed the library default (1 MB); allow up to 4 MB frames.
+WS_MAX_MESSAGE_SIZE = int(os.environ.get("WS_MAX_MESSAGE_SIZE", str(4 * 1024 * 1024)))
 
 # Pre-Trade Risk Limits
 MAX_ORDER_VALUE = 50000.0
@@ -41,6 +43,19 @@ BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
 BINANCE_BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://api.binance.com")
 BINANCE_WS_URL = os.environ.get("BINANCE_WS_URL", "wss://stream.binance.com:9443")
+
+# eToro Public API Credentials & URLs
+# Auth is EITHER a Bearer token (from SSO) OR an API-key pair (x-api-key + x-user-key) — NEVER both.
+ETORO_API_BASE = os.environ.get("ETORO_API_BASE", "https://public-api.etoro.com/api/v1")
+ETORO_ACCESS_TOKEN = os.environ.get("ETORO_ACCESS_TOKEN", "")  # SSO Bearer token
+ETORO_API_KEY = os.environ.get("ETORO_API_KEY", "")            # partner x-api-key
+ETORO_USER_KEY = os.environ.get("ETORO_USER_KEY", "")          # per-user x-user-key
+# eToro has no public market-data WebSocket; poll the rates endpoint on this interval (seconds).
+ETORO_POLL_INTERVAL = float(os.environ.get("ETORO_POLL_INTERVAL", "1.0"))
+# Account env: "demo", "real", or "auto" (probe /trading/info/real/pnl once at startup).
+ETORO_ENV = os.environ.get("ETORO_ENV", "auto")
+# Minimum spacing between trade-execution POSTs (eToro: 20 req/min shared limit).
+ETORO_EXEC_MIN_INTERVAL = float(os.environ.get("ETORO_EXEC_MIN_INTERVAL", "3.0"))
 
 # Detailed symbol catalog lists
 EQUITY_SYMBOLS = {
@@ -79,6 +94,11 @@ if TERMINAL_MODE == "LIVE_ALPACA":
     SYMBOLS = EQUITY_SYMBOLS
 elif TERMINAL_MODE == "LIVE_BINANCE":
     SYMBOLS = CRYPTO_SYMBOLS
+elif TERMINAL_MODE == "LIVE_ETORO":
+    # eToro is unique: a single API covers both equities and crypto, so the
+    # live eToro feed can serve the full merged pool that until now only
+    # the simulator could offer.
+    SYMBOLS = {**EQUITY_SYMBOLS, **CRYPTO_SYMBOLS}
 else: # "SIMULATED"
     # Merge both for a wider mock trading pool
     SYMBOLS = {**EQUITY_SYMBOLS, **CRYPTO_SYMBOLS}

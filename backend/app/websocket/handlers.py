@@ -1,7 +1,7 @@
 import json
 import logging
 from app.services.base_oms import BaseOMSService
-from app.websocket.connection_manager import ConnectionManager
+from app.websocket.connection_manager import ConnectionManager, _is_disconnect_error
 
 from app.services.bots.manager import BotManagerService
 
@@ -138,6 +138,16 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
                 "type": "trade_history",
                 "data": oms.get_trade_history()
             })
+            
+        elif action == "subscribe_symbol":
+            symbol = message.get("symbol")
+            if symbol and hasattr(oms, "feed"):
+                candles = oms.feed.get_candles(symbol)
+                history_payload = {
+                    "type": "history_update",
+                    "data": {symbol: candles}
+                }
+                await manager.send_to(websocket, history_payload)
             
         elif action == "admin_set_simulation":
             tick_interval = message.get("tick_interval")
@@ -344,6 +354,9 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
             })
             
     except Exception as e:
+        if _is_disconnect_error(e):
+            logging.debug("Client disconnected while handling message.")
+            return
         logging.error(f"Error processing client message: {str(e)}")
         await manager.send_to(websocket, {
             "type": "error",

@@ -1,36 +1,67 @@
 import React, { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
-import { X, Play, ShieldAlert, Cpu, Database, TrendingUp, Sliders, DollarSign, RefreshCw } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Slider } from '@/components/ui/slider';
+import { Separator } from '@/components/ui/separator';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Cpu, Database, DollarSign, RefreshCw, ShieldAlert, Sliders } from 'lucide-react';
 
 export default function SystemControlPanel({ isOpen, onClose }) {
   const { systemStats, activeSymbol, isLive, symbolsList } = useStore();
-  const [activeTab, setActiveTab] = useState('simulation'); // 'simulation' | 'account' | 'diagnostics'
+  const [activeTab, setActiveTab] = useState('simulation');
 
-  // Helper to extract unique assets from symbols list
   const getAvailableAssets = () => {
     const assets = new Set(['USD', 'USDT']);
     if (symbolsList && Array.isArray(symbolsList)) {
       symbolsList.forEach(sym => {
-        const isCrypto = sym.includes("USDT");
-        const asset = isCrypto ? sym.replace("USDT", "") : sym;
+        const isCrypto = sym.includes('USDT');
+        const asset = isCrypto ? sym.replace('USDT', '') : sym;
         assets.add(asset);
       });
     }
     return Array.from(assets).sort();
   };
-  
-  // Simulation tab states
+
   const [volatility, setVolatility] = useState(systemStats.volatility_multiplier || 1.0);
   const [tickInterval, setTickInterval] = useState(systemStats.tick_interval || 0.25);
   const [bias, setBias] = useState('RANDOM');
-  
-  // Account seeding states
   const [seedAsset, setSeedAsset] = useState('USD');
   const [seedAmount, setSeedAmount] = useState('10000');
   const [isResetting, setIsResetting] = useState(false);
 
-  // Sync component local state when store systemStats changes
   useEffect(() => {
     if (systemStats) {
       if (systemStats.volatility_multiplier !== undefined) setVolatility(systemStats.volatility_multiplier);
@@ -38,461 +69,308 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     }
   }, [systemStats]);
 
-  // Request fresh server stats on tab change to diagnostics
   useEffect(() => {
-    if (isOpen) {
-      sendWebSocketAction('admin_get_stats');
-    }
+    if (isOpen) sendWebSocketAction('admin_get_stats');
   }, [isOpen, activeTab]);
 
-  if (!isOpen) return null;
-
-  // Actions
   const handleUpdateSimulation = (updates = {}) => {
-    if (isLive) return; // Prevent simulated updates in live mode
-    const payload = {
+    if (isLive) return;
+    sendWebSocketAction('admin_set_simulation', {
       tick_interval: updates.tickInterval !== undefined ? updates.tickInterval : tickInterval,
       volatility_multiplier: updates.volatility !== undefined ? updates.volatility : volatility,
       symbol: activeSymbol,
       bias: updates.bias !== undefined ? updates.bias : bias,
-    };
-    sendWebSocketAction('admin_set_simulation', payload);
+    });
   };
 
   const handleSeedBalance = () => {
     const amount = parseFloat(seedAmount);
     if (isNaN(amount) || amount <= 0) {
-      alert("Please enter a valid balance amount");
+      toast.error('Please enter a valid balance amount');
       return;
     }
-    sendWebSocketAction('admin_seed_balance', {
-      asset: seedAsset,
-      amount: amount
-    });
+    sendWebSocketAction('admin_seed_balance', { asset: seedAsset, amount });
+    toast.success(`Credited ${amount} ${seedAsset}`);
   };
 
   const handleNuclearReset = () => {
-    if (window.confirm("🚨 WARNING: This will delete ALL database positions, orders, and trade histories. Default account balances will be re-seeded. Do you want to proceed?")) {
-      setIsResetting(true);
-      sendWebSocketAction('admin_reset_system');
-      setTimeout(() => {
-        setIsResetting(false);
-        onClose();
-      }, 1500);
-    }
+    setIsResetting(true);
+    sendWebSocketAction('admin_reset_system');
+    toast.info('System reset initiated…');
+    setTimeout(() => {
+      setIsResetting(false);
+      onClose();
+    }, 1500);
   };
 
   const handleEmergencyStop = () => {
-    if (window.confirm("🚨 EMERGENCY LIQUIDATION: This will immediately cancel all open orders and close all active positions. Do you want to execute?")) {
-      sendWebSocketAction('admin_emergency_stop');
-      onClose();
-    }
+    sendWebSocketAction('admin_emergency_stop');
+    toast.warning('Emergency liquidation executed');
+    onClose();
   };
 
   return (
-    <div style={{
-      position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
-      background: 'rgba(5, 8, 15, 0.75)', backdropFilter: 'blur(8px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      zIndex: 1000, animation: 'fade-in 0.2s ease-out'
-    }} onClick={onClose}>
-      
-      {/* Modal Card */}
-      <div style={{
-        background: 'rgba(10, 15, 26, 0.95)',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
-        borderRadius: '12px',
-        width: '540px',
-        maxWidth: '90%',
-        boxShadow: '0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(37,99,235,0.15)',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        animation: 'slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
-      }} onClick={e => e.stopPropagation()}>
-        
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)',
-          background: 'rgba(255,255,255,0.02)'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Cpu size={18} style={{ color: '#3b82f6' }} />
-            <span style={{ fontSize: '0.95rem', fontWeight: '700', color: '#fff', letterSpacing: '0.5px' }}>
-              SYSTEM ADMIN CONTROL PANEL
-            </span>
-          </div>
-          <button onClick={onClose} style={{
-            background: 'transparent', border: 'none', color: 'var(--text-muted)',
-            cursor: 'pointer', transition: 'color 0.15s'
-          }} onMouseEnter={e => e.currentTarget.style.color = '#fff'} onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}>
-            <X size={18} />
-          </button>
-        </div>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-[540px]" showCloseButton>
+        <DialogHeader className="border-b border-border bg-muted/20 px-5 py-4">
+          <DialogTitle className="flex items-center gap-2.5 text-sm font-bold tracking-wide">
+            <Cpu className="size-4 text-primary" />
+            SYSTEM ADMIN CONTROL PANEL
+          </DialogTitle>
+        </DialogHeader>
 
-        {/* Tab Headers */}
-        <div style={{ display: 'flex', background: 'rgba(0,0,0,0.2)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          {[
-            { id: 'simulation', label: 'Market Simulation', icon: <Sliders size={14} /> },
-            { id: 'account', label: 'Account Admin', icon: <DollarSign size={14} /> },
-            { id: 'diagnostics', label: 'Diagnostics', icon: <Database size={14} /> },
-          ].map(t => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '12px 20px', background: 'transparent', border: 'none',
-                color: activeTab === t.id ? '#60a5fa' : 'var(--text-muted)',
-                fontSize: '0.78rem', fontWeight: '600', cursor: 'pointer',
-                borderBottom: activeTab === t.id ? '2px solid #3b82f6' : '2px solid transparent',
-                transition: 'all 0.15s'
-              }}
-            >
-              {t.icon}
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-0">
+          <TabsList variant="line" className="h-auto w-full justify-start rounded-none border-b border-border bg-transparent px-2">
+            <TabsTrigger value="simulation" className="gap-1.5 px-4 py-3 text-xs">
+              <Sliders data-icon="inline-start" />
+              Market Simulation
+            </TabsTrigger>
+            <TabsTrigger value="account" className="gap-1.5 px-4 py-3 text-xs">
+              <DollarSign data-icon="inline-start" />
+              Account Admin
+            </TabsTrigger>
+            <TabsTrigger value="diagnostics" className="gap-1.5 px-4 py-3 text-xs">
+              <Database data-icon="inline-start" />
+              Diagnostics
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Tab Content */}
-        <div style={{ padding: '24px 20px', minHeight: '260px' }}>
-          
-          {/* Tab 1: Simulation */}
-          {activeTab === 'simulation' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
+          <div className="min-h-[260px] px-5 py-6">
+            <TabsContent value="simulation" className="mt-0 flex flex-col gap-5">
               {isLive && (
-                <div style={{
-                  background: 'rgba(239, 68, 68, 0.08)',
-                  border: '1px solid rgba(239, 68, 68, 0.2)',
-                  borderRadius: '8px',
-                  padding: '12px 14px',
-                  color: '#ef4444',
-                  fontSize: '0.74rem',
-                  fontWeight: '600',
-                  lineHeight: '1.4',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  animation: 'fade-in 0.2s ease-out'
-                }}>
-                  <ShieldAlert size={18} style={{ flexShrink: 0 }} />
-                  <span>
+                <Alert variant="destructive">
+                  <ShieldAlert data-icon="inline-start" />
+                  <AlertDescription className="text-xs leading-relaxed">
                     Simulation drift controls are locked in live trading. Volatility and tick rates are governed entirely by real-time exchange feeds.
-                  </span>
-                </div>
+                  </AlertDescription>
+                </Alert>
               )}
 
-              <div style={{
-                opacity: isLive ? 0.35 : 1,
-                pointerEvents: isLive ? 'none' : 'auto',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '20px',
-                transition: 'opacity 0.2s'
-              }}>
-                {/* Drift/Bias override */}
+              <div className={isLive ? 'pointer-events-none flex flex-col gap-5 opacity-35' : 'flex flex-col gap-5'}>
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                  <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
                     Drift Override for {activeSymbol}
-                  </label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-                    {[
-                      { id: 'UP', label: 'Bullish (Pump)', color: '#10b981', bg: 'rgba(16,185,129,0.1)' },
-                      { id: 'DOWN', label: 'Bearish (Dump)', color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
-                      { id: 'RANDOM', label: 'Random Walk', color: '#94a3b8', bg: 'rgba(255,255,255,0.03)' },
-                    ].map(b => (
-                      <button
-                        key={b.id}
-                        onClick={() => { setBias(b.id); handleUpdateSimulation({ bias: b.id }); }}
-                        style={{
-                          padding: '10px', borderRadius: '6px', border: `1px solid ${bias === b.id ? b.color : 'rgba(255,255,255,0.08)'}`,
-                          background: bias === b.id ? b.bg : 'rgba(255,255,255,0.01)',
-                          color: bias === b.id ? b.color : 'var(--text-secondary)',
-                          fontSize: '0.75rem', fontWeight: '700', cursor: 'pointer',
-                          transition: 'all 0.15s'
-                        }}
-                      >
-                        {b.label}
-                      </button>
-                    ))}
-                  </div>
+                  </Label>
+                  <ToggleGroup
+                    type="single"
+                    value={bias}
+                    onValueChange={(v) => { if (v) { setBias(v); handleUpdateSimulation({ bias: v }); } }}
+                    className="grid w-full grid-cols-3 gap-1"
+                    spacing={0}
+                  >
+                    <ToggleGroupItem value="UP" variant="buy" className="text-xs font-bold">
+                      Bullish (Pump)
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="DOWN" variant="sell" className="text-xs font-bold">
+                      Bearish (Dump)
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="RANDOM" variant="outline" className="text-xs font-bold">
+                      Random Walk
+                    </ToggleGroupItem>
+                  </ToggleGroup>
                 </div>
 
-                {/* Volatility Multiplier */}
                 <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600' }}>
-                      Volatility Multiplier
-                    </label>
-                    <span className="num-mono" style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: '700' }}>
-                      {volatility.toFixed(1)}x
-                    </span>
+                  <div className="mb-2 flex justify-between">
+                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">Volatility Multiplier</Label>
+                    <span className="num-mono text-sm font-bold text-trading-accent">{volatility.toFixed(1)}x</span>
                   </div>
-                  <input
-                    type="range" min="0.2" max="5.0" step="0.2"
-                    value={volatility}
-                    onChange={e => {
-                      const val = parseFloat(e.target.value);
+                  <Slider
+                    min={0.2}
+                    max={5}
+                    step={0.2}
+                    value={[volatility]}
+                    onValueChange={([val]) => {
                       setVolatility(val);
                       handleUpdateSimulation({ volatility: val });
                     }}
-                    style={{ width: '100%', cursor: 'pointer' }}
                   />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  <div className="mt-1 flex justify-between text-[0.65rem] text-muted-foreground">
                     <span>0.2x (Stable)</span>
                     <span>1.0x (Normal)</span>
                     <span>5.0x (Highly Volatile)</span>
                   </div>
                 </div>
 
-                {/* Tick interval / Server speed */}
                 <div>
-                  <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                  <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
                     Tick Broadcast Speed
-                  </label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '6px' }}>
+                  </Label>
+                  <ToggleGroup
+                    type="single"
+                    value={String(tickInterval)}
+                    onValueChange={(v) => {
+                      if (!v) return;
+                      const val = parseFloat(v);
+                      setTickInterval(val);
+                      handleUpdateSimulation({ tickInterval: val });
+                    }}
+                    className="grid w-full grid-cols-4 gap-1"
+                    spacing={0}
+                  >
                     {[
                       { val: 1.0, label: '1s (Slow)' },
                       { val: 0.5, label: '500ms' },
-                      { val: 0.25, label: '250ms (Normal)' },
-                      { val: 0.1, label: '100ms (Fast)' },
+                      { val: 0.25, label: '250ms' },
+                      { val: 0.1, label: '100ms' },
                     ].map(speed => (
-                      <button
-                        key={speed.val}
-                        onClick={() => { setTickInterval(speed.val); handleUpdateSimulation({ tickInterval: speed.val }); }}
-                        style={{
-                          padding: '8px 4px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)',
-                          background: tickInterval === speed.val ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.02)',
-                          color: tickInterval === speed.val ? '#60a5fa' : 'var(--text-secondary)',
-                          fontSize: '0.7rem', fontWeight: '600', cursor: 'pointer',
-                          borderColor: tickInterval === speed.val ? '#3b82f6' : 'rgba(255,255,255,0.08)',
-                          transition: 'all 0.15s'
-                        }}
-                      >
+                      <ToggleGroupItem key={speed.val} value={String(speed.val)} className="h-8 text-[0.7rem] font-semibold">
                         {speed.label}
-                      </button>
+                      </ToggleGroupItem>
                     ))}
-                  </div>
+                  </ToggleGroup>
                 </div>
               </div>
-            </div>
-          )}
+            </TabsContent>
 
-          {/* Tab 2: Account seeding */}
-          {activeTab === 'account' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <TabsContent value="account" className="mt-0 flex flex-col gap-6">
               {isLive ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  <div style={{
-                    background: 'rgba(245, 158, 11, 0.08)',
-                    border: '1px solid rgba(245, 158, 11, 0.2)',
-                    borderRadius: '8px',
-                    padding: '12px 14px',
-                    color: '#f59e0b',
-                    fontSize: '0.74rem',
-                    fontWeight: '600',
-                    lineHeight: '1.4',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px'
-                  }}>
-                    <ShieldAlert size={18} style={{ flexShrink: 0 }} />
-                    <span>
+                <>
+                  <Alert className="border-amber-500/30 bg-amber-500/10">
+                    <ShieldAlert data-icon="inline-start" className="text-amber-500" />
+                    <AlertDescription className="text-xs leading-relaxed text-amber-200/90">
                       Manual balance seeding and database resets are disabled in live trading mode. Balances and positions are synced from the broker account.
-                    </span>
-                  </div>
+                    </AlertDescription>
+                  </Alert>
 
-                  <button
-                    onClick={handleEmergencyStop}
-                    style={{
-                      width: '100%',
-                      padding: '16px',
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      border: '1px solid #ef4444',
-                      borderRadius: '8px',
-                      color: '#ef4444',
-                      fontWeight: '800',
-                      fontSize: '0.85rem',
-                      letterSpacing: '0.5px',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '10px',
-                      transition: 'all 0.15s',
-                      boxShadow: '0 0 15px rgba(239, 68, 68, 0.1)'
-                    }}
-                    onMouseEnter={e => {
-                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)';
-                      e.currentTarget.style.boxShadow = '0 0 25px rgba(239, 68, 68, 0.3)';
-                    }}
-                    onMouseLeave={e => {
-                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                      e.currentTarget.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.1)';
-                    }}
-                  >
-                    <ShieldAlert size={18} />
-                    🚨 EMERGENCY STOP: LIQUIDATE ALL POSITIONS & CANCEL ORDERS
-                  </button>
-                  <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-                    Warning: Immediately cancels all open limit orders and liquidates all active positions with market orders at the exchange.
-                  </span>
-                </div>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="destructive" className="h-auto w-full py-4 text-xs font-extrabold tracking-wide">
+                        <ShieldAlert data-icon="inline-start" />
+                        EMERGENCY STOP: LIQUIDATE ALL POSITIONS & CANCEL ORDERS
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Emergency liquidation?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will immediately cancel all open limit orders and close all active positions with market orders at the exchange.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction variant="destructive" onClick={handleEmergencyStop}>
+                          Execute
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </>
               ) : (
                 <>
-                  {/* Seed balance */}
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
                       Credit Account Balance
-                    </label>
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <select
-                        value={seedAsset}
-                        onChange={e => setSeedAsset(e.target.value)}
-                        style={{
-                          background: '#111827', border: '1px solid rgba(255, 255, 255, 0.12)',
-                          color: '#fff', borderRadius: '6px', padding: '10px', fontSize: '0.8rem',
-                          outline: 'none', cursor: 'pointer'
-                        }}
-                      >
-                        {getAvailableAssets().map(asset => (
-                          <option key={asset} value={asset} style={{ background: '#111827', color: '#fff' }}>{asset}</option>
-                        ))}
-                      </select>
-                      <input
+                    </Label>
+                    <div className="flex gap-2">
+                      <Select value={seedAsset} onValueChange={setSeedAsset}>
+                        <SelectTrigger className="w-[100px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {getAvailableAssets().map(asset => (
+                              <SelectItem key={asset} value={asset}>{asset}</SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <Input
                         type="number"
                         value={seedAmount}
                         onChange={e => setSeedAmount(e.target.value)}
-                        style={{
-                          flex: 1, background: '#111827', border: '1px solid rgba(255, 255, 255, 0.12)',
-                          color: '#fff', borderRadius: '6px', padding: '10px 14px', fontSize: '0.82rem',
-                          outline: 'none', fontFamily: 'var(--font-mono)'
-                        }}
-                        placeholder="Amount to credit..."
+                        placeholder="Amount to credit…"
+                        className="num-mono flex-1"
                       />
-                      <button
-                        onClick={handleSeedBalance}
-                        style={{
-                          background: '#2563eb', color: '#fff', border: 'none', borderRadius: '6px',
-                          padding: '0 20px', fontWeight: '600', fontSize: '0.78rem', cursor: 'pointer',
-                          transition: 'background 0.15s'
-                        }}
-                        onMouseEnter={e => e.currentTarget.style.background = '#1d4ed8'}
-                        onMouseLeave={e => e.currentTarget.style.background = '#2563eb'}
-                      >
-                        Credit Balance
-                      </button>
+                      <Button onClick={handleSeedBalance}>Credit Balance</Button>
                     </div>
                   </div>
 
-                  <hr style={{ border: 'none', borderBottom: '1px solid rgba(255, 255, 255, 0.06)' }} />
+                  <Separator />
 
-                  {/* Reset simulator system */}
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', fontWeight: '600' }}>
+                    <Label className="mb-2 block text-xs uppercase tracking-wide text-muted-foreground">
                       System Reset Actions
-                    </label>
-                    <button
-                      onClick={handleNuclearReset}
-                      disabled={isResetting}
-                      style={{
-                        width: '100%', padding: '12px', background: 'rgba(239, 68, 68, 0.1)',
-                        border: '1px solid #ef4444', borderRadius: '6px', color: '#ef4444',
-                        fontWeight: '700', fontSize: '0.78rem', cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                        transition: 'all 0.15s',
-                        boxShadow: '0 0 10px rgba(239,68,68,0.05)'
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-                        e.currentTarget.style.boxShadow = '0 0 15px rgba(239,68,68,0.15)';
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                        e.currentTarget.style.boxShadow = '0 0 10px rgba(239,68,68,0.05)';
-                      }}
-                    >
-                      {isResetting ? <RefreshCw size={14} className="animate-spin" /> : <ShieldAlert size={14} />}
-                      {isResetting ? "RESETTING SYSTEM CONFIGURATIONS..." : "NUCLEAR RESET: WIPE SYSTEM DATABASE"}
-                    </button>
-                    <span style={{ display: 'block', fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: '6px', textAlign: 'center' }}>
+                    </Label>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="destructive" className="w-full" disabled={isResetting}>
+                          {isResetting
+                            ? <RefreshCw data-icon="inline-start" className="animate-spin" />
+                            : <ShieldAlert data-icon="inline-start" />
+                          }
+                          {isResetting ? 'RESETTING SYSTEM…' : 'NUCLEAR RESET: WIPE SYSTEM DATABASE'}
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Wipe system database?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will delete all database positions, orders, and trade histories. Default account balances will be re-seeded.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction variant="destructive" onClick={handleNuclearReset}>
+                            Wipe Everything
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <p className="mt-2 text-center text-[0.66rem] text-muted-foreground">
                       Warning: Wipes active positions, cancels pending orders, and clears trade blotter logs.
-                    </span>
+                    </p>
                   </div>
                 </>
               )}
-            </div>
-          )}
+            </TabsContent>
 
-          {/* Tab 3: Diagnostics */}
-          {activeTab === 'diagnostics' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', padding: '14px', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>
-                    Active Client Sockets
-                  </div>
-                  <div className="num-mono" style={{ fontSize: '1.4rem', fontWeight: '700', color: '#60a5fa' }}>
-                    {systemStats.clients || 1}
-                  </div>
-                </div>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', padding: '14px', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: '600', marginBottom: '4px' }}>
-                    Active Tick Rate
-                  </div>
-                  <div className="num-mono" style={{ fontSize: '1.4rem', fontWeight: '700', color: '#34d399' }}>
-                    {(1.0 / (systemStats.tick_interval || 0.25)).toFixed(1)} <span style={{ fontSize: '0.8rem', fontWeight: '400' }}>ticks/sec</span>
-                  </div>
-                </div>
+            <TabsContent value="diagnostics" className="mt-0 flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3">
+                <Card className="border-border/60 bg-muted/20 py-0">
+                  <CardContent className="p-3.5">
+                    <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Active Client Sockets
+                    </p>
+                    <p className="num-mono text-2xl font-bold text-trading-accent">{systemStats.clients || 1}</p>
+                  </CardContent>
+                </Card>
+                <Card className="border-border/60 bg-muted/20 py-0">
+                  <CardContent className="p-3.5">
+                    <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Active Tick Rate
+                    </p>
+                    <p className="num-mono text-2xl font-bold text-trading-up">
+                      {(1.0 / (systemStats.tick_interval || 0.25)).toFixed(1)}
+                      <span className="ml-1 text-sm font-normal text-muted-foreground">ticks/sec</span>
+                    </p>
+                  </CardContent>
+                </Card>
               </div>
 
-              <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', padding: '16px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ fontSize: '0.72rem', color: '#fff', fontWeight: '700', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '6px', marginBottom: '2px' }}>
-                  Database Row Counts
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Open Positions count:</span>
-                  <span className="num-mono" style={{ fontWeight: '600', color: '#fff' }}>{systemStats.positions_count || 0}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Pending Orders count:</span>
-                  <span className="num-mono" style={{ fontWeight: '600', color: '#fff' }}>{systemStats.pending_orders_count || 0}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Filled Trades count:</span>
-                  <span className="num-mono" style={{ fontWeight: '600', color: '#fff' }}>{systemStats.filled_trades_count || 0}</span>
-                </div>
-              </div>
+              <Card className="border-border/60 bg-muted/20 py-0">
+                <CardContent className="flex flex-col gap-2.5 p-4">
+                  <p className="border-b border-border/60 pb-1.5 text-xs font-bold">Database Row Counts</p>
+                  {[
+                    ['Open Positions count', systemStats.positions_count || 0],
+                    ['Pending Orders count', systemStats.pending_orders_count || 0],
+                    ['Filled Trades count', systemStats.filled_trades_count || 0],
+                  ].map(([label, count]) => (
+                    <div key={label} className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">{label}:</span>
+                      <span className="num-mono font-semibold">{count}</span>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </div>
+        </Tabs>
 
-            </div>
-          )}
-
-        </div>
-
-        {/* Footer */}
-        <div style={{
-          padding: '12px 20px', borderTop: '1px solid rgba(255,255,255,0.08)',
-          background: 'rgba(0,0,0,0.15)', display: 'flex', justifyContent: 'flex-end'
-        }}>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '6px 16px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)',
-              background: 'rgba(255,255,255,0.03)', color: 'var(--text-secondary)',
-              fontSize: '0.75rem', fontWeight: '600', cursor: 'pointer',
-              fontFamily: 'var(--font-sans)', transition: 'all 0.15s'
-            }}
-            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
-            onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
-          >
-            Close Panel
-          </button>
-        </div>
-
-      </div>
-    </div>
+        <DialogFooter className="border-t border-border bg-muted/20 px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose}>Close Panel</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

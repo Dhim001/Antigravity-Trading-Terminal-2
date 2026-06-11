@@ -6,7 +6,7 @@ export const useWebSocket = (url) => {
   const {
     setConnectionStatus, updateHistory, updateAccount,
     updateMarketData, setOrderResult, setTradeHistory, addBotLog, setSystemStats,
-    setTerminalMode, setSymbolsList, setBots
+    setTerminalMode, setSymbolsList, setBots, setBotLogs, setBacktestResults
   } = useStore();
 
   useEffect(() => {
@@ -22,6 +22,8 @@ export const useWebSocket = (url) => {
       setTerminalMode,
       setSymbolsList,
       setBots,
+      setBotLogs,
+      setBacktestResults,
     };
 
     connectWebSocket(url, storeActions);

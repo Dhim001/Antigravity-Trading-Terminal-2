@@ -1,24 +1,58 @@
 /**
- * MiniChartWidget.jsx
- * A compact, self-contained candlestick chart panel used inside the multi-chart grid.
- * Each panel independently tracks its own symbol, renders live candles + EMA overlays,
- * and can be "focused" to set the global active symbol.
+ * MiniChartWidget.jsx — Compact ECharts panel for multi-chart grid.
  */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import { calcEMA } from '../utils/indicators';
-import { ChevronDown, Maximize2, Minimize2 } from 'lucide-react';
-
-// Symbols color catalog for accent indicators
+import { cn } from '@/lib/utils';
+import { Maximize2, Minimize2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 
 const SYMBOL_COLORS = {
   BTCUSDT: '#f59e0b',
   ETHUSDT: '#8b5cf6',
-  AAPL:    '#34d399',
-  TSLA:    '#f87171',
-  MSFT:    '#06b6d4',
+  AAPL: '#34d399',
+  TSLA: '#f87171',
+  MSFT: '#06b6d4',
 };
+
+const pad = (n) => String(n).padStart(2, '0');
+
+function MiniChartHeaderPrice({ symbol }) {
+  const ticker = useStore(state => state.tickerData[symbol]);
+  const direction = useStore(state => state.priceDirections[symbol]);
+
+  if (!ticker) {
+    return <span className="text-[0.7rem] text-muted-foreground">Loading…</span>;
+  }
+
+  const dec = (
+    symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE') || ticker.price < 2.0
+  ) ? 4 : 2;
+
+  const priceClass =
+    direction === 'up' ? 'text-trading-up'
+      : direction === 'down' ? 'text-trading-down'
+        : 'text-foreground';
+
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap text-xs">
+      <span className={cn('num-mono text-[0.8rem] font-bold transition-colors', priceClass)}>
+        {ticker.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+      </span>
+      <span className={cn(
+        'num-mono text-[0.7rem]',
+        ticker.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down',
+      )}>
+        {ticker.change_24h >= 0 ? '+' : ''}{ticker.change_24h}%
+      </span>
+    </div>
+  );
+}
 
 const EMPTY_ARRAY = [];
 
@@ -28,292 +62,233 @@ export default function MiniChartWidget({
   onFocus,
   isMaximized = false,
   onToggleMaximize,
-  style = {},
+  className,
 }) {
-  const containerRef  = useRef(null);
-  const chartRef      = useRef(null);
-  const candleRef     = useRef(null);
-  const ema9Ref       = useRef(null);
-  const ema21Ref      = useRef(null);
-  const prevSymbolRef = useRef('');
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
 
-  const [symbol, setSymbol]         = useState(defaultSymbol);
-  const [dropdownOpen, setDropdown] = useState(false);
+  const [symbol, setSymbol] = useState(defaultSymbol);
 
-  const symbolCandles = useStore(state => state.candleData[symbol] || EMPTY_ARRAY);
-  const symbolTicker = useStore(state => state.tickerData[symbol]);
-  const symbolDirection = useStore(state => state.priceDirections[symbol]);
+  const lastCandleTime = useStore(state => {
+    const candles = state.candleData[symbol];
+    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
+  });
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
   const symbolsList = useStore(state => state.symbolsList);
 
-  // ── Chart initialisation ────────────────────────────────────────────────
+  const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
+
+  const symbolCandles = useMemo(() => {
+    return useStore.getState().candleData[symbol] || EMPTY_ARRAY;
+  }, [lastCandleTime, symbol]);
+
+  const configureChart = useCallback(() => {
+    if (!chartRef.current || symbolCandles.length === 0) return;
+
+    const candles = symbolCandles;
+    const dec = (
+      symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE') ||
+      candles[candles.length - 1]?.close < 2.0
+    ) ? 4 : 2;
+
+    const categoryData = candles.map(c => {
+      const d = new Date(c.time * 1000);
+      return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+    });
+
+    const candlestickData = candles.map(c => [c.open, c.close, c.low, c.high]);
+    const ema9 = calcEMA(candles, 9);
+    const ema9Data = candles.map((c, i) => i >= 8 ? ema9[i - 8]?.value : null);
+    const ema21 = calcEMA(candles, 21);
+    const ema21Data = candles.map((c, i) => i >= 20 ? ema21[i - 20]?.value : null);
+
+    const option = {
+      backgroundColor: '#0b0f19',
+      grid: { left: '2%', right: '8%', top: '6%', bottom: '18%' },
+      tooltip: { show: false },
+      xAxis: {
+        type: 'category',
+        data: categoryData,
+        scale: true,
+        boundaryGap: false,
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+        axisLabel: { color: '#9ca3af', fontSize: 9 },
+      },
+      yAxis: {
+        scale: true,
+        position: 'right',
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        axisLabel: { color: '#9ca3af', fontSize: 9, formatter: val => val.toFixed(dec) },
+      },
+      dataZoom: [{ type: 'inside', start: 75, end: 100 }],
+      series: [
+        {
+          name: symbol,
+          type: 'candlestick',
+          data: candlestickData,
+          itemStyle: {
+            color: '#10b981',
+            color0: '#ef4444',
+            borderColor: '#10b981',
+            borderColor0: '#ef4444',
+          },
+        },
+        {
+          name: 'EMA 9',
+          type: 'line',
+          data: ema9Data,
+          showSymbol: false,
+          lineStyle: { color: '#f59e0b', width: 1, opacity: 0.8 },
+        },
+        {
+          name: 'EMA 21',
+          type: 'line',
+          data: ema21Data,
+          showSymbol: false,
+          lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.8 },
+        },
+      ],
+    };
+
+    chartRef.current.setOption(option, { notMerge: true });
+  }, [symbolCandles, symbol]);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const chart = createChart(containerRef.current, {
-      width:  containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight || 200,
-      layout: {
-        background: { type: 'solid', color: '#0b0f19' },
-        textColor: '#9ca3af',
-        fontFamily: 'Inter, sans-serif',
-        fontSize: 10,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.02)' },
-        horzLines: { color: 'rgba(255,255,255,0.02)' },
-      },
-      rightPriceScale: {
-        borderColor: 'rgba(255,255,255,0.06)',
-        visible: true,
-        scaleMargins: { top: 0.08, bottom: 0.08 },
-        minimumWidth: 90,
-      },
-      timeScale: {
-        borderColor: 'rgba(255,255,255,0.06)',
-        timeVisible: true,
-        secondsVisible: false,
-        visible: true,
-      },
-      crosshair: {
-        vertLine: { color: 'rgba(100,140,255,0.4)', width: 1, style: 3, labelBackgroundColor: '#2563eb' },
-        horzLine: { color: 'rgba(100,140,255,0.4)', width: 1, style: 3, labelBackgroundColor: '#2563eb' },
-      },
-      handleScroll: true,
-      handleScale: true,
-    });
+    const chart = echarts.init(containerRef.current, 'dark');
+    chartRef.current = chart;
 
-    const candle = chart.addSeries(CandlestickSeries, {
-      upColor: '#10b981', downColor: '#ef4444',
-      borderUpColor: '#10b981', borderDownColor: '#ef4444',
-      wickUpColor: '#10b981', wickDownColor: '#ef4444',
-    });
-
-    const ema9  = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    const ema21 = chart.addSeries(LineSeries, { color: '#8b5cf6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-
-    chartRef.current  = chart;
-    candleRef.current = candle;
-    ema9Ref.current   = ema9;
-    ema21Ref.current  = ema21;
-
-    // Responsive resize
-    const ro = new ResizeObserver(() => requestAnimationFrame(() => {
-      if (containerRef.current && chartRef.current) {
-        chartRef.current.resize(
-          containerRef.current.clientWidth,
-          containerRef.current.clientHeight
-        );
-      }
-    }));
+    const ro = new ResizeObserver(() => chart.resize());
     ro.observe(containerRef.current);
 
     return () => {
       ro.disconnect();
-      try { chart.remove(); } catch (_) {}
-      chartRef.current  = null;
-      candleRef.current = null;
-      ema9Ref.current   = null;
-      ema21Ref.current  = null;
+      chart.dispose();
+      chartRef.current = null;
     };
   }, []);
 
-  // ── Data rendering ──────────────────────────────────────────────────────
-  const renderData = useCallback((sym) => {
-    const candles = symbolCandles;
-    if (!candles || candles.length === 0 || !candleRef.current) return;
-
-    // Full reload on symbol change
-    if (prevSymbolRef.current !== sym) {
-      candleRef.current.setData(candles);
-      const e9  = calcEMA(candles, 9);
-      const e21 = calcEMA(candles, 21);
-      if (e9.length)  ema9Ref.current?.setData(e9);
-      if (e21.length) ema21Ref.current?.setData(e21);
-      chartRef.current?.timeScale().fitContent();
-      prevSymbolRef.current = sym;
-    } else {
-      // Incremental tick update
-      const last = candles[candles.length - 1];
-      try { candleRef.current.update(last); } catch (_) {}
-      const e9  = calcEMA(candles, 9);
-      const e21 = calcEMA(candles, 21);
-      if (e9.length)  try { ema9Ref.current?.update(e9[e9.length - 1]);   } catch (_) {}
-      if (e21.length) try { ema21Ref.current?.update(e21[e21.length - 1]); } catch (_) {}
-    }
-  }, [symbolCandles]);
+  useEffect(() => {
+    configureChart();
+  }, [configureChart]);
 
   useEffect(() => {
-    renderData(symbol);
-  }, [symbolCandles, symbol, renderData]);
+    const unsub = useStore.subscribe(
+      state => state.candleData[symbol],
+      (candles) => {
+        if (!candles || candles.length === 0 || !chartRef.current) return;
+        const last = candles[candles.length - 1];
+        const d = new Date(last.time * 1000);
+        const timeLabel = `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 
-  // ── Reset chart on symbol change ────────────────────────────────────────
-  useEffect(() => {
-    prevSymbolRef.current = ''; // force full reload
+        try {
+          const option = chartRef.current.getOption();
+          const candlestickSeries = option.series[0];
+
+          if (candlestickSeries) {
+            const entry = [last.open, last.close, last.low, last.high];
+
+            if (option.xAxis[0].data[option.xAxis[0].data.length - 1] === timeLabel) {
+              candlestickSeries.data[candlestickSeries.data.length - 1] = entry;
+            } else {
+              candlestickSeries.data.push(entry);
+              option.xAxis[0].data.push(timeLabel);
+            }
+
+            chartRef.current.setOption({ xAxis: option.xAxis, series: option.series });
+          }
+        } catch (_) {}
+      },
+    );
+    return unsub;
   }, [symbol]);
 
-  // ── Ticker data ─────────────────────────────────────────────────────────
-  const ticker    = symbolTicker;
-  const direction = symbolDirection;
-  const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
+  useEffect(() => {
+    setSymbol(defaultSymbol);
+  }, [defaultSymbol]);
 
   const handleFocusClick = () => {
     setActiveSymbol(symbol);
     if (onFocus) onFocus(symbol);
   };
 
+  const handleSymbolChange = (next) => {
+    setSymbol(next);
+    setActiveSymbol(next);
+    if (onFocus) onFocus(next);
+  };
+
   return (
     <div
+      className={cn(
+        'flex cursor-pointer flex-col overflow-hidden rounded-md bg-card transition-all duration-200',
+        isFocused ? 'border-[1.5px] shadow-[0_0_12px]' : 'border border-border',
+        isMaximized && 'absolute top-1 left-1 z-50 h-[calc(100%-8px)] w-[calc(100%-8px)] shadow-2xl',
+        !isMaximized && 'relative h-full w-full',
+        className,
+      )}
       style={{
-        display: 'flex', flexDirection: 'column',
-        background: '#0b0f19',
-        border: isFocused
-          ? `1.5px solid ${accentCol}`
-          : '1px solid rgba(255,255,255,0.06)',
-        borderRadius: '6px',
-        overflow: 'hidden',
-        transition: 'border-color 0.2s, opacity 0.2s ease-in-out, transform 0.2s ease-in-out',
-        boxShadow: isMaximized
-          ? `0 12px 36px rgba(0,0,0,0.7)`
-          : (isFocused ? `0 0 12px ${accentCol}30` : 'none'),
-        cursor: 'pointer',
-        position: isMaximized ? 'absolute' : 'relative',
-        width: isMaximized ? 'calc(100% - 8px)' : '100%',
-        height: isMaximized ? 'calc(100% - 8px)' : '100%',
-        zIndex: isMaximized ? 50 : 'auto',
-        ...(isMaximized && {
-          top: '4px',
-          left: '4px',
-        }),
-        ...style,
+        borderColor: isFocused ? accentCol : undefined,
+        boxShadow: isFocused && !isMaximized ? `0 0 12px ${accentCol}30` : undefined,
       }}
       onClick={handleFocusClick}
     >
-      {/* ── Mini chart header ── */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '6px 10px', background: '#080d14', flexShrink: 0,
-        borderBottom: '1px solid rgba(255,255,255,0.05)',
-        userSelect: 'none',
-      }}
+      <div
+        className="flex shrink-0 select-none items-center justify-between gap-2 border-b border-border bg-muted/30 px-2.5 py-1.5"
         onClick={e => e.stopPropagation()}
         onDoubleClick={(e) => {
           e.stopPropagation();
           if (onToggleMaximize) onToggleMaximize();
         }}
       >
-        {/* Symbol selector */}
-        <div style={{ position: 'relative', flexShrink: 0 }}>
-          <button
-            onClick={() => setDropdown(p => !p)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '5px',
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              color: accentCol, fontWeight: '700', fontSize: '0.8rem',
-              fontFamily: 'var(--font-sans)',
-            }}
+        <Select value={symbol} onValueChange={handleSymbolChange}>
+          <SelectTrigger
+            size="sm"
+            className="h-7 w-auto gap-1.5 border-0 bg-transparent px-1 shadow-none focus-visible:ring-0"
+            style={{ color: accentCol }}
           >
-            <span style={{
-              width: '8px', height: '8px', borderRadius: '50%',
-              background: accentCol, boxShadow: `0 0 6px ${accentCol}`,
-            }} />
-            {symbol}
-            <ChevronDown size={12} style={{ opacity: 0.7 }} />
-          </button>
-
-          {/* Dropdown */}
-          {dropdownOpen && (
-            <div style={{
-              position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 200,
-              background: '#101827', border: '1px solid rgba(255,255,255,0.12)',
-              borderRadius: '6px', minWidth: '130px',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-              maxHeight: '220px', overflowY: 'auto'
-            }}>
-              {symbolsList.map(s => (
-                <button
-                  key={s}
-                  onClick={() => { setSymbol(s); setDropdown(false); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    width: '100%', padding: '7px 12px', background: 'transparent',
-                    border: 'none', cursor: 'pointer', textAlign: 'left',
-                    color: s === symbol ? (SYMBOL_COLORS[s] || '#6366f1') : 'var(--text-secondary)',
-                    fontSize: '0.8rem', fontWeight: s === symbol ? '700' : '400',
-                    fontFamily: 'var(--font-sans)',
-                    borderBottom: '1px solid rgba(255,255,255,0.04)',
-                  }}
-                >
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: SYMBOL_COLORS[s] || '#6366f1', flexShrink: 0 }} />
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ background: accentCol, boxShadow: `0 0 6px ${accentCol}` }}
+            />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {symbolsList.map(s => (
+              <SelectItem key={s} value={s} className="text-xs">
+                <span className="flex items-center gap-2">
+                  <span
+                    className="size-1.5 shrink-0 rounded-full"
+                    style={{ background: SYMBOL_COLORS[s] || '#6366f1' }}
+                  />
                   {s}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        {/* Price + change */}
-        {ticker ? (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            fontSize: '0.75rem', minWidth: 0, overflow: 'hidden',
-            textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-          }}>
-            <span
-              className="num-mono"
-              style={{
-                fontWeight: '700', fontSize: '0.8rem',
-                color: direction === 'up' ? 'var(--color-up)' : direction === 'down' ? 'var(--color-down)' : '#fff',
-                transition: 'color 0.3s',
-              }}
-            >
-              {ticker.price.toLocaleString(undefined, { 
-                minimumFractionDigits: (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2,
-                maximumFractionDigits: (symbol.includes("XRP") || symbol.includes("ADA") || symbol.includes("DOGE") || ticker.price < 2.0) ? 4 : 2
-              })}
-            </span>
-            <span
-              className="num-mono"
-              style={{
-                color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)',
-                fontSize: '0.7rem',
-                display: 'inline',
-              }}
-            >
-              {ticker.change_24h >= 0 ? '+' : ''}{ticker.change_24h}%
-            </span>
-          </div>
-        ) : (
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>Loading…</span>
-        )}
+        <MiniChartHeaderPrice symbol={symbol} />
 
-        {/* Expand / focus icon */}
-        <button
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="shrink-0 text-muted-foreground hover:text-foreground"
           onClick={(e) => {
             e.stopPropagation();
-            if (onToggleMaximize) {
-              onToggleMaximize();
-            } else {
-              handleFocusClick();
-            }
+            if (onToggleMaximize) onToggleMaximize();
+            else handleFocusClick();
           }}
-          title={isMaximized ? "Restore Grid Layout" : "Maximize Chart"}
-          style={{
-            background: 'transparent', border: 'none', cursor: 'pointer',
-            color: 'var(--text-muted)', padding: '2px',
-            display: 'flex', alignItems: 'center',
-            transition: 'color 0.2s',
-            flexShrink: 0,
-          }}
-          onMouseEnter={e => e.currentTarget.style.color = '#fff'}
-          onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+          title={isMaximized ? 'Restore grid layout' : 'Maximize chart'}
         >
-          {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-        </button>
+          {isMaximized ? <Minimize2 /> : <Maximize2 />}
+        </Button>
       </div>
 
-      {/* ── Chart area ── */}
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
+      <div ref={containerRef} className="min-h-0 flex-1" />
     </div>
   );
 }

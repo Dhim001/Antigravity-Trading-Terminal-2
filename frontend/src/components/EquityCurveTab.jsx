@@ -1,12 +1,17 @@
 /**
  * EquityCurveTab.jsx
- * Cumulative P&L equity curve + drawdown visualization.
- * Uses lightweight-charts LineSeries from existing trade history data.
+ * Cumulative P&L equity curve + drawdown visualization using Apache ECharts.
  */
-import React, { useEffect, useRef, useMemo, useState } from 'react';
-import { createChart, LineSeries, AreaSeries } from 'lightweight-charts';
+import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
+import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
-import { TrendingUp, TrendingDown, BarChart2, Target, Award, Activity } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { TrendingUp, TrendingDown, BarChart2, Target, Activity } from 'lucide-react';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { WidgetEmpty } from './WidgetShell';
+import { StatCard } from './StatCard';
+
+const pad = (n) => String(n).padStart(2, '0');
 
 const fmt = (n, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -18,31 +23,13 @@ const PERIODS = [
   { label: 'ALL', days: Infinity },
 ];
 
-function StatPill({ label, value, positive, negative, icon: Icon }) {
-  const color = positive ? 'var(--color-up)' : negative ? 'var(--color-down)' : '#60a5fa';
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', gap: 3,
-      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
-      borderRadius: 'var(--r-md)', padding: '8px 12px', minWidth: 100, flex: '1 1 100px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>{label}</span>
-        {Icon && <Icon size={11} style={{ color, opacity: 0.8 }} />}
-      </div>
-      <span className="num-mono" style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color }}>{value}</span>
-    </div>
-  );
-}
-
 export default function EquityCurveTab() {
-  const { tradeHistory, tradeStats } = useStore();
+  const { tradeHistory } = useStore();
   const chartRef = useRef(null);
   const chartInst = useRef(null);
   const [period, setPeriod] = useState('ALL');
 
-  // Filter trades by period and build cumulative equity series
-  const { equitySeries, drawdownSeries, filteredStats } = useMemo(() => {
+  const { equitySeries, filteredStats } = useMemo(() => {
     const now = Date.now();
     const selectedPeriod = PERIODS.find(p => p.label === period);
     const cutoff = selectedPeriod?.days === Infinity ? 0 : now - selectedPeriod.days * 86400000;
@@ -54,10 +41,10 @@ export default function EquityCurveTab() {
     let cumPnl = 0;
     let peak = 0;
     let maxDrawdown = 0;
-    let wins = 0, losses = 0;
+    let wins = 0;
+    let losses = 0;
 
     const eqSeries = [];
-    const ddSeries = [];
 
     filledSells.forEach(t => {
       cumPnl += t.realized_pnl;
@@ -69,7 +56,6 @@ export default function EquityCurveTab() {
 
       const tsec = Math.floor(t.timestamp / 1000);
       eqSeries.push({ time: tsec, value: parseFloat(cumPnl.toFixed(2)) });
-      ddSeries.push({ time: tsec, value: parseFloat((-dd).toFixed(2)) });
     });
 
     const totalPnl = filledSells.reduce((s, t) => s + t.realized_pnl, 0);
@@ -78,125 +64,149 @@ export default function EquityCurveTab() {
 
     return {
       equitySeries: eqSeries,
-      drawdownSeries: ddSeries,
       filteredStats: { totalPnl, maxDrawdown, winRate, wins, losses, gross, count: filledSells.length },
     };
   }, [tradeHistory, period]);
 
-  // Build chart
+  const configureChart = useCallback(() => {
+    if (!chartInst.current || equitySeries.length === 0) return;
+
+    const categoryData = equitySeries.map(s => {
+      const d = new Date(s.time * 1000);
+      return `${d.toLocaleDateString()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    });
+
+    const lineData = equitySeries.map(s => s.value);
+    const isProfit = filteredStats.totalPnl >= 0;
+    const lineColor = isProfit ? '#10b981' : '#ef4444';
+    const areaColor = isProfit ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
+
+    const option = {
+      backgroundColor: 'transparent',
+      grid: { left: '2%', right: '6%', top: '10%', bottom: '20%' },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', label: { backgroundColor: '#1e3a8a' } },
+      },
+      xAxis: {
+        type: 'category',
+        data: categoryData,
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+        axisLabel: { color: '#6b7280', fontSize: 9 },
+      },
+      yAxis: {
+        type: 'value',
+        position: 'right',
+        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        axisLabel: { color: '#6b7280', fontSize: 9, formatter: val => `$${val}` },
+      },
+      dataZoom: [{ type: 'inside' }],
+      series: [{
+        name: 'Equity P&L',
+        type: 'line',
+        data: lineData,
+        showSymbol: false,
+        lineStyle: { color: lineColor, width: 2 },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: areaColor },
+            { offset: 1, color: 'transparent' },
+          ]),
+        },
+      }],
+    };
+
+    chartInst.current.setOption(option, { notMerge: true });
+  }, [equitySeries, filteredStats.totalPnl]);
+
   useEffect(() => {
     if (!chartRef.current) return;
 
-    const chart = createChart(chartRef.current, {
-      width: chartRef.current.clientWidth,
-      height: chartRef.current.clientHeight || 180,
-      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#6b7280', fontFamily: 'Inter, sans-serif' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)', minimumWidth: 70 },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true, secondsVisible: false },
-      crosshair: {
-        vertLine: { color: 'rgba(59,130,246,0.4)', width: 1, style: 3, labelBackgroundColor: '#1e3a8a' },
-        horzLine: { color: 'rgba(59,130,246,0.4)', width: 1, style: 3, labelBackgroundColor: '#1e3a8a' },
-      },
-      handleScroll: true,
-      handleScale: true,
-    });
-
-    const isProfit = filteredStats.totalPnl >= 0;
-    const lineColor = isProfit ? '#10b981' : '#ef4444';
-
-    const equityLine = chart.addSeries(AreaSeries, {
-      lineColor,
-      topColor: isProfit ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)',
-      bottomColor: isProfit ? 'rgba(16,185,129,0.02)' : 'rgba(239,68,68,0.02)',
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: true,
-    });
-
-    if (equitySeries.length > 0) {
-      equityLine.setData(equitySeries);
-      chart.timeScale().fitContent();
-    }
-
+    const chart = echarts.init(chartRef.current, 'dark');
     chartInst.current = chart;
 
-    const ro = new ResizeObserver(() => {
-      if (chartRef.current) {
-        chart.resize(chartRef.current.clientWidth, chartRef.current.clientHeight || 180);
-      }
-    });
-    if (chartRef.current) ro.observe(chartRef.current);
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(chartRef.current);
 
-    return () => { ro.disconnect(); try { chart.remove(); } catch (_) {} chartInst.current = null; };
-  }, [equitySeries, filteredStats.totalPnl]);
+    return () => {
+      ro.disconnect();
+      chart.dispose();
+      chartInst.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    configureChart();
+  }, [configureChart]);
 
   const isPos = filteredStats.totalPnl >= 0;
 
   if (tradeHistory.length === 0) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: 'var(--text-muted)' }}>
-        <TrendingUp size={32} style={{ opacity: 0.3 }} />
-        <span style={{ fontSize: 'var(--fs-base)' }}>No trade data yet</span>
-        <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.6 }}>Place trades to see your equity curve</span>
-      </div>
+      <WidgetEmpty
+        icon={TrendingUp}
+        message="No trade data yet — place trades to see your equity curve"
+        className="gap-3"
+      />
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* Stats row */}
-      <div style={{ display: 'flex', gap: 6, padding: '8px 14px', flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.05)', flexWrap: 'wrap' }}>
-        <StatPill
-          label="Total P&L" icon={isPos ? TrendingUp : TrendingDown}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-muted/20 p-2">
+        <StatCard
+          label="Total P&L"
+          icon={isPos ? TrendingUp : TrendingDown}
           value={`${isPos ? '+' : ''}$${fmt(filteredStats.totalPnl)}`}
-          positive={filteredStats.totalPnl > 0} negative={filteredStats.totalPnl < 0}
+          tone={filteredStats.totalPnl > 0 ? 'up' : filteredStats.totalPnl < 0 ? 'down' : 'neutral'}
         />
-        <StatPill
-          label="Win Rate" icon={Target}
+        <StatCard
+          label="Win Rate"
+          icon={Target}
           value={`${fmt(filteredStats.winRate, 1)}%`}
-          positive={filteredStats.winRate >= 50} negative={filteredStats.winRate < 40}
+          tone={filteredStats.winRate >= 50 ? 'up' : filteredStats.winRate < 40 ? 'down' : 'neutral'}
         />
-        <StatPill
-          label="Max Drawdown" icon={TrendingDown}
+        <StatCard
+          label="Max Drawdown"
+          icon={TrendingDown}
           value={`${fmt(filteredStats.maxDrawdown, 1)}%`}
-          negative={filteredStats.maxDrawdown > 10}
-          positive={filteredStats.maxDrawdown <= 5}
+          tone={filteredStats.maxDrawdown > 10 ? 'down' : filteredStats.maxDrawdown <= 5 ? 'up' : 'neutral'}
         />
-        <StatPill
-          label="Total Trades" icon={Activity}
+        <StatCard
+          label="Total Trades"
+          icon={Activity}
           value={filteredStats.count}
-          positive={false} negative={false}
+          tone="accent"
         />
-        <StatPill
-          label="Gross Volume" icon={BarChart2}
+        <StatCard
+          label="Gross Volume"
+          icon={BarChart2}
           value={`$${fmt(filteredStats.gross)}`}
-          positive={false} negative={false}
+          tone="neutral"
         />
 
-        {/* Period selector aligned right */}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+        <ToggleGroup
+          type="single"
+          size="sm"
+          spacing={1}
+          value={period}
+          onValueChange={v => v && setPeriod(v)}
+          className="ml-auto shrink-0"
+        >
           {PERIODS.map(p => (
-            <button
-              key={p.label}
-              onClick={() => setPeriod(p.label)}
-              className={`tf-btn${period === p.label ? ' active' : ''}`}
-            >
+            <ToggleGroupItem key={p.label} value={p.label} className="px-2 text-[0.62rem] font-semibold">
               {p.label}
-            </button>
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
       </div>
 
-      {/* Equity chart */}
-      <div ref={chartRef} style={{ flex: 1, minHeight: 0, padding: '4px 0' }} />
-
-      {/* Footer note */}
-      {equitySeries.length === 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
-          No closed trades in this period
-        </div>
+      {equitySeries.length === 0 ? (
+        <WidgetEmpty message="No closed trades in this period" />
+      ) : (
+        <div ref={chartRef} className="min-h-0 flex-1 py-1" />
       )}
     </div>
   );

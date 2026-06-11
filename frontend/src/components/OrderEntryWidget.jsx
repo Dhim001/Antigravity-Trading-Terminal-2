@@ -1,16 +1,19 @@
 /**
- * OrderEntryWidget.jsx
- * Enhanced order ticket with:
- *  - SL/TP inline inputs (absolute price or % offset)
- *  - Quick quantity % buttons (25 / 50 / 75 / 100%)
- *  - Risk/Reward ratio display
- *  - Keyboard shortcuts: B = focus BUY, S = focus SELL, Enter = submit
- *  - Toast-style animated result feedback
+ * OrderEntryWidget.jsx — order ticket with unified terminal tokens
  */
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
-import { PlusCircle, ShieldAlert, CheckCircle, Target, TrendingDown, TrendingUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
+import { WidgetShell } from './WidgetShell';
+import { cn } from '@/lib/utils';
+import { PlusCircle, ShieldAlert, Target, TrendingDown, TrendingUp, ChevronDown } from 'lucide-react';
 
 const fmtDec = (n, dec) => n?.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
@@ -27,15 +30,14 @@ export default function OrderEntryWidget() {
   const [quantity,  setQuantity]  = useState('');
   const [slPrice,   setSlPrice]   = useState('');
   const [tpPrice,   setTpPrice]   = useState('');
-  const [slMode,    setSlMode]    = useState('%');  // '%' or '$'
-  const [tpMode,    setTpMode]    = useState('%');  // '%' or '$'
+  const [slMode,    setSlMode]    = useState('%');
+  const [tpMode,    setTpMode]    = useState('%');
   const [errorMsg,  setErrorMsg]  = useState(null);
   const [showSLTP,  setShowSLTP]  = useState(false);
   const buyBtnRef  = useRef(null);
   const sellBtnRef = useRef(null);
   const formRef    = useRef(null);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e) => {
       const tag = document.activeElement?.tagName;
@@ -47,13 +49,18 @@ export default function OrderEntryWidget() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  // Sync price on symbol change
   useEffect(() => {
     if (ticker) setPrice(ticker.price.toString());
     else setPrice('');
     setSlPrice(''); setTpPrice(''); setQuantity('');
     setErrorMsg(null);
   }, [activeSymbol, ticker === undefined]);
+
+  useEffect(() => {
+    if (!orderResult) return;
+    if (orderResult.status === 'success') toast.success(orderResult.message);
+    else toast.error(orderResult.message);
+  }, [orderResult]);
 
   const isCrypto = activeSymbol.includes('USDT');
   const base  = isCrypto ? activeSymbol.replace('USDT', '') : activeSymbol;
@@ -68,7 +75,6 @@ export default function OrderEntryWidget() {
   const qty        = parseFloat(quantity) || 0;
   const estCost    = orderPrice * qty;
 
-  // Compute absolute SL/TP prices from mode + value
   const computeSlAbs = () => {
     if (!slPrice) return null;
     if (slMode === '$') return parseFloat(slPrice);
@@ -87,7 +93,6 @@ export default function OrderEntryWidget() {
   const slAbs = computeSlAbs();
   const tpAbs = computeTpAbs();
 
-  // Risk/Reward ratio
   const rrRatio = useMemo(() => {
     if (!slAbs || !tpAbs || !orderPrice) return null;
     const risk   = Math.abs(orderPrice - slAbs);
@@ -96,7 +101,6 @@ export default function OrderEntryWidget() {
     return (reward / risk).toFixed(2);
   }, [slAbs, tpAbs, orderPrice]);
 
-  // Quick quantity fill
   const fillQty = (pct) => {
     if (!orderPrice) return;
     if (side === 'BUY') {
@@ -111,16 +115,31 @@ export default function OrderEntryWidget() {
     e.preventDefault();
     setErrorMsg(null);
     const q = parseFloat(quantity);
-    if (isNaN(q) || q <= 0) { setErrorMsg('Quantity must be > 0'); return; }
+    if (isNaN(q) || q <= 0) {
+      setErrorMsg('Quantity must be > 0');
+      return;
+    }
     let lp = null;
     if (orderType === 'LIMIT') {
       lp = parseFloat(price);
-      if (isNaN(lp) || lp <= 0) { setErrorMsg('Price must be > 0'); return; }
+      if (isNaN(lp) || lp <= 0) {
+        setErrorMsg('Price must be > 0');
+        return;
+      }
     }
     const val = (lp || ticker?.price || 0) * q;
-    if (val > 50000) { setErrorMsg('Order value exceeds $50,000 risk limit'); return; }
-    if (side === 'BUY' && val > quoteAvailable) { setErrorMsg(`Insufficient funds. Available: ${quoteAvailable.toFixed(2)} ${quote}`); return; }
-    if (side === 'SELL' && q > basePosition) { setErrorMsg(`Insufficient holdings. Owned: ${basePosition} ${base}`); return; }
+    if (val > 50000) {
+      setErrorMsg('Order value exceeds $50,000 risk limit');
+      return;
+    }
+    if (side === 'BUY' && val > quoteAvailable) {
+      setErrorMsg(`Insufficient funds. Available: ${quoteAvailable.toFixed(2)} ${quote}`);
+      return;
+    }
+    if (side === 'SELL' && q > basePosition) {
+      setErrorMsg(`Insufficient holdings. Owned: ${basePosition} ${base}`);
+      return;
+    }
 
     const payload = { symbol: activeSymbol, type: orderType, side, price: lp, quantity: q };
     if (showSLTP) {
@@ -129,216 +148,242 @@ export default function OrderEntryWidget() {
     }
     const ok = sendWebSocketAction('place_order', payload);
     if (ok) { setQuantity(''); setSlPrice(''); setTpPrice(''); }
-    else setErrorMsg('Order dispatch failed — WebSocket disconnected.');
+    else {
+      setErrorMsg('Order dispatch failed — WebSocket disconnected.');
+      toast.error('Order dispatch failed — WebSocket disconnected.');
+    }
   };
 
   const priceDec  = ticker ? ((activeSymbol.includes('XRP') || activeSymbol.includes('ADA') || activeSymbol.includes('DOGE') || ticker.price < 2) ? 4 : 2) : 2;
   const isBuy = side === 'BUY';
 
   return (
-    <div className="widget-card" style={{ borderBottom: '1px solid var(--border-color)' }}>
-      {/* Header */}
-      <div className="widget-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <PlusCircle size={13} className="logo-icon" />
-          <span className="widget-title">Order Entry</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 'var(--fs-2xs)', fontWeight: 700, color: isBuy ? 'var(--color-up)' : 'var(--color-down)', letterSpacing: '0.5px' }}>
+    <WidgetShell
+      className="border-b border-border"
+      icon={PlusCircle}
+      title="Order Entry"
+      headerRight={
+        <div className="flex items-center gap-1.5">
+          <span className={cn('text-[0.62rem] font-bold tracking-wide', isBuy ? 'text-trading-up' : 'text-trading-down')}>
             {activeSymbol}
           </span>
           {ticker && (
-            <span className="num-mono" style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: ticker.change_24h >= 0 ? 'var(--color-up)' : 'var(--color-down)' }}>
+            <span className={cn('num-mono text-xs font-bold', ticker.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down')}>
               {fmtDec(ticker.price, priceDec)}
             </span>
           )}
         </div>
-      </div>
+      }
+      contentClassName="p-3 pb-2"
+    >
+        <ToggleGroup
+          type="single"
+          value={side}
+          onValueChange={(v) => v && setSide(v)}
+          className="mb-2 grid w-full grid-cols-2 gap-1"
+          spacing={0}
+        >
+          <ToggleGroupItem
+            ref={buyBtnRef}
+            value="BUY"
+            variant="buy"
+            className="w-full font-extrabold tracking-wide"
+          >
+            <TrendingUp data-icon="inline-start" />
+            BUY <span className="text-[0.62rem] font-medium opacity-60">[B]</span>
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            ref={sellBtnRef}
+            value="SELL"
+            variant="sell"
+            className="w-full font-extrabold tracking-wide"
+          >
+            <TrendingDown data-icon="inline-start" />
+            SELL <span className="text-[0.62rem] font-medium opacity-60">[S]</span>
+          </ToggleGroupItem>
+        </ToggleGroup>
 
-      <div className="widget-content" style={{ padding: 'var(--sp-3) var(--sp-3) var(--sp-2)' }}>
-        {/* BUY / SELL tabs */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 10 }}>
-          <button ref={buyBtnRef} onClick={() => setSide('BUY')} className="terminal-btn" style={{
-            background: isBuy ? 'rgba(16,185,129,0.18)' : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${isBuy ? 'rgba(16,185,129,0.5)' : 'var(--border-color)'}`,
-            color: isBuy ? 'var(--color-up)' : 'var(--text-muted)',
-            boxShadow: isBuy ? '0 0 12px rgba(16,185,129,0.12)' : 'none',
-            padding: '8px', fontSize: 'var(--fs-sm)', fontWeight: 800, letterSpacing: '1px',
-          }}>
-            <TrendingUp size={13} /> BUY <span style={{ fontSize: 'var(--fs-2xs)', opacity: 0.6, fontWeight: 500 }}>[B]</span>
-          </button>
-          <button ref={sellBtnRef} onClick={() => setSide('SELL')} className="terminal-btn" style={{
-            background: !isBuy ? 'rgba(239,68,68,0.18)' : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${!isBuy ? 'rgba(239,68,68,0.5)' : 'var(--border-color)'}`,
-            color: !isBuy ? 'var(--color-down)' : 'var(--text-muted)',
-            boxShadow: !isBuy ? '0 0 12px rgba(239,68,68,0.12)' : 'none',
-            padding: '8px', fontSize: 'var(--fs-sm)', fontWeight: 800, letterSpacing: '1px',
-          }}>
-            <TrendingDown size={13} /> SELL <span style={{ fontSize: 'var(--fs-2xs)', opacity: 0.6, fontWeight: 500 }}>[S]</span>
-          </button>
-        </div>
-
-        {/* LIMIT / MARKET */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginBottom: 10, background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--r-md)', padding: 2 }}>
+        <ToggleGroup
+          type="single"
+          value={orderType}
+          onValueChange={(v) => v && setOrderType(v)}
+          variant="outline"
+          className="mb-2 grid w-full grid-cols-2 rounded-md bg-muted/30 p-0.5"
+          spacing={0}
+        >
           {['LIMIT', 'MARKET'].map(t => (
-            <button key={t} onClick={() => setOrderType(t)} style={{
-              padding: '5px', background: orderType === t ? 'rgba(255,255,255,0.08)' : 'transparent',
-              border: 'none', borderRadius: 'var(--r-sm)', color: orderType === t ? '#fff' : 'var(--text-muted)',
-              fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-sans)', letterSpacing: '0.3px',
-            }}>{t}</button>
+            <ToggleGroupItem key={t} value={t} size="sm" className="font-bold">
+              {t}
+            </ToggleGroupItem>
           ))}
-        </div>
+        </ToggleGroup>
 
         <form ref={formRef} onSubmit={handlePlaceOrder}>
-          {/* Limit Price */}
-          {orderType === 'LIMIT' && (
-            <div className="terminal-input-group">
-              <label className="terminal-label">Limit Price</label>
-              <div className="terminal-input-wrapper">
-                <input type="number" step="any" value={price} onChange={e => setPrice(e.target.value)} className="terminal-input" style={{ paddingRight: 46, fontSize: 'var(--fs-sm)' }} required />
-                <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)' }}>{quote}</span>
+          <FieldGroup className="gap-2.5">
+            {orderType === 'LIMIT' && (
+              <Field data-invalid={!!errorMsg && errorMsg.includes('Price')}>
+                <FieldLabel htmlFor="limit-price">Limit Price</FieldLabel>
+                <div className="relative">
+                  <Input
+                    id="limit-price"
+                    type="number"
+                    step="any"
+                    value={price}
+                    onChange={e => setPrice(e.target.value)}
+                    className="num-mono pr-12"
+                    required
+                  />
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-muted-foreground">
+                    {quote}
+                  </span>
+                </div>
+              </Field>
+            )}
+
+            <Field data-invalid={!!errorMsg && (errorMsg.includes('Quantity') || errorMsg.includes('Insufficient'))}>
+              <FieldLabel htmlFor="order-qty">Quantity</FieldLabel>
+              <div className="relative">
+                <Input
+                  id="order-qty"
+                  type="number"
+                  step="any"
+                  value={quantity}
+                  onChange={e => setQuantity(e.target.value)}
+                  placeholder="0.00"
+                  className="num-mono pr-12"
+                  aria-invalid={!!errorMsg}
+                  required
+                />
+                <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-muted-foreground">
+                  {base}
+                </span>
               </div>
-            </div>
-          )}
+            </Field>
+          </FieldGroup>
 
-          {/* Quantity */}
-          <div className="terminal-input-group">
-            <label className="terminal-label">Quantity</label>
-            <div className="terminal-input-wrapper">
-              <input type="number" step="any" value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="0.00" className="terminal-input" style={{ paddingRight: 46, fontSize: 'var(--fs-sm)' }} required />
-              <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)' }}>{base}</span>
-            </div>
-          </div>
-
-          {/* Quick qty buttons */}
-          <div className="qty-quick-btns" style={{ marginBottom: 10 }}>
+          <div className="mb-2 grid grid-cols-4 gap-1">
             {[25, 50, 75, 100].map(pct => (
-              <button key={pct} type="button" className="qty-quick-btn" onClick={() => fillQty(pct)}>{pct}%</button>
+              <Button key={pct} type="button" variant="outline" size="sm" onClick={() => fillQty(pct)}>
+                {pct}%
+              </Button>
             ))}
           </div>
 
-          {/* Balance context */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 6 }}>
+          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
             <span>Available {isBuy ? quote : base}:</span>
-            <span className="num-mono" style={{ fontWeight: 700, color: '#fff' }}>
+            <span className="num-mono font-bold text-foreground">
               {isBuy ? `${quoteAvailable.toFixed(2)} ${quote}` : `${Math.abs(basePosition).toFixed(4)} ${base}`}
             </span>
           </div>
 
-          {/* Order value */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)', marginBottom: 10 }}>
+          <div className="mb-2 flex justify-between text-xs text-muted-foreground">
             <span>Est. Order Value:</span>
-            <span className="num-mono" style={{ fontWeight: 700, color: estCost > quoteAvailable && isBuy ? 'var(--color-down)' : '#fff' }}>
+            <span className={cn('num-mono font-bold', estCost > quoteAvailable && isBuy ? 'text-trading-down' : 'text-foreground')}>
               {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {quote}
             </span>
           </div>
 
-          {/* SL/TP toggle */}
-          <button type="button" onClick={() => setShowSLTP(s => !s)} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
-            background: showSLTP ? 'rgba(37,99,235,0.08)' : 'rgba(255,255,255,0.02)',
-            border: `1px solid ${showSLTP ? 'rgba(37,99,235,0.3)' : 'var(--border-color)'}`,
-            borderRadius: 'var(--r-md)', padding: '6px 10px', cursor: 'pointer', marginBottom: 8,
-            color: showSLTP ? '#93c5fd' : 'var(--text-muted)', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-sans)', fontWeight: 600,
-          }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Target size={11} /> Stop Loss / Take Profit</span>
-            <span style={{ fontSize: 'var(--fs-2xs)', opacity: 0.7 }}>{showSLTP ? '▲ Hide' : '▼ Show'}</span>
-          </button>
-
-          {showSLTP && (
-            <div style={{ background: 'rgba(255,255,255,0.015)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 'var(--r-md)', padding: '10px', marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {/* Stop Loss */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <label className="terminal-label" style={{ margin: 0, color: 'var(--color-down)' }}>Stop Loss</label>
-                  <div style={{ display: 'flex', gap: 2 }}>
+          <Collapsible open={showSLTP} onOpenChange={setShowSLTP}>
+            <CollapsibleTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className={cn('mb-2 w-full justify-between', showSLTP && 'border-primary/30 bg-primary/10 text-trading-accent')}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Target data-icon="inline-start" />
+                  Stop Loss / Take Profit
+                </span>
+                <ChevronDown className={cn('size-3.5 transition-transform', showSLTP && 'rotate-180')} />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mb-2 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-2">
+              <Field>
+                <div className="mb-1 flex items-center justify-between">
+                  <FieldLabel className="text-trading-down">Stop Loss</FieldLabel>
+                  <ToggleGroup type="single" value={slMode} onValueChange={(v) => { if (v) { setSlMode(v); setSlPrice(''); } }} spacing={0} className="h-6">
                     {['%', '$'].map(m => (
-                      <button key={m} type="button" onClick={() => { setSlMode(m); setSlPrice(''); }} style={{
-                        padding: '1px 7px', borderRadius: 'var(--r-sm)', border: '1px solid', cursor: 'pointer',
-                        fontSize: 'var(--fs-2xs)', fontWeight: 700, fontFamily: 'var(--font-sans)',
-                        background: slMode === m ? 'rgba(239,68,68,0.15)' : 'transparent',
-                        borderColor: slMode === m ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)',
-                        color: slMode === m ? '#f87171' : 'var(--text-muted)',
-                      }}>{m}</button>
+                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-[0.62rem] font-bold">{m}</ToggleGroupItem>
                     ))}
-                  </div>
+                  </ToggleGroup>
                 </div>
-                <div className="terminal-input-wrapper">
-                  <input type="number" step="any" value={slPrice} onChange={e => setSlPrice(e.target.value)} placeholder={slMode === '%' ? '1.5' : orderPrice ? orderPrice.toFixed(priceDec) : '0'} className="terminal-input" style={{ paddingRight: 40, fontSize: 'var(--fs-xs)', borderColor: 'rgba(239,68,68,0.25)' }} />
-                  <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)', color: '#f87171' }}>{slMode === '%' ? '%' : quote}</span>
+                <div className="relative">
+                  <Input
+                    type="number"
+                    step="any"
+                    value={slPrice}
+                    onChange={e => setSlPrice(e.target.value)}
+                    placeholder={slMode === '%' ? '1.5' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
+                    className="num-mono border-[color-mix(in_srgb,var(--color-down)_30%,transparent)] pr-10"
+                  />
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-trading-down">
+                    {slMode === '%' ? '%' : quote}
+                  </span>
                 </div>
-                {slAbs && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-down)', marginTop: 3, fontFamily: 'var(--font-mono)' }}>→ ${slAbs.toFixed(priceDec)}</div>}
-              </div>
+                {slAbs && (
+                  <FieldDescription className="num-mono text-trading-down">→ ${slAbs.toFixed(priceDec)}</FieldDescription>
+                )}
+              </Field>
 
-              {/* Take Profit */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <label className="terminal-label" style={{ margin: 0, color: 'var(--color-up)' }}>Take Profit</label>
-                  <div style={{ display: 'flex', gap: 2 }}>
+              <Field>
+                <div className="mb-1 flex items-center justify-between">
+                  <FieldLabel className="text-trading-up">Take Profit</FieldLabel>
+                  <ToggleGroup type="single" value={tpMode} onValueChange={(v) => { if (v) { setTpMode(v); setTpPrice(''); } }} spacing={0} className="h-6">
                     {['%', '$'].map(m => (
-                      <button key={m} type="button" onClick={() => { setTpMode(m); setTpPrice(''); }} style={{
-                        padding: '1px 7px', borderRadius: 'var(--r-sm)', border: '1px solid', cursor: 'pointer',
-                        fontSize: 'var(--fs-2xs)', fontWeight: 700, fontFamily: 'var(--font-sans)',
-                        background: tpMode === m ? 'rgba(16,185,129,0.15)' : 'transparent',
-                        borderColor: tpMode === m ? 'rgba(16,185,129,0.4)' : 'rgba(255,255,255,0.1)',
-                        color: tpMode === m ? '#6ee7b7' : 'var(--text-muted)',
-                      }}>{m}</button>
+                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-[0.62rem] font-bold">{m}</ToggleGroupItem>
                     ))}
-                  </div>
+                  </ToggleGroup>
                 </div>
-                <div className="terminal-input-wrapper">
-                  <input type="number" step="any" value={tpPrice} onChange={e => setTpPrice(e.target.value)} placeholder={tpMode === '%' ? '3.0' : orderPrice ? orderPrice.toFixed(priceDec) : '0'} className="terminal-input" style={{ paddingRight: 40, fontSize: 'var(--fs-xs)', borderColor: 'rgba(16,185,129,0.25)' }} />
-                  <span className="terminal-input-suffix" style={{ fontSize: 'var(--fs-2xs)', color: '#6ee7b7' }}>{tpMode === '%' ? '%' : quote}</span>
+                <div className="relative">
+                  <Input
+                    type="number"
+                    step="any"
+                    value={tpPrice}
+                    onChange={e => setTpPrice(e.target.value)}
+                    placeholder={tpMode === '%' ? '3.0' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
+                    className="num-mono border-[color-mix(in_srgb,var(--color-up)_30%,transparent)] pr-10"
+                  />
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-trading-up">
+                    {tpMode === '%' ? '%' : quote}
+                  </span>
                 </div>
-                {tpAbs && <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--color-up)', marginTop: 3, fontFamily: 'var(--font-mono)' }}>→ ${tpAbs.toFixed(priceDec)}</div>}
-              </div>
+                {tpAbs && (
+                  <FieldDescription className="num-mono text-trading-up">→ ${tpAbs.toFixed(priceDec)}</FieldDescription>
+                )}
+              </Field>
 
-              {/* R:R display */}
               {rrRatio && (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px', borderRadius: 'var(--r-sm)', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-secondary)' }}>Risk / Reward:&nbsp;</span>
-                  <span className="num-mono" style={{ fontWeight: 800, color: parseFloat(rrRatio) >= 2 ? 'var(--color-up)' : parseFloat(rrRatio) >= 1 ? '#fbbf24' : 'var(--color-down)' }}>
+                <div className="flex items-center justify-center rounded-sm border border-border bg-muted/30 py-1.5 text-xs">
+                  <span className="text-muted-foreground">Risk / Reward:&nbsp;</span>
+                  <span className={cn(
+                    'num-mono font-extrabold',
+                    parseFloat(rrRatio) >= 2 ? 'text-trading-up' : parseFloat(rrRatio) >= 1 ? 'text-trading-warn' : 'text-trading-down'
+                  )}>
                     1 : {rrRatio}
                   </span>
                 </div>
               )}
-            </div>
-          )}
+            </CollapsibleContent>
+          </Collapsible>
 
-          {/* Submit button */}
-          <button type="submit" className={`terminal-btn ${isBuy ? 'btn-buy' : 'btn-sell'}`} style={{ fontWeight: 800, letterSpacing: '0.8px', boxShadow: isBuy ? '0 0 16px rgba(16,185,129,0.12)' : '0 0 16px rgba(239,68,68,0.12)' }}>
-            {isBuy ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+          <Button
+            type="submit"
+            variant={isBuy ? 'buy' : 'sell'}
+            size="lg"
+            className="w-full font-extrabold tracking-wide"
+          >
+            {isBuy ? <TrendingUp data-icon="inline-start" /> : <TrendingDown data-icon="inline-start" />}
             Place {side} {orderType}
-          </button>
+          </Button>
         </form>
 
-        {/* Error */}
         {errorMsg && (
-          <div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', padding: '9px 10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 'var(--r-md)', marginTop: 8, fontSize: 'var(--fs-xs)' }}>
-            <ShieldAlert size={13} style={{ color: 'var(--color-down)', flexShrink: 0, marginTop: 1 }} />
-            <span style={{ color: '#f87171' }}>{errorMsg}</span>
-          </div>
+          <Alert variant="destructive" className="mt-2 py-2">
+            <ShieldAlert data-icon="inline-start" />
+            <AlertDescription>{errorMsg}</AlertDescription>
+          </Alert>
         )}
-
-        {/* Order result */}
-        {orderResult && (
-          <div style={{
-            display: 'flex', gap: 7, alignItems: 'flex-start', padding: '9px 10px',
-            background: orderResult.status === 'success' ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
-            border: `1px solid ${orderResult.status === 'success' ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
-            borderRadius: 'var(--r-md)', marginTop: 8, fontSize: 'var(--fs-xs)',
-            animation: 'slideUp 0.2s ease',
-          }}>
-            {orderResult.status === 'success'
-              ? <CheckCircle size={13} style={{ color: 'var(--color-up)', flexShrink: 0, marginTop: 1 }} />
-              : <ShieldAlert  size={13} style={{ color: 'var(--color-down)', flexShrink: 0, marginTop: 1 }} />
-            }
-            <span style={{ color: orderResult.status === 'success' ? '#6ee7b7' : '#f87171' }}>
-              {orderResult.message}
-            </span>
-          </div>
-        )}
-      </div>
-    </div>
+    </WidgetShell>
   );
 }

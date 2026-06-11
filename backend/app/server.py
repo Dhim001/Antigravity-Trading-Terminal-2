@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import websockets
-from app.config import WS_HOST, WS_PORT, TERMINAL_MODE
+from app.config import WS_HOST, WS_PORT, WS_MAX_MESSAGE_SIZE, TERMINAL_MODE
 from app.database import init_db
 from app.websocket.connection_manager import ConnectionManager
 from app.websocket.handlers import handle_client_message
@@ -10,6 +10,8 @@ from app.services.bots.manager import BotManagerService
 from app.services.bots.backtester import BacktesterService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Dev/HMR refreshes often abort the handshake mid-flight; avoid ERROR tracebacks for that.
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 # Global connection manager
 manager = ConnectionManager()
@@ -27,6 +29,12 @@ elif TERMINAL_MODE == "LIVE_BINANCE":
     from app.services.binance_oms import BinanceOMSService
     feed = BinanceFeedService()
     oms = BinanceOMSService(feed)
+elif TERMINAL_MODE == "LIVE_ETORO":
+    logging.info("Initializing Live eToro Feed & OMS...")
+    from app.services.etoro_feed import EtoroFeedService
+    from app.services.etoro_oms import EtoroOMSService
+    feed = EtoroFeedService()
+    oms = EtoroOMSService(feed)
 else: # "SIMULATED"
     logging.info("Initializing Simulated Feed & OMS...")
     from app.services.sim_feed import SimulatedFeedService
@@ -150,12 +158,8 @@ async def websocket_handler(websocket):
         }
     })
     
-    # 1. Send initial historical candles to let chart pre-render
-    history_payload = {
-        "type": "history_update",
-        "data": {symbol: feed.get_candles(symbol) for symbol in feed.symbols}
-    }
-    await manager.send_to(websocket, history_payload)
+    # 1. Historical candles are now lazy-loaded on client request (via subscribe_symbol)
+    
     
     # 2. Send current account snapshot
     account_payload = {
@@ -200,7 +204,9 @@ async def main():
     # Start WebSocket Server on defined host/port
     logging.info(f"WebSocket Server listening on ws://{WS_HOST}:{WS_PORT}")
     
-    async with websockets.serve(websocket_handler, WS_HOST, WS_PORT) as server:
+    async with websockets.serve(
+        websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
+    ) as server:
         tasks = []
         if TERMINAL_MODE == "SIMULATED":
             tasks.append(asyncio.create_task(simulated_market_loop()))

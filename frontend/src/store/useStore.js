@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { subscribeWithSelector } from 'zustand/middleware';
 
 const getLocal = (key, fallback) => {
   try {
@@ -15,7 +16,7 @@ const setLocal = (key, val) => {
   } catch (_) {}
 };
 
-export const useStore = create((set, get) => ({
+export const useStore = create(subscribeWithSelector((set, get) => ({
   connectionStatus: 'disconnected',
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
@@ -66,6 +67,10 @@ export const useStore = create((set, get) => ({
   setActiveSymbol: (symbol) => {
     setLocal('terminal_active_symbol', symbol);
     set({ activeSymbol: symbol });
+    // Dynamic import to request symbol history on change, avoiding circular dependencies
+    import('../services/websocket').then(({ sendWebSocketAction }) => {
+      sendWebSocketAction("subscribe_symbol", { symbol });
+    });
   },
 
   setViewMode: (mode) => {
@@ -73,7 +78,9 @@ export const useStore = create((set, get) => ({
     set({ viewMode: mode });
   },
 
-  updateHistory: (historyData) => set({ candleData: historyData }),
+  updateHistory: (historyData) => set((state) => ({ 
+    candleData: { ...state.candleData, ...historyData } 
+  })),
 
   updateAccount: (accountData) => set({
     balances: accountData.balances || {},
@@ -243,9 +250,9 @@ export const useStore = create((set, get) => ({
             // Update current active candle
             candles[candles.length - 1] = incomingCandle;
           } else {
-            // Append new candle
+            // Append new candle — keep 7 days of 1-min history (10080 candles)
             candles.push(incomingCandle);
-            if (candles.length > 500) {
+            if (candles.length > 10080) {
               candles.shift();
             }
           }
@@ -269,4 +276,4 @@ export const useStore = create((set, get) => ({
       return updates;
     });
   }
-}));
+})));

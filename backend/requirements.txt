@@ -9,4 +9,9 @@ python-dotenv>=1.0.1
 
 # Data analysis & technical indicators for trading screener bots
 pandas>=2.2.0
-pandas-ta-classic
+pandas-ta-openbb>=0.4.24
+
+# Real-time data & statistics modeling for simulations
+yfinance>=1.4.1
+arch>=8.0.0
+pyarrow>=24.0.0
