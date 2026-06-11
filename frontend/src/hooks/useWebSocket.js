@@ -5,7 +5,7 @@ import { connectWebSocket, disconnectWebSocket, sendWebSocketAction } from '../s
 export const useWebSocket = (url) => {
   const {
     setConnectionStatus, updateHistory, updateAccount,
-    updateMarketData, setOrderResult, setTradeHistory, addBotLog, setSystemStats,
+    updateMarketData, updateOrderBooks, setOrderResult, setTradeHistory, addBotLog, setSystemStats,
     setTerminalMode, setSymbolsList, setBots, setBotLogs, setBacktestResults
   } = useStore();
 
@@ -15,6 +15,7 @@ export const useWebSocket = (url) => {
       updateHistory,
       updateAccount,
       updateMarketData,
+      updateOrderBooks,
       setOrderResult,
       setTradeHistory,
       addBotLog,

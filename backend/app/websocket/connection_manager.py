@@ -17,6 +17,7 @@ def _is_disconnect_error(exc: BaseException) -> bool:
 class ConnectionManager:
     def __init__(self):
         self.connected_clients = set()
+        self.client_symbols = {}  # websocket -> subscribed chart symbol
 
     def register(self, websocket):
         logging.info("New client connection registered.")
@@ -26,6 +27,11 @@ class ConnectionManager:
         logging.info("Client connection unregistered.")
         if websocket in self.connected_clients:
             self.connected_clients.remove(websocket)
+        self.client_symbols.pop(websocket, None)
+
+    def set_client_symbol(self, websocket, symbol: str):
+        if symbol:
+            self.client_symbols[websocket] = symbol
 
     async def broadcast(self, payload):
         """Broadcasts a JSON-serializable payload to all registered clients."""

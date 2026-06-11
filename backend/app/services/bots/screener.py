@@ -15,12 +15,15 @@ class MarketScreenerService:
     def process_candles(self, symbol: str, ohlcv_data: list) -> pd.DataFrame:
         """
         Converts a list of candle dicts to a DataFrame and computes all required indicators.
-        ohlcv_data format: [{'time': ts, 'open': o, 'high': h, 'low': l, 'close': c, 'volume': v}, ...]
+        Uses a rolling tail window — full 7-day history is unnecessary for live signals.
         """
         if not ohlcv_data or len(ohlcv_data) < 50:
-            return pd.DataFrame() # Not enough data
-            
-        df = pd.DataFrame(ohlcv_data)
+            return pd.DataFrame()
+
+        # Indicator warm-up needs ~50 bars; 300 keeps screener fast at scale
+        window = ohlcv_data[-300:] if len(ohlcv_data) > 300 else ohlcv_data
+
+        df = pd.DataFrame(window)
         
         # Ensure correct types
         for col in ['open', 'high', 'low', 'close', 'volume']:

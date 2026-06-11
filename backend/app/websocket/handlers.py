@@ -141,6 +141,8 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
             
         elif action == "subscribe_symbol":
             symbol = message.get("symbol")
+            if symbol:
+                manager.set_client_symbol(websocket, symbol)
             if symbol and hasattr(oms, "feed"):
                 candles = oms.feed.get_candles(symbol)
                 history_payload = {
@@ -295,7 +297,7 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
                 # Broadcast updated bot list
                 await manager.broadcast({
                     "type": "bots_update",
-                    "data": list(bot_manager.active_bots.values())
+                    "data": bot_manager.list_bots_public()
                 })
             except Exception as e:
                 await manager.send_to(websocket, {
@@ -314,7 +316,7 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
                 # Broadcast updated bot list
                 await manager.broadcast({
                     "type": "bots_update",
-                    "data": list(bot_manager.active_bots.values())
+                    "data": bot_manager.list_bots_public()
                 })
             except Exception as e:
                 await manager.send_to(websocket, {
@@ -325,7 +327,7 @@ async def handle_client_message(websocket, message_str, oms: BaseOMSService, man
         elif action == "bot_get_all":
             await manager.send_to(websocket, {
                 "type": "bots_update",
-                "data": list(bot_manager.active_bots.values())
+                "data": bot_manager.list_bots_public()
             })
 
         elif action == "run_backtest":

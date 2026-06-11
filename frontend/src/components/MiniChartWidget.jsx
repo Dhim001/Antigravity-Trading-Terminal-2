@@ -6,6 +6,7 @@ import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import { calcEMA } from '../utils/indicators';
 import { cn } from '@/lib/utils';
+import { getCandles } from '../services/candleBuffer';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -54,7 +55,7 @@ function MiniChartHeaderPrice({ symbol }) {
   );
 }
 
-const EMPTY_ARRAY = [];
+const MINI_DISPLAY_BARS = 120;
 
 export default function MiniChartWidget({
   defaultSymbol = 'BTCUSDT',
@@ -69,18 +70,16 @@ export default function MiniChartWidget({
 
   const [symbol, setSymbol] = useState(defaultSymbol);
 
-  const lastCandleTime = useStore(state => {
-    const candles = state.candleData[symbol];
-    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
-  });
+  const candleRev = useStore(state => state.candleRevision[symbol] || 0);
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
   const symbolsList = useStore(state => state.symbolsList);
 
   const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
 
   const symbolCandles = useMemo(() => {
-    return useStore.getState().candleData[symbol] || EMPTY_ARRAY;
-  }, [lastCandleTime, symbol]);
+    const raw = getCandles(symbol);
+    return raw.length > MINI_DISPLAY_BARS ? raw.slice(-MINI_DISPLAY_BARS) : raw;
+  }, [symbol, candleRev]);
 
   const configureChart = useCallback(() => {
     if (!chartRef.current || symbolCandles.length === 0) return;
@@ -177,34 +176,11 @@ export default function MiniChartWidget({
 
   useEffect(() => {
     const unsub = useStore.subscribe(
-      state => state.candleData[symbol],
-      (candles) => {
-        if (!candles || candles.length === 0 || !chartRef.current) return;
-        const last = candles[candles.length - 1];
-        const d = new Date(last.time * 1000);
-        const timeLabel = `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-
-        try {
-          const option = chartRef.current.getOption();
-          const candlestickSeries = option.series[0];
-
-          if (candlestickSeries) {
-            const entry = [last.open, last.close, last.low, last.high];
-
-            if (option.xAxis[0].data[option.xAxis[0].data.length - 1] === timeLabel) {
-              candlestickSeries.data[candlestickSeries.data.length - 1] = entry;
-            } else {
-              candlestickSeries.data.push(entry);
-              option.xAxis[0].data.push(timeLabel);
-            }
-
-            chartRef.current.setOption({ xAxis: option.xAxis, series: option.series });
-          }
-        } catch (_) {}
-      },
+      state => state.candleRevision[symbol] || 0,
+      () => configureChart(),
     );
     return unsub;
-  }, [symbol]);
+  }, [symbol, configureChart]);
 
   useEffect(() => {
     setSymbol(defaultSymbol);

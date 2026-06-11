@@ -66,11 +66,14 @@ async def simulated_market_loop():
             for symbol in feed.symbols:
                 market_data = feed.get_market_data(symbol)
                 data[symbol] = market_data
-                
-                # Feed new data to bot manager
-                candles = feed.get_candles(symbol)
-                if candles:
-                    await bot_manager.process_market_tick(symbol, candles)
+
+                # Bot screener only when bots are running for this symbol (avoid 25× pandas-ta per tick)
+                if bot_manager.active_bots:
+                    watching = any(b.get("symbol") == symbol for b in bot_manager.active_bots.values())
+                    if watching:
+                        candles = feed.get_candles(symbol)
+                        if candles:
+                            await bot_manager.process_market_tick(symbol, candles)
                 
             # 2. Match any pending limit orders based on updated prices
             fills = oms.match_pending_orders()
@@ -90,12 +93,28 @@ async def simulated_market_loop():
             # Combine fills
             total_fills = fills + sl_tp_fills
             
-            # 4. Formulate the update payload
-            payload = {
-                "type": "market_update",
-                "data": data
-            }
-            await manager.broadcast(payload)
+            # 4. Broadcast slim tick payload (no orderbooks — sent per-client below)
+            slim_data = {}
+            for symbol, md in data.items():
+                slim_data[symbol] = {
+                    "symbol": symbol,
+                    "price": md["price"],
+                    "change_24h": md["change_24h"],
+                    "volume_24h": md["volume_24h"],
+                    "high_24h": md["high_24h"],
+                    "low_24h": md["low_24h"],
+                    "candle": md["candle"],
+                }
+            await manager.broadcast({"type": "market_update", "data": slim_data})
+
+            # Order book only for each client's subscribed symbol (much smaller than ×25)
+            for client in list(manager.connected_clients):
+                sym = manager.client_symbols.get(client)
+                if sym and sym in data and data[sym].get("orderbook"):
+                    await manager.send_to(client, {
+                        "type": "orderbook_update",
+                        "data": {sym: data[sym]["orderbook"]},
+                    })
                 
             # If any limit orders or SL/TP got filled, broadcast the account state update
             if total_fills:

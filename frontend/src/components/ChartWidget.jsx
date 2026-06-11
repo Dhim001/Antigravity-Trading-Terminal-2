@@ -16,6 +16,7 @@ import {
   Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
+import { getCandles } from '../services/candleBuffer';
 
 const INDICATORS = {
   ema9:   { label: 'EMA 9',  color: '#f59e0b' },
@@ -38,6 +39,66 @@ const TF_CONFIGS = [
   { label: '1D',  secs: 86400 },
 ];
 
+/** Bars rendered on chart — full history stays in store for backtest/signals */
+const CHART_DISPLAY_BARS = 600;
+const FUTURE_PADDING = 15;
+
+const pad = (n) => String(n).padStart(2, '0');
+
+function formatTimeLabel(timeSec) {
+  const d = new Date(timeSec * 1000);
+  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+function buildCategoryLabels(bars) {
+  const labels = bars.map(c => formatTimeLabel(c.time));
+  for (let i = 0; i < FUTURE_PADDING; i++) labels.push('');
+  return labels;
+}
+
+function buildMainSeriesData(bars, chartType) {
+  const data = chartType === 'line'
+    ? bars.map(c => c.close)
+    : bars.map(c => [c.open, c.close, c.low, c.high]);
+  for (let i = 0; i < FUTURE_PADDING; i++) data.push('-');
+  return data;
+}
+
+function buildVolumeSeriesData(bars) {
+  const data = bars.map(c => volumeSeriesEntry(c));
+  for (let i = 0; i < FUTURE_PADDING; i++) data.push(null);
+  return data;
+}
+
+function normalizeEchartsList(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function aggregateBucket(raw, cfg) {
+  if (!raw.length) return null;
+  const t = Math.floor(raw[raw.length - 1].time / cfg.secs) * cfg.secs;
+  const bucket = cfg.secs <= 60 ? [raw[raw.length - 1]] : raw.filter(c => c.time >= t);
+  if (!bucket.length) return null;
+  return {
+    time: t,
+    open: bucket[0].open,
+    high: Math.max(...bucket.map(c => c.high)),
+    low: Math.min(...bucket.map(c => c.low)),
+    close: bucket[bucket.length - 1].close,
+    volume: bucket.reduce((sum, c) => sum + (c.volume || 0), 0),
+  };
+}
+
+function volumeSeriesEntry(bar) {
+  return {
+    value: bar.volume || 0,
+    itemStyle: {
+      color: bar.close >= bar.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)',
+    },
+  };
+}
+
 const SIGNAL_STYLES = {
   'STRONG BUY':  { bg: 'rgba(16,185,129,0.2)',  border: '#10b981', color: '#10b981', dot: '#10b981' },
   'BUY':         { bg: 'rgba(16,185,129,0.1)',  border: '#6ee7b7', color: '#6ee7b7', dot: '#6ee7b7' },
@@ -45,8 +106,6 @@ const SIGNAL_STYLES = {
   'SELL':        { bg: 'rgba(239,68,68,0.1)',   border: '#fca5a5', color: '#fca5a5', dot: '#fca5a5' },
   'STRONG SELL': { bg: 'rgba(239,68,68,0.2)',   border: '#ef4444', color: '#ef4444', dot: '#ef4444' },
 };
-
-const pad = (n) => String(n).padStart(2, '0');
 
 function formatVol(v) {
   if (!v) return '—';
@@ -64,6 +123,54 @@ function getPriceDecimals(price) {
   if (price < 1)       return 4;
   if (price < 10)      return 3;
   return 2;
+}
+
+function buildMarkLineData(symbolPosition, dec) {
+  const markLineData = [];
+  if (!symbolPosition || symbolPosition.size === 0) return markLineData;
+
+  markLineData.push({
+    yAxis: symbolPosition.avg_price,
+    lineStyle: { color: '#3b82f6', width: 2, type: 'solid' },
+    label: {
+      show: true,
+      position: 'end',
+      formatter: `ENTRY ${symbolPosition.size > 0 ? 'LONG' : 'SHORT'} (${Math.abs(symbolPosition.size).toFixed(4)})`,
+    },
+  });
+  if (symbolPosition.stop_loss_price > 0) {
+    markLineData.push({
+      yAxis: symbolPosition.stop_loss_price,
+      lineStyle: { color: '#ef4444', width: 1, type: 'dashed' },
+      label: { show: true, position: 'end', formatter: `SL: ${symbolPosition.stop_loss_price.toFixed(dec)}` },
+    });
+  }
+  if (symbolPosition.take_profit_price > 0) {
+    markLineData.push({
+      yAxis: symbolPosition.take_profit_price,
+      lineStyle: { color: '#10b981', width: 1, type: 'dashed' },
+      label: { show: true, position: 'end', formatter: `TP: ${symbolPosition.take_profit_price.toFixed(dec)}` },
+    });
+  }
+  return markLineData;
+}
+
+function buildTradeMarkers(tradeHistory, activeSymbol, candles, categoryData) {
+  return tradeHistory
+    .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
+    .map(t => {
+      const timeVal = Math.floor(new Date(t.timestamp).getTime() / 1000);
+      let categoryIndex = candles.findIndex(c => c.time >= timeVal);
+      if (categoryIndex === -1) categoryIndex = candles.length - 1;
+
+      return {
+        coord: [categoryData[categoryIndex], t.average_fill_price || t.price],
+        value: `${t.side} ${(t.filled_quantity ?? t.quantity)?.toFixed(4)}`,
+        symbol: t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z',
+        symbolSize: 10,
+        itemStyle: { color: t.side === 'BUY' ? '#10b981' : '#ef4444' },
+      };
+    });
 }
 
 // ─── Child Component: Header Ticker ──────────────────────────────────
@@ -98,12 +205,14 @@ function ChartHeaderPrice({ symbol }) {
 function ChartSignalBadge({ symbol }) {
   const [signal, setSignal] = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
   const lastCandleTime = useStore(state => {
-    const candles = state.candleData[symbol];
-    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
+    const rev = state.candleRevision[symbol];
+    if (!rev) return 0;
+    const candles = getCandles(symbol);
+    return candles.length > 0 ? candles[candles.length - 1].time : 0;
   });
 
   useEffect(() => {
-    const candles = useStore.getState().candleData[symbol] || [];
+    const candles = getCandles(symbol);
     if (candles.length > 0) {
       setSignal(generateSignal(candles));
     }
@@ -161,20 +270,40 @@ function ChartSignalBadge({ symbol }) {
   );
 }
 
-const EMPTY_ARRAY = [];
-
 // ─── Main Component ──────────────────────────────────────────────────
 export default function ChartWidget() {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const candlesRef = useRef([]);
+  const displayBarsRef = useRef([]);
+  const chartLayoutRef = useRef({ xAxisCount: 1, showVolume: true });
+  const liveRafRef = useRef(null);
+  const configureChartRef = useRef(() => {});
+  const applyOverlayPatchRef = useRef(() => {});
+  const chartReadyRef = useRef(false);
 
   const activeSymbol = useStore(state => state.activeSymbol);
-  const lastCandleTime = useStore(state => {
-    const candles = state.candleData[activeSymbol];
-    return candles && candles.length > 0 ? candles[candles.length - 1].time : 0;
-  });
+  const historyRev = useStore(state => state.candleHistoryRevision[activeSymbol] || 0);
+  const candleRev = useStore(state => state.candleRevision[activeSymbol] || 0);
+  const lastCandleTime = useMemo(() => {
+    const candles = getCandles(activeSymbol);
+    return candles.length > 0 ? candles[candles.length - 1].time : 0;
+  }, [activeSymbol, candleRev]);
   const symbolPosition = useStore(state => state.positions[activeSymbol]);
+  const positionOverlayKey = useStore(state => {
+    const p = state.positions[activeSymbol];
+    if (!p || p.size === 0) return '';
+    return `${p.size}|${p.avg_price}|${p.stop_loss_price}|${p.take_profit_price}`;
+  });
+  const tradeOverlayKey = useStore(state => {
+    let key = '';
+    for (const t of state.tradeHistory) {
+      if (t.symbol === activeSymbol && t.status === 'FILLED') {
+        key += `${t.timestamp}:${t.side}:${t.filled_quantity ?? t.quantity}:${t.average_fill_price ?? t.price};`;
+      }
+    }
+    return key;
+  });
   const tradeHistory = useStore(state => state.tradeHistory);
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
@@ -207,32 +336,37 @@ export default function ChartWidget() {
     });
   }, []);
 
-  // Aggregate candles based on timeframe
+  // Aggregate candles based on timeframe; chart renders a rolling window only
   const aggregatedCandles = useMemo(() => {
-    const raw = useStore.getState().candleData[activeSymbol] || EMPTY_ARRAY;
-    if (!raw || raw.length === 0) return [];
-    
-    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    if (cfg.secs <= 60) return raw;
+    const raw = getCandles(activeSymbol);
+    if (!raw.length) return [];
 
-    const buckets = new Map();
-    for (const c of raw) {
-      const t = Math.floor(c.time / cfg.secs) * cfg.secs;
-      if (!buckets.has(t)) {
-        buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
-      } else {
-        const b = buckets.get(t);
-        b.high = Math.max(b.high, c.high);
-        b.low = Math.min(b.low, c.low);
-        b.close = c.close;
-        b.volume += (c.volume || 0);
+    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+    let series;
+    if (cfg.secs <= 60) {
+      series = raw;
+    } else {
+      const buckets = new Map();
+      for (const c of raw) {
+        const t = Math.floor(c.time / cfg.secs) * cfg.secs;
+        if (!buckets.has(t)) {
+          buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
+        } else {
+          const b = buckets.get(t);
+          b.high = Math.max(b.high, c.high);
+          b.low = Math.min(b.low, c.low);
+          b.close = c.close;
+          b.volume += (c.volume || 0);
+        }
       }
+      series = Array.from(buckets.values()).sort((a, b) => a.time - b.time);
     }
-    return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-  }, [timeframe, activeSymbol, lastCandleTime]);
+    return series.length > CHART_DISPLAY_BARS ? series.slice(-CHART_DISPLAY_BARS) : series;
+  }, [timeframe, activeSymbol, historyRev]);
 
   useEffect(() => {
-    candlesRef.current = aggregatedCandles;
+    displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
+    candlesRef.current = displayBarsRef.current;
   }, [aggregatedCandles]);
 
   // Direct DOM Legend update
@@ -270,19 +404,17 @@ export default function ChartWidget() {
 
   // Set up chart options
   const configureChart = useCallback(() => {
-    if (!chartRef.current || aggregatedCandles.length === 0) return;
+    if (!chartRef.current || aggregatedCandles.length === 0) {
+      chartReadyRef.current = false;
+      return;
+    }
 
     const candles = aggregatedCandles;
     const dec = getPriceDecimals(candles[candles.length - 1]?.close);
 
-    // Categories (time labels) with future padding — must exist before zoom math
-    const categoryData = candles.map(c => {
-      const d = new Date(c.time * 1000);
-      return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-    });
-    const futurePadding = 15;
-    for (let i = 0; i < futurePadding; i++) {
-      categoryData.push("");
+    const categoryData = candles.map(c => formatTimeLabel(c.time));
+    for (let i = 0; i < FUTURE_PADDING; i++) {
+      categoryData.push('');
     }
 
     // Dynamic Zoom preservation using absolute indices
@@ -293,12 +425,14 @@ export default function ChartWidget() {
     if (prevConfigRef.current.symbol === activeSymbol && prevConfigRef.current.timeframe === timeframe && chartRef.current) {
       try {
         const currentOption = chartRef.current.getOption();
-        if (currentOption && currentOption.dataZoom && currentOption.dataZoom[0]) {
-          const prevStart = currentOption.dataZoom[0].startValue;
-          const prevEnd = currentOption.dataZoom[0].endValue;
-          
+        const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
+        const xAxisList = normalizeEchartsList(currentOption?.xAxis);
+        if (dataZoomList[0] && xAxisList[0]?.data) {
+          const prevStart = dataZoomList[0].startValue;
+          const prevEnd = dataZoomList[0].endValue;
+
           if (prevStart !== undefined && prevEnd !== undefined && prevStart !== null && prevEnd !== null) {
-            const prevTotal = currentOption.xAxis[0].data.length;
+            const prevTotal = xAxisList[0].data.length;
             const diff = totalCount - prevTotal;
             if (diff > 0) {
               // If the user was looking at the end of the chart, auto-scroll to the right
@@ -317,7 +451,9 @@ export default function ChartWidget() {
             }
           }
         }
-      } catch (_) {}
+      } catch (err) {
+        console.warn('[ChartWidget] zoom preservation failed:', err);
+      }
     }
 
     if (startVal === null || endVal === null || startVal === undefined || endVal === undefined) {
@@ -328,52 +464,9 @@ export default function ChartWidget() {
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
 
     const candlestickData = candles.map(c => [c.open, c.close, c.low, c.high]);
-
-    // Position SL/TP marklines
-    const markLineData = [];
-    if (symbolPosition && symbolPosition.size !== 0) {
-      markLineData.push({
-        yAxis: symbolPosition.avg_price,
-        lineStyle: { color: '#3b82f6', width: 2, type: 'solid' },
-        label: {
-          show: true,
-          position: 'end',
-          formatter: `ENTRY ${symbolPosition.size > 0 ? 'LONG' : 'SHORT'} (${Math.abs(symbolPosition.size).toFixed(4)})`
-        }
-      });
-      if (symbolPosition.stop_loss_price > 0) {
-        markLineData.push({
-          yAxis: symbolPosition.stop_loss_price,
-          lineStyle: { color: '#ef4444', width: 1, type: 'dashed' },
-          label: { show: true, position: 'end', formatter: `SL: ${symbolPosition.stop_loss_price.toFixed(dec)}` }
-        });
-      }
-      if (symbolPosition.take_profit_price > 0) {
-        markLineData.push({
-          yAxis: symbolPosition.take_profit_price,
-          lineStyle: { color: '#10b981', width: 1, type: 'dashed' },
-          label: { show: true, position: 'end', formatter: `TP: ${symbolPosition.take_profit_price.toFixed(dec)}` }
-        });
-      }
+    for (let i = 0; i < FUTURE_PADDING; i++) {
+      candlestickData.push('-');
     }
-
-    // Trade execution markers
-    const tradeMarkers = tradeHistory
-      .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
-      .map(t => {
-        const timeVal = Math.floor(new Date(t.timestamp).getTime() / 1000);
-        // Find nearest index
-        let categoryIndex = candles.findIndex(c => c.time >= timeVal);
-        if (categoryIndex === -1) categoryIndex = candles.length - 1;
-        
-        return {
-          coord: [categoryData[categoryIndex], t.average_fill_price || t.price],
-          value: `${t.side} ${(t.filled_quantity ?? t.quantity)?.toFixed(4)}`,
-          symbol: t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z',
-          symbolSize: 10,
-          itemStyle: { color: t.side === 'BUY' ? '#10b981' : '#ef4444' }
-        };
-      });
 
     // ── Grid Configurations ──
     const showVol = active.volume;
@@ -415,6 +508,7 @@ export default function ChartWidget() {
     
     // Main grid axis
     xAxes.push({
+      id: 'x-0',
       type: 'category',
       data: categoryData,
       gridIndex: 0,
@@ -441,6 +535,7 @@ export default function ChartWidget() {
       const isLowest = gIdx === gridCount - 1;
 
       xAxes.push({
+        id: `x-${xAxes.length}`,
         type: 'category',
         data: categoryData,
         gridIndex: gIdx,
@@ -476,25 +571,21 @@ export default function ChartWidget() {
 
     // Main Candlestick / Line Series
     if (chartType === 'line') {
+      const lineData = candles.map(c => c.close);
+      for (let i = 0; i < FUTURE_PADDING; i++) lineData.push('-');
       series.push({
+        id: 'main',
         name: activeSymbol,
         type: 'line',
-        data: candles.map(c => c.close),
+        data: lineData,
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
         lineStyle: { color: '#3b82f6', width: 2 },
-        markLine: {
-          symbol: ['none', 'none'],
-          data: markLineData
-        },
-        markPoint: {
-          data: tradeMarkers,
-          label: { show: false }
-        }
       });
     } else {
       series.push({
+        id: 'main',
         name: activeSymbol,
         type: 'candlestick',
         data: candlestickData,
@@ -504,16 +595,8 @@ export default function ChartWidget() {
           color: '#10b981',
           color0: '#ef4444',
           borderColor: '#10b981',
-          borderColor0: '#ef4444'
+          borderColor0: '#ef4444',
         },
-        markLine: {
-          symbol: ['none', 'none'],
-          data: markLineData
-        },
-        markPoint: {
-          data: tradeMarkers,
-          label: { show: false }
-        }
       });
     }
 
@@ -564,14 +647,18 @@ export default function ChartWidget() {
     if (showVol) {
       const gIdx = paneGridMap.volume;
       series.push({
+        id: 'volume',
         name: 'Volume',
         type: 'bar',
         xAxisIndex: gIdx,
         yAxisIndex: gIdx,
-        data: candles.map(c => ({
-          value: c.volume || 0,
-          itemStyle: { color: c.close >= c.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' }
-        }))
+        data: [
+          ...candles.map(c => ({
+            value: c.volume || 0,
+            itemStyle: { color: c.close >= c.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' },
+          })),
+          ...Array(FUTURE_PADDING).fill(null),
+        ],
       });
     }
 
@@ -645,11 +732,41 @@ export default function ChartWidget() {
     };
 
     chartRef.current.setOption(option, { notMerge: true });
-    
+
+    chartLayoutRef.current = { xAxisCount: xAxes.length, showVolume: showVol };
+    chartReadyRef.current = true;
+
     // Initial legend display
     const lastBar = candles[candles.length - 1];
     updateLegendDOM(lastBar);
-  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, symbolPosition, tradeHistory, updateLegendDOM]);
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM]);
+
+  // Lightweight overlay patch — SL/TP lines and trade markers only
+  const applyOverlayPatch = useCallback(() => {
+    const chart = chartRef.current;
+    const bars = candlesRef.current;
+    if (!chart || !bars.length) return;
+
+    const dec = getPriceDecimals(bars[bars.length - 1]?.close);
+    const categoryData = buildCategoryLabels(bars);
+    const markLineData = buildMarkLineData(symbolPosition, dec);
+    const tradeMarkers = buildTradeMarkers(tradeHistory, activeSymbol, bars, categoryData);
+
+    try {
+      chart.setOption({
+        series: [{
+          id: 'main',
+          markLine: { symbol: ['none', 'none'], data: markLineData },
+          markPoint: { data: tradeMarkers, label: { show: false } },
+        }],
+      }, { lazyUpdate: true });
+    } catch (err) {
+      console.warn('[ChartWidget] overlay patch failed:', err);
+    }
+  }, [activeSymbol, symbolPosition, tradeHistory]);
+
+  configureChartRef.current = configureChart;
+  applyOverlayPatchRef.current = applyOverlayPatch;
 
   // Init ECharts Instance
   useEffect(() => {
@@ -657,6 +774,7 @@ export default function ChartWidget() {
 
     const chart = echarts.init(containerRef.current, 'dark');
     chartRef.current = chart;
+    chartReadyRef.current = false;
 
     // Crosshair Hover / axisPointer listener to update legend DOM dynamically
     chart.on('updateAxisPointer', (event) => {
@@ -696,96 +814,101 @@ export default function ChartWidget() {
     });
     ro.observe(containerRef.current);
 
+    if (displayBarsRef.current.length > 0) {
+      requestAnimationFrame(() => {
+        configureChartRef.current();
+        applyOverlayPatchRef.current();
+      });
+    }
+
     return () => {
       ro.disconnect();
       chart.dispose();
       chartRef.current = null;
+      chartReadyRef.current = false;
     };
   }, [updateLegendDOM]);
 
-  // Redraw when aggregated candles or configurations modify
+  // Full rebuild when structure/data/indicators change
   useEffect(() => {
     configureChart();
   }, [configureChart]);
 
-  // Subscribe to real-time price updates (Intra-bar updates)
+  // Lightweight overlay patch — trades, positions, and after full rebuild
+  useEffect(() => {
+    applyOverlayPatch();
+  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey]);
+
+  // Live tick updates — patch by series/xAxis id (no getOption mutation)
+  const applyLiveCandleUpdate = useCallback(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartReadyRef.current) return;
+
+    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+    const raw = getCandles(activeSymbol);
+    const aggregatedLive = aggregateBucket(raw, cfg);
+    if (!aggregatedLive) return;
+
+    const bars = displayBarsRef.current;
+    if (!bars.length) return;
+
+    const last = bars[bars.length - 1];
+    if (last && last.time === aggregatedLive.time) {
+      bars[bars.length - 1] = aggregatedLive;
+    } else if (!last || aggregatedLive.time > last.time) {
+      bars.push({ ...aggregatedLive });
+      if (bars.length > CHART_DISPLAY_BARS) bars.shift();
+    } else {
+      return;
+    }
+
+    candlesRef.current = bars;
+
+    const labels = buildCategoryLabels(bars);
+    const { xAxisCount, showVolume } = chartLayoutRef.current;
+    const patch = {
+      xAxis: Array.from({ length: xAxisCount }, (_, i) => ({
+        id: `x-${i}`,
+        data: labels,
+      })),
+      series: [{
+        id: 'main',
+        type: chartType === 'line' ? 'line' : 'candlestick',
+        data: buildMainSeriesData(bars, chartType),
+      }],
+    };
+    if (showVolume) {
+      patch.series.push({ id: 'volume', data: buildVolumeSeriesData(bars) });
+    }
+
+    try {
+      chart.setOption(patch, { lazyUpdate: false });
+      updateLegendDOM(aggregatedLive);
+    } catch (err) {
+      console.warn('[ChartWidget] live candle update failed:', err);
+    }
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM]);
+
   useEffect(() => {
     const symbol = activeSymbol;
     const unsubscribe = useStore.subscribe(
-      state => state.candleData[symbol],
-      (candles) => {
-        if (!candles || candles.length === 0 || !chartRef.current) return;
-        const last = candles[candles.length - 1];
-
-        // Format for timeframe aggregation
-        const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-        const t = Math.floor(last.time / cfg.secs) * cfg.secs;
-
-        // Get live bucket candles
-        const raw = useStore.getState().candleData[symbol] || EMPTY_ARRAY;
-        const bucketCandles = raw.filter(c => c.time >= t);
-
-        if (bucketCandles.length > 0) {
-          const aggregatedLive = {
-            time: t,
-            open: bucketCandles[0].open,
-            high: Math.max(...bucketCandles.map(c => c.high)),
-            low: Math.min(...bucketCandles.map(c => c.low)),
-            close: bucketCandles[bucketCandles.length - 1].close,
-            volume: bucketCandles.reduce((sum, c) => sum + (c.volume || 0), 0)
-          };
-
-          try {
-            const option = chartRef.current.getOption();
-            const lastIdx = candlesRef.current.length - 1;
-            if (lastIdx < 0) return;
-
-            // Only update if it represents the same bar
-            if (candlesRef.current[lastIdx] && aggregatedLive.time === candlesRef.current[lastIdx].time) {
-              // Mutate the local ref in-place to avoid jump-back on subsequent component updates
-              candlesRef.current[lastIdx] = {
-                ...candlesRef.current[lastIdx],
-                open: aggregatedLive.open,
-                high: aggregatedLive.high,
-                low: aggregatedLive.low,
-                close: aggregatedLive.close,
-                volume: aggregatedLive.volume
-              };
-
-              // 1. Candlestick/Line Series Update
-              const mainSeries = option.series[0];
-              if (mainSeries) {
-                if (mainSeries.type === 'candlestick') {
-                  mainSeries.data[lastIdx] = [aggregatedLive.open, aggregatedLive.close, aggregatedLive.low, aggregatedLive.high];
-                } else {
-                  mainSeries.data[lastIdx] = aggregatedLive.close;
-                }
-              }
-
-              // 2. Volume Series Update
-              const showVol = active.volume;
-              if (showVol) {
-                const volSeriesIdx = option.series.findIndex(s => s.name === 'Volume');
-                if (volSeriesIdx !== -1) {
-                  option.series[volSeriesIdx].data[lastIdx] = {
-                    value: aggregatedLive.volume,
-                    itemStyle: { color: aggregatedLive.close >= aggregatedLive.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' }
-                  };
-                }
-              }
-
-              // Lightweight option update targeting only the updated series to avoid interrupting user gestures
-              chartRef.current.setOption({
-                series: option.series
-              });
-              updateLegendDOM(aggregatedLive);
-            }
-          } catch (_) {}
-        }
-      }
+      (state) => state.candleRevision[symbol] || 0,
+      () => {
+        if (liveRafRef.current != null) return;
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null;
+          applyLiveCandleUpdate();
+        });
+      },
     );
-    return unsubscribe;
-  }, [activeSymbol, timeframe, active.volume, updateLegendDOM]);
+    return () => {
+      unsubscribe();
+      if (liveRafRef.current != null) {
+        cancelAnimationFrame(liveRafRef.current);
+        liveRafRef.current = null;
+      }
+    };
+  }, [activeSymbol, applyLiveCandleUpdate]);
 
   // Handle ESC key to cancel interaction mode
   useEffect(() => {

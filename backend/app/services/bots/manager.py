@@ -173,3 +173,18 @@ class BotManagerService:
         conn.close()
         
         await self.log_bot_event(bot_id, "INFO", "Bot stopped.")
+
+    def list_bots_public(self) -> list:
+        """JSON-safe bot list for WebSocket clients (no strategy instances)."""
+        out = []
+        for bot in self.active_bots.values():
+            out.append({
+                "id": bot["id"],
+                "strategy": bot["strategy"],
+                "symbol": bot["symbol"],
+                "timeframe": bot["timeframe"],
+                "status": bot["status"],
+                "allocation": bot["allocation"],
+                "config": bot.get("config", {}),
+            })
+        return out

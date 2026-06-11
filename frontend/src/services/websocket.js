@@ -35,6 +35,7 @@ export const connectWebSocket = (url, storeActions) => {
     storeActions.setConnectionStatus('connected');
     const activeSymbol = useStore.getState().activeSymbol;
     ws.send(JSON.stringify({ action: "subscribe_symbol", symbol: activeSymbol }));
+    ws.send(JSON.stringify({ action: "bot_get_all" }));
   };
 
   ws.onclose = () => {
@@ -75,6 +76,9 @@ export const connectWebSocket = (url, storeActions) => {
           break;
         case 'market_update':
           storeActions.updateMarketData(data);
+          break;
+        case 'orderbook_update':
+          storeActions.updateOrderBooks(data);
           break;
         case 'order_result':
           storeActions.setOrderResult(data);
