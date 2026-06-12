@@ -9,7 +9,7 @@ class BacktesterService:
     def run_backtest(self, symbol: str, strategy_name: str, config: dict, candles: list) -> dict:
         """
         Runs a bar-close backtest over historical candles (same eval row as live manager).
-        Returns metrics: win_rate, total_pnl, max_drawdown, trade_count, equity_curve.
+        Returns metrics: win_rate, total_pnl, max_drawdown, trade_count, equity_curve, trades.
         """
         if not candles or len(candles) < 50:
             return {"error": "Not enough historical data"}
@@ -22,7 +22,7 @@ class BacktesterService:
         strategy = get_strategy(strategy_name, config)
 
         position = None
-        trades = []
+        trade_log = []
         equity = 10000.0
         peak_equity = equity
         max_drawdown = 0.0
@@ -30,22 +30,37 @@ class BacktesterService:
         sample_stride = max(1, (len(df) - 1) // 200)
         start_i = first_eval_index(df, strategy_name, config)
 
+        def _close_position(bar_time, exit_price, reason: str):
+            nonlocal position, equity
+            if not position:
+                return
+            side = position["side"]
+            qty = position["qty"]
+            entry = position["entry_price"]
+            profit = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
+            equity += profit
+            trade_log.append({
+                "time": int(bar_time) if bar_time is not None else 0,
+                "side": side,
+                "price": round(exit_price, 4),
+                "quantity": round(qty, 6),
+                "pnl": round(profit, 2),
+                "is_exit": True,
+                "reason": reason,
+            })
+            position = None
+
         for i in range(start_i, len(df)):
             row = df.iloc[i].to_dict()
+            bar_time = row.get("time")
 
             if position:
                 current_price = row["close"]
 
                 if position["side"] == "BUY" and current_price <= position["stop_loss"]:
-                    profit = (position["stop_loss"] - position["entry_price"]) * position["qty"]
-                    equity += profit
-                    trades.append({"profit": profit, "type": "SL"})
-                    position = None
+                    _close_position(bar_time, position["stop_loss"], "SL")
                 elif position["side"] == "SELL" and current_price >= position["stop_loss"]:
-                    profit = (position["entry_price"] - position["stop_loss"]) * position["qty"]
-                    equity += profit
-                    trades.append({"profit": profit, "type": "SL"})
-                    position = None
+                    _close_position(bar_time, position["stop_loss"], "SL")
 
                 if position and config.get("trailing_stop_percent"):
                     if position["side"] == "BUY":
@@ -88,17 +103,26 @@ class BacktesterService:
                             "high_watermark": current_price,
                             "low_watermark": current_price,
                         }
+                        trade_log.append({
+                            "time": int(bar_time) if bar_time is not None else 0,
+                            "side": signal,
+                            "price": round(current_price, 4),
+                            "quantity": round(qty, 6),
+                            "pnl": None,
+                            "is_exit": False,
+                            "reason": "ENTRY",
+                        })
 
             peak_equity = max(peak_equity, equity)
-            drawdown = (peak_equity - equity) / peak_equity * 100
+            drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity else 0
             max_drawdown = max(max_drawdown, drawdown)
 
-            bar_time = row.get("time")
             if bar_time is not None and (i % sample_stride == 0 or i == len(df) - 1):
                 equity_curve.append({"time": int(bar_time), "equity": round(equity, 2)})
 
-        winning_trades = sum(1 for t in trades if t["profit"] > 0)
-        total_trades = len(trades)
+        closed = [t for t in trade_log if t.get("is_exit")]
+        winning_trades = sum(1 for t in closed if (t.get("pnl") or 0) > 0)
+        total_trades = len(closed)
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
 
         return {
@@ -108,4 +132,5 @@ class BacktesterService:
             "trade_count": total_trades,
             "equity_curve": equity_curve,
             "starting_equity": 10000.0,
+            "trades": trade_log[-100:],
         }

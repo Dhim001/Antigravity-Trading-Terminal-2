@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Callable, Awaitable, List, Dict
 import websockets
 from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL, SYMBOLS
+from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
 
 class AlpacaFeedService(BaseFeedService):
@@ -108,11 +109,10 @@ class AlpacaFeedService(BaseFeedService):
                         c["volume"] = round(c["volume"] + random.uniform(5, 50), 2)
                         
                     if self.broadcast_callback:
-                        payload = {
-                            "type": "market_update",
-                            "data": {sym: self.get_market_data(sym)}
-                        }
-                        await self.broadcast_callback(payload)
+                        await publish_market_update(
+                            self.broadcast_callback,
+                            {sym: self.get_market_data(sym)},
+                        )
                 await asyncio.sleep(1.0)
                 
         self.connection_task = asyncio.create_task(fallback_loop())
@@ -196,10 +196,7 @@ class AlpacaFeedService(BaseFeedService):
                             updates[symbol] = self.get_market_data(symbol)
                             
                         if updates and self.broadcast_callback:
-                            await self.broadcast_callback({
-                                "type": "market_update",
-                                "data": updates
-                            })
+                            await publish_market_update(self.broadcast_callback, updates)
                             
             except asyncio.CancelledError:
                 break

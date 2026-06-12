@@ -4,7 +4,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
-import { sendWebSocketAction } from '../services/websocket';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -111,7 +112,7 @@ export default function OrderEntryWidget() {
     }
   };
 
-  const handlePlaceOrder = (e) => {
+  const handlePlaceOrder = async (e) => {
     e.preventDefault();
     setErrorMsg(null);
     const q = parseFloat(quantity);
@@ -146,11 +147,11 @@ export default function OrderEntryWidget() {
       if (slAbs) payload.stop_loss_price = parseFloat(slAbs.toFixed(8));
       if (tpAbs) payload.take_profit_price = parseFloat(tpAbs.toFixed(8));
     }
-    const ok = sendWebSocketAction('place_order', payload);
+    const { ok } = await sendAction(Action.PLACE_ORDER, payload);
     if (ok) { setQuantity(''); setSlPrice(''); setTpPrice(''); }
     else {
-      setErrorMsg('Order dispatch failed — WebSocket disconnected.');
-      toast.error('Order dispatch failed — WebSocket disconnected.');
+      setErrorMsg('Order dispatch failed — backend unreachable.');
+      toast.error('Order dispatch failed — backend unreachable.');
     }
   };
 

@@ -1,11 +1,12 @@
 import { useStore } from '../store/useStore';
-import { toast } from 'sonner';
+import { Action, MessageType } from '../api/protocol';
+import { applyServerMessage, getStoreActions } from '../api/dispatch';
+import { WS_URL } from '../api/config';
 
 let ws = null;
 let reconnectTimeout = null;
 let isConnecting = false;
 let lastUrl = null;
-let lastStoreActions = null;
 
 const clearReconnect = () => {
   if (reconnectTimeout) {
@@ -14,9 +15,9 @@ const clearReconnect = () => {
   }
 };
 
-export const connectWebSocket = (url, storeActions) => {
+export const connectWebSocket = (url = WS_URL) => {
   lastUrl = url;
-  lastStoreActions = storeActions;
+  const storeActions = getStoreActions();
 
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
     return;
@@ -27,100 +28,49 @@ export const connectWebSocket = (url, storeActions) => {
 
   clearReconnect();
   isConnecting = true;
-  console.log("WebSocket connecting to:", url);
+  console.log('WebSocket connecting to:', url);
   ws = new WebSocket(url);
 
   ws.onopen = () => {
     isConnecting = false;
-    console.log("WebSocket connected successfully.");
+    console.log('WebSocket connected successfully.');
     storeActions.setConnectionStatus('connected');
     const activeSymbol = useStore.getState().activeSymbol;
-    ws.send(JSON.stringify({ action: "subscribe_symbol", symbol: activeSymbol }));
-    ws.send(JSON.stringify({ action: "bot_get_all" }));
+    ws.send(JSON.stringify({ action: Action.SUBSCRIBE_SYMBOL, symbol: activeSymbol }));
+    ws.send(JSON.stringify({ action: Action.BOT_GET_ALL }));
   };
 
   ws.onclose = () => {
     isConnecting = false;
     ws = null;
-    console.log("WebSocket disconnected. Retrying in 3s...");
+    console.log('WebSocket disconnected. Retrying in 3s...');
     storeActions.setConnectionStatus('disconnected');
     clearReconnect();
     reconnectTimeout = setTimeout(() => {
-      if (lastUrl && lastStoreActions) {
-        connectWebSocket(lastUrl, lastStoreActions);
+      if (lastUrl) {
+        connectWebSocket(lastUrl);
       }
     }, 3000);
   };
 
   ws.onerror = (error) => {
     isConnecting = false;
-    console.error("WebSocket transport error:", error);
+    console.error('WebSocket transport error:', error);
   };
 
   ws.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
-      const { type, data } = payload;
+      const { type, data, message } = payload;
 
-      switch (type) {
-        case 'terminal_config':
-          storeActions.setTerminalConfig(data);
-          break;
-        case 'history_update':
-          storeActions.updateHistory(data);
-          break;
-        case 'account_update':
-          storeActions.updateAccount(data);
-          break;
-        case 'market_update':
-          storeActions.updateMarketData(data);
-          break;
-        case 'orderbook_update':
-          storeActions.updateOrderBooks(data);
-          break;
-        case 'order_result':
-          storeActions.setOrderResult(data);
-          break;
-        case 'trade_history':
-          storeActions.setTradeHistory(data);
-          break;
-        case 'bot_log':
-          storeActions.addBotLog(data);
-          if (data && typeof data === 'object' && data.message) {
-            if (data.level === 'ERROR') toast.error(data.message);
-            else if (data.level === 'SUCCESS') toast.success(data.message);
-            else if (data.level === 'WARN' && /daily loss|blocked/i.test(data.message)) {
-              toast.warning(data.message);
-            }
-          }
-          break;
-        case 'bot_logs_history':
-          storeActions.setBotLogs(data);
-          break;
-        case 'bots_update':
-          storeActions.setBots(data);
-          break;
-        case 'bot_detail':
-          storeActions.setBotDetail(data);
-          break;
-        case 'system_stats':
-          storeActions.setSystemStats(data);
-          break;
-        case 'backtest_result':
-          if (data.status === 'success') {
-            storeActions.setBacktestResults(data.results);
-          } else {
-            console.error("Backtest failed:", data.message);
-          }
-          break;
-        case 'error':
-          console.error("Server execution error:", payload.message);
-          break;
-        default:
-          console.warn("Unrecognized WebSocket frame type:", type);
+      if (type === MessageType.ERROR) {
+        console.error('Server execution error:', message);
+        return;
       }
+
+      applyServerMessage(type, data, storeActions);
     } catch (err) {
-      console.error("Failed to parse WebSocket message:", err);
+      console.error('Failed to parse WebSocket message:', err);
     }
   };
 };
@@ -140,7 +90,7 @@ export const sendWebSocketAction = (action, payload = {}) => {
     ws.send(JSON.stringify({ action, ...payload }));
     return true;
   }
-  console.warn("Cannot transmit message. WebSocket is offline.");
+  console.warn('Cannot transmit message. WebSocket is offline.');
   return false;
 };
 

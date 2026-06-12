@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
+from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update
 from app.services.bots.indicators import prepare_strategy_df
 from app.services.bots.strategies import get_strategy
 from app.services.bots.bar_events import BarCloseTracker
@@ -61,10 +62,7 @@ class BotManagerService:
         if self._log_writes % 25 == 0:
             bot_analytics.prune_bot_logs(BOT_LOG_RETENTION)
 
-        await self.broadcast_cb({
-            "type": "bot_log",
-            "data": {"bot_id": bot_id, "level": level, "message": message},
-        })
+        await publish_bot_log(self.broadcast_cb, bot_id, level, message)
 
     def get_account_balance(self):
         balances = self.oms.get_account_data().get("balances", {})
@@ -358,13 +356,10 @@ class BotManagerService:
                 )
                 self.record_snapshot_for_bot(bot_id)
 
-                await self.broadcast_cb({
-                    "type": "bots_update",
-                    "data": self.list_bots_public(),
-                })
+                await publish_bots_update(self.broadcast_cb, self.list_bots_public())
                 detail = self.get_bot_detail(bot_id)
                 if detail:
-                    await self.broadcast_cb({"type": "bot_detail", "data": detail})
+                    await publish_bot_detail(self.broadcast_cb, detail)
             else:
                 self._executed_signals.discard(signal_id)
                 msg = result.get("message", "Unknown error")

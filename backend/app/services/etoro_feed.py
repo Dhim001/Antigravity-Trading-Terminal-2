@@ -33,6 +33,7 @@ from app.config import (
     ETORO_USER_KEY,
     SYMBOLS,
 )
+from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,7 @@ class EtoroFeedService(BaseFeedService):
                 rates = await asyncio.to_thread(self._fetch_all_rates)
                 updates = self._apply_rates(rates)
                 if updates and self.broadcast_callback:
-                    await self.broadcast_callback({"type": "market_update", "data": updates})
+                    await publish_market_update(self.broadcast_callback, updates)
                 backoff = self.poll_interval  # success resets backoff
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:

@@ -33,10 +33,19 @@ ALLOW_CUSTOM_STRATEGIES = os.environ.get("ALLOW_CUSTOM_STRATEGIES", "false").low
 )
 
 # WebSocket Server Settings
-WS_HOST = "localhost"
-WS_PORT = 8765
+WS_HOST = os.environ.get("WS_HOST", "127.0.0.1")
+WS_PORT = int(os.environ.get("WS_PORT", "8765"))
 # 7-day 1m history payloads exceed the library default (1 MB); allow up to 4 MB frames.
 WS_MAX_MESSAGE_SIZE = int(os.environ.get("WS_MAX_MESSAGE_SIZE", str(4 * 1024 * 1024)))
+
+# HTTP REST API (Phase 3) — runs alongside WebSocket in server/all roles
+HTTP_ENABLED = os.environ.get("HTTP_ENABLED", "true").lower() in ("1", "true", "yes")
+HTTP_HOST = os.environ.get("HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.environ.get("HTTP_PORT", "8766"))
+# Comma-separated origins for CORS, or * for all (dev default)
+HTTP_CORS_ORIGINS = os.environ.get("HTTP_CORS_ORIGINS", "*").strip()
+# Optional API key for HTTP routes (except /health). Empty = auth disabled.
+HTTP_API_KEY = os.environ.get("HTTP_API_KEY", "").strip()
 
 # Pre-Trade Risk Limits
 MAX_ORDER_VALUE = 50000.0

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
+import { Action } from '../api/protocol';
 import {
   setCandleHistory, applyLiveCandle, hasCandleHistory,
 } from '../services/candleBuffer';
@@ -25,6 +26,8 @@ function bumpRevision(revisions, symbol) {
 
 export const useStore = create(subscribeWithSelector((set, get) => ({
   connectionStatus: 'disconnected',
+  /** HTTP bootstrap: idle | loading | ready | error */
+  apiStatus: 'idle',
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
   terminalMode: 'SIMULATED',
@@ -74,12 +77,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   botDetail: null,
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
+  setApiStatus: (status) => set({ apiStatus: status }),
 
   setActiveSymbol: (symbol) => {
     setLocal('terminal_active_symbol', symbol);
     set({ activeSymbol: symbol });
-    import('../services/websocket').then(({ sendWebSocketAction }) => {
-      sendWebSocketAction("subscribe_symbol", { symbol });
+    import('../api/transport').then(({ sendAction }) => {
+      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol });
     });
   },
 

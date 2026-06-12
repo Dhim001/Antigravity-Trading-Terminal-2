@@ -5,6 +5,7 @@ import time
 from typing import Callable, Awaitable, List
 import websockets
 from app.config import BINANCE_WS_URL, SYMBOLS
+from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
 
 class BinanceFeedService(BaseFeedService):
@@ -127,10 +128,7 @@ class BinanceFeedService(BaseFeedService):
                             updates[symbol] = self.get_market_data(symbol)
                             
                         if updates and self.broadcast_callback:
-                            await self.broadcast_callback({
-                                "type": "market_update",
-                                "data": updates
-                            })
+                            await publish_market_update(self.broadcast_callback, updates)
             except asyncio.CancelledError:
                 break
             except Exception as e:

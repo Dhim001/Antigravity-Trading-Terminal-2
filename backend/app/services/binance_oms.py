@@ -8,6 +8,7 @@ from typing import Dict, List
 import requests
 from app.config import BINANCE_API_KEY, BINANCE_SECRET_KEY, BINANCE_BASE_URL, SYMBOLS
 from app.database import get_connection
+from app.api.outbound import publish_account_update, publish_bot_log
 from app.services.base_oms import BaseOMSService
 from app.services.sim_oms import SimulatedOMSService
 
@@ -353,11 +354,8 @@ class BinanceOMSService(BaseOMSService):
                         conn.close()
                         
                         if self.broadcast_callback:
-                            await self.broadcast_callback({
-                                "type": "bot_log",
-                                "data": {"bot_id": "system", "level": "INFO", "message": log_msg}
-                            })
-                            await self.broadcast_callback({"type": "account_update", "data": self.get_account_data()})
+                            await publish_bot_log(self.broadcast_callback, "system", "INFO", log_msg)
+                            await publish_account_update(self.broadcast_callback, self.get_account_data())
                             
                 await asyncio.sleep(1.0)
             except Exception as e:

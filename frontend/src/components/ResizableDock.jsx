@@ -11,7 +11,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
-import { sendWebSocketAction } from '../services/websocket';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
@@ -19,6 +20,7 @@ import {
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestMiniChart from './BacktestMiniChart';
+import BotDetailDrawer from './BotDetailDrawer';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -56,7 +58,7 @@ const PositionRow = React.memo(function PositionRow({ sym, pos }) {
   const activeSymbol = useStore(state => state.activeSymbol);
 
   const handleClose = () => {
-    sendWebSocketAction('place_order', {
+    sendAction(Action.PLACE_ORDER, {
       symbol: sym,
       type: 'MARKET',
       side: pos.size > 0 ? 'SELL' : 'BUY',
@@ -189,7 +191,7 @@ function OrdersTab() {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => sendWebSocketAction('cancel_order', { order_id: ord.id })}
+                  onClick={() => sendAction(Action.CANCEL_ORDER, { order_id: ord.id })}
                   title="Cancel order"
                   className="text-trading-down hover:text-trading-down"
                 >
@@ -261,6 +263,7 @@ function AlgoTab() {
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
+  const [botDrawerOpen, setBotDrawerOpen] = useState(false);
 
   const confirmDeploy = () => {
     setDeployOpen(false);
@@ -277,7 +280,7 @@ function AlgoTab() {
       return;
     }
 
-    sendWebSocketAction("bot_create", {
+    sendAction(Action.BOT_CREATE, {
       strategy: botStrategy,
       symbol: activeSymbol,
       timeframe: "1m",
@@ -287,7 +290,7 @@ function AlgoTab() {
   };
 
   const handleRunBacktest = () => {
-    sendWebSocketAction("run_backtest", {
+    sendAction(Action.RUN_BACKTEST, {
       strategy: botStrategy,
       symbol: activeSymbol,
       config: botConfig
@@ -300,15 +303,15 @@ function AlgoTab() {
   };
 
   const handleStopBot = (bot_id) => {
-    sendWebSocketAction("bot_stop", { bot_id });
+    sendAction(Action.BOT_STOP, { bot_id });
   };
 
   const handlePauseBot = (bot_id) => {
-    sendWebSocketAction("bot_pause", { bot_id });
+    sendAction(Action.BOT_PAUSE, { bot_id });
   };
 
   const handleResumeBot = (bot_id) => {
-    sendWebSocketAction("bot_resume", { bot_id });
+    sendAction(Action.BOT_RESUME, { bot_id });
   };
 
   const handleStopAll = () => {
@@ -318,7 +321,7 @@ function AlgoTab() {
 
   const confirmStopAll = () => {
     setStopAllOpen(false);
-    sendWebSocketAction("bot_stop_all", {});
+    sendAction(Action.BOT_STOP_ALL, {});
   };
 
   const statusBadgeVariant = (status) => {
@@ -342,12 +345,13 @@ function AlgoTab() {
       setActiveSymbol(bot.symbol);
     }
     setSelectedBotId(bot_id);
-    sendWebSocketAction('bot_get_detail', { bot_id });
+    setBotDrawerOpen(true);
+    sendAction(Action.BOT_GET_DETAIL, { bot_id });
   };
 
   useEffect(() => {
     if (selectedBotId && activeBots.some(b => b.id === selectedBotId)) {
-      sendWebSocketAction('bot_get_detail', { bot_id: selectedBotId });
+      sendAction(Action.BOT_GET_DETAIL, { bot_id: selectedBotId });
     } else if (selectedBotId && !activeBots.some(b => b.id === selectedBotId)) {
       setSelectedBotId(null);
       setBotDetail(null);
@@ -450,6 +454,34 @@ function AlgoTab() {
                   equityCurve={backtestResults.equity_curve}
                   totalPnl={backtestResults.total_pnl}
                 />
+                {backtestResults.trades?.length > 0 && (
+                  <div className="algo-backtest-trades scroll-panel-y scroll-panel-y-0 max-h-36">
+                    <table className="terminal-table m-0 text-[0.58rem]">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Side</th>
+                          <th className="text-right">Qty</th>
+                          <th className="text-right">Price</th>
+                          <th className="text-right">PnL</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backtestResults.trades.filter(t => t.is_exit).slice(-12).reverse().map((t, i) => (
+                          <tr key={`${t.time}-${i}`}>
+                            <td className="text-muted-foreground">{t.time ? new Date(t.time * 1000).toLocaleString() : '—'}</td>
+                            <td>{t.side}{t.is_exit ? ' ↗' : ''}</td>
+                            <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
+                            <td className="num-mono text-right">{Number(t.price).toFixed(2)}</td>
+                            <td className={cn('num-mono text-right', t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'))}>
+                              {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -617,67 +649,12 @@ function AlgoTab() {
         <header className="algo-tab__panel-header">
           <div className="algo-tab__panel-title">
             <Activity size={13} className="text-muted-foreground" aria-hidden />
-            {botDetail?.bot ? `${botDetail.bot.symbol} · Detail` : 'Bot Log'}
+            Bot Log
           </div>
-          <div className="flex items-center gap-1">
-            {selectedBotId && (
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => { setSelectedBotId(null); setBotDetail(null); }}
-              >
-                Clear
-              </Button>
-            )}
-            <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
-              <Trash2 />
-            </Button>
-          </div>
+          <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
+            <Trash2 />
+          </Button>
         </header>
-
-        {botDetail?.bot && selectedBotId === botDetail.bot.id && (
-          <div className="bot-detail-strip">
-            <div className="bot-detail-stats">
-              <div><span>Trades</span><strong>{botDetail.stats.trade_count}</strong></div>
-              <div><span>Win rate</span><strong>{botDetail.stats.win_rate}%</strong></div>
-              <div><span>Total PnL</span><strong className={botDetail.stats.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${botDetail.stats.total_pnl}</strong></div>
-              <div><span>Today</span><strong className={botDetail.stats.daily_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${botDetail.stats.daily_pnl}</strong></div>
-            </div>
-            {botDetail.trades?.length > 0 && (
-              <p className="bot-detail-strip__hint">
-                Bot trades shown on chart (gold pins = exits).
-              </p>
-            )}
-            {botDetail.trades?.length > 0 && (
-              <div className="bot-detail-trades scroll-panel-y scroll-panel-y-0">
-                <table className="terminal-table m-0 text-[0.62rem]">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Side</th>
-                      <th className="text-right">Qty</th>
-                      <th className="text-right">Price</th>
-                      <th className="text-right">PnL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {botDetail.trades.slice(0, 12).map(t => (
-                      <tr key={t.id}>
-                        <td className="text-muted-foreground">{new Date(t.timestamp + 'Z').toLocaleTimeString()}</td>
-                        <td>{t.side}{t.is_exit ? ' ↗' : ''}</td>
-                        <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
-                        <td className="num-mono text-right">{Number(t.price).toFixed(2)}</td>
-                        <td className={cn('num-mono text-right', t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'))}>
-                          {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
 
         <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0">
           <div className="algo-tab__log-list">
@@ -689,6 +666,14 @@ function AlgoTab() {
           </div>
         </div>
       </section>
+
+      <BotDetailDrawer
+        open={botDrawerOpen && !!selectedBotId}
+        onOpenChange={setBotDrawerOpen}
+        onStop={handleStopBot}
+        onPause={handlePauseBot}
+        onResume={handleResumeBot}
+      />
     </div>
   );
 }

@@ -1,0 +1,42 @@
+"""Wire protocol constants — inbound actions and outbound message types."""
+
+from enum import StrEnum
+
+
+class Action(StrEnum):
+    PLACE_ORDER = "place_order"
+    CANCEL_ORDER = "cancel_order"
+    UPDATE_POSITION_SL_TP = "update_position_sl_tp"
+    GET_ACCOUNT = "get_account"
+    GET_HISTORY = "get_history"
+    SUBSCRIBE_SYMBOL = "subscribe_symbol"
+    ADMIN_SET_SIMULATION = "admin_set_simulation"
+    ADMIN_SEED_BALANCE = "admin_seed_balance"
+    ADMIN_RESET_SYSTEM = "admin_reset_system"
+    ADMIN_EMERGENCY_STOP = "admin_emergency_stop"
+    ADMIN_GET_STATS = "admin_get_stats"
+    BOT_CREATE = "bot_create"
+    BOT_STOP = "bot_stop"
+    BOT_PAUSE = "bot_pause"
+    BOT_RESUME = "bot_resume"
+    BOT_STOP_ALL = "bot_stop_all"
+    BOT_GET_DETAIL = "bot_get_detail"
+    BOT_GET_ALL = "bot_get_all"
+    RUN_BACKTEST = "run_backtest"
+
+
+class MessageType(StrEnum):
+    TERMINAL_CONFIG = "terminal_config"
+    ORDER_RESULT = "order_result"
+    ACCOUNT_UPDATE = "account_update"
+    TRADE_HISTORY = "trade_history"
+    HISTORY_UPDATE = "history_update"
+    MARKET_UPDATE = "market_update"
+    ORDERBOOK_UPDATE = "orderbook_update"
+    SYSTEM_STATS = "system_stats"
+    BOTS_UPDATE = "bots_update"
+    BOT_DETAIL = "bot_detail"
+    BOT_LOG = "bot_log"
+    BOT_LOGS_HISTORY = "bot_logs_history"
+    BACKTEST_RESULT = "backtest_result"
+    ERROR = "error"

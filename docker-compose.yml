@@ -25,5 +25,43 @@ services:
       timeout: 3s
       retries: 5
 
+  backend:
+    build: ./backend
+    ports:
+      - "8765:8765"
+      - "8766:8766"
+    environment:
+      TERMINAL_MODE: SIMULATED
+      TERMINAL_ROLE: all
+      HTTP_ENABLED: "true"
+      HTTP_HOST: 0.0.0.0
+      WS_HOST: 0.0.0.0
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+      # HTTP_API_KEY: change-me
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_HTTP_BASE_URL: ""
+        VITE_WS_URL: ws://localhost:8765
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   pgdata:

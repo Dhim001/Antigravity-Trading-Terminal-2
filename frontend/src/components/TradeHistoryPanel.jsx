@@ -4,7 +4,8 @@
  */
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useStore } from '../store/useStore';
-import { sendWebSocketAction } from '../services/websocket';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
 import { cn } from '@/lib/utils';
 import {
   X, Download, RefreshCw, ChevronUp, ChevronDown, ChevronsUpDown,
@@ -78,7 +79,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
 
   const fetchHistory = useCallback(() => {
     setLoading(true);
-    sendWebSocketAction('get_history');
+    sendAction(Action.GET_HISTORY);
   }, []);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);

@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useStore } from './store/useStore';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useBootstrap } from './hooks/useBootstrap';
 
 import WatchlistWidget       from './components/WatchlistWidget';
 import ChartWidget           from './components/ChartWidget';
@@ -18,7 +19,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { TrendingUp, LayoutGrid, BarChart2, Settings, Search, OctagonX } from 'lucide-react';
-import { sendWebSocketAction } from './services/websocket';
+import { sendAction } from './api/transport';
+import { Action } from './api/protocol';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -28,13 +30,15 @@ const DOCK_DEFAULT = 320;
 
 export default function App() {
   const connectionStatus = useStore(state => state.connectionStatus);
+  const apiStatus          = useStore(state => state.apiStatus);
   const viewMode         = useStore(state => state.viewMode);
   const setViewMode      = useStore(state => state.setViewMode);
   const isLive           = useStore(state => state.isLive);
   const terminalMode     = useStore(state => state.terminalMode);
   const isBotRunning     = useStore(state => state.isBotRunning);
   const distributed      = useStore(state => state.distributed);
-  useWebSocket('ws://127.0.0.1:8765');
+  useBootstrap();
+  useWebSocket();
 
   const [showAdmin, setShowAdmin]   = useState(false);
   const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
@@ -44,6 +48,14 @@ export default function App() {
   const handleDockHeightChange = useCallback(h => setDockHeight(h), []);
 
   const connected = connectionStatus === 'connected';
+  const apiReady = apiStatus === 'ready';
+  const connectionTitle = connected
+    ? (isLive ? 'Live broker connected' : 'Simulated feed connected')
+    : apiReady
+      ? 'WebSocket reconnecting — data loaded via REST'
+      : apiStatus === 'loading'
+        ? 'Loading snapshot via REST…'
+        : 'Backend unreachable — retrying WebSocket';
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -160,7 +172,7 @@ export default function App() {
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      onClick={() => sendWebSocketAction('bot_stop_all', {})}
+                      onClick={() => sendAction(Action.BOT_STOP_ALL, {})}
                     >
                       Stop all bots
                     </AlertDialogAction>
@@ -192,7 +204,7 @@ export default function App() {
           <Badge
             variant="outline"
             className="icon-label px-2 py-0.5 text-[0.75rem] font-semibold"
-            title={connected ? (isLive ? 'Live broker connected' : 'Simulated feed connected') : 'WebSocket disconnected'}
+            title={connectionTitle}
           >
             <span
               className={cn(
@@ -201,11 +213,19 @@ export default function App() {
                   ? isLive
                     ? 'bg-trading-warn shadow-[0_0_6px_var(--color-crypto)]'
                     : 'bg-trading-up shadow-[0_0_6px_var(--color-up)]'
-                  : 'bg-trading-down shadow-[0_0_6px_var(--color-down)]'
+                  : apiReady
+                    ? 'bg-trading-accent shadow-[0_0_6px_var(--color-accent)]'
+                    : 'bg-trading-down shadow-[0_0_6px_var(--color-down)]'
               )}
             />
             <span className="header-label">
-              {connected ? (isLive ? 'Live Broker' : 'Simulated') : 'Disconnected'}
+              {connected
+                ? (isLive ? 'Live Broker' : 'Simulated')
+                : apiReady
+                  ? 'REST'
+                  : apiStatus === 'loading'
+                    ? 'Loading…'
+                    : 'Disconnected'}
             </span>
           </Badge>
         </div>

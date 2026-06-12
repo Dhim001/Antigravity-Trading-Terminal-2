@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { getCandles } from '../services/candleBuffer';
+import { Action } from '../api/protocol';
 
 const INDICATORS = {
   ema9:   { label: 'EMA 9',  color: '#f59e0b' },
@@ -958,12 +959,12 @@ export default function ChartWidget() {
       const price = e.detail;
       
       if (chartInteractionMode === 'edit_sl') {
-        import('../services/websocket').then(({ sendWebSocketAction }) => {
-          sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, stop_loss_price: price });
+        import('../api/transport').then(({ sendAction }) => {
+          sendAction(Action.UPDATE_POSITION_SL_TP, { symbol: activeSymbol, stop_loss_price: price });
         });
       } else if (chartInteractionMode === 'edit_tp') {
-        import('../services/websocket').then(({ sendWebSocketAction }) => {
-          sendWebSocketAction("update_position_sl_tp", { symbol: activeSymbol, take_profit_price: price });
+        import('../api/transport').then(({ sendAction }) => {
+          sendAction(Action.UPDATE_POSITION_SL_TP, { symbol: activeSymbol, take_profit_price: price });
         });
       }
       

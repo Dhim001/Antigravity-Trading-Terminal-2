@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, List
 import requests
 from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, SYMBOLS
+from app.api.outbound import publish_bot_log, publish_post_trade_bundle
 from app.services.base_oms import BaseOMSService
 from app.services.sim_oms import SimulatedOMSService
 
@@ -296,24 +297,17 @@ class AlpacaOMSService(BaseOMSService):
                             
                             # Push updates to connected websocket client
                             if self.broadcast_callback:
-                                # Send bot log console entry
-                                await self.broadcast_callback({
-                                    "type": "bot_log",
-                                    "data": {
-                                        "bot_id": "system",
-                                        "level": "INFO",
-                                        "message": f"🔔 Alpaca Order Update: {event.upper()} {order['qty']} {symbol} @ {order.get('filled_avg_price') or order.get('price')}"
-                                    }
-                                })
-                                # Broadcast overall balances/positions updates
-                                await self.broadcast_callback({
-                                    "type": "account_update",
-                                    "data": self.get_account_data()
-                                })
-                                await self.broadcast_callback({
-                                    "type": "trade_history",
-                                    "data": self.get_trade_history()
-                                })
+                                await publish_bot_log(
+                                    self.broadcast_callback,
+                                    "system",
+                                    "INFO",
+                                    f"🔔 Alpaca Order Update: {event.upper()} {order['qty']} {symbol} @ {order.get('filled_avg_price') or order.get('price')}",
+                                )
+                                await publish_post_trade_bundle(
+                                    self.broadcast_callback,
+                                    self.get_account_data(),
+                                    self.get_trade_history(),
+                                )
             except asyncio.CancelledError:
                 break
             except Exception as e:

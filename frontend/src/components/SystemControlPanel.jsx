@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
-import { sendWebSocketAction } from '../services/websocket';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
 import {
   Dialog,
   DialogContent,
@@ -108,12 +109,12 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   }, [systemStats]);
 
   useEffect(() => {
-    if (isOpen) sendWebSocketAction('admin_get_stats');
+    if (isOpen) sendAction(Action.ADMIN_GET_STATS);
   }, [isOpen, activeTab]);
 
   const handleUpdateSimulation = (updates = {}) => {
     if (isLive) return;
-    sendWebSocketAction('admin_set_simulation', {
+    sendAction(Action.ADMIN_SET_SIMULATION, {
       tick_interval: updates.tickInterval !== undefined ? updates.tickInterval : tickInterval,
       volatility_multiplier: updates.volatility !== undefined ? updates.volatility : volatility,
       symbol: activeSymbol,
@@ -127,13 +128,13 @@ export default function SystemControlPanel({ isOpen, onClose }) {
       toast.error('Please enter a valid balance amount');
       return;
     }
-    sendWebSocketAction('admin_seed_balance', { asset: seedAsset, amount });
+    sendAction(Action.ADMIN_SEED_BALANCE, { asset: seedAsset, amount });
     toast.success(`Credited ${amount} ${seedAsset}`);
   };
 
   const handleNuclearReset = () => {
     setIsResetting(true);
-    sendWebSocketAction('admin_reset_system');
+    sendAction(Action.ADMIN_RESET_SYSTEM);
     toast.info('System reset initiated…');
     setTimeout(() => {
       setIsResetting(false);
@@ -142,13 +143,13 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   };
 
   const handleEmergencyStop = () => {
-    sendWebSocketAction('admin_emergency_stop');
+    sendAction(Action.ADMIN_EMERGENCY_STOP);
     toast.warning('Emergency liquidation executed');
     onClose();
   };
 
   const handleRefreshStats = () => {
-    sendWebSocketAction('admin_get_stats');
+    sendAction(Action.ADMIN_GET_STATS);
     toast.success('Diagnostics refreshed');
   };
 

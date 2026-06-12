@@ -1,0 +1,110 @@
+"""Tests for HTTP bindings, OpenAPI, and middleware."""
+
+import unittest
+from unittest.mock import AsyncMock, MagicMock
+
+from starlette.testclient import TestClient
+
+from app.api.http.app import create_http_app
+from app.api.http.bindings import HTTP_BINDINGS
+from app.api.middleware import middleware_rate_limit
+from app.api.openapi import build_openapi_spec
+from app.api.context import RequestContext
+from app.api.protocol import Action
+from app.api.types import RouteMeta
+from app.api.router import ensure_routes_loaded
+from app.api.state import AppState
+from app.api.http.collector import HttpConnectionManager
+
+
+def _make_state():
+    oms = MagicMock()
+    oms.get_account_data.return_value = {"balances": [{"asset": "USD", "balance": 10000}]}
+    oms.get_trade_history.return_value = []
+    oms.place_order = AsyncMock(return_value={"status": "success", "order_id": "ord-1"})
+    oms.cancel_order = AsyncMock(return_value={"status": "success"})
+
+    bot_manager = MagicMock()
+    bot_manager.list_bots_public.return_value = []
+    bot_manager.get_bot_detail.return_value = {"id": "bot-1"}
+    bot_manager.create_bot = AsyncMock(return_value="bot-2")
+    bot_manager.stop_bot = AsyncMock()
+    bot_manager.pause_bot = AsyncMock()
+    bot_manager.resume_bot = AsyncMock()
+    bot_manager.stop_all_bots = AsyncMock(return_value=1)
+
+    manager = MagicMock()
+    manager.connected_clients = set()
+
+    return AppState(oms=oms, manager=manager, bot_manager=bot_manager, backtester=None)
+
+
+class TestHttpBindings(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ensure_routes_loaded()
+        cls.client = TestClient(create_http_app(_make_state()))
+
+    def test_all_bindings_have_registered_actions(self):
+        from app.api.router import ROUTES
+        for _method, _path, action, _ in HTTP_BINDINGS:
+            self.assertIn(action, ROUTES)
+
+    def test_health(self):
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["ok"])
+
+    def test_openapi_spec(self):
+        spec = build_openapi_spec()
+        self.assertEqual(spec["openapi"], "3.1.0")
+        self.assertIn("/api/v1/bots", spec["paths"])
+        self.assertIn("/api/v1/admin/emergency-stop", spec["paths"])
+
+    def test_openapi_endpoint(self):
+        resp = self.client.get("/api/v1/openapi.json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("paths", resp.json())
+
+    def test_cancel_order_route(self):
+        resp = self.client.delete("/api/v1/orders/ord-123")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_bot_stop_route(self):
+        resp = self.client.post("/api/v1/bots/bot-1/stop")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_backtest_route(self):
+        resp = self.client.post("/api/v1/backtest", json={
+            "symbol": "AAPL",
+            "strategy": "MACD_RSI",
+            "config": {},
+        })
+        self.assertIn(resp.status_code, (200, 400))
+
+
+class TestRateLimitMiddleware(unittest.IsolatedAsyncioTestCase):
+    async def test_rate_limit_blocks_rapid_trades(self):
+        manager = HttpConnectionManager()
+        oms = MagicMock()
+        bot_manager = MagicMock()
+        ctx = RequestContext(
+            websocket=None,
+            manager=manager,
+            oms=oms,
+            bot_manager=bot_manager,
+            backtester=None,
+            message={"_rate_key": "test-client"},
+            action=Action.PLACE_ORDER,
+        )
+        meta = RouteMeta(handler=AsyncMock(), tags=["trading"])
+
+        first = await middleware_rate_limit(ctx, meta)
+        second = await middleware_rate_limit(ctx, meta)
+        self.assertFalse(first)
+        self.assertTrue(second)
+        self.assertTrue(any(m.get("type") == "order_result" for m in manager.messages))
+
+
+if __name__ == "__main__":
+    unittest.main()

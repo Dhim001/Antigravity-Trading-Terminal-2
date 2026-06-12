@@ -25,6 +25,7 @@ from app.config import (
     MAX_ORDER_VALUE,
 )
 from app.services.base_oms import BaseOMSService
+from app.api.outbound import publish_account_update
 from app.services.sim_oms import SimulatedOMSService
 
 logger = logging.getLogger(__name__)
@@ -566,10 +567,7 @@ class EtoroOMSService(BaseOMSService):
         while self._active:
             try:
                 if self.broadcast_callback:
-                    await self.broadcast_callback({
-                        "type": "account_update",
-                        "data": self.get_account_data(),
-                    })
+                    await publish_account_update(self.broadcast_callback, self.get_account_data())
             except asyncio.CancelledError:
                 break
             except Exception as e:
