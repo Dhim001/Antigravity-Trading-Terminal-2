@@ -16,6 +16,10 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 | Multi-chart grid view | Done |
 | Bottom dock: positions, orders, balances, algo, history, equity | Done |
 | Algo bot engine (4 strategies + backtester) | Done |
+| Bot risk gates, pause/resume, analytics | Done |
+| Distributed runtime (Redis worker split) | Done |
+| PostgreSQL + custom strategy plugins | Done |
+| Docker Compose (Redis/Postgres) + header bot controls | Done |
 | Admin / simulation controls | Done |
 | shadcn/ui design system migration | Done |
 | Symbol command palette (⌘K) | Done |
@@ -81,7 +85,23 @@ graph TD
   - `SUPERTREND_ADX` — SuperTrend flip + ADX confirmation
   - `VWAP_PULLBACK` — VWAP mean-reversion entries
 - **Backtester** service for offline strategy evaluation
-- Dock **Algo Bot** tab: strategy templates, capital allocation, live bot logs
+- Dock **Algo Bot** tab: strategy templates, capital allocation, live bot logs, backtest equity curve, deploy confirmation
+- **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all
+- **Bot analytics**: per-bot trades, snapshots, detail panel, chart trade markers
+- **Config-driven strategies**: indicator periods wired from bot `config`
+- **Optional `CUSTOM` strategy plugins** in `backend/strategies/` (`ALLOW_CUSTOM_STRATEGIES=true`)
+
+### Distributed runtime (Phase 6)
+
+By default everything runs in one process (`TERMINAL_ROLE=all`). For scale, split the WebSocket server from the bot engine via Redis:
+
+| Role | Command | Responsibility |
+|------|---------|----------------|
+| `all` (default) | `python main.py` | WS + feed + bot engine |
+| `server` | `python main.py` | WS + feed; publishes bar-close events |
+| `worker` | `python worker.py` | Bot engine only; consumes Redis events |
+
+Requires `REDIS_URL`. Optional `DATABASE_URL` for PostgreSQL instead of SQLite. See `backend/.env.example`.
 
 ### Live integrations
 Set `TERMINAL_MODE` in `.env` to switch backends:
@@ -115,17 +135,21 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 ```
 trading-terminal/
 ├── backend/
-│   ├── main.py                 # Entry point
+│   ├── main.py                 # Entry point (WebSocket server)
+│   ├── worker.py               # Bot engine worker (TERMINAL_ROLE=worker)
 │   ├── app/
 │   │   ├── config.py           # Modes, symbols, API credentials
-│   │   ├── database.py         # SQLite schema & helpers
+│   │   ├── database.py         # Schema & helpers (SQLite or Postgres)
+│   │   ├── db/connection.py    # DATABASE_URL adapter
 │   │   ├── server.py           # WebSocket server & DI wiring
 │   │   ├── services/
 │   │   │   ├── sim_feed.py     # Simulated feed (SBBS)
 │   │   │   ├── synthetic_data.py
 │   │   │   ├── alpaca_*.py / binance_*.py / etoro_*.py
-│   │   │   └── bots/           # Screener, strategies, manager, backtester
+│   │   │   ├── events/         # Redis pub/sub (bar_close, bot_reload)
+│   │   │   └── bots/           # Screener, strategies, manager, backtester, runtime
 │   │   └── websocket/          # Connection manager & message handlers
+│   ├── strategies/             # Optional CUSTOM strategy plugins
 │   └── data/                   # Cached *.parquet (generated locally)
 └── frontend/
     └── src/
@@ -162,6 +186,29 @@ python main.py
 Server listens on **`ws://127.0.0.1:8765`**.
 
 On Windows you can also run `backend/start.bat`.
+
+**Distributed mode** (optional — requires Redis):
+
+```bash
+# Start Redis + Postgres
+docker compose up -d
+```
+
+```powershell
+# Terminal 2: Server (WS + market feed)
+$env:TERMINAL_ROLE="server"
+$env:REDIS_URL="redis://127.0.0.1:6379/0"
+# Optional Postgres:
+# $env:DATABASE_URL="postgresql://trading:trading@127.0.0.1:5432/trading"
+python main.py
+
+# Terminal 3: Bot worker
+$env:TERMINAL_ROLE="worker"
+$env:REDIS_URL="redis://127.0.0.1:6379/0"
+python worker.py
+```
+
+Or run `backend/worker.bat` for the worker process on Windows.
 
 ### Frontend
 
@@ -204,6 +251,13 @@ ETORO_USER_KEY=
 ETORO_ENV=auto          # demo | real | auto
 ETORO_POLL_INTERVAL=1.0
 ETORO_EXEC_MIN_INTERVAL=3.0
+
+# Bot engine (optional)
+ALLOW_LIVE_BOTS=false
+TERMINAL_ROLE=all              # all | server | worker
+REDIS_URL=                     # redis://127.0.0.1:6379/0 for server/worker split
+DATABASE_URL=                  # postgresql://... or omit for SQLite
+ALLOW_CUSTOM_STRATEGIES=false
 ```
 
 SQLite database `backend/trading.db` and cached parquet files are created automatically and are **gitignored**.
@@ -219,7 +273,8 @@ SQLite database `backend/trading.db` and cached parquet files are created automa
 | `update_position_sl_tp` | Set stop-loss / take-profit |
 | `subscribe_symbol` | Request candle history for symbol |
 | `get_account` / `get_history` | Snapshot account or trade log |
-| `bot_create` / `bot_start` / `bot_stop` | Manage algo bots |
+| `bot_create` / `bot_stop` / `bot_pause` / `bot_resume` / `bot_stop_all` | Manage algo bots |
+| `bot_get_detail` / `run_backtest` | Bot stats + offline backtest |
 | `admin_set_simulation` | Tick speed, volatility, bias |
 | `admin_reset_system` | Wipe orders, positions, history |
 
@@ -227,6 +282,6 @@ SQLite database `backend/trading.db` and cached parquet files are created automa
 
 ## Tech Stack
 
-**Backend:** Python, `websockets`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `requests`
+**Backend:** Python, `websockets`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `requests`, `redis`, `psycopg`
 
 **Frontend:** React 19, Vite 8, Zustand, ECharts, lightweight-charts, shadcn/ui, Tailwind CSS v4, Lucide icons, cmdk, Sonner toasts

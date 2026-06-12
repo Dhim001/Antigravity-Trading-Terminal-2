@@ -1,89 +1,188 @@
-import importlib.metadata
+import importlib.metadata  # noqa: F401 — pandas can shadow importlib on Py 3.14
+
+import logging
+
 import pandas as pd
 import pandas_ta as ta
-import logging
+
+from app.services.bots.indicators import (
+    atr_col,
+    config_cache_key,
+    merge_strategy_config,
+    rsi_col,
+)
+
 
 class MarketScreenerService:
     """
-    Calculates all technical indicators for crypto day trading using pandas-ta.
-    Takes OHLCV data and appends indicator columns required by the bots.
+    Calculates technical indicators for bot strategies using pandas-ta.
+    Indicator periods come from the bot config (with strategy defaults).
     """
-    
+
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        self._cache: dict[tuple, pd.DataFrame] = {}
 
-    def process_candles(self, symbol: str, ohlcv_data: list) -> pd.DataFrame:
+    def process_candles(
+        self,
+        symbol: str,
+        ohlcv_data: list,
+        config: dict | None = None,
+        strategy: str | None = None,
+    ) -> pd.DataFrame:
         """
-        Converts a list of candle dicts to a DataFrame and computes all required indicators.
+        Converts candle dicts to a DataFrame and computes indicators for the strategy.
         Uses a rolling tail window — full 7-day history is unnecessary for live signals.
         """
         if not ohlcv_data or len(ohlcv_data) < 50:
             return pd.DataFrame()
 
-        # Indicator warm-up needs ~50 bars; 300 keeps screener fast at scale
-        window = ohlcv_data[-300:] if len(ohlcv_data) > 300 else ohlcv_data
+        bar_time = ohlcv_data[-1].get("time")
+        strat_key = (strategy or "MACD_RSI").upper()
+        if strat_key == "CUSTOM":
+            strat_key = (config or {}).get("base_strategy", "MACD_RSI").upper()
+        cfg = merge_strategy_config(strat_key, config)
+        cache_key = (symbol, bar_time, config_cache_key(strat_key, config))
 
+        if bar_time is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached.copy()
+
+        window = ohlcv_data[-300:] if len(ohlcv_data) > 300 else ohlcv_data
         df = pd.DataFrame(window)
-        
-        # Ensure correct types
-        for col in ['open', 'high', 'low', 'close', 'volume']:
+
+        for col in ["open", "high", "low", "close", "volume"]:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-        # Drop rows with NaN in price columns
-        df = df.dropna(subset=['open', 'high', 'low', 'close'])
-        
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna(subset=["open", "high", "low", "close"])
+
         if len(df) < 50:
             return pd.DataFrame()
 
         try:
-            # 1. MACD (12, 26, 9)
-            macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-            if macd is not None:
-                df = pd.concat([df, macd], axis=1)
-                
-            # 2. RSI (14)
-            df['RSI_14'] = ta.rsi(df['close'], length=14)
-            
-            # 3. Stochastic (14, 3, 3)
-            stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3)
-            if stoch is not None:
-                df = pd.concat([df, stoch], axis=1)
-                
-            # 4. Bollinger Bands (20, 2)
-            bb = ta.bbands(df['close'], length=20, std=2)
-            if bb is not None:
-                df = pd.concat([df, bb], axis=1)
-                
-            # 5. ATR (14)
-            df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-            
-            # 6. SuperTrend (14, 3)
-            st = ta.supertrend(df['high'], df['low'], df['close'], length=14, multiplier=3.0)
-            if st is not None:
-                df = pd.concat([df, st], axis=1)
-                
-            # 7. ADX (14)
-            adx = ta.adx(df['high'], df['low'], df['close'], length=14)
-            if adx is not None:
-                df = pd.concat([df, adx], axis=1)
-                
-            # 8. VWAP (Requires timestamp index for proper session grouping)
-            if 'time' in df.columns and len(df) > 0:
-                try:
-                    df_temp = df.copy()
-                    first_ts = df_temp['time'].iloc[0]
-                    unit = 'ms' if first_ts > 1e11 else 's'
-                    df_temp['datetime'] = pd.to_datetime(df_temp['time'], unit=unit)
-                    df_temp.set_index('datetime', inplace=True)
-                    df_temp.sort_index(inplace=True)
-                    vwap = ta.vwap(df_temp['high'], df_temp['low'], df_temp['close'], df_temp['volume'])
-                    if vwap is not None:
-                        df['VWAP'] = vwap.values
-                except Exception as vwap_err:
-                    self.logger.warning(f"VWAP calculation skipped: {vwap_err}")
-
+            self._compute_for_strategy(df, strat_key, cfg)
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {e}")
-            
+
+        if bar_time is not None and not df.empty:
+            self._cache[cache_key] = df.copy()
+            stale = [k for k in self._cache if k[0] == symbol and k[1] != bar_time]
+            for key in stale:
+                del self._cache[key]
+
         return df
+
+    def _compute_for_strategy(self, df: pd.DataFrame, strategy: str, cfg: dict) -> None:
+        """Compute indicator columns needed by the given strategy."""
+        strat = strategy.upper()
+
+        if strat in ("MACD_RSI", "BRS_SCALPING", "VWAP_PULLBACK"):
+            atr_len = cfg.get("atr_length", 14)
+            df[atr_col(atr_len)] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+
+        if strat in ("MACD_RSI",):
+            macd = ta.macd(
+                df["close"],
+                fast=cfg["macd_fast"],
+                slow=cfg["macd_slow"],
+                signal=cfg["macd_signal"],
+            )
+            if macd is not None:
+                for col in macd.columns:
+                    df[col] = macd[col]
+            df[rsi_col(cfg["rsi_length"])] = ta.rsi(df["close"], length=cfg["rsi_length"])
+
+        if strat == "BRS_SCALPING":
+            stoch = ta.stoch(
+                df["high"],
+                df["low"],
+                df["close"],
+                k=cfg["stoch_k"],
+                d=cfg["stoch_d"],
+                smooth_k=cfg["stoch_smooth"],
+            )
+            if stoch is not None:
+                for col in stoch.columns:
+                    df[col] = stoch[col]
+            bb = ta.bbands(df["close"], length=cfg["bb_length"], std=cfg["bb_std"])
+            if bb is not None:
+                for col in bb.columns:
+                    df[col] = bb[col]
+            df[rsi_col(cfg["rsi_length"])] = ta.rsi(df["close"], length=cfg["rsi_length"])
+
+        if strat == "SUPERTREND_ADX":
+            st = ta.supertrend(
+                df["high"],
+                df["low"],
+                df["close"],
+                length=cfg["st_length"],
+                multiplier=cfg["st_multiplier"],
+            )
+            if st is not None:
+                for col in st.columns:
+                    df[col] = st[col]
+            adx = ta.adx(
+                df["high"],
+                df["low"],
+                df["close"],
+                length=cfg["adx_length"],
+            )
+            if adx is not None:
+                for col in adx.columns:
+                    df[col] = adx[col]
+
+        if strat == "VWAP_PULLBACK":
+            self._compute_vwap(df)
+
+        # Full suite for unknown / backtest-all path
+        if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK"):
+            self._compute_all(df, cfg)
+
+    def _compute_all(self, df: pd.DataFrame, cfg: dict) -> None:
+        """Compute every indicator (legacy / multi-strategy backtests)."""
+        macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        if macd is not None:
+            for col in macd.columns:
+                df[col] = macd[col]
+        df[rsi_col(14)] = ta.rsi(df["close"], length=14)
+        stoch = ta.stoch(df["high"], df["low"], df["close"], k=14, d=3, smooth_k=3)
+        if stoch is not None:
+            for col in stoch.columns:
+                df[col] = stoch[col]
+        bb = ta.bbands(df["close"], length=20, std=2)
+        if bb is not None:
+            for col in bb.columns:
+                df[col] = bb[col]
+        df[atr_col(14)] = ta.atr(df["high"], df["low"], df["close"], length=14)
+        st = ta.supertrend(df["high"], df["low"], df["close"], length=14, multiplier=3.0)
+        if st is not None:
+            for col in st.columns:
+                df[col] = st[col]
+        adx = ta.adx(df["high"], df["low"], df["close"], length=14)
+        if adx is not None:
+            for col in adx.columns:
+                df[col] = adx[col]
+        self._compute_vwap(df)
+
+    def _compute_vwap(self, df: pd.DataFrame) -> None:
+        if "time" not in df.columns or len(df) == 0:
+            return
+        try:
+            df_temp = df.copy()
+            first_ts = df_temp["time"].iloc[0]
+            unit = "ms" if first_ts > 1e11 else "s"
+            df_temp["datetime"] = pd.to_datetime(df_temp["time"], unit=unit)
+            df_temp.set_index("datetime", inplace=True)
+            df_temp.sort_index(inplace=True)
+            vwap = ta.vwap(
+                df_temp["high"],
+                df_temp["low"],
+                df_temp["close"],
+                df_temp["volume"],
+            )
+            if vwap is not None:
+                df["VWAP"] = vwap.values
+        except Exception as vwap_err:
+            self.logger.warning(f"VWAP calculation skipped: {vwap_err}")

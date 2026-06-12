@@ -360,6 +360,53 @@ body {
   min-width: 0;
 }
 
+.header-distributed-badge {
+  border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  color: var(--color-accent-light);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header-stop-bots-btn {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--destructive) 35%, transparent),
+    0 0 12px color-mix(in oklab, var(--destructive) 18%, transparent);
+  animation: header-stop-pulse 2.8s ease-in-out infinite;
+}
+
+@keyframes header-stop-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--destructive) 35%, transparent),
+      0 0 8px color-mix(in oklab, var(--destructive) 12%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--destructive) 55%, transparent),
+      0 0 16px color-mix(in oklab, var(--destructive) 28%, transparent);
+  }
+}
+
+.dock-algo-pulse {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-up);
+  box-shadow: 0 0 6px var(--color-up);
+  animation: dock-algo-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes dock-algo-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(0.85); }
+}
+
 /** Hide secondary header copy below 1280px — icons + tooltips remain */
 @media (max-width: 1279px) {
   .terminal-header {
@@ -964,6 +1011,552 @@ body {
 }
 
 /* dock-tab-content removed — use Tailwind on TabsContent */
+
+/* ═══════════════════════════════════════════════════════════════════
+   ALGO BOT TAB
+═══════════════════════════════════════════════════════════════════ */
+.algo-tab {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+  height: 100%;
+  min-height: 0;
+  padding: var(--sp-3);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+@media (min-width: 1280px) {
+  .algo-tab {
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) minmax(220px, 300px);
+    overflow: hidden;
+  }
+}
+
+.algo-tab__banner {
+  grid-column: 1 / -1;
+}
+
+.algo-tab__panel {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in oklab, var(--border) 90%, var(--primary));
+  background: color-mix(in oklab, var(--card) 92%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--foreground) 5%, transparent),
+    0 2px 12px rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 1279px) {
+  .algo-tab__panel--deploy {
+    max-height: min(440px, 48vh);
+  }
+  .algo-tab__panel--bots {
+    max-height: min(320px, 40vh);
+  }
+  .algo-tab__panel--log {
+    max-height: min(260px, 32vh);
+  }
+}
+
+.algo-tab__panel-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--icon-gap-loose);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--muted) 42%, transparent) 0%,
+    color-mix(in oklab, var(--muted) 18%, transparent) 100%
+  );
+}
+
+.algo-tab__panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--icon-gap-loose);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+
+.algo-tab__panel-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--icon-gap-loose);
+}
+
+.algo-bots-scroll-hint {
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  user-select: none;
+}
+
+@media (min-width: 1280px) {
+  .algo-bots-scroll-hint {
+    display: none;
+  }
+}
+
+.algo-tab__panel-footer {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--icon-gap-loose);
+  border-top: 1px solid var(--border);
+  padding: 0.625rem 0.75rem;
+  background: color-mix(in oklab, var(--muted) 25%, transparent);
+}
+
+.algo-tab__scroll {
+  min-height: 0;
+  flex: 1 1 0%;
+}
+
+.algo-tab__log-list {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.62rem;
+  line-height: 1.55;
+}
+
+.algo-template-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.375rem;
+}
+
+.algo-template-btn {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 30%, transparent);
+  padding: 0.5rem 0.625rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+
+.algo-template-btn:hover {
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+  border-color: color-mix(in oklab, var(--primary) 25%, var(--border));
+}
+
+.algo-template-btn--active {
+  border-color: color-mix(in oklab, var(--primary) 55%, var(--border));
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+.algo-template-btn__name {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.algo-template-btn__meta {
+  margin-top: 0.125rem;
+  font-size: 0.6rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.algo-template-btn--active .algo-template-btn__name {
+  color: var(--color-accent-light);
+}
+
+.algo-field-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.algo-field-hint {
+  display: block;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.algo-inline-code {
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+  padding: 0.1rem 0.35rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.62rem;
+}
+
+.algo-backtest-lab {
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklab, var(--color-up) 30%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-up) 8%, transparent) 0%,
+    color-mix(in oklab, var(--card) 95%, transparent) 100%
+  );
+  padding: 0.625rem 0.75rem;
+  font-size: 0.62rem;
+}
+
+.algo-backtest-lab--down {
+  border-color: color-mix(in oklab, var(--color-down) 30%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-down) 8%, transparent) 0%,
+    color-mix(in oklab, var(--card) 95%, transparent) 100%
+  );
+}
+
+.algo-backtest-lab__title {
+  margin-bottom: 0.375rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.algo-backtest-lab--down .algo-backtest-lab__title {
+  color: var(--color-down);
+}
+
+.algo-backtest-lab:not(.algo-backtest-lab--down) .algo-backtest-lab__title {
+  color: var(--color-up);
+}
+
+.algo-backtest-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+
+.backtest-mini-chart {
+  margin-top: 0.5rem;
+  height: 100px;
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: color-mix(in oklab, var(--background) 50%, transparent);
+}
+
+.algo-stop-all-btn {
+  border-color: color-mix(in oklab, var(--destructive) 40%, var(--border)) !important;
+  color: var(--color-down) !important;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.algo-stop-all-btn:hover {
+  background: color-mix(in oklab, var(--destructive) 12%, transparent) !important;
+  border-color: color-mix(in oklab, var(--destructive) 55%, var(--border)) !important;
+}
+
+/* Active bots — horizontal + vertical scroll with sticky symbol & actions */
+.algo-bots-scroll-wrap {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0%;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.algo-bots-scroll-wrap::before,
+.algo-bots-scroll-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  width: 14px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.algo-bots-scroll-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg-primary) 0%, transparent 100%);
+}
+
+.algo-bots-scroll-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg-primary) 0%, transparent 100%);
+}
+
+.algo-bots-scroll {
+  min-height: 0;
+  flex: 1 1 0%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+}
+
+.algo-bots-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.algo-bots-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--foreground) 22%, transparent);
+}
+
+.algo-bots-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--foreground) 35%, transparent);
+}
+
+.algo-bots-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.terminal-table.algo-bots-table {
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.68rem;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.terminal-table.algo-bots-table th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 7px 12px;
+  font-size: 0.58rem;
+  white-space: nowrap;
+  background: color-mix(in oklab, var(--bg-secondary) 96%, transparent);
+  box-shadow: 0 1px 0 var(--border-subtle);
+}
+
+.terminal-table.algo-bots-table td {
+  padding: 8px 12px;
+  vertical-align: middle;
+}
+
+.terminal-table.algo-bots-table th:nth-child(1),
+.terminal-table.algo-bots-table td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 4.5rem;
+  background: rgba(6, 10, 18, 0.98);
+  box-shadow: 1px 0 0 var(--border-subtle);
+}
+
+.terminal-table.algo-bots-table thead th:nth-child(1) {
+  z-index: 5;
+}
+
+.terminal-table.algo-bots-table th:nth-child(2),
+.terminal-table.algo-bots-table td:nth-child(2) {
+  min-width: 7.5rem;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-table.algo-bots-table th:nth-child(3),
+.terminal-table.algo-bots-table td:nth-child(3),
+.terminal-table.algo-bots-table th:nth-child(4),
+.terminal-table.algo-bots-table td:nth-child(4) {
+  min-width: 4.75rem;
+}
+
+.terminal-table.algo-bots-table th:nth-child(5),
+.terminal-table.algo-bots-table td:nth-child(5) {
+  min-width: 5.5rem;
+}
+
+.terminal-table.algo-bots-table th:nth-child(6),
+.terminal-table.algo-bots-table td:nth-child(6) {
+  min-width: 5.25rem;
+}
+
+.terminal-table.algo-bots-table th:nth-child(7),
+.terminal-table.algo-bots-table td:nth-child(7) {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  min-width: 8.5rem;
+  background: rgba(6, 10, 18, 0.98);
+  box-shadow: -1px 0 0 var(--border-subtle);
+}
+
+.terminal-table.algo-bots-table thead th:nth-child(7) {
+  z-index: 5;
+}
+
+.terminal-table tr.algo-bot-row:nth-child(even) > td {
+  background: color-mix(in oklab, var(--muted) 12%, transparent);
+}
+
+.terminal-table tr.algo-bot-row:nth-child(even) > td:nth-child(1),
+.terminal-table tr.algo-bot-row:nth-child(even) > td:nth-child(7) {
+  background: color-mix(in oklab, var(--muted) 18%, rgba(6, 10, 18, 0.98));
+}
+
+.terminal-table tr.algo-bot-row:hover > td {
+  background: var(--bg-hover);
+}
+
+.terminal-table tr.algo-bot-row:hover > td:nth-child(1),
+.terminal-table tr.algo-bot-row:hover > td:nth-child(7) {
+  background: color-mix(in oklab, var(--bg-hover) 85%, rgba(6, 10, 18, 0.98));
+}
+
+.terminal-table tr.algo-bot-row {
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.terminal-table tr.algo-bot-row.row-active > td {
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+}
+
+.terminal-table tr.algo-bot-row.row-active > td:nth-child(1) {
+  background: color-mix(in oklab, var(--primary) 14%, rgba(6, 10, 18, 0.98));
+  box-shadow:
+    inset 3px 0 0 var(--primary),
+    1px 0 0 var(--border-subtle);
+}
+
+.terminal-table tr.algo-bot-row.row-active > td:nth-child(7) {
+  background: color-mix(in oklab, var(--primary) 14%, rgba(6, 10, 18, 0.98));
+}
+
+.algo-last-signal {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.algo-table-empty {
+  padding: 2rem 1rem !important;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.algo-dialog-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.algo-dialog-summary strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.bot-detail-strip {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0.625rem 0.75rem;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--primary) 6%, transparent) 0%,
+    color-mix(in oklab, var(--muted) 20%, transparent) 100%
+  );
+}
+
+.bot-detail-strip__hint {
+  margin-top: 0.375rem;
+  font-size: 0.6rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.bot-detail-trades {
+  margin-top: 0.5rem;
+  max-height: 6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--background) 40%, transparent);
+}
+
+.algo-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.125rem 0;
+  border-radius: 2px;
+  color: var(--text-muted);
+}
+
+.algo-log-line--success { color: var(--color-up); }
+.algo-log-line--error   { color: var(--color-down); }
+.algo-log-line--warn    { color: var(--color-warn, #f59e0b); }
+.algo-log-line--info    { color: var(--color-accent-light); }
+
+.algo-tab__deploy-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.algo-bot-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.bot-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  font-size: 0.62rem;
+}
+
+.bot-detail-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--background) 35%, transparent);
+  border: 1px solid var(--border-subtle);
+}
+
+.bot-detail-stats span {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.bot-detail-stats strong {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 640px) {
+  .bot-detail-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    TABLES

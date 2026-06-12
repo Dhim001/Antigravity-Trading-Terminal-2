@@ -1,99 +1,88 @@
 import asyncio
 import logging
 import websockets
-from app.config import WS_HOST, WS_PORT, WS_MAX_MESSAGE_SIZE, TERMINAL_MODE
+
+from app.config import (
+    WS_HOST,
+    WS_PORT,
+    WS_MAX_MESSAGE_SIZE,
+    TERMINAL_MODE,
+    TERMINAL_ROLE,
+    ALLOW_LIVE_BOTS,
+    REDIS_URL,
+)
 from app.database import init_db
+from app.db.connection import DB_DRIVER
 from app.websocket.connection_manager import ConnectionManager
 from app.websocket.handlers import handle_client_message
-from app.services.bots.screener import MarketScreenerService
-from app.services.bots.manager import BotManagerService
-from app.services.bots.backtester import BacktesterService
+from app.services.bots.runtime import (
+    bar_publish_loop,
+    bot_market_loop,
+    bot_snapshot_loop,
+    create_bot_stack,
+    create_feed_and_oms,
+    runs_bar_publisher,
+    runs_bot_engine_inline,
+)
+from app.services.events.event_bus import create_event_bus
+from app.services.events import channels, publish as event_publish
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-# Dev/HMR refreshes often abort the handshake mid-flight; avoid ERROR tracebacks for that.
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
-# Global connection manager
+if TERMINAL_ROLE == "worker":
+    raise SystemExit(
+        "TERMINAL_ROLE=worker — run `python worker.py` instead of main.py / server.py"
+    )
+
 manager = ConnectionManager()
+event_bus = create_event_bus(REDIS_URL) if REDIS_URL and TERMINAL_ROLE == "server" else None
 
-# Dependency Injection Factory
-if TERMINAL_MODE == "LIVE_ALPACA":
-    logging.info("Initializing Live Alpaca Feed & OMS...")
-    from app.services.alpaca_feed import AlpacaFeedService
-    from app.services.alpaca_oms import AlpacaOMSService
-    feed = AlpacaFeedService()
-    oms = AlpacaOMSService(feed)
-elif TERMINAL_MODE == "LIVE_BINANCE":
-    logging.info("Initializing Live Binance Feed & OMS...")
-    from app.services.binance_feed import BinanceFeedService
-    from app.services.binance_oms import BinanceOMSService
-    feed = BinanceFeedService()
-    oms = BinanceOMSService(feed)
-elif TERMINAL_MODE == "LIVE_ETORO":
-    logging.info("Initializing Live eToro Feed & OMS...")
-    from app.services.etoro_feed import EtoroFeedService
-    from app.services.etoro_oms import EtoroOMSService
-    feed = EtoroFeedService()
-    oms = EtoroOMSService(feed)
-else: # "SIMULATED"
-    logging.info("Initializing Simulated Feed & OMS...")
-    from app.services.sim_feed import SimulatedFeedService
-    from app.services.sim_oms import SimulatedOMSService
-    feed = SimulatedFeedService()
-    oms = SimulatedOMSService(feed)
+logging.info("Initializing feed & OMS (mode=%s, role=%s, db=%s)...", TERMINAL_MODE, TERMINAL_ROLE, DB_DRIVER)
+feed, oms = create_feed_and_oms()
 
-# Register a bridge to broadcast market updates directly to WebSocket clients
+
 async def broadcast_wrapper(payload: dict):
     await manager.broadcast(payload)
+    if event_bus and TERMINAL_ROLE == "server":
+        await event_bus.publish(channels.WS_BROADCAST, payload)
+
 
 feed.register_broadcast_callback(broadcast_wrapper)
 if hasattr(oms, "register_broadcast_callback"):
     oms.register_broadcast_callback(broadcast_wrapper)
 
-# Initialize Bot Engine
-screener_service = MarketScreenerService()
-backtester_service = BacktesterService(screener_service)
-bot_manager = BotManagerService(oms, screener_service, broadcast_wrapper)
+screener_service, backtester_service, bot_manager = create_bot_stack(broadcast_wrapper, oms)
+
+
+async def redis_forward_loop():
+    """Keep forward loop alive (subscriptions registered before event_bus.start)."""
+    logging.info("Redis forward loop active on %s", channels.WS_BROADCAST)
+    while True:
+        await asyncio.sleep(3600)
+
 
 async def simulated_market_loop():
-    """Simulated broadcast loop, only running in SIMULATED mode."""
     logging.info("Starting simulated market data broadcast loop...")
     tick_count = 0
     while True:
         try:
-            # 1. Update prices and order books
             data = {}
             for symbol in feed.symbols:
                 market_data = feed.get_market_data(symbol)
                 data[symbol] = market_data
-
-                # Bot screener only when bots are running for this symbol (avoid 25× pandas-ta per tick)
-                if bot_manager.active_bots:
-                    watching = any(b.get("symbol") == symbol for b in bot_manager.active_bots.values())
-                    if watching:
-                        candles = feed.get_candles(symbol)
-                        if candles:
-                            await bot_manager.process_market_tick(symbol, candles)
-                
-            # 2. Match any pending limit orders based on updated prices
             fills = oms.match_pending_orders()
-            
-            # 3. Check for server-side SL/TP triggers
             sl_tp_fills, sl_tp_logs = oms.check_sl_tp_triggers()
-            
-            # Broadcast any triggered SL/TP log actions
+
             if sl_tp_logs:
                 for log_msg in sl_tp_logs:
                     logging.info(log_msg)
                     await manager.broadcast({
                         "type": "bot_log",
-                        "data": log_msg
+                        "data": {"bot_id": "system", "level": "INFO", "message": log_msg},
                     })
-            
-            # Combine fills
+
             total_fills = fills + sl_tp_fills
-            
-            # 4. Broadcast slim tick payload (no orderbooks — sent per-client below)
             slim_data = {}
             for symbol, md in data.items():
                 slim_data[symbol] = {
@@ -107,7 +96,6 @@ async def simulated_market_loop():
                 }
             await manager.broadcast({"type": "market_update", "data": slim_data})
 
-            # Order book only for each client's subscribed symbol (much smaller than ×25)
             for client in list(manager.connected_clients):
                 sym = manager.client_symbols.get(client)
                 if sym and sym in data and data[sym].get("orderbook"):
@@ -115,92 +103,63 @@ async def simulated_market_loop():
                         "type": "orderbook_update",
                         "data": {sym: data[sym]["orderbook"]},
                     })
-                
-            # If any limit orders or SL/TP got filled, broadcast the account state update
+
             if total_fills:
-                logging.info(f"Orders matched/filled: {total_fills}")
-                await manager.broadcast({
-                    "type": "account_update",
-                    "data": oms.get_account_data()
-                })
-                await manager.broadcast({
-                    "type": "trade_history",
-                    "data": oms.get_trade_history()
-                })
-                
-            # 5. Periodically broadcast diagnostics stats
+                logging.info("Orders matched/filled: %s", total_fills)
+                await manager.broadcast({"type": "account_update", "data": oms.get_account_data()})
+                await manager.broadcast({"type": "trade_history", "data": oms.get_trade_history()})
+
             tick_count += 1
             if tick_count % 12 == 0:
                 from app.database import get_db_stats
+
                 stats = get_db_stats()
                 stats["clients"] = len(manager.connected_clients)
                 stats["tick_interval"] = feed.tick_interval
                 stats["volatility_multiplier"] = feed.volatility_multiplier
-                await manager.broadcast({
-                    "type": "system_stats",
-                    "data": stats
-                })
-                
+                await manager.broadcast({"type": "system_stats", "data": stats})
         except Exception as e:
-            logging.error(f"Error in simulated broadcast loop: {str(e)}")
-            
+            logging.error("Error in simulated broadcast loop: %s", e)
         await asyncio.sleep(feed.tick_interval)
 
+
 async def diagnostics_broadcast_loop():
-    """Periodic diagnostics updates for live/external feeds."""
     while True:
         try:
             from app.database import get_db_stats
+
             stats = get_db_stats()
             stats["clients"] = len(manager.connected_clients)
-            stats["tick_interval"] = 1.0 # fixed L1 tick
+            stats["tick_interval"] = 1.0
             stats["volatility_multiplier"] = 1.0
-            await manager.broadcast({
-                "type": "system_stats",
-                "data": stats
-            })
+            await manager.broadcast({"type": "system_stats", "data": stats})
         except Exception as e:
-            logging.error(f"Error in diagnostics loop: {str(e)}")
+            logging.error("Error in diagnostics loop: %s", e)
         await asyncio.sleep(5)
 
+
 async def websocket_handler(websocket):
-    """Manages WebSocket connection lifecycle."""
     logging.info("New client connected.")
     manager.register(websocket)
-    
-    # Send terminal mode handshake configuration
+
     await manager.send_to(websocket, {
         "type": "terminal_config",
         "data": {
             "terminalMode": TERMINAL_MODE,
-            "symbols": list(feed.symbols)
-        }
+            "terminalRole": TERMINAL_ROLE,
+            "symbols": list(feed.symbols),
+            "allowLiveBots": ALLOW_LIVE_BOTS,
+            "distributed": bool(REDIS_URL),
+        },
     })
-    
-    # 1. Historical candles are now lazy-loaded on client request (via subscribe_symbol)
-    
-    
-    # 2. Send current account snapshot
-    account_payload = {
-        "type": "account_update",
-        "data": oms.get_account_data()
-    }
-    await manager.send_to(websocket, account_payload)
-    
-    # 3. Send initial trade history
-    history_payload = {
-        "type": "trade_history",
-        "data": oms.get_trade_history()
-    }
-    await manager.send_to(websocket, history_payload)
-    
-    # 4. Send bot logs history
-    logs_payload = {
+
+    await manager.send_to(websocket, {"type": "account_update", "data": oms.get_account_data()})
+    await manager.send_to(websocket, {"type": "trade_history", "data": oms.get_trade_history()})
+    await manager.send_to(websocket, {
         "type": "bot_logs_history",
-        "data": bot_manager.get_recent_logs(100)
-    }
-    await manager.send_to(websocket, logs_payload)
-    
+        "data": bot_manager.get_recent_logs(100),
+    })
+
     try:
         async for message_str in websocket:
             await handle_client_message(websocket, message_str, oms, manager, bot_manager, backtester_service)
@@ -209,33 +168,48 @@ async def websocket_handler(websocket):
     finally:
         manager.unregister(websocket)
 
+
 async def main():
-    # Ensure database schema is set up
     init_db()
-    
-    # Load active bots now that the db schema is guaranteed to exist
     bot_manager.load_bots_from_db()
-    
-    # Start the Feed and OMS engines
+
+    if event_bus:
+        async def _publish_reload(payload):
+            await event_bus.publish(channels.BOT_RELOAD, payload)
+
+        async def on_ws_broadcast(payload: dict):
+            await manager.broadcast(payload)
+
+        event_publish.register_publisher(channels.BOT_RELOAD, _publish_reload)
+        event_bus.subscribe(channels.WS_BROADCAST, on_ws_broadcast)
+        await event_bus.start()
+
     await feed.start()
     await oms.initialize()
-    
-    # Start WebSocket Server on defined host/port
-    logging.info(f"WebSocket Server listening on ws://{WS_HOST}:{WS_PORT}")
-    
+
+    logging.info("WebSocket Server listening on ws://%s:%s (role=%s)", WS_HOST, WS_PORT, TERMINAL_ROLE)
+
     async with websockets.serve(
         websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
-    ) as server:
+    ):
         tasks = []
+
+        if runs_bot_engine_inline():
+            tasks.append(asyncio.create_task(bot_market_loop(bot_manager, feed)))
+            tasks.append(asyncio.create_task(bot_snapshot_loop(bot_manager)))
+        elif runs_bar_publisher():
+            tasks.append(asyncio.create_task(bar_publish_loop(feed, event_bus)))
+            tasks.append(asyncio.create_task(redis_forward_loop()))
+
         if TERMINAL_MODE == "SIMULATED":
             tasks.append(asyncio.create_task(simulated_market_loop()))
         else:
             tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
-        
-        # Keep the server running forever and print heartbeat
+
         while True:
             await asyncio.sleep(10)
             logging.info("Heartbeat: Server is running...")
+
 
 if __name__ == "__main__":
     try:

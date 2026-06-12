@@ -353,7 +353,10 @@ class BinanceOMSService(BaseOMSService):
                         conn.close()
                         
                         if self.broadcast_callback:
-                            await self.broadcast_callback({"type": "bot_log", "data": log_msg})
+                            await self.broadcast_callback({
+                                "type": "bot_log",
+                                "data": {"bot_id": "system", "level": "INFO", "message": log_msg}
+                            })
                             await self.broadcast_callback({"type": "account_update", "data": self.get_account_data()})
                             
                 await asyncio.sleep(1.0)

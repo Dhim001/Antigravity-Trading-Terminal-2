@@ -1,17 +1,32 @@
 import sqlite3
-from app.config import DB_PATH, EQUITY_SYMBOLS, CRYPTO_SYMBOLS
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+from app.config import EQUITY_SYMBOLS, CRYPTO_SYMBOLS
+from app.db.connection import get_connection, is_postgres
+
+
+def _row_val(row, idx: int = 0):
+    if isinstance(row, dict):
+        return list(row.values())[idx]
+    return row[idx]
+
+
+def _serial_type() -> str:
+    return "SERIAL PRIMARY KEY" if is_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def _safe_alter(cursor, sql: str):
+    try:
+        cursor.execute(sql)
+    except Exception:
+        pass
+
 
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # Enable foreign keys
-    cursor.execute("PRAGMA foreign_keys = ON;")
+
+    if not is_postgres():
+        cursor.execute("PRAGMA foreign_keys = ON;")
     
     # Create accounts table
     cursor.execute("""
@@ -62,45 +77,61 @@ def init_db():
     """)
     
     # Create bot_logs table
-    cursor.execute("""
+    serial = _serial_type()
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS bot_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {serial},
             bot_id TEXT NOT NULL,
             level TEXT NOT NULL,
             message TEXT NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
         )
     """)
     
     conn.commit()
 
-    # Run migrations to add Stop Loss & Take Profit support if missing
-    try:
-        cursor.execute("ALTER TABLE orders ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE orders ADD COLUMN take_profit_percent REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
-        
-    try:
-        cursor.execute("ALTER TABLE positions ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE positions ADD COLUMN take_profit_percent REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN take_profit_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN take_profit_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN bot_id TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN signal_id TEXT DEFAULT NULL")
+
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS bot_trades (
+            id {serial},
+            bot_id TEXT NOT NULL,
+            order_id TEXT,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            pnl REAL,
+            signal_id TEXT,
+            is_exit INTEGER NOT NULL DEFAULT 0,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS bot_snapshots (
+            id {serial},
+            bot_id TEXT NOT NULL,
+            equity REAL NOT NULL,
+            unrealized_pnl REAL DEFAULT 0,
+            realized_pnl REAL DEFAULT 0,
+            open_positions INTEGER DEFAULT 0,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_trades_bot_id ON bot_trades(bot_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_snapshots_bot_id ON bot_snapshots(bot_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_bot_id ON orders(bot_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_logs_bot_id ON bot_logs(bot_id)")
     conn.commit()
     
     # Collect all unique base assets dynamically from config
@@ -118,8 +149,12 @@ def init_db():
 
     for asset, initial_balance in assets_to_seed:
         cursor.execute("SELECT COUNT(*) FROM accounts WHERE asset = ?", (asset,))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)", (asset, initial_balance))
+        row = cursor.fetchone()
+        if _row_val(row) == 0:
+            cursor.execute(
+                "INSERT INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)",
+                (asset, initial_balance),
+            )
     conn.commit()
         
     conn.close()
@@ -127,13 +162,17 @@ def init_db():
 def reset_db():
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # Enable foreign keys
-    cursor.execute("PRAGMA foreign_keys = ON;")
+
+    if not is_postgres():
+        cursor.execute("PRAGMA foreign_keys = ON;")
     
     # Clear active data tables
     cursor.execute("DELETE FROM positions;")
     cursor.execute("DELETE FROM orders;")
+    cursor.execute("DELETE FROM bot_trades;")
+    cursor.execute("DELETE FROM bot_snapshots;")
+    cursor.execute("DELETE FROM bot_logs;")
+    cursor.execute("UPDATE bots SET status = 'STOPPED'")
     
     # Collect all unique base assets dynamically from config
     assets = {"USD", "USDT"}
@@ -149,7 +188,19 @@ def reset_db():
         assets_to_reset.append((asset, initial_balance))
 
     for asset, initial_balance in assets_to_reset:
-        cursor.execute("INSERT OR REPLACE INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)", (asset, initial_balance))
+        if is_postgres():
+            cursor.execute(
+                """
+                INSERT INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)
+                ON CONFLICT (asset) DO UPDATE SET balance = EXCLUDED.balance, locked = 0.0
+                """,
+                (asset, initial_balance),
+            )
+        else:
+            cursor.execute(
+                "INSERT OR REPLACE INTO accounts (asset, balance, locked) VALUES (?, ?, 0.0)",
+                (asset, initial_balance),
+            )
         
     conn.commit()
     conn.close()
@@ -160,17 +211,17 @@ def get_db_stats():
     
     stats = {}
     try:
-        # Number of open positions
         cursor.execute("SELECT COUNT(*) FROM positions WHERE size != 0.0")
-        stats["positions_count"] = cursor.fetchone()[0]
-        
-        # Number of pending orders
+        row = cursor.fetchone()
+        stats["positions_count"] = _row_val(row)
+
         cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'PENDING'")
-        stats["pending_orders_count"] = cursor.fetchone()[0]
-        
-        # Number of historical filled trades
+        row = cursor.fetchone()
+        stats["pending_orders_count"] = _row_val(row)
+
         cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'FILLED'")
-        stats["filled_trades_count"] = cursor.fetchone()[0]
+        row = cursor.fetchone()
+        stats["filled_trades_count"] = _row_val(row)
     except Exception:
         stats = {
             "positions_count": 0,

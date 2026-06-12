@@ -47,7 +47,14 @@ export function WidgetShell({
 }
 
 /** Scroll container for dock tables — single scroll owner, no padding */
-export function ScrollTablePanel({ children, className }) {
+export function ScrollTablePanel({ children, className, horizontal = false }) {
+  if (horizontal) {
+    return (
+      <div className={cn('algo-bots-scroll-wrap min-h-0 flex-1', className)}>
+        <div className="algo-bots-scroll">{children}</div>
+      </div>
+    );
+  }
   return (
     <div className={cn('scroll-panel-y scroll-panel-y-0 min-h-0 flex-1', className)}>
       {children}

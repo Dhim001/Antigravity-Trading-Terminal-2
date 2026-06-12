@@ -1,9 +1,18 @@
 import logging
 import json
 import uuid
-import asyncio
+from datetime import datetime, timezone
+
+from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
+from app.services.bots.indicators import prepare_strategy_df
 from app.services.bots.strategies import get_strategy
+from app.services.bots.bar_events import BarCloseTracker
+from app.services.bots.risk_gate import RiskGate
+from app.services.bots import analytics as bot_analytics
+
+ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
+
 
 class BotManagerService:
     def __init__(self, oms_service, screener_service, broadcast_cb):
@@ -11,174 +20,123 @@ class BotManagerService:
         self.oms = oms_service
         self.screener = screener_service
         self.broadcast_cb = broadcast_cb
-        self.active_bots = {} # Dict of bot_id -> bot_data
-        
+        self.active_bots = {}
+        self._bar_tracker = BarCloseTracker()
+        self._risk_gate = RiskGate()
+        self._executed_signals: set[str] = set()
+        self._log_writes = 0
+
+    def _get_daily_pnl(self, bot_id: str) -> float:
+        return bot_analytics.get_daily_pnl(bot_id)
+
     def load_bots_from_db(self):
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM bots WHERE status = 'RUNNING'")
+        cursor.execute("SELECT * FROM bots WHERE status IN ('RUNNING', 'PAUSED', 'ERROR')")
         rows = cursor.fetchall()
         for row in rows:
-            bot_id = row['id']
+            bot_id = row["id"]
             self.active_bots[bot_id] = dict(row)
-            self.active_bots[bot_id]['config'] = json.loads(row['config'])
-            # initialize strategy instance
-            self.active_bots[bot_id]['strategy_instance'] = get_strategy(row['strategy'], self.active_bots[bot_id]['config'])
+            self.active_bots[bot_id]["config"] = json.loads(row["config"])
+            self.active_bots[bot_id]["last_signal_bar_time"] = None
+            self.active_bots[bot_id]["last_signal_at"] = None
+            self.active_bots[bot_id]["strategy_instance"] = get_strategy(
+                row["strategy"], self.active_bots[bot_id]["config"]
+            )
         conn.close()
-        self.logger.info(f"Loaded {len(self.active_bots)} active bots from DB.")
+        self.logger.info(f"Loaded {len(self.active_bots)} bots from DB.")
 
     async def log_bot_event(self, bot_id: str, level: str, message: str):
         self.logger.info(f"[BOT {bot_id}] {level} - {message}")
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)", (bot_id, level, message))
+        cursor.execute(
+            "INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)",
+            (bot_id, level, message),
+        )
         conn.commit()
         conn.close()
-        
-        # Broadcast to frontend
+
+        self._log_writes += 1
+        if self._log_writes % 25 == 0:
+            bot_analytics.prune_bot_logs(BOT_LOG_RETENTION)
+
         await self.broadcast_cb({
             "type": "bot_log",
-            "data": {"bot_id": bot_id, "level": level, "message": message}
+            "data": {"bot_id": bot_id, "level": level, "message": message},
         })
 
     def get_account_balance(self):
-        return self.oms.get_account_data().get('USD', {}).get('balance', 0)
+        balances = self.oms.get_account_data().get("balances", {})
+        usd = balances.get("USD", {}).get("balance")
+        if usd is not None:
+            return usd
+        return balances.get("USDT", {}).get("balance", 0)
+
+    def _get_position(self, symbol: str) -> dict:
+        positions = self.oms.get_account_data().get("positions", {})
+        return positions.get(symbol) or {}
+
+    def _get_position_size(self, symbol: str) -> float:
+        pos = self._get_position(symbol)
+        return float(pos.get("size", 0) or 0)
 
     def get_recent_logs(self, limit: int = 100):
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT bot_id, level, message, timestamp FROM bot_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
+        cursor.execute(
+            "SELECT bot_id, level, message, timestamp FROM bot_logs ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
 
-    async def process_market_tick(self, symbol: str, ohlcv_data: list):
-        """Called by the main loop whenever new candles arrive"""
-        # 1. Screen indicators
-        df = self.screener.process_candles(symbol, ohlcv_data)
-        if df.empty:
+    def _calc_exit_pnl(self, side: str, qty: float, exit_price: float, entry_price: float) -> float:
+        if side == "SELL":
+            return (exit_price - entry_price) * qty
+        return (entry_price - exit_price) * qty
+
+    def record_snapshot_for_bot(self, bot_id: str):
+        if bot_id not in self.active_bots:
             return
-
-        # Prepare 'previous' values for logic evaluation
-        df['MACDh_12_26_9_prev'] = df['MACDh_12_26_9'].shift(1)
-        df['SUPERTd_14_3.0_prev'] = df['SUPERTd_14_3.0'].shift(1)
-        df['close_prev'] = df['close'].shift(1)
-
-        latest_row = df.iloc[-1].to_dict()
-
-        # 2. Iterate through bots watching this symbol
-        for bot_id, bot in self.active_bots.items():
-            if bot['symbol'] != symbol:
-                continue
-
-            strat = bot.get('strategy_instance')
-            if not strat:
-                continue
-                
-            signal_data = strat.evaluate(latest_row)
-            signal = signal_data.get('signal')
-            
-            if signal in ('BUY', 'SELL'):
-                await self._execute_signal(bot, signal, signal_data, latest_row['close'])
-
-    async def _execute_signal(self, bot, side, signal_data, current_price):
-        bot_id = bot['id']
-        symbol = bot['symbol']
-        
-        # Risk Management: 1% Rule with ATR Sizing
-        account_balance = self.get_account_balance()
-        risk_amount = account_balance * 0.01 # 1% Risk
-        
-        stop_loss_price = signal_data.get('stop_loss_price')
-        if not stop_loss_price:
-            sl_dist = signal_data.get('stop_loss_distance', current_price * 0.02) # fallback 2%
-            if side == 'BUY':
-                stop_loss_price = current_price - sl_dist
-            else:
-                stop_loss_price = current_price + sl_dist
-                
-        # Handle zero division
-        price_diff = abs(current_price - stop_loss_price)
-        if price_diff <= 0:
-            await self.log_bot_event(bot_id, "ERROR", "Calculated stop loss distance is 0. Aborting trade.")
-            return
-
-        # Position Size = (Account Balance × 1%) ÷ (Entry Price − Stop Loss Price)
-        position_size = risk_amount / price_diff
-        
-        # Max allocation cap (e.g. don't use more than allocated capital)
-        notional_value = position_size * current_price
-        if notional_value > bot['allocation']:
-            position_size = bot['allocation'] / current_price
-            await self.log_bot_event(bot_id, "WARN", f"ATR position size exceeded allocation cap. Reduced to {position_size:.4f} shares.")
-            
-        # Ensure we meet minimums
-        if position_size < 0.001:
-            await self.log_bot_event(bot_id, "INFO", "Signal ignored: Position size too small based on risk.")
-            return
-            
-        await self.log_bot_event(bot_id, "INFO", f"Triggered {side} signal. Price: {current_price:.2f}, SL: {stop_loss_price:.2f}, Qty: {position_size:.4f}")
-        
-        # Submit to OMS
-        try:
-            result = await self.oms.place_order({
-                "symbol": symbol,
-                "type": "MARKET",
-                "side": side,
-                "quantity": position_size,
-                "stop_loss_percent": bot.get('config', {}).get('trailing_stop_percent') or bot.get('config', {}).get('stop_loss_percent'),
-                "take_profit_percent": bot.get('config', {}).get('take_profit_percent')
-            })
-            if result.get("status") == "success":
-                order_id = result.get("order_id")
-                await self.log_bot_event(bot_id, "SUCCESS", f"Placed {side} order {order_id}.")
-            else:
-                await self.log_bot_event(bot_id, "ERROR", f"Order failed: {result.get('message')}")
-        except Exception as e:
-            await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
-
-    async def create_bot(self, strategy: str, symbol: str, timeframe: str, allocation: float, config: dict):
-        bot_id = str(uuid.uuid4())
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (bot_id, strategy, symbol, timeframe, 'RUNNING', allocation, json.dumps(config))
+        bot = self.active_bots[bot_id]
+        symbol = bot["symbol"]
+        stats = bot_analytics.get_bot_stats(bot_id)
+        realized = stats["total_pnl"]
+        pos = self._get_position(symbol)
+        pos_size = float(pos.get("size", 0) or 0)
+        avg = float(pos.get("avg_price") or 0)
+        mark = avg
+        if hasattr(self.oms, "feed") and hasattr(self.oms.feed, "_symbols"):
+            mark = float(self.oms.feed._symbols.get(symbol, {}).get("price", mark))
+        unrealized = pos_size * (mark - avg) if pos_size else 0.0
+        equity = float(bot["allocation"]) + realized + unrealized
+        open_positions = 1 if abs(pos_size) > 0 else 0
+        bot_analytics.record_snapshot(
+            bot_id, equity, unrealized, realized, open_positions
         )
-        conn.commit()
-        conn.close()
-        
-        self.active_bots[bot_id] = {
-            'id': bot_id,
-            'strategy': strategy,
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'status': 'RUNNING',
-            'allocation': allocation,
-            'config': config,
-            'strategy_instance': get_strategy(strategy, config)
-        }
-        
-        await self.log_bot_event(bot_id, "INFO", f"Bot created and started for {symbol} using {strategy}.")
-        return bot_id
 
-    async def stop_bot(self, bot_id: str):
-        if bot_id in self.active_bots:
-            del self.active_bots[bot_id]
-            
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE bots SET status = 'STOPPED' WHERE id = ?", (bot_id,))
-        conn.commit()
-        conn.close()
-        
-        await self.log_bot_event(bot_id, "INFO", "Bot stopped.")
+    async def snapshot_all_bots(self):
+        for bot_id in list(self.active_bots.keys()):
+            self.record_snapshot_for_bot(bot_id)
 
-    def list_bots_public(self) -> list:
-        """JSON-safe bot list for WebSocket clients (no strategy instances)."""
-        out = []
-        for bot in self.active_bots.values():
-            out.append({
+    def get_bot_detail(self, bot_id: str) -> dict | None:
+        if bot_id not in self.active_bots:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM bots WHERE id = ?", (bot_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            bot = dict(row)
+            bot["config"] = json.loads(bot["config"])
+        else:
+            bot = self.active_bots[bot_id]
+        stats = bot_analytics.get_bot_stats(bot_id)
+        return {
+            "bot": {
                 "id": bot["id"],
                 "strategy": bot["strategy"],
                 "symbol": bot["symbol"],
@@ -186,5 +144,334 @@ class BotManagerService:
                 "status": bot["status"],
                 "allocation": bot["allocation"],
                 "config": bot.get("config", {}),
+            },
+            "stats": stats,
+            "trades": bot_analytics.get_trades(bot_id, 50),
+            "snapshots": bot_analytics.get_snapshots(bot_id, 30),
+        }
+
+    async def _set_bot_status(self, bot_id: str, status: str):
+        if bot_id in self.active_bots:
+            self.active_bots[bot_id]["status"] = status
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE bots SET status = ? WHERE id = ?", (status, bot_id))
+        conn.commit()
+        conn.close()
+
+    async def _halt_bot(self, bot_id: str, reason: str):
+        await self._set_bot_status(bot_id, "ERROR")
+        await self.log_bot_event(bot_id, "ERROR", reason)
+
+    async def process_market_tick(self, symbol: str, ohlcv_data: list):
+        if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
+            return
+        if not self.active_bots or not any(
+            b["symbol"] == symbol and b.get("status") == "RUNNING"
+            for b in self.active_bots.values()
+        ):
+            return
+        if not self._bar_tracker.check(symbol, ohlcv_data):
+            return
+
+        for bot_id, bot in list(self.active_bots.items()):
+            if bot["symbol"] != symbol or bot.get("status") != "RUNNING":
+                continue
+
+            strat = bot.get("strategy_instance")
+            if not strat:
+                continue
+
+            bot_config = bot.get("config", {})
+            bot_strategy = bot["strategy"]
+            df = self.screener.process_candles(
+                symbol, ohlcv_data, bot_config, bot_strategy
+            )
+            if df.empty or len(df) < 2:
+                continue
+
+            df = prepare_strategy_df(df, bot_strategy, bot_config)
+            eval_row = df.iloc[-2].to_dict()
+            bar_time = eval_row.get("time")
+            eval_price = eval_row.get("close")
+
+            signal_data = strat.evaluate(eval_row)
+            signal = signal_data.get("signal")
+            if signal not in ("BUY", "SELL", "CLOSE"):
+                continue
+
+            if bar_time is not None and bot.get("last_signal_bar_time") == bar_time:
+                continue
+
+            await self._handle_signal(bot, signal, signal_data, eval_price, bar_time)
+
+    async def _handle_signal(self, bot, signal: str, signal_data: dict, eval_price: float, bar_time):
+        bot_id = bot["id"]
+        symbol = bot["symbol"]
+        pos_size = self._get_position_size(symbol)
+        pos = self._get_position(symbol)
+
+        if signal == "CLOSE":
+            if pos_size > 0:
+                await self._execute_order(
+                    bot, "SELL", abs(pos_size), eval_price, signal_data,
+                    is_exit=True, bar_time=bar_time,
+                    entry_price=float(pos.get("avg_price") or eval_price),
+                )
+            elif pos_size < 0:
+                await self._execute_order(
+                    bot, "BUY", abs(pos_size), eval_price, signal_data,
+                    is_exit=True, bar_time=bar_time,
+                    entry_price=float(pos.get("avg_price") or eval_price),
+                )
+            return
+
+        if signal == "BUY":
+            if pos_size > 0:
+                return
+            await self._execute_order(
+                bot, "BUY", None, eval_price, signal_data,
+                is_exit=False, bar_time=bar_time,
+            )
+            return
+
+        if signal == "SELL":
+            if pos_size > 0:
+                await self._execute_order(
+                    bot, "SELL", abs(pos_size), eval_price, signal_data,
+                    is_exit=True, bar_time=bar_time,
+                    entry_price=float(pos.get("avg_price") or eval_price),
+                )
+            return
+
+    async def _execute_order(
+        self,
+        bot,
+        side: str,
+        quantity: float | None,
+        current_price: float,
+        signal_data: dict,
+        *,
+        is_exit: bool,
+        bar_time,
+        entry_price: float | None = None,
+    ):
+        bot_id = bot["id"]
+        symbol = bot["symbol"]
+        signal_kind = "CLOSE" if is_exit else side
+        signal_id = f"{bot_id}:{bar_time}:{signal_kind}"
+
+        if signal_id in self._executed_signals:
+            return
+
+        if not is_exit:
+            account_balance = self.get_account_balance()
+            risk_amount = account_balance * 0.01
+
+            stop_loss_price = signal_data.get("stop_loss_price")
+            if not stop_loss_price:
+                sl_dist = signal_data.get("stop_loss_distance", current_price * 0.02)
+                stop_loss_price = (
+                    current_price - sl_dist if side == "BUY" else current_price + sl_dist
+                )
+
+            price_diff = abs(current_price - stop_loss_price)
+            if price_diff <= 0:
+                await self.log_bot_event(bot_id, "ERROR", "Stop loss distance is 0. Aborting trade.")
+                return
+
+            quantity = risk_amount / price_diff
+
+        pos_size = self._get_position_size(symbol)
+        decision = self._risk_gate.validate_trade(
+            bot,
+            side,
+            quantity,
+            current_price,
+            is_exit=is_exit,
+            daily_pnl=self._get_daily_pnl(bot_id),
+            position_size=pos_size,
+        )
+
+        if not decision.allowed:
+            await self.log_bot_event(bot_id, "WARN", f"Risk blocked: {decision.reason}")
+            if "Daily loss limit" in decision.reason:
+                await self._halt_bot(bot_id, decision.reason)
+            return
+
+        quantity = decision.quantity if decision.quantity is not None else quantity
+        if decision.reason not in ("OK",):
+            await self.log_bot_event(bot_id, "INFO", decision.reason)
+
+        if quantity < 0.001:
+            await self.log_bot_event(bot_id, "INFO", "Signal ignored: quantity too small.")
+            return
+
+        action = "Exit" if is_exit else "Entry"
+        bot["last_signal_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        await self.log_bot_event(
+            bot_id,
+            "INFO",
+            f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f}",
+        )
+
+        self._executed_signals.add(signal_id)
+
+        try:
+            result = await self.oms.place_order({
+                "symbol": symbol,
+                "type": "MARKET",
+                "side": side,
+                "quantity": quantity,
+                "stop_loss_percent": (
+                    None if is_exit
+                    else bot.get("config", {}).get("trailing_stop_percent")
+                    or bot.get("config", {}).get("stop_loss_percent")
+                ),
+                "take_profit_percent": (
+                    None if is_exit else bot.get("config", {}).get("take_profit_percent")
+                ),
+                "bot_id": bot_id,
+                "signal_id": signal_id,
+            })
+
+            if result.get("status") == "success":
+                if bar_time is not None:
+                    bot["last_signal_bar_time"] = bar_time
+                order_id = result.get("order_id")
+                await self.log_bot_event(bot_id, "SUCCESS", f"Placed {side} order {order_id}.")
+
+                trade_pnl = None
+                if is_exit and entry_price is not None:
+                    trade_pnl = self._calc_exit_pnl(side, quantity, current_price, entry_price)
+
+                bot_analytics.record_trade(
+                    bot_id,
+                    order_id,
+                    symbol,
+                    side,
+                    quantity,
+                    current_price,
+                    pnl=trade_pnl,
+                    signal_id=signal_id,
+                    is_exit=is_exit,
+                )
+                self.record_snapshot_for_bot(bot_id)
+
+                await self.broadcast_cb({
+                    "type": "bots_update",
+                    "data": self.list_bots_public(),
+                })
+                detail = self.get_bot_detail(bot_id)
+                if detail:
+                    await self.broadcast_cb({"type": "bot_detail", "data": detail})
+            else:
+                self._executed_signals.discard(signal_id)
+                msg = result.get("message", "Unknown error")
+                await self.log_bot_event(bot_id, "ERROR", f"Order failed: {msg}")
+                if TERMINAL_MODE != "SIMULATED":
+                    await self.log_bot_event(
+                        bot_id,
+                        "WARN",
+                        "Live order not retried (at-most-once). Reconcile manually if needed.",
+                    )
+        except Exception as e:
+            self._executed_signals.discard(signal_id)
+            await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
+            if TERMINAL_MODE != "SIMULATED":
+                await self.log_bot_event(
+                    bot_id,
+                    "WARN",
+                    "Ambiguous live outcome — do not resend; reconcile via broker.",
+                )
+
+    async def create_bot(self, strategy: str, symbol: str, timeframe: str, allocation: float, config: dict):
+        if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
+            raise ValueError(
+                "Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true in .env to enable."
+            )
+
+        decision = self._risk_gate.validate_create(len(self.active_bots))
+        if not decision.allowed:
+            raise ValueError(decision.reason)
+
+        bot_id = str(uuid.uuid4())
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (bot_id, strategy, symbol, timeframe, "RUNNING", allocation, json.dumps(config)),
+        )
+        conn.commit()
+        conn.close()
+
+        self.active_bots[bot_id] = {
+            "id": bot_id,
+            "strategy": strategy,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "status": "RUNNING",
+            "allocation": allocation,
+            "config": config,
+            "last_signal_bar_time": None,
+            "last_signal_at": None,
+            "strategy_instance": get_strategy(strategy, config),
+        }
+
+        await self.log_bot_event(bot_id, "INFO", f"Bot created and started for {symbol} using {strategy}.")
+        self.record_snapshot_for_bot(bot_id)
+        return bot_id
+
+    async def pause_bot(self, bot_id: str):
+        if bot_id not in self.active_bots:
+            raise ValueError("Bot not found")
+        await self._set_bot_status(bot_id, "PAUSED")
+        await self.log_bot_event(bot_id, "INFO", "Bot paused.")
+
+    async def resume_bot(self, bot_id: str):
+        if bot_id not in self.active_bots:
+            raise ValueError("Bot not found")
+        bot = self.active_bots[bot_id]
+        if bot.get("status") == "ERROR":
+            raise ValueError("Bot is in ERROR state — stop and redeploy.")
+        await self._set_bot_status(bot_id, "RUNNING")
+        await self.log_bot_event(bot_id, "INFO", "Bot resumed.")
+
+    async def stop_bot(self, bot_id: str):
+        if bot_id in self.active_bots:
+            del self.active_bots[bot_id]
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE bots SET status = 'STOPPED' WHERE id = ?", (bot_id,))
+        conn.commit()
+        conn.close()
+
+        await self.log_bot_event(bot_id, "INFO", "Bot stopped.")
+
+    async def stop_all_bots(self):
+        bot_ids = list(self.active_bots.keys())
+        for bot_id in bot_ids:
+            await self.stop_bot(bot_id)
+        return len(bot_ids)
+
+    def list_bots_public(self) -> list:
+        out = []
+        for bot in self.active_bots.values():
+            bot_id = bot["id"]
+            stats = bot_analytics.get_bot_stats(bot_id)
+            out.append({
+                "id": bot_id,
+                "strategy": bot["strategy"],
+                "symbol": bot["symbol"],
+                "timeframe": bot["timeframe"],
+                "status": bot["status"],
+                "allocation": bot["allocation"],
+                "config": bot.get("config", {}),
+                "daily_pnl": stats["daily_pnl"],
+                "total_pnl": stats["total_pnl"],
+                "trade_count": stats["trade_count"],
+                "win_rate": stats["win_rate"],
+                "last_signal_at": bot.get("last_signal_at"),
             })
         return out

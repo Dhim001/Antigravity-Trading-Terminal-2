@@ -19,6 +19,19 @@ if os.path.exists(env_path):
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
 USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
+# Bot engine on live brokers is opt-in (paper/live safety gate).
+ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
+
+# Distributed runtime: all (monolith) | server (WS+feed) | worker (bot engine only)
+TERMINAL_ROLE = os.environ.get("TERMINAL_ROLE", "all").lower()
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+# Optional user strategy plugins in backend/strategies/
+ALLOW_CUSTOM_STRATEGIES = os.environ.get("ALLOW_CUSTOM_STRATEGIES", "false").lower() in (
+    "1", "true", "yes"
+)
+
 # WebSocket Server Settings
 WS_HOST = "localhost"
 WS_PORT = 8765
@@ -27,6 +40,13 @@ WS_MAX_MESSAGE_SIZE = int(os.environ.get("WS_MAX_MESSAGE_SIZE", str(4 * 1024 * 1
 
 # Pre-Trade Risk Limits
 MAX_ORDER_VALUE = 50000.0
+
+# Bot risk limits
+BOT_MIN_NOTIONAL = float(os.environ.get("BOT_MIN_NOTIONAL", "10.0"))
+BOT_DAILY_LOSS_LIMIT_PCT = float(os.environ.get("BOT_DAILY_LOSS_LIMIT_PCT", "5.0"))
+BOT_MAX_ACTIVE_BOTS = int(os.environ.get("BOT_MAX_ACTIVE_BOTS", "20"))
+BOT_SNAPSHOT_INTERVAL = float(os.environ.get("BOT_SNAPSHOT_INTERVAL", "300"))
+BOT_LOG_RETENTION = int(os.environ.get("BOT_LOG_RETENTION", "500"))
 
 # Simulation Settings Defaults
 DEFAULT_TICK_INTERVAL = 0.25

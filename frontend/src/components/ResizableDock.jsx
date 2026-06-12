@@ -14,22 +14,29 @@ import { useStore } from '../store/useStore';
 import { sendWebSocketAction } from '../services/websocket';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
-  Play, Settings, Trash2, XSquare, Maximize2, Minimize2,
+  Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
+import BacktestMiniChart from './BacktestMiniChart';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import {
   InputGroup, InputGroupAddon, InputGroupInput, InputGroupText,
 } from '@/components/ui/input-group';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
+import { formatLastSignal } from '@/lib/formatTime';
 
 const DOCK_MIN = 160;
 const DOCK_MAX = 560;
@@ -246,15 +253,30 @@ function AlgoTab() {
     activeBots, botStrategy, botConfig, activeSymbol, symbolsList,
     setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, setChartInteractionMode,
-    selectedBotId, setSelectedBotId,
+    isLive, allowLiveBots, terminalMode, setActiveSymbol,
+    selectedBotId, setSelectedBotId, botDetail, setBotDetail,
   } = useStore();
 
+  const liveBotsBlocked = isLive && !allowLiveBots;
+  const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
+  const [deployOpen, setDeployOpen] = useState(false);
+  const [stopAllOpen, setStopAllOpen] = useState(false);
+
+  const confirmDeploy = () => {
+    setDeployOpen(false);
+    handleCreateBot();
+  };
+
   const handleCreateBot = () => {
+    if (liveBotsBlocked) {
+      toast.error('Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true on the server.');
+      return;
+    }
     if (!botConfig.allocation || botConfig.allocation <= 0) {
       toast.error('Enter a valid capital allocation amount');
       return;
     }
-    
+
     sendWebSocketAction("bot_create", {
       strategy: botStrategy,
       symbol: activeSymbol,
@@ -281,168 +303,392 @@ function AlgoTab() {
     sendWebSocketAction("bot_stop", { bot_id });
   };
 
+  const handlePauseBot = (bot_id) => {
+    sendWebSocketAction("bot_pause", { bot_id });
+  };
+
+  const handleResumeBot = (bot_id) => {
+    sendWebSocketAction("bot_resume", { bot_id });
+  };
+
+  const handleStopAll = () => {
+    if (activeBots.length === 0) return;
+    setStopAllOpen(true);
+  };
+
+  const confirmStopAll = () => {
+    setStopAllOpen(false);
+    sendWebSocketAction("bot_stop_all", {});
+  };
+
+  const statusBadgeVariant = (status) => {
+    if (status === 'RUNNING') return 'buy';
+    if (status === 'PAUSED') return 'secondary';
+    if (status === 'ERROR') return 'destructive';
+    return 'sell';
+  };
+
+  const logLineClass = (log) => {
+    if (log.includes('BUY') || log.includes('SUCCESS')) return 'algo-log-line algo-log-line--success';
+    if (log.includes('SELL') || log.includes('ERROR') || log.includes('STOP')) return 'algo-log-line algo-log-line--error';
+    if (log.includes('WARN')) return 'algo-log-line algo-log-line--warn';
+    if (log.includes('INFO') || log.includes('started')) return 'algo-log-line algo-log-line--info';
+    return 'algo-log-line';
+  };
+
+  const selectBot = (bot_id) => {
+    const bot = activeBots.find(b => b.id === bot_id);
+    if (bot?.symbol && bot.symbol !== activeSymbol) {
+      setActiveSymbol(bot.symbol);
+    }
+    setSelectedBotId(bot_id);
+    sendWebSocketAction('bot_get_detail', { bot_id });
+  };
+
+  useEffect(() => {
+    if (selectedBotId && activeBots.some(b => b.id === selectedBotId)) {
+      sendWebSocketAction('bot_get_detail', { bot_id: selectedBotId });
+    } else if (selectedBotId && !activeBots.some(b => b.id === selectedBotId)) {
+      setSelectedBotId(null);
+      setBotDetail(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBotId, activeBots.length]);
+
   return (
-    <div className="scroll-panel-y scroll-panel-y-0 grid h-full min-h-0 grid-cols-1 gap-3 p-3 xl:grid-cols-[minmax(240px,320px)_1fr_minmax(220px,300px)] xl:overflow-hidden">
-      <Card size="sm" className="flex min-h-0 flex-col gap-2.5 rounded-lg py-3 shadow-none xl:scroll-panel-y xl:scroll-panel-y-0">
-        <CardHeader className="border-b border-border pb-2">
-          <CardTitle className="icon-label-loose text-xs uppercase tracking-wide">
+    <div className="algo-tab">
+      {liveBotsBlocked && (
+        <Alert className="algo-tab__banner border-trading-warn/40 bg-trading-warn/10 text-trading-warn xl:col-span-3">
+          <ShieldAlert aria-hidden />
+          <AlertDescription className="text-xs leading-relaxed">
+            Bots run in <strong>{terminalMode}</strong> but live execution is off.
+            Set <code className="algo-inline-code">ALLOW_LIVE_BOTS=true</code> in
+            server <code className="algo-inline-code">.env</code> to deploy on live feeds.
+            Backtest still works.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <section className="algo-tab__panel algo-tab__panel--deploy">
+        <header className="algo-tab__panel-header">
+          <div className="algo-tab__panel-title">
             <Settings size={13} className="text-primary" aria-hidden />
             Deploy Bot
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2.5 px-3">
-        <div className="flex flex-col gap-1.5">
-          <Label className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">Strategy Templates</Label>
-          <div className="grid grid-cols-1 gap-1.5">
-            {strategyTemplates.map(t => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => selectTemplate(t)}
-                className={cn(
-                  'rounded-md border px-2.5 py-2 text-left transition-colors',
-                  botStrategy === t.strategy
-                    ? 'border-primary/50 bg-primary/10'
-                    : 'border-border bg-muted/20 hover:bg-muted/40',
-                )}
-              >
-                <div className={cn('text-xs font-bold', botStrategy === t.strategy ? 'text-primary' : 'text-foreground')}>
-                  {t.name}
-                </div>
-                <div className="mt-0.5 text-[0.62rem] text-muted-foreground">
-                  Alloc: ${t.allocation} • Trail SL: {t.config.trailing_stop_percent || 0}%
-                </div>
-              </button>
-            ))}
           </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">Capital Allocation (USD/USDT)</Label>
-          <InputGroup className="h-8">
-            <InputGroupInput
-              type="number"
-              step="any"
-              value={botConfig?.allocation || ''}
-              onChange={e => updateBotConfig({ allocation: parseFloat(e.target.value) || 0 })}
-              className="text-xs"
-            />
-            <InputGroupAddon align="inline-end">
-              <InputGroupText className="text-xs">$</InputGroupText>
-            </InputGroupAddon>
-          </InputGroup>
-          <span className="block text-[0.65rem] text-muted-foreground">
-            Risk is dynamically managed at 1% of total account balance using ATR stops.
-          </span>
-        </div>
-
-        {backtestResults && (
-          <div className="rounded-md border border-trading-up/25 bg-trading-up/5 p-2 text-[0.62rem]">
-            <div className="mb-1 font-bold text-trading-up">7-Day Backtest Preview</div>
-            <div className="grid grid-cols-2 gap-1">
-              <div>Win Rate: <span className="text-foreground">{backtestResults.win_rate}%</span></div>
-              <div>Est PnL: <span className={backtestResults.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${backtestResults.total_pnl}</span></div>
-              <div>Max DD: <span className="text-trading-down">{backtestResults.max_drawdown}%</span></div>
-              <div>Trades: <span className="text-foreground">{backtestResults.trade_count}</span></div>
+        </header>
+        <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body">
+          <div className="flex flex-col gap-2.5">
+            <div className="space-y-1.5">
+              <Label className="algo-field-label">Symbol</Label>
+              <Select value={activeSymbol} onValueChange={setActiveSymbol}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Bot symbol">
+                  <SelectValue placeholder="Select symbol" />
+                </SelectTrigger>
+                <SelectContent className="max-h-56">
+                  {symbolsList.map(sym => (
+                    <SelectItem key={sym} value={sym} className="text-xs">{sym}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          </div>
-        )}
 
-        <div className="mt-auto flex gap-[var(--icon-gap-loose)]">
+            <div className="flex flex-col gap-1.5">
+              <Label className="algo-field-label">Strategy Templates</Label>
+              <div className="algo-template-grid">
+                {strategyTemplates.map(t => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => selectTemplate(t)}
+                    className={cn(
+                      'algo-template-btn',
+                      botStrategy === t.strategy && 'algo-template-btn--active',
+                    )}
+                  >
+                    <div className="algo-template-btn__name">{t.name}</div>
+                    <div className="algo-template-btn__meta">
+                      {t.strategy} · ${t.allocation} · SL {t.config.trailing_stop_percent || 0}%
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="algo-field-label">Capital Allocation</Label>
+              <InputGroup className="h-8">
+                <InputGroupInput
+                  type="number"
+                  step="any"
+                  value={botConfig?.allocation || ''}
+                  onChange={e => updateBotConfig({ allocation: parseFloat(e.target.value) || 0 })}
+                  className="text-xs"
+                  aria-label="Capital allocation"
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText className="text-xs">$</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+              <span className="algo-field-hint">
+                Risk sized at 1% of account balance using ATR-based stops. Signals evaluate on closed 1m bars.
+              </span>
+            </div>
+
+            {backtestResults && (
+              <div className={cn(
+                'algo-backtest-lab',
+                (backtestResults.total_pnl ?? 0) < 0 && 'algo-backtest-lab--down',
+              )}>
+                <div className="algo-backtest-lab__title">7-Day Backtest Lab</div>
+                <div className="algo-backtest-metrics">
+                  <div>Win Rate: <span className="text-foreground">{backtestResults.win_rate}%</span></div>
+                  <div>Est PnL: <span className={backtestResults.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${backtestResults.total_pnl}</span></div>
+                  <div>Max DD: <span className="text-trading-down">{backtestResults.max_drawdown}%</span></div>
+                  <div>Trades: <span className="text-foreground">{backtestResults.trade_count}</span></div>
+                </div>
+                <BacktestMiniChart
+                  equityCurve={backtestResults.equity_curve}
+                  totalPnl={backtestResults.total_pnl}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+        <footer className="algo-tab__panel-footer">
           <Button variant="outline" size="sm" className="flex-1 text-xs" onClick={handleRunBacktest}>
             <Activity data-icon="inline-start" />
             BACKTEST
           </Button>
-          <Button variant="buy" size="sm" className="flex-[1.5] text-xs font-bold" onClick={handleCreateBot}>
+          <Button
+            variant="buy"
+            size="sm"
+            className="flex-[1.5] text-xs font-bold"
+            onClick={() => setDeployOpen(true)}
+            disabled={liveBotsBlocked}
+            title={liveBotsBlocked ? 'Live bot trading disabled on server' : 'Deploy bot'}
+          >
             <Play data-icon="inline-start" />
             DEPLOY
           </Button>
-        </div>
-        </CardContent>
-      </Card>
+        </footer>
+      </section>
 
-      <Card size="sm" className="flex min-h-[200px] flex-col overflow-hidden rounded-lg py-0 shadow-none xl:min-h-0">
-        <ScrollTablePanel>
-        <table className="terminal-table m-0 min-w-[560px]">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Strategy</th>
-              <th className="text-right">Allocation</th>
-              <th className="text-center">Status</th>
-              <th className="text-center">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {activeBots.length === 0 ? (
+      <Dialog open={deployOpen} onOpenChange={setDeployOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Deploy trading bot</DialogTitle>
+            <DialogDescription className="text-xs leading-relaxed">
+              This will start a live bot on the server using your current template and allocation.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="algo-dialog-summary">
+            <div><span className="text-muted-foreground">Strategy:</span> <strong>{botStrategy}</strong></div>
+            <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
+            <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
+            <div><span className="text-muted-foreground">Timeframe:</span> <strong>1m (closed-bar signals)</strong></div>
+          </div>
+          <DialogFooter showCloseButton={false}>
+            <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
+            <Button variant="buy" size="sm" onClick={confirmDeploy}>Confirm deploy</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={stopAllOpen} onOpenChange={setStopAllOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Stop all bots?</DialogTitle>
+            <DialogDescription className="text-xs leading-relaxed">
+              Halts every active bot. Does not close open positions.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter showCloseButton={false}>
+            <Button variant="ghost" size="sm" onClick={() => setStopAllOpen(false)}>Cancel</Button>
+            <Button variant="destructive" size="sm" onClick={confirmStopAll}>Stop all</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <section className="algo-tab__panel algo-tab__panel--bots">
+        <header className="algo-tab__panel-header">
+          <div className="algo-tab__panel-title">
+            <Cpu size={13} className={runningCount > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
+            Active Bots
+            <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount}</Badge>
+          </div>
+          <div className="algo-tab__panel-actions">
+            {activeBots.length > 0 && (
+              <span className="algo-bots-scroll-hint">Scroll ↔</span>
+            )}
+            {activeBots.length > 0 && (
+              <Button
+                variant="outline"
+                size="xs"
+                className="algo-stop-all-btn"
+                onClick={handleStopAll}
+                title="Stop all bots"
+              >
+                <OctagonX data-icon="inline-start" />
+                STOP ALL
+              </Button>
+            )}
+          </div>
+        </header>
+        <ScrollTablePanel horizontal className="algo-tab__scroll">
+          <table className="terminal-table algo-bots-table m-0">
+            <thead>
               <tr>
-                <td colSpan="5" className="py-5 text-center text-muted-foreground">
-                  No active bots.
-                </td>
+                <th>Symbol</th>
+                <th>Strategy</th>
+                <th className="text-right">Alloc</th>
+                <th className="text-right">Today PnL</th>
+                <th>Last signal</th>
+                <th className="text-center">Status</th>
+                <th className="text-center">Actions</th>
               </tr>
-            ) : (
-              activeBots.map(bot => (
-                <tr key={bot.id}>
-                  <td className="font-bold">{bot.symbol}</td>
-                  <td className="text-xs text-secondary-foreground">{bot.strategy}</td>
-                  <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
-                  <td className="text-center">
-                    <Badge variant={bot.status === 'RUNNING' ? 'buy' : 'sell'}>{bot.status}</Badge>
-                  </td>
-                  <td className="text-center">
-                    {bot.status === 'RUNNING' && (
-                      <div className="flex justify-center gap-1">
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          onClick={() => setChartInteractionMode('edit_sl')}
-                          title="Click to set SL on chart"
-                        >
-                          SET SL
-                        </Button>
-                        <Button variant="destructive" size="xs" onClick={() => handleStopBot(bot.id)}>
-                          STOP
-                        </Button>
-                      </div>
-                    )}
+            </thead>
+            <tbody>
+              {activeBots.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="algo-table-empty">
+                    No active bots. Pick a template and deploy.
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : (
+                activeBots.map(bot => (
+                  <tr
+                    key={bot.id}
+                    className={cn('algo-bot-row', selectedBotId === bot.id && 'row-active')}
+                    onClick={() => selectBot(bot.id)}
+                  >
+                    <td className="font-bold">{bot.symbol}</td>
+                    <td className="text-xs text-secondary-foreground">{bot.strategy}</td>
+                    <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
+                    <td className={cn(
+                      'num-mono text-right font-semibold',
+                      (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                    )}>
+                      {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
+                    </td>
+                    <td className="algo-last-signal" title={bot.last_signal_at || undefined}>
+                      {formatLastSignal(bot.last_signal_at)}
+                    </td>
+                    <td className="text-center">
+                      <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
+                    </td>
+                    <td className="text-center" onClick={e => e.stopPropagation()}>
+                      <div className="algo-bot-actions">
+                        {bot.status === 'RUNNING' && (
+                          <>
+                            <Button variant="outline" size="xs" onClick={() => handlePauseBot(bot.id)} title="Pause bot">
+                              <Pause />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => setChartInteractionMode('edit_sl')}
+                              title="Set stop loss on chart"
+                            >
+                              SL
+                            </Button>
+                          </>
+                        )}
+                        {bot.status === 'PAUSED' && (
+                          <Button variant="outline" size="xs" onClick={() => handleResumeBot(bot.id)} title="Resume bot">
+                            <PlayCircle />
+                          </Button>
+                        )}
+                        {bot.status !== 'STOPPED' && (
+                          <Button variant="destructive" size="xs" onClick={() => handleStopBot(bot.id)} title="Stop bot">
+                            STOP
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </ScrollTablePanel>
-      </Card>
+      </section>
 
-      <Card size="sm" className="flex min-h-[160px] flex-col overflow-hidden rounded-lg bg-background/80 py-3 shadow-none xl:min-h-0">
-        <div className="mb-2 flex shrink-0 items-center justify-between border-b border-border px-3 pb-2">
-          <div className="icon-label-loose">
-            <Cpu size={13} className={activeBots.length > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
-            <span className="text-xs font-bold uppercase tracking-wide">Bot Log</span>
-            <Badge variant={activeBots.length > 0 ? 'buy' : 'secondary'}>
-              {activeBots.length > 0 ? `${activeBots.length} ACTIVE` : 'IDLE'}
-            </Badge>
+      <section className="algo-tab__panel algo-tab__panel--log">
+        <header className="algo-tab__panel-header">
+          <div className="algo-tab__panel-title">
+            <Activity size={13} className="text-muted-foreground" aria-hidden />
+            {botDetail?.bot ? `${botDetail.bot.symbol} · Detail` : 'Bot Log'}
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log">
-            <Trash2 />
-          </Button>
-        </div>
+          <div className="flex items-center gap-1">
+            {selectedBotId && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => { setSelectedBotId(null); setBotDetail(null); }}
+              >
+                Clear
+              </Button>
+            )}
+            <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
+              <Trash2 />
+            </Button>
+          </div>
+        </header>
 
-        <ScrollArea className="min-h-0 flex-1 px-3">
-          <div className="flex flex-col-reverse gap-1 font-mono text-[0.62rem] text-muted-foreground">
+        {botDetail?.bot && selectedBotId === botDetail.bot.id && (
+          <div className="bot-detail-strip">
+            <div className="bot-detail-stats">
+              <div><span>Trades</span><strong>{botDetail.stats.trade_count}</strong></div>
+              <div><span>Win rate</span><strong>{botDetail.stats.win_rate}%</strong></div>
+              <div><span>Total PnL</span><strong className={botDetail.stats.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${botDetail.stats.total_pnl}</strong></div>
+              <div><span>Today</span><strong className={botDetail.stats.daily_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${botDetail.stats.daily_pnl}</strong></div>
+            </div>
+            {botDetail.trades?.length > 0 && (
+              <p className="bot-detail-strip__hint">
+                Bot trades shown on chart (gold pins = exits).
+              </p>
+            )}
+            {botDetail.trades?.length > 0 && (
+              <div className="bot-detail-trades scroll-panel-y scroll-panel-y-0">
+                <table className="terminal-table m-0 text-[0.62rem]">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Side</th>
+                      <th className="text-right">Qty</th>
+                      <th className="text-right">Price</th>
+                      <th className="text-right">PnL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {botDetail.trades.slice(0, 12).map(t => (
+                      <tr key={t.id}>
+                        <td className="text-muted-foreground">{new Date(t.timestamp + 'Z').toLocaleTimeString()}</td>
+                        <td>{t.side}{t.is_exit ? ' ↗' : ''}</td>
+                        <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
+                        <td className="num-mono text-right">{Number(t.price).toFixed(2)}</td>
+                        <td className={cn('num-mono text-right', t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'))}>
+                          {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0">
+          <div className="algo-tab__log-list">
             {botLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
-            ) : botLogs.map((log, i) => {
-              let c = 'text-muted-foreground';
-              if (log.includes('BUY') || log.includes('SUCCESS')) c = 'text-trading-up';
-              else if (log.includes('SELL') || log.includes('ERROR') || log.includes('STOP')) c = 'text-trading-down';
-              else if (log.includes('WARN')) c = 'text-trading-warn';
-              else if (log.includes('INFO') || log.includes('started')) c = 'text-primary';
-              return <div key={i} className={cn(c, 'whitespace-pre-wrap leading-relaxed')}>{log}</div>;
-            })}
+            ) : botLogs.map((log, i) => (
+              <div key={i} className={logLineClass(log)}>{log}</div>
+            ))}
           </div>
-        </ScrollArea>
-      </Card>
+        </div>
+      </section>
     </div>
   );
 }
@@ -467,6 +713,14 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   useEffect(() => {
     setParentDockHeight(dockH);
   }, [dockH, setParentDockHeight]);
+
+  useEffect(() => {
+    const onDockTab = (e) => {
+      if (e.detail) setActiveTab(e.detail);
+    };
+    window.addEventListener('dock-tab', onDockTab);
+    return () => window.removeEventListener('dock-tab', onDockTab);
+  }, []);
 
   const pendingOrders = orders.filter(o => o.status === 'PENDING').length;
   const posCount = Object.keys(positions).length;
@@ -529,7 +783,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
                       </Badge>
                     )}
                     {tab.id === 'algo' && isBotRunning && (
-                      <span className="size-1.5 rounded-full bg-trading-up shadow-[0_0_5px_var(--color-up)]" />
+                      <span className="dock-algo-pulse" aria-hidden />
                     )}
                   </TabsTrigger>
                 );

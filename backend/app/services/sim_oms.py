@@ -31,7 +31,7 @@ class SimulatedOMSService(BaseOMSService):
             } for row in cursor.fetchall()
         }
         
-        cursor.execute("SELECT id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, timestamp FROM orders ORDER BY timestamp DESC LIMIT 50")
+        cursor.execute("SELECT id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, timestamp, bot_id, signal_id FROM orders ORDER BY timestamp DESC LIMIT 50")
         orders = [dict(row) for row in cursor.fetchall()]
         
         conn.close()
@@ -47,7 +47,7 @@ class SimulatedOMSService(BaseOMSService):
 
         cursor.execute("""
             SELECT id, symbol, type, side, price, quantity, status,
-                   filled_quantity, average_fill_price, timestamp
+                   filled_quantity, average_fill_price, timestamp, bot_id, signal_id
             FROM orders
             ORDER BY timestamp ASC
         """)
@@ -135,6 +135,8 @@ class SimulatedOMSService(BaseOMSService):
         quantity = order_req.get("quantity")
         stop_loss_percent = order_req.get("stop_loss_percent")
         take_profit_percent = order_req.get("take_profit_percent")
+        bot_id = order_req.get("bot_id")
+        signal_id = order_req.get("signal_id")
 
         if symbol not in self.feed._symbols:
             return {"status": "error", "message": f"Invalid symbol: {symbol}"}
@@ -187,8 +189,8 @@ class SimulatedOMSService(BaseOMSService):
             status = "PENDING" if order_type == "LIMIT" else "FILLED"
             
             cursor.execute("""
-                INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, stop_loss_percent, take_profit_percent)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, stop_loss_percent, take_profit_percent, bot_id, signal_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 order_id, symbol, order_type, side, 
                 price if order_type == "LIMIT" else None, 
@@ -196,7 +198,9 @@ class SimulatedOMSService(BaseOMSService):
                 quantity if order_type == "MARKET" else 0.0,
                 market_price if order_type == "MARKET" else 0.0,
                 stop_loss_percent,
-                take_profit_percent
+                take_profit_percent,
+                bot_id,
+                signal_id,
             ))
             
             if order_type == "MARKET":

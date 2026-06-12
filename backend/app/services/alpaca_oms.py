@@ -299,7 +299,11 @@ class AlpacaOMSService(BaseOMSService):
                                 # Send bot log console entry
                                 await self.broadcast_callback({
                                     "type": "bot_log",
-                                    "data": f"🔔 Alpaca Order Update: {event.upper()} {order['qty']} {symbol} @ {order.get('filled_avg_price') or order.get('price')}"
+                                    "data": {
+                                        "bot_id": "system",
+                                        "level": "INFO",
+                                        "message": f"🔔 Alpaca Order Update: {event.upper()} {order['qty']} {symbol} @ {order.get('filled_avg_price') or order.get('price')}"
+                                    }
                                 })
                                 # Broadcast overall balances/positions updates
                                 await self.broadcast_callback({

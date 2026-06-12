@@ -7,7 +7,6 @@ import ChartWidget           from './components/ChartWidget';
 import MultiChartGrid        from './components/MultiChartGrid';
 import OrderBookWidget       from './components/OrderBookWidget';
 import OrderEntryWidget      from './components/OrderEntryWidget';
-import AlgoTraderEngine      from './components/AlgoTraderEngine';
 import SystemControlPanel    from './components/SystemControlPanel';
 import MarketOverviewStrip   from './components/MarketOverviewStrip';
 import ResizableDock         from './components/ResizableDock';
@@ -18,7 +17,12 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { TrendingUp, LayoutGrid, BarChart2, Settings, Search } from 'lucide-react';
+import { TrendingUp, LayoutGrid, BarChart2, Settings, Search, OctagonX } from 'lucide-react';
+import { sendWebSocketAction } from './services/websocket';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 const DOCK_DEFAULT = 320;
 
@@ -28,11 +32,14 @@ export default function App() {
   const setViewMode      = useStore(state => state.setViewMode);
   const isLive           = useStore(state => state.isLive);
   const terminalMode     = useStore(state => state.terminalMode);
+  const isBotRunning     = useStore(state => state.isBotRunning);
+  const distributed      = useStore(state => state.distributed);
   useWebSocket('ws://127.0.0.1:8765');
 
   const [showAdmin, setShowAdmin]   = useState(false);
   const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [stopBotsOpen, setStopBotsOpen] = useState(false);
 
   const handleDockHeightChange = useCallback(h => setDockHeight(h), []);
 
@@ -52,6 +59,10 @@ export default function App() {
         e.preventDefault();
         setViewMode('multi');
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -62,7 +73,6 @@ export default function App() {
       className="dashboard-container"
       style={{ '--dock-h': `${dockHeight}px` }}
     >
-      <AlgoTraderEngine />
       <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
       <SymbolCommandPalette
         open={paletteOpen}
@@ -119,6 +129,47 @@ export default function App() {
         </div>
 
         <div className="header-actions">
+          {distributed && (
+            <Badge variant="outline" className="header-distributed-badge hidden sm:inline-flex">
+              Distributed
+            </Badge>
+          )}
+
+          {isBotRunning && (
+            <>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="header-stop-bots-btn h-[var(--control-h)] px-2.5 text-xs"
+                onClick={() => setStopBotsOpen(true)}
+                title="Stop all running bots"
+              >
+                <OctagonX data-icon="inline-start" />
+                <span className="header-label">Stop Bots</span>
+              </Button>
+              <AlertDialog open={stopBotsOpen} onOpenChange={setStopBotsOpen}>
+                <AlertDialogContent className="sm:max-w-md">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Stop all bots?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This halts every active bot immediately. Open positions are not closed — use
+                      System Control → Emergency Stop to flatten positions and cancel orders.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={() => sendWebSocketAction('bot_stop_all', {})}
+                    >
+                      Stop all bots
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          )}
+
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

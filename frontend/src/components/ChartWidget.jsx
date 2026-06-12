@@ -155,6 +155,23 @@ function buildMarkLineData(symbolPosition, dec) {
   return markLineData;
 }
 
+function buildBotTradeMarkers(botTrades, candles, categoryData) {
+  if (!botTrades?.length || !candles.length) return [];
+  return botTrades.map(t => {
+    const ts = Math.floor(new Date(`${t.timestamp}Z`).getTime() / 1000);
+    let idx = candles.findIndex(c => c.time >= ts);
+    if (idx === -1) idx = candles.length - 1;
+    const isExit = t.is_exit === 1 || t.is_exit === true;
+    return {
+      coord: [categoryData[idx], t.price],
+      value: `${t.side}${isExit ? ' exit' : ''}`,
+      symbol: isExit ? 'pin' : (t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z'),
+      symbolSize: isExit ? 14 : 11,
+      itemStyle: { color: isExit ? '#f59e0b' : (t.side === 'BUY' ? '#10b981' : '#ef4444') },
+    };
+  });
+}
+
 function buildTradeMarkers(tradeHistory, activeSymbol, candles, categoryData) {
   return tradeHistory
     .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
@@ -305,6 +322,12 @@ export default function ChartWidget() {
     return key;
   });
   const tradeHistory = useStore(state => state.tradeHistory);
+  const selectedBotId = useStore(state => state.selectedBotId);
+  const botDetail = useStore(state => state.botDetail);
+  const botOverlayKey = useStore(state => {
+    if (!state.selectedBotId || !state.botDetail?.trades) return '';
+    return state.botDetail.trades.map(t => `${t.id}:${t.timestamp}:${t.side}`).join(';');
+  });
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
 
@@ -751,19 +774,26 @@ export default function ChartWidget() {
     const categoryData = buildCategoryLabels(bars);
     const markLineData = buildMarkLineData(symbolPosition, dec);
     const tradeMarkers = buildTradeMarkers(tradeHistory, activeSymbol, bars, categoryData);
+    const showBotMarkers = selectedBotId
+      && botDetail?.bot?.symbol === activeSymbol
+      && botDetail?.trades?.length;
+    const botMarkers = showBotMarkers
+      ? buildBotTradeMarkers(botDetail.trades, bars, categoryData)
+      : [];
+    const allMarkers = [...tradeMarkers, ...botMarkers];
 
     try {
       chart.setOption({
         series: [{
           id: 'main',
           markLine: { symbol: ['none', 'none'], data: markLineData },
-          markPoint: { data: tradeMarkers, label: { show: false } },
+          markPoint: { data: allMarkers, label: { show: false } },
         }],
       }, { lazyUpdate: true });
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, symbolPosition, tradeHistory]);
+  }, [activeSymbol, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey]);
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -837,7 +867,7 @@ export default function ChartWidget() {
   // Lightweight overlay patch — trades, positions, and after full rebuild
   useEffect(() => {
     applyOverlayPatch();
-  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey]);
+  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey, botOverlayKey]);
 
   // Live tick updates — patch by series/xAxis id (no getOption mutation)
   const applyLiveCandleUpdate = useCallback(() => {

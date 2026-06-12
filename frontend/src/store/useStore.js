@@ -28,6 +28,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
   terminalMode: 'SIMULATED',
+  terminalRole: 'all',
+  distributed: false,
+  allowLiveBots: false,
   isLive: false,
   symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
 
@@ -63,10 +66,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   chartInteractionMode: 'normal',
   strategyTemplates: [
     { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5 } },
-    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3 } },
-    { id: 't3', name: 'Mean Reversion', strategy: 'BB_STOCH', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1 } },
+    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND_ADX', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3 } },
+    { id: 't3', name: 'Mean Reversion Scalp', strategy: 'BRS_SCALPING', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1 } },
+    { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', allocation: 1500, config: { trailing_stop_percent: 2 } },
   ],
   selectedBotId: null,
+  botDetail: null,
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
 
@@ -164,11 +169,21 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
+  setTerminalConfig: ({ terminalMode, allowLiveBots, symbols, terminalRole, distributed }) => set((state) => ({
+    terminalMode: terminalMode ?? state.terminalMode,
+    isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
+    allowLiveBots: allowLiveBots ?? state.allowLiveBots,
+    terminalRole: terminalRole ?? state.terminalRole,
+    distributed: distributed ?? state.distributed,
+    ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
+  })),
+
   setSymbolsList: (list) => set({ symbolsList: list }),
 
-  setBots: (bots) => set({ activeBots: bots }),
-  startBot: () => set({ isBotRunning: true }),
-  stopBot: () => set({ isBotRunning: false }),
+  setBots: (bots) => set({
+    activeBots: bots,
+    isBotRunning: Array.isArray(bots) && bots.some((b) => b.status === 'RUNNING'),
+  }),
   setBotStrategy: (strategy) => {
     setLocal('terminal_bot_strategy', strategy);
     set({ botStrategy: strategy });
@@ -180,7 +195,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   }),
   addBotLog: (log) => set((state) => {
     const time = new Date().toLocaleTimeString();
-    const entry = `[${time}] ${log.message || log}`;
+    let entry;
+    if (typeof log === 'string') {
+      entry = `[${time}] ${log}`;
+    } else {
+      const level = log.level ? `${log.level} - ` : '';
+      entry = `[${time}] ${level}${log.message || ''}`;
+    }
     const newLogs = [entry, ...state.botLogs];
     if (newLogs.length > 100) newLogs.pop();
     return { botLogs: newLogs };
@@ -196,6 +217,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBacktestResults: (results) => set({ backtestResults: results }),
   setChartInteractionMode: (mode) => set({ chartInteractionMode: mode }),
   setSelectedBotId: (id) => set({ selectedBotId: id }),
+  setBotDetail: (detail) => set({ botDetail: detail }),
 
   setOrderResult: (result) => {
     set({ orderResult: result });

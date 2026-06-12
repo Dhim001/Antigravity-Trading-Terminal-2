@@ -1,4 +1,5 @@
 import { useStore } from '../store/useStore';
+import { toast } from 'sonner';
 
 let ws = null;
 let reconnectTimeout = null;
@@ -63,10 +64,7 @@ export const connectWebSocket = (url, storeActions) => {
 
       switch (type) {
         case 'terminal_config':
-          storeActions.setTerminalMode(data.terminalMode);
-          if (data.symbols) {
-            storeActions.setSymbolsList(data.symbols);
-          }
+          storeActions.setTerminalConfig(data);
           break;
         case 'history_update':
           storeActions.updateHistory(data);
@@ -88,12 +86,22 @@ export const connectWebSocket = (url, storeActions) => {
           break;
         case 'bot_log':
           storeActions.addBotLog(data);
+          if (data && typeof data === 'object' && data.message) {
+            if (data.level === 'ERROR') toast.error(data.message);
+            else if (data.level === 'SUCCESS') toast.success(data.message);
+            else if (data.level === 'WARN' && /daily loss|blocked/i.test(data.message)) {
+              toast.warning(data.message);
+            }
+          }
           break;
         case 'bot_logs_history':
           storeActions.setBotLogs(data);
           break;
         case 'bots_update':
           storeActions.setBots(data);
+          break;
+        case 'bot_detail':
+          storeActions.setBotDetail(data);
           break;
         case 'system_stats':
           storeActions.setSystemStats(data);
