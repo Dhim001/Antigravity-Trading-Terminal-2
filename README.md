@@ -437,6 +437,57 @@ cd frontend && npm run build && npm run preview
 npm run test:e2e
 ```
 
+### Performance & stress testing
+
+Medium-tier load tests for WebSocket throughput, HTTP bursts, and frontend interaction budgets. Requires the backend running on **8765/8766**.
+
+**Backend only** — concurrent WebSocket clients, action round-trips, HTTP latency/burst, symbol-switch stress:
+
+```bash
+cd backend
+python scripts/perf_stress_test.py --clients 10 --duration 25
+```
+
+Optional flags: `--action-rounds`, `--http-samples`, `--http-burst`, `--subscribe-burst`, `--ws-url`, `--http-url`. Prints JSON metrics and a PASS/FAIL summary against built-in thresholds.
+
+Longer WebSocket soak (60s, single client):
+
+```bash
+cd backend
+python scripts/soak_test.py
+```
+
+**Frontend only** — Playwright perf suite (load time, dock tab thrash, watchlist switching, multi-chart, sidebar collapse, heap):
+
+```bash
+# Terminal 1 — backend
+cd backend && python main.py
+
+# Terminal 2 — production preview (default E2E base URL :4173)
+cd frontend && npm run build && npm run preview
+
+# Terminal 3
+cd frontend
+npm run test:perf
+```
+
+Set `E2E_BASE_URL` if the app is served elsewhere (e.g. `http://127.0.0.1:5173` for `npm run dev`).
+
+**Both suites** (Windows):
+
+```powershell
+.\scripts\run-perf-tests.ps1
+```
+
+Starts preview on `:4173` automatically if `E2E_BASE_URL` is unset.
+
+| Script | Location |
+|--------|----------|
+| Backend perf/stress | `backend/scripts/perf_stress_test.py` |
+| Backend soak | `backend/scripts/soak_test.py` |
+| Frontend perf | `frontend/e2e/performance.spec.js` |
+| Combined runner | `scripts/run-perf-tests.ps1` |
+
 ### Router middleware (Phase 6)
 
 `backend/app/api/middleware.py` wraps every dispatched action with:
