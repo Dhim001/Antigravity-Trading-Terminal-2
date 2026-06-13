@@ -35,6 +35,7 @@ from app.config import (
 )
 from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
+from app.services.feeds.bar_close import BarCloseEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class EtoroFeedService(BaseFeedService):
         self.poll_interval = ETORO_POLL_INTERVAL
         self.active = False
         self.poll_task: Optional[asyncio.Task] = None
+        self._bar_close = BarCloseEmitter()
 
         # symbol -> instrumentId and the reverse lookup for parsing responses
         self._instrument_ids: Dict[str, int] = {}
@@ -77,6 +79,9 @@ class EtoroFeedService(BaseFeedService):
 
     def register_broadcast_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
         self.broadcast_callback = callback
+
+    def register_bar_close_callback(self, callback) -> None:
+        self._bar_close.register(callback)
 
     def get_candles(self, symbol: str) -> List[dict]:
         return self.candles.get(symbol, [])
@@ -311,6 +316,14 @@ class EtoroFeedService(BaseFeedService):
             price = round(price, decimals)
             info["price"] = price
 
+            try:
+                from app.config import ARCHIVE_TICKS_ENABLED
+                if ARCHIVE_TICKS_ENABLED:
+                    from app.services.archive.tick_writer import record_tick
+                    record_tick(symbol, price)
+            except Exception:
+                pass
+
             # Real bid/ask if eToro provided them; otherwise a tight synthetic book.
             bid = entry.get("bid")
             ask = entry.get("ask")
@@ -354,6 +367,7 @@ class EtoroFeedService(BaseFeedService):
             )
             if len(candles) > MAX_CANDLES:
                 candles.pop(0)
+            self._bar_close.notify(symbol)
 
     # ------------------------------------------------------------------ #
     # Fallback candle/book generators (used before first live tick)

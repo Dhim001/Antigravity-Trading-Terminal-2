@@ -68,6 +68,11 @@ async def _binding_handler(request: Request) -> JSONResponse:
             if path_field in request.path_params:
                 message[ws_field] = request.path_params[path_field]
 
+    if method == "GET":
+        for key, value in request.query_params.multi_items():
+            if key not in message:
+                message[key] = value
+
     if method in ("POST", "PATCH", "DELETE"):
         if method != "DELETE":
             body = {}

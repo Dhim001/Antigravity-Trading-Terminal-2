@@ -25,19 +25,27 @@ services:
       timeout: 3s
       retries: 5
 
+  # WebSocket + HTTP + feed (publishes bar-close events to Redis)
   backend:
     build: ./backend
+    command: ["python", "main.py"]
     ports:
       - "8765:8765"
       - "8766:8766"
     environment:
       TERMINAL_MODE: SIMULATED
-      TERMINAL_ROLE: all
+      TERMINAL_ROLE: server
       HTTP_ENABLED: "true"
       HTTP_HOST: 0.0.0.0
       WS_HOST: 0.0.0.0
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+      ARCHIVE_ENABLED: "true"
+      ARCHIVE_BACKEND: db
+      ARCHIVE_BACKFILL_ON_STARTUP: "true"
+      ARCHIVE_PARQUET_ENABLED: "false"
+      ARCHIVE_TICKS_ENABLED: "true"
+      ALLOW_LIVE_BOTS: "false"
       # HTTP_API_KEY: change-me
     depends_on:
       redis:
@@ -51,6 +59,26 @@ services:
       retries: 5
       start_period: 30s
 
+  # Bot engine worker (consumes Redis bar-close events)
+  worker:
+    build: ./backend
+    command: ["python", "worker.py"]
+    environment:
+      TERMINAL_MODE: SIMULATED
+      TERMINAL_ROLE: worker
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+      ALLOW_LIVE_BOTS: "false"
+      ARCHIVE_ENABLED: "true"
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
@@ -62,6 +90,33 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  # Monolith mode (single process — no worker). Enable with:
+  #   docker compose --profile monolith up
+  backend-monolith:
+    profiles: ["monolith"]
+    build: ./backend
+    command: ["python", "main.py"]
+    ports:
+      - "8765:8765"
+      - "8766:8766"
+    environment:
+      TERMINAL_MODE: SIMULATED
+      TERMINAL_ROLE: all
+      HTTP_ENABLED: "true"
+      HTTP_HOST: 0.0.0.0
+      WS_HOST: 0.0.0.0
+      DATABASE_URL: postgresql://trading:trading@postgres:5432/trading
+      ARCHIVE_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   pgdata:

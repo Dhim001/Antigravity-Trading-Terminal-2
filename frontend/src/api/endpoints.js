@@ -1,5 +1,6 @@
 import { apiAction, apiRequest } from './client';
 import { applyHttpEnvelope } from './dispatch';
+import { useStore } from '../store/useStore';
 
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
@@ -36,4 +37,24 @@ export async function fetchCandles(symbol, storeActions) {
   const body = await apiAction(`/api/v1/market/${encoded}/candles`);
   applyHttpEnvelope(body, storeActions);
   return body;
+}
+
+/** Fetch archived OHLCV range and prepend to chart buffer (scroll-left load). */
+export async function fetchOlderCandles(symbol, from, to, interval = 'auto') {
+  const encoded = encodeURIComponent(symbol);
+  const qs = new URLSearchParams({
+    from: String(from),
+    to: String(to),
+    interval,
+  });
+  const body = await apiAction(
+    `/api/v1/market/${encoded}/history?${qs}`,
+    { timeoutMs: 20000 },
+  );
+  const bars = body.data?.[symbol];
+  if (!Array.isArray(bars) || bars.length === 0) return 0;
+
+  const { prependHistory } = useStore.getState();
+  prependHistory({ [symbol]: bars });
+  return bars.length;
 }

@@ -478,6 +478,59 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                 </div>
               </AdminSection>
 
+              <AdminSection title="Market Archive (DB)" description="SQLite or Postgres tables — market_bars_1m / market_bars_1h.">
+                <div className="flex flex-wrap gap-2 mb-2">
+                  <StatCard
+                    label="1m Bars"
+                    icon={Activity}
+                    value={(systemStats.archive?.bars_1m ?? 0).toLocaleString()}
+                    tone="neutral"
+                    sub="Full-minute OHLCV"
+                  />
+                  <StatCard
+                    label="1h Bars"
+                    icon={Activity}
+                    value={(systemStats.archive?.bars_1h ?? 0).toLocaleString()}
+                    tone="neutral"
+                    sub="Rolled-up archive"
+                  />
+                  <StatCard
+                    label="Est. Size"
+                    icon={Database}
+                    value={`${systemStats.archive?.est_size_mb ?? 0} MB`}
+                    tone="accent"
+                    sub="SQLite / Postgres"
+                  />
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => sendAction(Action.ADMIN_ARCHIVE_BACKFILL, { force: false })}
+                >
+                  <RefreshCw data-icon="inline-start" aria-hidden />
+                  Backfill from seed data
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => sendAction(Action.ADMIN_ARCHIVE_EXPORT, { days: 90, interval: 'auto' })}
+                >
+                  <Database data-icon="inline-start" aria-hidden />
+                  Export Parquet (90d)
+                </Button>
+                {(systemStats.archive?.ticks ?? 0) > 0 && (
+                  <StatCard
+                    label="Ticks (24h)"
+                    icon={Activity}
+                    value={(systemStats.archive?.ticks ?? 0).toLocaleString()}
+                    tone="neutral"
+                    sub="Sub-minute snapshots"
+                  />
+                )}
+              </AdminSection>
+
               <AdminSection title="Database Row Counts" description="Persistent store record totals.">
                 <Card className="admin-panel-card py-0 shadow-none">
                   <CardContent className="p-0">

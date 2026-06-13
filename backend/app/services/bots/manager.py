@@ -7,7 +7,7 @@ from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update
 from app.services.bots.indicators import prepare_strategy_df
-from app.services.bots.strategies import get_strategy
+from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
@@ -390,6 +390,7 @@ class BotManagerService:
         if not decision.allowed:
             raise ValueError(decision.reason)
 
+        strategy = normalize_strategy_name(strategy)
         bot_id = str(uuid.uuid4())
         conn = get_connection()
         cursor = conn.cursor()

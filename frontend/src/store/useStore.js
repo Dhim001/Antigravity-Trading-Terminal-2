@@ -2,8 +2,16 @@ import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import { Action } from '../api/protocol';
 import {
-  setCandleHistory, applyLiveCandle, hasCandleHistory,
+  setCandleHistory, applyLiveCandle, hasCandleHistory, mergeCandleHistory,
+  prependCandleHistory,
 } from '../services/candleBuffer';
+import {
+  hydrateFromSnapshot, scheduleMarketSnapshotSave, forceMarketSnapshotSave,
+} from '../services/marketSnapshot';
+import { getHmrData } from '../services/hmrState';
+
+const initialSnapshot = hydrateFromSnapshot();
+const hmrStore = getHmrData()?.zustandSnapshot;
 
 const getLocal = (key, fallback) => {
   try {
@@ -27,24 +35,27 @@ function bumpRevision(revisions, symbol) {
 export const useStore = create(subscribeWithSelector((set, get) => ({
   connectionStatus: 'disconnected',
   /** HTTP bootstrap: idle | loading | ready | error */
-  apiStatus: 'idle',
+  apiStatus: hmrStore?.apiStatus ?? 'idle',
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
   terminalMode: 'SIMULATED',
   terminalRole: 'all',
   distributed: false,
   allowLiveBots: false,
+  botMinCandles: 200,
+  archiveTicksEnabled: false,
+  ambiguousOrders: [],
   isLive: false,
   symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
 
   // Market data states
-  tickerData: {},
-  priceDirections: {},
-  orderBooks: {},
+  tickerData: hmrStore?.tickerData ?? initialSnapshot.tickerData ?? {},
+  priceDirections: hmrStore?.priceDirections ?? initialSnapshot.priceDirections ?? {},
+  orderBooks: hmrStore?.orderBooks ?? {},
   /** Bumped on live ticks — drives incremental chart patches */
-  candleRevision: {},
+  candleRevision: hmrStore?.candleRevision ?? initialSnapshot.candleRevision ?? {},
   /** Bumped only on history load — drives full chart rebuild */
-  candleHistoryRevision: {},
+  candleHistoryRevision: hmrStore?.candleHistoryRevision ?? initialSnapshot.candleHistoryRevision ?? {},
 
   // Account states
   balances: {},
@@ -92,16 +103,45 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     set({ viewMode: mode });
   },
 
-  updateHistory: (historyData) => set((state) => {
-    let candleRevision = state.candleRevision;
-    let candleHistoryRevision = state.candleHistoryRevision;
-    for (const [symbol, candles] of Object.entries(historyData)) {
-      setCandleHistory(symbol, candles);
-      candleRevision = bumpRevision(candleRevision, symbol);
-      candleHistoryRevision = bumpRevision(candleHistoryRevision, symbol);
-    }
-    return { candleRevision, candleHistoryRevision };
-  }),
+  updateHistory: (historyData) => {
+    set((state) => {
+      let candleRevision = state.candleRevision;
+      let candleHistoryRevision = state.candleHistoryRevision;
+      let anyChange = false;
+
+      for (const [symbol, candles] of Object.entries(historyData)) {
+        const { changed, fullRebuild } = mergeCandleHistory(symbol, candles);
+        if (!changed) continue;
+        anyChange = true;
+        candleRevision = bumpRevision(candleRevision, symbol);
+        if (fullRebuild) {
+          candleHistoryRevision = bumpRevision(candleHistoryRevision, symbol);
+        }
+      }
+
+      if (!anyChange) return {};
+      return { candleRevision, candleHistoryRevision };
+    });
+    scheduleMarketSnapshotSave(get);
+  },
+
+  prependHistory: (historyData) => {
+    set((state) => {
+      let candleHistoryRevision = state.candleHistoryRevision;
+      let anyChange = false;
+
+      for (const [symbol, candles] of Object.entries(historyData)) {
+        const { changed } = prependCandleHistory(symbol, candles);
+        if (!changed) continue;
+        anyChange = true;
+        candleHistoryRevision = bumpRevision(candleHistoryRevision, symbol);
+      }
+
+      if (!anyChange) return {};
+      return { candleHistoryRevision };
+    });
+    scheduleMarketSnapshotSave(get);
+  },
 
   updateAccount: (accountData) => set({
     balances: accountData.balances || {},
@@ -173,14 +213,18 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
-  setTerminalConfig: ({ terminalMode, allowLiveBots, symbols, terminalRole, distributed }) => set((state) => ({
+  setTerminalConfig: ({ terminalMode, allowLiveBots, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
     allowLiveBots: allowLiveBots ?? state.allowLiveBots,
     terminalRole: terminalRole ?? state.terminalRole,
     distributed: distributed ?? state.distributed,
+    botMinCandles: botMinCandles ?? state.botMinCandles,
+    archiveTicksEnabled: archiveTicksEnabled ?? state.archiveTicksEnabled,
     ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
   })),
+
+  setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),
 
   setSymbolsList: (list) => set({ symbolsList: list }),
 
@@ -238,17 +282,30 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   updateMarketData: (marketData) => {
     set((state) => {
-      const activeSymbol = state.activeSymbol;
       const tickerData = state.tickerData;
       const priceDirections = state.priceDirections;
       let candleRevision = null;
+      let candleHistoryRevision = null;
       let tickerChanged = false;
       let directionChanged = false;
+      let orderBooksChanged = false;
       let nextTickers = tickerData;
       let nextDirections = priceDirections;
+      let nextOrderBooks = state.orderBooks;
 
       for (const [symbol, info] of Object.entries(marketData)) {
         if (!info) continue;
+
+        if (info.orderbook?.bids?.length && info.orderbook?.asks?.length) {
+          const prevOb = state.orderBooks[symbol];
+          if (prevOb !== info.orderbook) {
+            if (!orderBooksChanged) {
+              nextOrderBooks = { ...state.orderBooks };
+              orderBooksChanged = true;
+            }
+            nextOrderBooks[symbol] = info.orderbook;
+          }
+        }
 
         const prev = tickerData[symbol];
         if (
@@ -289,8 +346,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
           }
         }
 
-        // Live candle: only symbols with loaded history (O(1) in-place mutation)
-        if (info.candle && hasCandleHistory(symbol)) {
+        // Seed buffer from live tick when history not yet loaded
+        if (info.candle && !hasCandleHistory(symbol)) {
+          setCandleHistory(symbol, [info.candle]);
+          candleRevision = bumpRevision(candleRevision ?? state.candleRevision, symbol);
+          candleHistoryRevision = bumpRevision(
+            candleHistoryRevision ?? state.candleHistoryRevision,
+            symbol,
+          );
+        } else if (info.candle && hasCandleHistory(symbol)) {
           if (applyLiveCandle(symbol, info.candle)) {
             candleRevision = bumpRevision(candleRevision ?? state.candleRevision, symbol);
           }
@@ -300,9 +364,27 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       const updates = {};
       if (tickerChanged) updates.tickerData = nextTickers;
       if (directionChanged) updates.priceDirections = nextDirections;
+      if (orderBooksChanged) updates.orderBooks = nextOrderBooks;
       if (candleRevision) updates.candleRevision = candleRevision;
+      if (candleHistoryRevision) updates.candleHistoryRevision = candleHistoryRevision;
 
       return Object.keys(updates).length ? updates : {};
     });
+    scheduleMarketSnapshotSave(get);
   },
 })));
+
+if (import.meta.hot) {
+  import.meta.hot.dispose((data) => {
+    const s = useStore.getState();
+    data.zustandSnapshot = {
+      tickerData: s.tickerData,
+      priceDirections: s.priceDirections,
+      orderBooks: s.orderBooks,
+      candleRevision: s.candleRevision,
+      candleHistoryRevision: s.candleHistoryRevision,
+      apiStatus: s.apiStatus,
+    };
+    forceMarketSnapshotSave(() => useStore.getState());
+  });
+}

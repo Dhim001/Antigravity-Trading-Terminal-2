@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from app.config import TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL
+from app.services.bots.live_hooks import register_live_bot_hooks
 from app.database import init_db
 from app.db.connection import DB_DRIVER
 from app.services.bots.runtime import (
@@ -50,6 +51,7 @@ async def main():
     await oms.initialize()
 
     register_worker_handlers(bot_manager, event_bus, feed)
+    register_live_bot_hooks(feed, bot_manager)
     await event_bus.start()
     logger.info("Bot worker listening on %s", channels.BAR_CLOSE)
 

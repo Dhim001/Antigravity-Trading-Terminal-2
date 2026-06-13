@@ -444,6 +444,16 @@ class EtoroOMSService(BaseOMSService):
                 "positionIds": [int(pos["positionID"])],
             }
             result = await self._post_order(payload)
+            if result.get("status") == "ambiguous":
+                from app.config import TERMINAL_MODE
+                from app.services.reconciliation import record_ambiguous_order
+
+                record_ambiguous_order(
+                    {**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity},
+                    result.get("message", "Ambiguous eToro order"),
+                    broker=TERMINAL_MODE,
+                    bot_id=order_req.get("bot_id"),
+                )
             if result.get("status") == "success":
                 result["message"] = f"eToro close submitted: SELL {symbol}"
             return result
@@ -485,6 +495,16 @@ class EtoroOMSService(BaseOMSService):
             payload["takeProfitRate"] = mid * (1 + tp_pct / 100.0)
 
         result = await self._post_order(payload)
+        if result.get("status") == "ambiguous":
+            from app.config import TERMINAL_MODE
+            from app.services.reconciliation import record_ambiguous_order
+
+            record_ambiguous_order(
+                {**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity},
+                result.get("message", "Ambiguous eToro order"),
+                broker=TERMINAL_MODE,
+                bot_id=order_req.get("bot_id"),
+            )
         if result.get("status") == "success":
             result["message"] = (
                 f"eToro order submitted: {side} {quantity} {symbol} "

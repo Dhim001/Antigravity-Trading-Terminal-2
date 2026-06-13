@@ -13,10 +13,34 @@ from app.api.responses import (
 )
 from app.api.router import route
 from app.database import get_connection, get_db_stats, reset_db
+from app.api.outbound import publish_market_update
 from app.services.events import channels
 from app.services.events import publish as event_publish
 
 logger = logging.getLogger(__name__)
+
+
+async def _broadcast_market_snapshot(ctx: RequestContext) -> None:
+    """Push current in-memory prices to all clients without resetting the sim feed."""
+    feed = getattr(ctx.oms, "feed", None)
+    if not feed or not hasattr(feed, "get_market_data"):
+        return
+    slim = {}
+    for symbol in feed.symbols:
+        md = feed.get_market_data(symbol)
+        if not md:
+            continue
+        slim[symbol] = {
+            "symbol": symbol,
+            "price": md["price"],
+            "change_24h": md.get("change_24h"),
+            "volume_24h": md.get("volume_24h"),
+            "high_24h": md.get("high_24h"),
+            "low_24h": md.get("low_24h"),
+            "candle": md.get("candle"),
+        }
+    if slim:
+        await publish_market_update(ctx.manager.broadcast, slim)
 
 
 async def _notify_bot_registry_change() -> None:
@@ -92,12 +116,18 @@ async def admin_reset_system(ctx: RequestContext) -> None:
         reset_db()
         ctx.bot_manager.active_bots.clear()
         ctx.bot_manager._executed_signals.clear()
-        if hasattr(ctx.oms, "feed"):
-            ctx.oms.feed.tick_interval = 0.25
-            ctx.oms.feed.volatility_multiplier = 1.0
-            ctx.oms.feed.biases.clear()
+        feed = getattr(ctx.oms, "feed", None)
+        if feed is not None:
+            if hasattr(feed, "tick_interval"):
+                feed.tick_interval = 0.25
+            if hasattr(feed, "volatility_multiplier"):
+                feed.volatility_multiplier = 1.0
+            if hasattr(feed, "biases"):
+                feed.biases.clear()
+            if hasattr(feed, "persist_state"):
+                feed.persist_state()
         status = "success"
-        result_msg = "System database reset successfully to defaults"
+        result_msg = "Trading state reset to defaults — market prices preserved"
     except Exception as exc:
         status = "error"
         result_msg = f"Failed to reset database: {exc}"
@@ -106,6 +136,8 @@ async def admin_reset_system(ctx: RequestContext) -> None:
     await broadcast_account_update(ctx)
     await broadcast_trade_history(ctx)
     await broadcast_bots_update(ctx)
+    if status == "success":
+        await _broadcast_market_snapshot(ctx)
 
 
 @route(Action.ADMIN_EMERGENCY_STOP, tags=["admin"])
@@ -132,3 +164,104 @@ async def admin_get_stats(ctx: RequestContext) -> None:
         stats["volatility_multiplier"] = 1.0
 
     await send_system_stats(ctx, stats)
+
+
+@route(Action.ADMIN_ARCHIVE_BACKFILL, tags=["admin"])
+async def admin_archive_backfill(ctx: RequestContext) -> None:
+    """Import seed parquet / feed buffer into market_bars_1m (SQLite or Postgres)."""
+    from app.config import TERMINAL_MODE
+    from app.services.archive.backfill import run_archive_backfill
+
+    feed = getattr(ctx.oms, "feed", None)
+    force = bool(ctx.message.get("force"))
+    symbols = ctx.message.get("symbols")
+    if symbols and not isinstance(symbols, list):
+        symbols = [symbols]
+
+    try:
+        result = run_archive_backfill(
+            symbols,
+            feed=feed,
+            source=TERMINAL_MODE or "SIMULATED",
+            skip_existing=not force,
+        )
+        await send_order_result(ctx, {
+            "status": "success",
+            "message": f"Archive backfill wrote {result.get('rows_written', 0)} rows",
+            "archive_backfill": result,
+        })
+    except Exception as exc:
+        await send_order_result(ctx, {"status": "error", "message": str(exc)})
+
+
+@route(Action.ADMIN_ARCHIVE_EXPORT, tags=["admin"])
+async def admin_archive_export(ctx: RequestContext) -> None:
+    from app.config import ARCHIVE_PARQUET_ENABLED, ARCHIVE_PARQUET_DIR
+    from app.services.archive.parquet_export import export_all_symbols
+
+    if not ARCHIVE_PARQUET_ENABLED:
+        await send_order_result(ctx, {
+            "status": "error",
+            "message": "Parquet export disabled. Set ARCHIVE_PARQUET_ENABLED=true or ARCHIVE_BACKEND=both.",
+        })
+        return
+
+    feed = getattr(ctx.oms, "feed", None)
+    symbols = ctx.message.get("symbols")
+    if symbols and not isinstance(symbols, list):
+        symbols = [symbols]
+    if not symbols and feed is not None:
+        symbols = list(feed.symbols)
+    days = int(ctx.message.get("days") or 90)
+    interval = ctx.message.get("interval") or "auto"
+
+    try:
+        result = export_all_symbols(symbols or [], days=days, interval=interval)
+        await send_order_result(ctx, {
+            "status": "success",
+            "message": f"Exported {result.get('total_rows', 0)} rows to {ARCHIVE_PARQUET_DIR}",
+            "archive_export": result,
+        })
+    except Exception as exc:
+        await send_order_result(ctx, {"status": "error", "message": str(exc)})
+
+
+@route(Action.ADMIN_GET_RECONCILIATION, tags=["admin"])
+async def admin_get_reconciliation(ctx: RequestContext) -> None:
+    from app.services.reconciliation import list_ambiguous_orders
+
+    pending = list_ambiguous_orders(include_resolved=False)
+    await send_order_result(ctx, {
+        "status": "success",
+        "message": f"{len(pending)} ambiguous order(s) pending review",
+        "reconciliation": {"pending": pending, "count": len(pending)},
+    })
+
+
+@route(Action.ADMIN_RECONCILE, tags=["admin"])
+async def admin_reconcile(ctx: RequestContext) -> None:
+    from app.services.reconciliation import auto_reconcile_with_portfolio
+
+    result = auto_reconcile_with_portfolio(ctx.oms)
+    await send_order_result(ctx, {
+        "status": "success",
+        "message": f"Auto-reconciled {result.get('matched', 0)} order(s)",
+        "reconciliation": result,
+    })
+
+
+@route(Action.ADMIN_RESOLVE_AMBIGUOUS, tags=["admin"])
+async def admin_resolve_ambiguous(ctx: RequestContext) -> None:
+    from app.services.reconciliation import resolve_ambiguous_order
+
+    order_id = ctx.message.get("order_id") or ctx.message.get("id")
+    resolution = ctx.message.get("resolution") or "dismissed"
+    note = ctx.message.get("note") or ""
+    if not order_id:
+        await send_order_result(ctx, {"status": "error", "message": "order_id is required"})
+        return
+    ok = resolve_ambiguous_order(order_id, resolution, note)
+    await send_order_result(ctx, {
+        "status": "success" if ok else "error",
+        "message": "Ambiguous order resolved" if ok else "Order not found or already resolved",
+    })

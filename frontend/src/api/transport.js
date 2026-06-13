@@ -14,6 +14,17 @@ export const HTTP_ROUTES = Object.freeze({
     method: 'GET',
     path: (p) => `/api/v1/market/${encodeURIComponent(p.symbol)}/candles`,
   },
+  [Action.GET_MARKET_HISTORY]: {
+    method: 'GET',
+    path: (p) => {
+      const qs = new URLSearchParams();
+      if (p.from != null) qs.set('from', String(p.from));
+      if (p.to != null) qs.set('to', String(p.to));
+      if (p.interval) qs.set('interval', p.interval);
+      const q = qs.toString();
+      return `/api/v1/market/${encodeURIComponent(p.symbol)}/history${q ? `?${q}` : ''}`;
+    },
+  },
   [Action.PLACE_ORDER]: { method: 'POST', path: () => '/api/v1/orders', body: (p) => p },
   [Action.CANCEL_ORDER]: {
     method: 'DELETE',
@@ -48,6 +59,40 @@ export const HTTP_ROUTES = Object.freeze({
   [Action.BOT_STOP_ALL]: { method: 'POST', path: () => '/api/v1/bots/stop-all' },
   [Action.RUN_BACKTEST]: { method: 'POST', path: () => '/api/v1/backtest', body: (p) => p },
   [Action.ADMIN_GET_STATS]: { method: 'GET', path: () => '/api/v1/admin/stats' },
+  [Action.ADMIN_ARCHIVE_BACKFILL]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/archive/backfill',
+    body: (p) => p,
+  },
+  [Action.ADMIN_ARCHIVE_EXPORT]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/archive/export',
+    body: (p) => p,
+  },
+  [Action.ADMIN_GET_RECONCILIATION]: {
+    method: 'GET',
+    path: () => '/api/v1/admin/reconciliation',
+  },
+  [Action.ADMIN_RECONCILE]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/reconciliation/reconcile',
+    body: (p) => p,
+  },
+  [Action.ADMIN_RESOLVE_AMBIGUOUS]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/reconciliation/resolve',
+    body: (p) => p,
+  },
+  [Action.GET_MARKET_TICKS]: {
+    method: 'GET',
+    path: (p) => {
+      const qs = new URLSearchParams();
+      if (p.from != null) qs.set('from', String(p.from));
+      if (p.to != null) qs.set('to', String(p.to));
+      const q = qs.toString();
+      return `/api/v1/market/${encodeURIComponent(p.symbol)}/ticks${q ? `?${q}` : ''}`;
+    },
+  },
   [Action.ADMIN_SET_SIMULATION]: {
     method: 'POST',
     path: () => '/api/v1/admin/simulation',

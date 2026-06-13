@@ -7,6 +7,7 @@ import logging
 from app.api.state import AppState
 from app.config import REDIS_URL, TERMINAL_MODE, TERMINAL_ROLE
 from app.db.connection import DB_DRIVER
+from app.services.bots.live_hooks import register_live_bot_hooks
 from app.services.bots.runtime import create_bot_stack, create_feed_and_oms
 from app.services.events.event_bus import create_event_bus
 from app.services.events import channels
@@ -37,6 +38,7 @@ def create_app_state() -> AppState:
         oms.register_broadcast_callback(broadcast_wrapper)
 
     screener_service, backtester_service, bot_manager = create_bot_stack(broadcast_wrapper, oms)
+    register_live_bot_hooks(feed, bot_manager)
 
     return AppState(
         oms=oms,

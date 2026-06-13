@@ -10,10 +10,13 @@ from app.config import (
     TERMINAL_MODE,
     TERMINAL_ROLE,
     ALLOW_LIVE_BOTS,
+    BOT_MIN_CANDLES,
     REDIS_URL,
     HTTP_ENABLED,
     HTTP_HOST,
     HTTP_PORT,
+    ARCHIVE_ENABLED,
+    ARCHIVE_TICKS_ENABLED,
 )
 from app.database import init_db
 from app.api.http_server import run_http_server
@@ -36,6 +39,7 @@ from app.services.bots.runtime import (
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
+from app.services.archive.runtime import archive_capture_loop, archive_rollup_loop, archive_startup_backfill
 from app.services.events import channels, publish as event_publish
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -106,6 +110,8 @@ async def simulated_market_loop():
                 )
 
             tick_count += 1
+            if tick_count % 120 == 0 and hasattr(feed, "persist_state"):
+                feed.persist_state()
             if tick_count % 12 == 0:
                 from app.database import get_db_stats
 
@@ -146,6 +152,8 @@ async def websocket_handler(websocket):
         "symbols": list(state.feed.symbols),
         "allowLiveBots": ALLOW_LIVE_BOTS,
         "distributed": bool(REDIS_URL),
+        "botMinCandles": BOT_MIN_CANDLES,
+        "archiveTicksEnabled": ARCHIVE_TICKS_ENABLED,
     }))
 
     await manager.send_to(websocket, account_update(state.oms.get_account_data()))
@@ -208,6 +216,15 @@ async def main():
             tasks.append(asyncio.create_task(simulated_market_loop()))
         else:
             tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
+
+        if ARCHIVE_ENABLED:
+            tasks.append(asyncio.create_task(archive_startup_backfill(state.feed)))
+            tasks.append(asyncio.create_task(archive_capture_loop(state.feed)))
+            tasks.append(asyncio.create_task(archive_rollup_loop(state.feed)))
+
+        if ARCHIVE_TICKS_ENABLED:
+            from app.services.archive.tick_writer import tick_flush_loop
+            tasks.append(asyncio.create_task(tick_flush_loop()))
 
         await asyncio.gather(*tasks)
 

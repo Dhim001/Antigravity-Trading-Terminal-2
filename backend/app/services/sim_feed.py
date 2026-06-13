@@ -6,6 +6,7 @@ import asyncio
 from typing import Callable, Awaitable, List
 from app.config import SYMBOLS, DEFAULT_TICK_INTERVAL, DEFAULT_VOLATILITY_MULTIPLIER
 from app.services.base_feed import BaseFeedService
+from app.services.feeds.bar_close import BarCloseEmitter
 from app.services.synthetic_data import SBBSGenerator
 
 class SimulatedFeedService(BaseFeedService):
@@ -20,6 +21,7 @@ class SimulatedFeedService(BaseFeedService):
         self.broadcast_callback = None
         self._generators = {}
         self._target_candles = {}
+        self._bar_close = BarCloseEmitter()
         
         for symbol, info in self._symbols.items():
             try:
@@ -28,6 +30,40 @@ class SimulatedFeedService(BaseFeedService):
                 print(f"Warning: Could not initialize SBBS for {symbol}: {e}")
             self.candles[symbol] = self._generate_initial_candles(symbol, info["price"])
             self.order_books[symbol] = self._generate_order_book(symbol, info["price"])
+
+        self._restore_persisted_state()
+
+    def _restore_persisted_state(self) -> None:
+        try:
+            from app.services.sim_state import load_sim_market_state
+            saved = load_sim_market_state()
+            if not saved:
+                return
+            restored = 0
+            for symbol, row in saved.items():
+                if symbol not in self._symbols:
+                    continue
+                if row.get("price") is not None:
+                    self._symbols[symbol]["price"] = row["price"]
+                if row.get("candles"):
+                    self.candles[symbol] = self._normalize_candles(row["candles"])
+                if row.get("target"):
+                    self._target_candles[symbol] = row["target"]
+                self.order_books[symbol] = self._generate_order_book(
+                    symbol, self._symbols[symbol]["price"]
+                )
+                restored += 1
+            if restored:
+                print(f"Restored sim market state for {restored} symbol(s) from database.")
+        except Exception as exc:
+            print(f"Warning: sim state restore skipped: {exc}")
+
+    def persist_state(self) -> None:
+        try:
+            from app.services.sim_state import save_sim_market_state
+            save_sim_market_state(self)
+        except Exception as exc:
+            print(f"Warning: sim state persist failed: {exc}")
 
     @property
     def symbols(self) -> List[str]:
@@ -47,6 +83,9 @@ class SimulatedFeedService(BaseFeedService):
 
     def register_broadcast_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
         self.broadcast_callback = callback
+
+    def register_bar_close_callback(self, callback) -> None:
+        self._bar_close.register(callback)
 
     def get_market_data(self, symbol: str) -> dict:
         if symbol not in self._symbols:
@@ -119,6 +158,14 @@ class SimulatedFeedService(BaseFeedService):
         
         self.order_books[symbol] = self._generate_order_book(symbol, new_price)
         
+        try:
+            from app.config import ARCHIVE_TICKS_ENABLED
+            if ARCHIVE_TICKS_ENABLED:
+                from app.services.archive.tick_writer import record_tick
+                record_tick(symbol, new_price, volume=vol_tick)
+        except Exception:
+            pass
+        
         if not active_candles or active_candles[-1]["time"] < current_minute:
             # Initialize the new candle — time in UNIX SECONDS
             op = target['open'] if target else new_price
@@ -136,6 +183,7 @@ class SimulatedFeedService(BaseFeedService):
             active_candles.append(new_candle)
             if len(active_candles) > 10080:
                 active_candles.pop(0)
+            self._bar_close.notify(symbol)
         else:
             # Update the current candle
             candle = active_candles[-1]
@@ -171,11 +219,28 @@ class SimulatedFeedService(BaseFeedService):
     def get_candles(self, symbol: str) -> List[dict]:
         return self.candles.get(symbol, [])
 
+    @staticmethod
+    def _normalize_candles(candles: List[dict]) -> List[dict]:
+        """Align bar times to minute boundaries and merge duplicates."""
+        by_time: dict = {}
+        for c in candles:
+            t = (int(c["time"]) // 60) * 60
+            if t not in by_time:
+                by_time[t] = {**c, "time": t}
+                continue
+            b = by_time[t]
+            b["high"] = max(b["high"], c["high"])
+            b["low"] = min(b["low"], c["low"])
+            b["close"] = c["close"]
+            b["volume"] = round(float(b.get("volume", 0)) + float(c.get("volume", 0)), 2)
+        return [by_time[t] for t in sorted(by_time)]
+
     def _generate_initial_candles(self, symbol, start_price, count=10080):
         gen = self._generators.get(symbol)
+        now_minute = (int(time.time()) // 60) * 60
         if not gen or not hasattr(gen, 'empirical_data') or gen.empirical_data is None or gen.empirical_data.empty:
             candles = []
-            current_time = int(time.time()) - (count * 60)
+            current_time = now_minute - (count * 60)
             price = start_price
             info = self._symbols[symbol]
             for i in range(count):
@@ -191,8 +256,7 @@ class SimulatedFeedService(BaseFeedService):
             return candles
 
         current_close = gen.empirical_data.iloc[-1]['Close']
-        now = int(time.time())
-        start_time = now - (count * 60)
+        start_time = now_minute - (count * 60)
         candles = []
         for i in range(count):
             candle_time = start_time + (i * 60)

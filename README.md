@@ -23,6 +23,9 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 | Admin / simulation controls | Done |
 | shadcn/ui design system migration | Done |
 | Symbol command palette (⌘K) | Done |
+| Long-term market bar archive (1m DB + 1h rollup) | Done |
+| Live algo bot integration (archive warm-up + bar-close hooks) | Done |
+| Docker server/worker split + reconciliation + Parquet export | Done |
 
 ---
 
@@ -273,6 +276,7 @@ ETORO_EXEC_MIN_INTERVAL=3.0
 
 # Bot engine (optional)
 ALLOW_LIVE_BOTS=false
+BOT_MIN_CANDLES=200
 TERMINAL_ROLE=all              # all | server | worker
 REDIS_URL=                     # redis://127.0.0.1:6379/0 for server/worker split
 DATABASE_URL=                  # postgresql://... or omit for SQLite
@@ -371,7 +375,8 @@ Runs alongside WebSocket on **`http://127.0.0.1:8766`** by default (`HTTP_ENABLE
 | `GET` | `/api/v1/openapi.json` | — | OpenAPI 3.1 spec (Phase 9) |
 | `GET` | `/api/v1/account` | `get_account` | Account balances and positions |
 | `GET` | `/api/v1/history` | `get_history` | Trade history blotter |
-| `GET` | `/api/v1/market/{symbol}/candles` | `subscribe_symbol` | Historical candles for symbol |
+| `GET` | `/api/v1/market/{symbol}/candles` | `subscribe_symbol` | In-memory live candle buffer for symbol |
+| `GET` | `/api/v1/market/{symbol}/history` | `get_market_history` | Archived OHLCV range (`?from=&to=&interval=1m\|1h\|auto`) |
 | `POST` | `/api/v1/orders` | `place_order` | Place market/limit order |
 | `DELETE` | `/api/v1/orders/{order_id}` | `cancel_order` | Cancel open order |
 | `PATCH` | `/api/v1/positions/{symbol}/sl-tp` | `update_position_sl_tp` | Update SL/TP on position |
@@ -395,6 +400,7 @@ Example:
 curl http://127.0.0.1:8766/health
 curl http://127.0.0.1:8766/api/v1/openapi.json
 curl http://127.0.0.1:8766/api/v1/account
+curl "http://127.0.0.1:8766/api/v1/market/BTCUSDT/history?from=1710000000&to=1711000000&interval=auto"
 curl -X POST http://127.0.0.1:8766/api/v1/bots/bot-1/stop
 curl -X POST http://127.0.0.1:8766/api/v1/bots \
   -H "Content-Type: application/json" \
@@ -416,6 +422,84 @@ Response envelope:
 Disable HTTP: `HTTP_ENABLED=false` in `.env`.
 
 Optional HTTP auth: set `HTTP_API_KEY` in backend `.env` and `VITE_HTTP_API_KEY` in frontend build env. `/health` stays public; all other REST routes require `X-API-Key`.
+
+### Long-term market bar archive
+
+Separate from the live WebSocket path and the short `sim_market_state` snapshot (~500 bars). Completed **1-minute OHLCV bars** are batched to SQLite/Postgres; bars older than the retention window roll up to **1-hour** bars.
+
+| Layer | Role |
+|-------|------|
+| `market_bars_1m` | Full 1m resolution (default **90 days**) |
+| `market_bars_1h` | Rolled-up hourly bars (default **~5 years**) |
+| Live feed / WS | Unchanged — archive writes are async side-channel |
+
+**Phase 3 integrations:**
+- **Backtester** — `days` param (7 / 30 / 90) merges archive + live feed via `resolve_backtest_candles`
+- **Chart** — pan/zoom to the left edge loads older bars from archive (`prependHistory`)
+
+**Env vars** (see `backend/.env.example`):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `ARCHIVE_ENABLED` | `true` | Master switch |
+| `ARCHIVE_RETENTION_1M_DAYS` | `90` | Keep 1m bars this long |
+| `ARCHIVE_RETENTION_1H_DAYS` | `1825` | Keep 1h bars this long |
+| `ARCHIVE_FLUSH_INTERVAL` | `60` | Batch DB flush (seconds) |
+| `ARCHIVE_ROLLUP_INTERVAL` | `3600` | Rollup job period (seconds) |
+
+**Query archived history:**
+
+```bash
+GET /api/v1/market/{symbol}/history?from=UNIX&to=UNIX&interval=1m|1h|auto
+```
+
+`interval=auto` returns 1m bars for the recent window and 1h bars for older data. Admin stats (`/api/v1/admin/stats`) include an `archive` block with row counts.
+
+Works in **SIMULATED** and **live** feed modes (source tagged per `TERMINAL_MODE`).
+
+**Storage:** Option A only — `market_bars_1m` / `market_bars_1h` in SQLite (`trading.db`) or Postgres (`DATABASE_URL`). No Parquet archive files.
+
+**Startup backfill:** `ARCHIVE_BACKFILL_ON_STARTUP=true` imports existing `backend/data/*_7d_1m.parquet` seed files into the DB so backtests and chart scroll-back work immediately. Manual trigger: `POST /api/v1/admin/archive/backfill` or **Admin → Diagnostics → Backfill from seed data**.
+
+### Live algo bot integration (Phase 5)
+
+Bots can run on **live feeds** when explicitly enabled. The live path is opt-in for safety — simulated mode always allows bots.
+
+| Component | Role |
+|-----------|------|
+| `ALLOW_LIVE_BOTS` | Gate for creating/running bots on live brokers (default `false`) |
+| `get_bot_candles()` | Merges feed buffer + archived 1m bars when buffer &lt; `BOT_MIN_CANDLES` (default 200) |
+| Bar-close hooks | Binance/Alpaca/eToro/sim feeds emit on new 1m bar → immediate `process_market_tick` |
+| `bot_market_loop` | Poll fallback (1s live / sim tick interval) with archive-enriched candles |
+
+**Enable live bots** (paper or real):
+
+```env
+TERMINAL_MODE=LIVE_BINANCE   # or LIVE_ALPACA / LIVE_ETORO
+ALLOW_LIVE_BOTS=true
+BOT_MIN_CANDLES=200
+ARCHIVE_ENABLED=true         # recommended for indicator warm-up on live feeds
+```
+
+Strategy aliases (`SUPERTREND` → `SUPERTREND_ADX`, `BB_STOCH` → `BRS_SCALPING`) are normalized at bot creation. The Algo tab surfaces `allowLiveBots` from the server bootstrap payload.
+
+### Optional enhancements
+
+**Docker server/worker split** (default in `docker-compose.yml`):
+
+| Service | Role | Command |
+|---------|------|---------|
+| `backend` | `server` | WS + feed + bar publisher |
+| `worker` | `worker` | Bot engine via Redis |
+| `backend-monolith` | `all` | `--profile monolith` for single-process |
+
+**Live reconciliation** — ambiguous live orders (timeouts/network) are stored in `ambiguous_orders`. Algo tab shows pending items; **Auto-reconcile** checks open positions. Admin API: `GET /api/v1/admin/reconciliation`, `POST .../reconcile`, `POST .../resolve`.
+
+**Parquet export** — `ARCHIVE_PARQUET_ENABLED=true` or `ARCHIVE_BACKEND=both`. Admin: `POST /api/v1/admin/archive/export` or **Admin → Export Parquet**.
+
+**Sub-minute ticks** — `ARCHIVE_TICKS_ENABLED=true` captures trade/poll snapshots to `market_ticks` (default 24h retention). Query: `GET /api/v1/market/{symbol}/ticks?from=&to=`.
+
+**5-year chart scroll** — pan/zoom left loads archived bars with `interval=auto` (1m recent + 1h older), up to 50k bars in the client buffer.
 
 ### CI & testing
 

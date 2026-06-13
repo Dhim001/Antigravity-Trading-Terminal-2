@@ -249,10 +249,12 @@ export default function App() {
       <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
 
       <main className="workspace-main">
-        {viewMode === 'single'
-          ? <ChartWidget />
-          : <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
-        }
+        <div className={viewMode === 'single' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} aria-hidden={viewMode !== 'single'}>
+          <ChartWidget />
+        </div>
+        <div className={viewMode === 'multi' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} aria-hidden={viewMode !== 'multi'}>
+          <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
+        </div>
       </main>
 
       <section className="trading-panel">

@@ -149,6 +149,10 @@ _STRATEGY_ALIASES = {
 }
 
 
+def normalize_strategy_name(strategy_name: str) -> str:
+    return _STRATEGY_ALIASES.get(strategy_name.upper(), strategy_name.upper())
+
+
 def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
     strategies = {
         "MACD_RSI": MacdRsiStrategy,
@@ -156,7 +160,7 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
         "SUPERTREND_ADX": SupertrendAdxStrategy,
         "VWAP_PULLBACK": VwapPullbackStrategy,
     }
-    key = _STRATEGY_ALIASES.get(strategy_name.upper(), strategy_name.upper())
+    key = normalize_strategy_name(strategy_name)
 
     if key == "CUSTOM":
         from app.services.bots.custom_loader import get_custom_strategy

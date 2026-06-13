@@ -16,7 +16,8 @@ import {
   Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger,
 } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { getCandles } from '../services/candleBuffer';
+import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
+import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
 
 const INDICATORS = {
@@ -40,8 +41,11 @@ const TF_CONFIGS = [
   { label: '1D',  secs: 86400 },
 ];
 
-/** Bars rendered on chart — full history stays in store for backtest/signals */
+/** Default visible bars; grows when user scrolls into archived history */
 const CHART_DISPLAY_BARS = 600;
+const CHART_DISPLAY_MAX = 15000;
+const ARCHIVE_LOAD_CHUNK = 1000;
+const ARCHIVE_1M_RETENTION_SEC = 90 * 86400;
 const FUTURE_PADDING = 15;
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -78,8 +82,13 @@ function normalizeEchartsList(value) {
 
 function aggregateBucket(raw, cfg) {
   if (!raw.length) return null;
-  const t = Math.floor(raw[raw.length - 1].time / cfg.secs) * cfg.secs;
-  const bucket = cfg.secs <= 60 ? [raw[raw.length - 1]] : raw.filter(c => c.time >= t);
+  const lastSec = toUnixSeconds(raw[raw.length - 1].time);
+  if (lastSec == null) return null;
+  const t = Math.floor(lastSec / cfg.secs) * cfg.secs;
+  const bucket = raw.filter((c) => {
+    const sec = toUnixSeconds(c.time);
+    return sec != null && Math.floor(sec / cfg.secs) * cfg.secs === t;
+  });
   if (!bucket.length) return null;
   return {
     time: t,
@@ -91,6 +100,25 @@ function aggregateBucket(raw, cfg) {
   };
 }
 
+function bucketCandles(raw, intervalSecs) {
+  const buckets = new Map();
+  for (const c of raw) {
+    const sec = toUnixSeconds(c.time);
+    if (sec == null) continue;
+    const t = Math.floor(sec / intervalSecs) * intervalSecs;
+    if (!buckets.has(t)) {
+      buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
+    } else {
+      const b = buckets.get(t);
+      b.high = Math.max(b.high, c.high);
+      b.low = Math.min(b.low, c.low);
+      b.close = c.close;
+      b.volume += (c.volume || 0);
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
+
 function volumeSeriesEntry(bar) {
   return {
     value: bar.volume || 0,
@@ -98,6 +126,89 @@ function volumeSeriesEntry(bar) {
       color: bar.close >= bar.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)',
     },
   };
+}
+
+const MACD_WARMUP = 33;
+const RSI_WARMUP = 14;
+const ATR_WARMUP = 14;
+const BB_WARMUP = 19;
+
+function padIndicatorValues(data) {
+  const out = [...data];
+  for (let i = 0; i < FUTURE_PADDING; i++) out.push(null);
+  return out;
+}
+
+function mapEmaSeries(candles, period) {
+  const ema = calcEMA(candles, period);
+  const offset = period - 1;
+  return padIndicatorValues(candles.map((_, i) => (i >= offset ? ema[i - offset]?.value : null)));
+}
+
+function mapRsiSeries(candles) {
+  const rsi = calcRSI(candles, 14);
+  return padIndicatorValues(candles.map((_, i) => (i >= RSI_WARMUP ? rsi[i - RSI_WARMUP]?.value : null)));
+}
+
+function mapAtrSeries(candles) {
+  const atr = calcATR(candles, 14);
+  return padIndicatorValues(candles.map((_, i) => (i >= ATR_WARMUP ? atr[i - ATR_WARMUP]?.value : null)));
+}
+
+function mapMacdSeries(candles) {
+  const macd = calcMACD(candles, 12, 26, 9);
+  const mapper = (mList) => padIndicatorValues(
+    candles.map((_, i) => (i >= MACD_WARMUP ? mList[i - MACD_WARMUP]?.value : null)),
+  );
+  const hist = padIndicatorValues(
+    candles.map((_, i) => {
+      if (i < MACD_WARMUP) return null;
+      const item = macd.histogram[i - MACD_WARMUP];
+      return item ? {
+        value: item.value,
+        itemStyle: { color: item.value >= 0 ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)' },
+      } : null;
+    }),
+  );
+  return { macd: mapper(macd.macdLine), signal: mapper(macd.signalLine), hist };
+}
+
+function mapBbSeries(candles) {
+  const bb = calcBollingerBands(candles, 20, 2);
+  const mapper = (bbList) => padIndicatorValues(
+    candles.map((_, i) => (i >= BB_WARMUP ? bbList[i - BB_WARMUP]?.value : null)),
+  );
+  return { upper: mapper(bb.upper), middle: mapper(bb.middle), lower: mapper(bb.lower) };
+}
+
+function mapVwapSeries(candles) {
+  const vwap = calcVWAP(candles);
+  return padIndicatorValues(candles.map((_, i) => vwap[i]?.value ?? null));
+}
+
+/** Series patches for live candle updates — keeps sub-panes in sync with price/volume. */
+function buildIndicatorSeriesPatches(bars, active) {
+  const patches = [];
+  if (active.ema9) patches.push({ id: 'ema9', data: mapEmaSeries(bars, 9) });
+  if (active.ema21) patches.push({ id: 'ema21', data: mapEmaSeries(bars, 21) });
+  if (active.ema50) patches.push({ id: 'ema50', data: mapEmaSeries(bars, 50) });
+  if (active.bb) {
+    const bb = mapBbSeries(bars);
+    patches.push({ id: 'bb-upper', data: bb.upper });
+    patches.push({ id: 'bb-mid', data: bb.middle });
+    patches.push({ id: 'bb-lower', data: bb.lower });
+  }
+  if (active.vwap) patches.push({ id: 'vwap', data: mapVwapSeries(bars) });
+  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars) });
+  if (active.rsi) patches.push({ id: 'rsi', data: mapRsiSeries(bars) });
+  if (active.macd) {
+    const m = mapMacdSeries(bars);
+    patches.push({ id: 'macd', data: m.macd });
+    patches.push({ id: 'macd-signal', data: m.signal });
+    patches.push({ id: 'macd-hist', data: m.hist });
+  }
+  if (active.atr) patches.push({ id: 'atr', data: mapAtrSeries(bars) });
+  return patches;
 }
 
 const SIGNAL_STYLES = {
@@ -299,7 +410,11 @@ export default function ChartWidget() {
   const configureChartRef = useRef(() => {});
   const applyOverlayPatchRef = useRef(() => {});
   const chartReadyRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const olderExhaustedRef = useRef({});
+  const loadOlderRef = useRef(null);
 
+  const [displayBarLimit, setDisplayBarLimit] = useState(CHART_DISPLAY_BARS);
   const activeSymbol = useStore(state => state.activeSymbol);
   const historyRev = useStore(state => state.candleHistoryRevision[activeSymbol] || 0);
   const candleRev = useStore(state => state.candleRevision[activeSymbol] || 0);
@@ -334,6 +449,11 @@ export default function ChartWidget() {
 
   const [timeframe, setTimeframe] = useState(() => { try { return localStorage.getItem('terminal_tf') || '1m'; } catch { return '1m'; } });
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
+
+  useEffect(() => {
+    setDisplayBarLimit(CHART_DISPLAY_BARS);
+    olderExhaustedRef.current[activeSymbol] = false;
+  }, [activeSymbol, timeframe]);
   const [chartType, setChartType] = useState('candle');
   const [active, setActive] = useState(() => {
     try {
@@ -366,27 +486,10 @@ export default function ChartWidget() {
     if (!raw.length) return [];
 
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    let series;
-    if (cfg.secs <= 60) {
-      series = raw;
-    } else {
-      const buckets = new Map();
-      for (const c of raw) {
-        const t = Math.floor(c.time / cfg.secs) * cfg.secs;
-        if (!buckets.has(t)) {
-          buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
-        } else {
-          const b = buckets.get(t);
-          b.high = Math.max(b.high, c.high);
-          b.low = Math.min(b.low, c.low);
-          b.close = c.close;
-          b.volume += (c.volume || 0);
-        }
-      }
-      series = Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-    }
-    return series.length > CHART_DISPLAY_BARS ? series.slice(-CHART_DISPLAY_BARS) : series;
-  }, [timeframe, activeSymbol, historyRev]);
+    const series = bucketCandles(raw, cfg.secs);
+    const limit = displayBarLimit;
+    return series.length > limit ? series.slice(-limit) : series;
+  }, [timeframe, activeSymbol, historyRev, displayBarLimit]);
 
   useEffect(() => {
     displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
@@ -626,43 +729,38 @@ export default function ChartWidget() {
 
     // Overlay indicators
     if (active.ema9) {
-      const ema9 = calcEMA(candles, 9);
-      const ema9Data = candles.map((c, i) => i >= 8 ? ema9[i - 8]?.value : null);
       series.push({
-        name: 'EMA 9', type: 'line', data: ema9Data, xAxisIndex: 0, yAxisIndex: 0,
+        id: 'ema9',
+        name: 'EMA 9', type: 'line', data: mapEmaSeries(candles, 9), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#f59e0b', width: 1, opacity: 0.85 }
       });
     }
     if (active.ema21) {
-      const ema21 = calcEMA(candles, 21);
-      const ema21Data = candles.map((c, i) => i >= 20 ? ema21[i - 20]?.value : null);
       series.push({
-        name: 'EMA 21', type: 'line', data: ema21Data, xAxisIndex: 0, yAxisIndex: 0,
+        id: 'ema21',
+        name: 'EMA 21', type: 'line', data: mapEmaSeries(candles, 21), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.85 }
       });
     }
     if (active.ema50) {
-      const ema50 = calcEMA(candles, 50);
-      const ema50Data = candles.map((c, i) => i >= 49 ? ema50[i - 49]?.value : null);
       series.push({
-        name: 'EMA 50', type: 'line', data: ema50Data, xAxisIndex: 0, yAxisIndex: 0,
+        id: 'ema50',
+        name: 'EMA 50', type: 'line', data: mapEmaSeries(candles, 50), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#06b6d4', width: 1, opacity: 0.85 }
       });
     }
     if (active.bb) {
-      const bb = calcBollingerBands(candles, 20, 2);
-      const mapper = (bbList) => candles.map((c, i) => i >= 19 ? bbList[i - 19]?.value : null);
+      const bb = mapBbSeries(candles);
       series.push(
-        { name: 'BB Upper', type: 'line', data: mapper(bb.upper), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } },
-        { name: 'BB Mid', type: 'line', data: mapper(bb.middle), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: 'rgba(99,102,241,0.3)', width: 1, type: 'dotted' } },
-        { name: 'BB Lower', type: 'line', data: mapper(bb.lower), xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }
+        { id: 'bb-upper', name: 'BB Upper', type: 'line', data: bb.upper, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } },
+        { id: 'bb-mid', name: 'BB Mid', type: 'line', data: bb.middle, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: 'rgba(99,102,241,0.3)', width: 1, type: 'dotted' } },
+        { id: 'bb-lower', name: 'BB Lower', type: 'line', data: bb.lower, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }
       );
     }
     if (active.vwap) {
-      const vwap = calcVWAP(candles);
-      const vwapData = candles.map((c, i) => vwap[i]?.value ?? null);
       series.push({
-        name: 'VWAP', type: 'line', data: vwapData, xAxisIndex: 0, yAxisIndex: 0,
+        id: 'vwap',
+        name: 'VWAP', type: 'line', data: mapVwapSeries(candles), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#ec4899', width: 1.5 }
       });
     }
@@ -676,57 +774,41 @@ export default function ChartWidget() {
         type: 'bar',
         xAxisIndex: gIdx,
         yAxisIndex: gIdx,
-        data: [
-          ...candles.map(c => ({
-            value: c.volume || 0,
-            itemStyle: { color: c.close >= c.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)' },
-          })),
-          ...Array(FUTURE_PADDING).fill(null),
-        ],
+        data: buildVolumeSeriesData(candles),
       });
     }
 
     if (showRsi) {
       const gIdx = paneGridMap.rsi;
-      const rsi = calcRSI(candles, 14);
-      const rsiData = candles.map((c, i) => i >= 14 ? rsi[i - 14]?.value : null);
       series.push({
-        name: 'RSI', type: 'line', data: rsiData, xAxisIndex: gIdx, yAxisIndex: gIdx,
+        id: 'rsi',
+        name: 'RSI', type: 'line', data: mapRsiSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
         showSymbol: false, lineStyle: { color: '#fbbf24', width: 1.5 }
       });
     }
 
     if (showMacd) {
       const gIdx = paneGridMap.macd;
-      const macd = calcMACD(candles, 12, 26, 9);
-      const mapper = (mList) => candles.map((c, i) => i >= 33 ? mList[i - 33]?.value : null);
-
+      const macd = mapMacdSeries(candles);
       series.push(
-        { name: 'MACD', type: 'line', data: mapper(macd.macdLine), xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#34d399', width: 1.2 } },
-        { name: 'Signal', type: 'line', data: mapper(macd.signalLine), xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#f87171', width: 1.2 } },
+        { id: 'macd', name: 'MACD', type: 'line', data: macd.macd, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#34d399', width: 1.2 } },
+        { id: 'macd-signal', name: 'Signal', type: 'line', data: macd.signal, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#f87171', width: 1.2 } },
         {
+          id: 'macd-hist',
           name: 'Hist',
           type: 'bar',
           xAxisIndex: gIdx,
           yAxisIndex: gIdx,
-          data: candles.map((c, i) => {
-            if (i < 33) return null;
-            const item = macd.histogram[i - 33];
-            return item ? {
-              value: item.value,
-              itemStyle: { color: item.value >= 0 ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)' }
-            } : null;
-          })
+          data: macd.hist,
         }
       );
     }
 
     if (showAtr) {
       const gIdx = paneGridMap.atr;
-      const atr = calcATR(candles, 14);
-      const atrData = candles.map((c, i) => i >= 14 ? atr[i - 14]?.value : null);
       series.push({
-        name: 'ATR', type: 'line', data: atrData, xAxisIndex: gIdx, yAxisIndex: gIdx,
+        id: 'atr',
+        name: 'ATR', type: 'line', data: mapAtrSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
         showSymbol: false, lineStyle: { color: '#94a3b8', width: 1.5 }
       });
     }
@@ -799,6 +881,40 @@ export default function ChartWidget() {
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
 
+  const loadOlderHistory = useCallback(async () => {
+    if (loadingOlderRef.current || olderExhaustedRef.current[activeSymbol]) return;
+
+    const oldest = getOldestBarTime(activeSymbol);
+    if (oldest == null) return;
+
+    const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
+    const barSecs = cfg.secs <= 60 ? 60 : cfg.secs;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let interval = cfg.secs >= 3600 ? '1h' : '1m';
+    if (oldest < nowSec - ARCHIVE_1M_RETENTION_SEC) {
+      interval = 'auto';
+    }
+    const chunk = interval === 'auto' || interval === '1h' ? ARCHIVE_LOAD_CHUNK : Math.min(ARCHIVE_LOAD_CHUNK, 500);
+    const from = oldest - chunk * barSecs;
+    const to = oldest - barSecs;
+
+    loadingOlderRef.current = true;
+    try {
+      const added = await fetchOlderCandles(activeSymbol, from, to, interval);
+      if (added <= 0) {
+        olderExhaustedRef.current[activeSymbol] = true;
+      } else {
+        setDisplayBarLimit((prev) => Math.min(prev + added, CHART_DISPLAY_MAX));
+      }
+    } catch (err) {
+      console.warn('[ChartWidget] load older history failed:', err);
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [activeSymbol, timeframe]);
+
+  loadOlderRef.current = loadOlderHistory;
+
   // Init ECharts Instance
   useEffect(() => {
     if (!containerRef.current) return;
@@ -807,7 +923,6 @@ export default function ChartWidget() {
     chartRef.current = chart;
     chartReadyRef.current = false;
 
-    // Crosshair Hover / axisPointer listener to update legend DOM dynamically
     chart.on('updateAxisPointer', (event) => {
       const axesInfo = event.axesInfo;
       if (axesInfo && axesInfo[0]) {
@@ -821,6 +936,20 @@ export default function ChartWidget() {
         if (candles && candles.length > 0) {
           updateLegendDOM(candles[candles.length - 1]);
         }
+      }
+    });
+
+    chart.on('datazoom', () => {
+      if (!chartReadyRef.current) return;
+      try {
+        const currentOption = chart.getOption();
+        const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
+        const dz = dataZoomList[0];
+        if (dz && typeof dz.startValue === 'number' && dz.startValue <= 10) {
+          loadOlderRef.current?.();
+        }
+      } catch (err) {
+        console.warn('[ChartWidget] datazoom handler failed:', err);
       }
     });
 
@@ -888,7 +1017,7 @@ export default function ChartWidget() {
       bars[bars.length - 1] = aggregatedLive;
     } else if (!last || aggregatedLive.time > last.time) {
       bars.push({ ...aggregatedLive });
-      if (bars.length > CHART_DISPLAY_BARS) bars.shift();
+        if (bars.length > displayBarLimit) bars.shift();
     } else {
       return;
     }
@@ -896,21 +1025,21 @@ export default function ChartWidget() {
     candlesRef.current = bars;
 
     const labels = buildCategoryLabels(bars);
-    const { xAxisCount, showVolume } = chartLayoutRef.current;
+    const { xAxisCount } = chartLayoutRef.current;
     const patch = {
       xAxis: Array.from({ length: xAxisCount }, (_, i) => ({
         id: `x-${i}`,
         data: labels,
       })),
-      series: [{
-        id: 'main',
-        type: chartType === 'line' ? 'line' : 'candlestick',
-        data: buildMainSeriesData(bars, chartType),
-      }],
+      series: [
+        {
+          id: 'main',
+          type: chartType === 'line' ? 'line' : 'candlestick',
+          data: buildMainSeriesData(bars, chartType),
+        },
+        ...buildIndicatorSeriesPatches(bars, active),
+      ],
     };
-    if (showVolume) {
-      patch.series.push({ id: 'volume', data: buildVolumeSeriesData(bars) });
-    }
 
     try {
       chart.setOption(patch, { lazyUpdate: false });
@@ -918,7 +1047,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active]);
 
   useEffect(() => {
     const symbol = activeSymbol;

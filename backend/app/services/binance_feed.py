@@ -7,6 +7,7 @@ import websockets
 from app.config import BINANCE_WS_URL, SYMBOLS
 from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
+from app.services.feeds.bar_close import BarCloseEmitter
 
 class BinanceFeedService(BaseFeedService):
     def __init__(self):
@@ -16,6 +17,7 @@ class BinanceFeedService(BaseFeedService):
         self.broadcast_callback = None
         self.connection_task = None
         self.active = False
+        self._bar_close = BarCloseEmitter()
 
         for sym, info in self._symbols.items():
             self.order_books[sym] = self._generate_synthetic_book(sym, info["price"])
@@ -26,6 +28,9 @@ class BinanceFeedService(BaseFeedService):
 
     def register_broadcast_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
         self.broadcast_callback = callback
+
+    def register_bar_close_callback(self, callback) -> None:
+        self._bar_close.register(callback)
 
     def get_candles(self, symbol: str) -> List[dict]:
         return self.candles.get(symbol, [])
@@ -99,6 +104,13 @@ class BinanceFeedService(BaseFeedService):
                             k = data.get("k", {})
                             close_price = float(k.get("c"))
                             self._symbols[symbol]["price"] = close_price
+                            try:
+                                from app.config import ARCHIVE_TICKS_ENABLED
+                                if ARCHIVE_TICKS_ENABLED:
+                                    from app.services.archive.tick_writer import record_tick
+                                    record_tick(symbol, close_price, volume=float(k.get("v", 0)))
+                            except Exception:
+                                pass
                             
                             t_epoch = int(k.get("t") // 1000)
                             active_candles = self.candles[symbol]
@@ -117,6 +129,7 @@ class BinanceFeedService(BaseFeedService):
                                 active_candles.append(new_candle)
                                 if len(active_candles) > 500:
                                     active_candles.pop(0)
+                                self._bar_close.notify(symbol)
                                     
                             updates[symbol] = self.get_market_data(symbol)
                             

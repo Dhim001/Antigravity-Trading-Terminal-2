@@ -21,6 +21,7 @@ USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
 # Bot engine on live brokers is opt-in (paper/live safety gate).
 ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
+BOT_MIN_CANDLES = int(os.environ.get("BOT_MIN_CANDLES", "200"))
 
 # Distributed runtime: all (monolith) | server (WS+feed) | worker (bot engine only)
 TERMINAL_ROLE = os.environ.get("TERMINAL_ROLE", "all").lower()
@@ -56,6 +57,41 @@ BOT_DAILY_LOSS_LIMIT_PCT = float(os.environ.get("BOT_DAILY_LOSS_LIMIT_PCT", "5.0
 BOT_MAX_ACTIVE_BOTS = int(os.environ.get("BOT_MAX_ACTIVE_BOTS", "20"))
 BOT_SNAPSHOT_INTERVAL = float(os.environ.get("BOT_SNAPSHOT_INTERVAL", "300"))
 BOT_LOG_RETENTION = int(os.environ.get("BOT_LOG_RETENTION", "500"))
+
+# Long-term market bar archive (1m bars → DB, rollup to 1h after retention window)
+ARCHIVE_ENABLED = os.environ.get("ARCHIVE_ENABLED", "true").lower() in ("1", "true", "yes")
+ARCHIVE_RETENTION_1M_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1M_DAYS", "90"))
+ARCHIVE_RETENTION_1H_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1H_DAYS", "1825"))
+ARCHIVE_ROLLUP_INTERVAL = float(os.environ.get("ARCHIVE_ROLLUP_INTERVAL", "3600"))
+ARCHIVE_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_FLUSH_INTERVAL", "60"))
+ARCHIVE_BACKEND = os.environ.get("ARCHIVE_BACKEND", "db").lower()
+ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "true").lower() in (
+    "1", "true", "yes"
+)
+ARCHIVE_PARQUET_ENABLED = os.environ.get("ARCHIVE_PARQUET_ENABLED", "false").lower() in (
+    "1", "true", "yes"
+)
+ARCHIVE_PARQUET_DIR = os.environ.get(
+    "ARCHIVE_PARQUET_DIR",
+    os.path.join(BASE_DIR, "archive_parquet"),
+)
+
+# Sub-minute tick snapshots (trade/quote polls) — optional, short retention
+ARCHIVE_TICKS_ENABLED = os.environ.get("ARCHIVE_TICKS_ENABLED", "false").lower() in (
+    "1", "true", "yes"
+)
+ARCHIVE_TICK_RETENTION_HOURS = int(os.environ.get("ARCHIVE_TICK_RETENTION_HOURS", "24"))
+ARCHIVE_TICK_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_TICK_FLUSH_INTERVAL", "30"))
+
+if ARCHIVE_BACKEND not in ("db", "parquet", "both", ""):
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "ARCHIVE_BACKEND=%r unknown; using db.",
+        ARCHIVE_BACKEND,
+    )
+    ARCHIVE_BACKEND = "db"
+if ARCHIVE_BACKEND in ("parquet", "both"):
+    ARCHIVE_PARQUET_ENABLED = True
 
 # Simulation Settings Defaults
 DEFAULT_TICK_INTERVAL = 0.25

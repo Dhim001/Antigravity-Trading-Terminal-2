@@ -132,6 +132,31 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_snapshots_bot_id ON bot_snapshots(bot_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_bot_id ON orders(bot_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_logs_bot_id ON bot_logs(bot_id)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ambiguous_orders (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            order_type TEXT NOT NULL,
+            bot_id TEXT,
+            broker TEXT,
+            payload TEXT,
+            message TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            resolution TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ambiguous_orders_status ON ambiguous_orders (status)"
+    )
+
+    from app.services.archive.schema import init_archive_schema
+    init_archive_schema(cursor)
+
     conn.commit()
     
     # Collect all unique base assets dynamically from config
@@ -222,6 +247,35 @@ def get_db_stats():
         cursor.execute("SELECT COUNT(*) FROM orders WHERE status = 'FILLED'")
         row = cursor.fetchone()
         stats["filled_trades_count"] = _row_val(row)
+
+        try:
+            from app.services.archive.query import get_archive_stats
+            from app.services.archive.writer import get_archive_writer
+
+            archive_stats = get_archive_stats()
+            writer = get_archive_writer()
+            stats["archive"] = {
+                **archive_stats,
+                "pending_flush": writer.pending_count,
+                "total_flushed": writer.total_flushed,
+            }
+        except Exception:
+            pass
+        try:
+            from app.services.reconciliation import list_ambiguous_orders
+
+            stats["reconciliation"] = {
+                "pending_count": len(list_ambiguous_orders(include_resolved=False)),
+            }
+        except Exception:
+            pass
+        try:
+            cursor.execute("SELECT COUNT(*) FROM market_ticks")
+            row = cursor.fetchone()
+            stats["archive"] = stats.get("archive") or {}
+            stats["archive"]["ticks"] = _row_val(row)
+        except Exception:
+            pass
     except Exception:
         stats = {
             "positions_count": 0,

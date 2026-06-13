@@ -1,19 +1,24 @@
-# Dependency directories
+# ─── Dependencies ───────────────────────────────────────────────────────────
 node_modules/
 jspm_packages/
 web_modules/
 
-# Build outputs
+# ─── Build outputs ──────────────────────────────────────────────────────────
 dist/
 dist-ssr/
 build/
 out/
 .next/
 .nuxt/
-.vite/
+.turbo/
+*.tsbuildinfo
 
-# Python cache & compiled files
+# Vite (pre-bundle cache when inspected outside node_modules)
+**/.vite/
+
+# ─── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -34,34 +39,40 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Python test, lint, and type checking caches
+# Test, lint, and type-check caches
 .pytest_cache/
 .tox/
+.nox/
 .coverage
 .coverage.*
 htmlcov/
 .hypothesis/
 .ruff_cache/
 .mypy_cache/
+.dmypy.json
+dmypy.json
 .ipynb_checkpoints/
 
-# Python virtual environments
+# Virtual environments
 .venv/
 venv/
 ENV/
 env/
-ENV/local/
-ENV/runtime/
 
-# Databases and local storage
+# ─── Databases & local persistence ──────────────────────────────────────────
 *.db
 *.sqlite
 *.sqlite3
+backend/trading.db
 
-# Generated / cached market data (yfinance → synthetic_data.py)
+# Generated / cached market data (yfinance seeds, eToro id cache)
 backend/data/*.parquet
+backend/data/*.json
 
-# Logs & debugging
+# Optional Parquet archive export (ARCHIVE_PARQUET_DIR)
+backend/archive_parquet/
+
+# ─── Logs & debugging ───────────────────────────────────────────────────────
 logs/
 *.log
 npm-debug.log*
@@ -70,7 +81,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Environment, local config, and secrets
+# ─── Environment, secrets, and local config ─────────────────────────────────
 .env
 .env.*
 !.env.example
@@ -78,7 +89,6 @@ lerna-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
-*.local
 *credentials*.json
 *secrets*.json
 *keys*.json
@@ -86,11 +96,18 @@ lerna-debug.log*
 *.key
 *.pub
 
-# Frontend dev / tooling artifacts
-frontend/screenshot*.png
-*.tsbuildinfo
+# Local Docker / compose overrides
+docker-compose.override.yml
+docker-compose.*.local.yml
 
-# IDEs, editors, and OS metadata
+# ─── Frontend dev & E2E artifacts ───────────────────────────────────────────
+frontend/screenshot*.png
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+playwright/.cache/
+
+# ─── IDEs, editors, and OS metadata ─────────────────────────────────────────
 .vscode/
 !.vscode/extensions.json
 .idea/

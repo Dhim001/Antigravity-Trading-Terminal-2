@@ -16,6 +16,7 @@ import { Action } from '../api/protocol';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
+  RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
@@ -257,8 +258,10 @@ function AlgoTab() {
     activeBots, botStrategy, botConfig, activeSymbol, symbolsList,
     setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, setChartInteractionMode,
-    isLive, allowLiveBots, terminalMode, setActiveSymbol,
+    isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
+    setActiveSymbol,
     selectedBotId, setSelectedBotId, botDetail, setBotDetail,
+    ambiguousOrders, setAmbiguousOrders,
   } = useStore();
 
   const liveBotsBlocked = isLive && !allowLiveBots;
@@ -266,6 +269,7 @@ function AlgoTab() {
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [botDrawerOpen, setBotDrawerOpen] = useState(false);
+  const [backtestDays, setBacktestDays] = useState('7');
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
 
@@ -304,7 +308,8 @@ function AlgoTab() {
     sendAction(Action.RUN_BACKTEST, {
       strategy: botStrategy,
       symbol: activeSymbol,
-      config: botConfig
+      config: botConfig,
+      days: parseInt(backtestDays, 10) || 7,
     });
   };
 
@@ -370,6 +375,24 @@ function AlgoTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBotId, activeBots.length]);
 
+  const refreshReconciliation = useCallback(() => {
+    sendAction(Action.ADMIN_GET_RECONCILIATION, {});
+  }, []);
+
+  useEffect(() => {
+    if (isLive) refreshReconciliation();
+  }, [isLive, refreshReconciliation]);
+
+  const handleAutoReconcile = () => {
+    sendAction(Action.ADMIN_RECONCILE, {});
+    setTimeout(refreshReconciliation, 500);
+  };
+
+  const handleDismissAmbiguous = (orderId) => {
+    sendAction(Action.ADMIN_RESOLVE_AMBIGUOUS, { order_id: orderId, resolution: 'dismissed' });
+    setAmbiguousOrders(ambiguousOrders.filter(o => o.id !== orderId));
+  };
+
   return (
     <div className="algo-tab">
       {liveBotsBlocked && (
@@ -382,6 +405,66 @@ function AlgoTab() {
             Backtest still works.
           </AlertDescription>
         </Alert>
+      )}
+
+      {isLive && allowLiveBots && (
+        <Alert className="algo-tab__banner border-trading-up/30 bg-trading-up/5 xl:col-span-3">
+          <Activity aria-hidden />
+          <AlertDescription className="text-xs leading-relaxed">
+            <strong>Live bots enabled</strong> on {terminalMode}
+            {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
+            Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
+            Signals fire on closed 1m bars — do not resend ambiguous orders.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {isLive && ambiguousOrders.length > 0 && (
+        <section className="algo-tab__panel algo-reconcile-panel xl:col-span-3">
+          <header className="algo-tab__panel-header">
+            <div className="algo-tab__panel-title">
+              <AlertTriangle size={13} className="text-trading-warn" aria-hidden />
+              Ambiguous Orders ({ambiguousOrders.length})
+            </div>
+            <div className="flex gap-1">
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={refreshReconciliation}>
+                <RefreshCw data-icon="inline-start" aria-hidden />
+                Refresh
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleAutoReconcile}>
+                Auto-reconcile
+              </Button>
+            </div>
+          </header>
+          <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 max-h-28">
+            <table className="terminal-table text-xs w-full">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th className="text-right">Qty</th>
+                  <th>Message</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {ambiguousOrders.map((o) => (
+                  <tr key={o.id}>
+                    <td>{o.symbol}</td>
+                    <td>{o.side}</td>
+                    <td className="num-mono text-right">{Number(o.quantity).toFixed(4)}</td>
+                    <td className="text-muted-foreground truncate max-w-[180px]" title={o.message}>{o.message}</td>
+                    <td className="text-right">
+                      <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => handleDismissAmbiguous(o.id)}>
+                        Dismiss
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       <section className="algo-tab__panel algo-tab__panel--deploy">
@@ -441,12 +524,36 @@ function AlgoTab() {
               </span>
             </div>
 
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Backtest Range</Label>
+              <Select value={backtestDays} onValueChange={setBacktestDays}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest history range">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="7" className="text-xs">7 days (in-memory + archive)</SelectItem>
+                  <SelectItem value="30" className="text-xs">30 days (archive 1m)</SelectItem>
+                  <SelectItem value="90" className="text-xs">90 days (archive 1m max)</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Uses archived 1m bars when range exceeds live buffer. Scroll the chart left to load older history.
+              </span>
+            </div>
+
             {backtestResults && (
               <div className={cn(
                 'algo-backtest-lab',
                 (backtestResults.total_pnl ?? 0) < 0 && 'algo-backtest-lab--down',
               )}>
-                <div className="algo-backtest-lab__title">7-Day Backtest Lab</div>
+                <div className="algo-backtest-lab__title">
+                  {backtestResults.meta?.days ?? backtestDays}-Day Backtest Lab
+                  {backtestResults.meta?.count != null && (
+                    <span className="text-muted-foreground font-normal ml-1">
+                      ({backtestResults.meta.count.toLocaleString()} bars)
+                    </span>
+                  )}
+                </div>
                 <div className="algo-backtest-metrics">
                   <div>Win Rate: <span className="text-foreground">{backtestResults.win_rate}%</span></div>
                   <div>Est PnL: <span className={backtestResults.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${backtestResults.total_pnl}</span></div>

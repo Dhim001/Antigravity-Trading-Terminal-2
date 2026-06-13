@@ -42,6 +42,21 @@ async def place_order(ctx: RequestContext) -> None:
         "stop_loss_percent": stop_loss_percent,
         "take_profit_percent": take_profit_percent,
     })
+    if result.get("status") == "ambiguous":
+        from app.config import TERMINAL_MODE
+        from app.services.reconciliation import record_ambiguous_order
+
+        record_ambiguous_order(
+            {
+                "symbol": symbol,
+                "type": order_type,
+                "side": side,
+                "price": price,
+                "quantity": quantity,
+            },
+            result.get("message", "Ambiguous order outcome"),
+            broker=TERMINAL_MODE,
+        )
     await send_order_bundle(ctx, result)
 
 

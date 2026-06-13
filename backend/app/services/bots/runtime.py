@@ -5,6 +5,7 @@ import logging
 
 from app.config import TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL, BOT_SNAPSHOT_INTERVAL
 from app.services.bots.bar_events import BarCloseTracker
+from app.services.bots.candle_source import get_bot_candles
 from app.services.bots.manager import BotManagerService
 from app.services.bots.screener import MarketScreenerService
 from app.services.bots.backtester import BacktesterService
@@ -64,7 +65,7 @@ async def bot_market_loop(bot_manager: BotManagerService, feed):
             if bot_manager.active_bots:
                 watched = {b["symbol"] for b in bot_manager.active_bots.values()}
                 for symbol in watched:
-                    candles = feed.get_candles(symbol)
+                    candles = get_bot_candles(symbol, feed)
                     if candles:
                         await bot_manager.process_market_tick(symbol, candles)
         except Exception as exc:
@@ -94,8 +95,10 @@ async def bar_publish_loop(feed, event_bus):
 def register_worker_handlers(bot_manager: BotManagerService, event_bus, feed=None):
     async def on_bar_close(payload: dict):
         symbol = payload.get("symbol")
-        candles = payload.get("candles")
-        if symbol and candles:
+        if not symbol:
+            return
+        candles = get_bot_candles(symbol, feed) if feed else payload.get("candles")
+        if candles:
             if feed and hasattr(feed, "sync_bar"):
                 feed.sync_bar(symbol, candles)
             await bot_manager.process_market_tick(symbol, candles)

@@ -108,9 +108,25 @@ async def run_backtest(ctx: RequestContext) -> None:
     strategy = msg.get("strategy")
     config = msg.get("config", {})
 
+    try:
+        days = int(msg.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 365))
+    interval = msg.get("interval")
+
     if ctx.backtester and hasattr(ctx.oms, "feed"):
-        candles = ctx.oms.feed.get_candles(symbol)
+        from app.services.archive.resolve import resolve_backtest_candles
+
+        candles, meta = resolve_backtest_candles(
+            symbol,
+            ctx.oms.feed,
+            days=days,
+            interval=interval,
+        )
         results = ctx.backtester.run_backtest(symbol, strategy, config, candles)
+        if isinstance(results, dict) and "error" not in results:
+            results["meta"] = meta
         await send_backtest_result(ctx, {"status": "success", "results": results})
     else:
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})

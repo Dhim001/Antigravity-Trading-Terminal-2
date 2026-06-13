@@ -1,6 +1,7 @@
 import { toast } from 'sonner';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
+import { forceMarketSnapshotSave } from '../services/marketSnapshot';
 
 /** Snapshot of Zustand actions for WS / HTTP message dispatch. */
 export function getStoreActions() {
@@ -8,6 +9,7 @@ export function getStoreActions() {
   return {
     setConnectionStatus: s.setConnectionStatus,
     updateHistory: s.updateHistory,
+    prependHistory: s.prependHistory,
     updateAccount: s.updateAccount,
     updateMarketData: s.updateMarketData,
     updateOrderBooks: s.updateOrderBooks,
@@ -20,6 +22,7 @@ export function getStoreActions() {
     setBotLogs: s.setBotLogs,
     setBacktestResults: s.setBacktestResults,
     setBotDetail: s.setBotDetail,
+    setAmbiguousOrders: s.setAmbiguousOrders,
   };
 }
 
@@ -46,6 +49,15 @@ export function applyServerMessage(type, data, storeActions) {
       break;
     case MessageType.ORDER_RESULT:
       storeActions.setOrderResult(data);
+      if (data?.status === 'ambiguous') {
+        toast.warning(data.message || 'Order outcome unknown — reconcile before retrying.');
+      }
+      if (data?.reconciliation?.pending) {
+        storeActions.setAmbiguousOrders(data.reconciliation.pending);
+      }
+      if (data?.status === 'success' && /market prices preserved/i.test(data?.message ?? '')) {
+        forceMarketSnapshotSave(() => useStore.getState());
+      }
       break;
     case MessageType.TRADE_HISTORY:
       storeActions.setTradeHistory(data);
