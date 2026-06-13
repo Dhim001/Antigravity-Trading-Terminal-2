@@ -163,9 +163,7 @@ export default function OrderEntryWidget() {
       className="border-b border-border"
       icon={PlusCircle}
       title="Order Entry"
-      scrollable
-      scrollPad={false}
-      contentClassName="p-3 pb-2"
+      contentClassName="order-entry-shell p-0"
       headerRight={
         <div className="icon-label">
           <span className={cn('text-[0.62rem] font-bold tracking-wide', isBuy ? 'text-trading-up' : 'text-trading-down')}>
@@ -179,6 +177,7 @@ export default function OrderEntryWidget() {
         </div>
       }
     >
+      <div className="order-entry-scroll">
         <ToggleGroup
           type="single"
           value={side}
@@ -221,7 +220,7 @@ export default function OrderEntryWidget() {
           ))}
         </ToggleGroup>
 
-        <form ref={formRef} onSubmit={handlePlaceOrder}>
+        <form ref={formRef} id="order-entry-form" onSubmit={handlePlaceOrder}>
           <FieldGroup className="gap-2.5">
             {orderType === 'LIMIT' && (
               <Field data-invalid={!!errorMsg && errorMsg.includes('Price')}>
@@ -369,17 +368,20 @@ export default function OrderEntryWidget() {
               )}
             </CollapsibleContent>
           </Collapsible>
-
-          <Button
-            type="submit"
-            variant={isBuy ? 'buy' : 'sell'}
-            size="lg"
-            className="w-full font-extrabold tracking-wide"
-          >
-            {isBuy ? <TrendingUp data-icon="inline-start" /> : <TrendingDown data-icon="inline-start" />}
-            Place {side} {orderType}
-          </Button>
         </form>
+      </div>
+
+      <div className="order-entry-footer">
+        <Button
+          type="submit"
+          form="order-entry-form"
+          variant={isBuy ? 'buy' : 'sell'}
+          size="lg"
+          className="w-full font-extrabold tracking-wide"
+        >
+          {isBuy ? <TrendingUp data-icon="inline-start" /> : <TrendingDown data-icon="inline-start" />}
+          Place {side} {orderType}
+        </Button>
 
         {errorMsg && (
           <Alert variant="destructive" className="mt-2 py-2">
@@ -387,6 +389,7 @@ export default function OrderEntryWidget() {
             <AlertDescription>{errorMsg}</AlertDescription>
           </Alert>
         )}
+      </div>
     </WidgetShell>
   );
 }

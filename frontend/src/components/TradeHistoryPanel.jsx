@@ -19,7 +19,6 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { WidgetToolbar, WidgetToolbarDivider, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
 
@@ -163,15 +162,15 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className={cn('history-panel', !embedded && 'history-panel--expanded')}>
       {!embedded && (
-        <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted/30 px-5 py-3">
-          <div className="flex items-center gap-2">
-            <Activity size={14} className="text-primary" />
+        <div className="history-sheet-header">
+          <div className="icon-label-loose">
+            <Activity size={14} className="text-primary" aria-hidden />
             <span className="text-sm font-extrabold">Transaction History</span>
             <Badge variant="secondary">{filtered.length} records</Badge>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-[var(--icon-gap-loose)]">
             {toolbarActions}
             {onClose && (
               <Button variant="ghost" size="icon-sm" onClick={onClose}>
@@ -185,12 +184,12 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
       {embedded && (
         <WidgetToolbar className="justify-between">
           <Badge variant="secondary" className="font-normal">{filtered.length} records</Badge>
-          <div className="flex items-center gap-1">{toolbarActions}</div>
+          <div className="flex items-center gap-[var(--icon-gap)]">{toolbarActions}</div>
         </WidgetToolbar>
       )}
 
       {stats && (
-        <div className="flex shrink-0 flex-wrap gap-1.5 border-b border-border bg-muted/20 p-2">
+        <div className="history-stats-row">
           <StatCard
             label="Realized P&L"
             icon={stats.total_pnl >= 0 ? TrendingUp : TrendingDown}
@@ -236,8 +235,8 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         </div>
       )}
 
-      <WidgetToolbar className="scroll-panel-x no-scrollbar flex-nowrap">
-        <Filter size={11} className="shrink-0 text-muted-foreground" />
+      <WidgetToolbar compact className="scroll-panel-x no-scrollbar flex-nowrap">
+        <Filter size={11} className="shrink-0 text-muted-foreground" aria-hidden />
         <ToggleGroup
           type="single"
           size="sm"
@@ -309,10 +308,10 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         />
       </WidgetToolbar>
 
-      <ScrollArea className="min-h-0 flex-1">
+      <div className="history-table-scroll scroll-panel-y scroll-panel-y-0">
         {loading ? (
-          <div className="flex h-full min-h-[120px] items-center justify-center gap-2 text-muted-foreground">
-            <RefreshCw size={14} className="animate-spin" />
+          <div className="flex h-full min-h-[120px] items-center justify-center gap-[var(--icon-gap-loose)] text-muted-foreground">
+            <RefreshCw size={14} className="animate-spin" aria-hidden />
             Loading…
           </div>
         ) : filtered.length === 0 ? (
@@ -386,9 +385,9 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
             </tbody>
           </table>
         )}
-      </ScrollArea>
+      </div>
 
-      <div className="flex shrink-0 items-center justify-between border-t border-border bg-muted/30 px-3 py-1.5 text-[0.62rem] text-muted-foreground">
+      <div className="history-footer-bar">
         <span>Showing {filtered.length} of {tradeHistory.length}</span>
         {filtered.length > 0 && (
           <span className="flex gap-3">

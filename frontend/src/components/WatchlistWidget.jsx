@@ -85,7 +85,7 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
         isActive ? 'border-l-primary bg-primary/10' : 'border-l-transparent',
       )}
     >
-      <td className="py-1.5 pl-2 pr-1">
+      <td className="watchlist-col-symbol py-1.5 pl-2 pr-1">
         <div className="icon-label-tight">
           <span
             className={cn(
@@ -101,13 +101,13 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
           </span>
         </div>
       </td>
-      <td className="px-0.5 py-1.5">
+      <td className="watchlist-col-spark px-0.5 py-1.5">
         <MiniSparkline points={sparkData} isUp={isUp} />
       </td>
       <td
         key={flashState?.key}
         className={cn(
-          'num-mono px-1.5 py-1.5 text-right text-xs font-semibold',
+          'watchlist-col-price num-mono px-1 py-1.5 text-right text-xs font-semibold',
           flashCls,
           flashState
             ? flashState.dir === 'up' ? 'text-trading-up' : 'text-trading-down'
@@ -116,10 +116,10 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
       >
         {info ? info.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }) : '…'}
       </td>
-      <td className={cn('num-mono px-1.5 py-1.5 text-right text-[0.62rem] font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
+      <td className={cn('watchlist-col-chg num-mono px-1 py-1.5 text-right text-[0.62rem] font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {info ? `${isUp ? '+' : ''}${Number(info.change_24h).toFixed(2)}%` : '—'}
       </td>
-      <td className="num-mono py-1.5 pl-1 pr-2 text-right text-[0.62rem] text-muted-foreground">
+      <td className="watchlist-col-vol num-mono py-1.5 pl-1 pr-2 text-right text-[0.62rem] text-muted-foreground">
         {info ? fmtVol(info.volume_24h) : '—'}
       </td>
     </tr>
@@ -165,7 +165,7 @@ export default function WatchlistWidget() {
 
   const toolbar = (
     <>
-      <div className="relative w-full shrink-0 border-b border-border px-2.5 py-1.5">
+      <div className="watchlist-search-bar">
         <Search size={12} className="pointer-events-none absolute top-1/2 left-[calc(0.625rem+var(--icon-gap))] -translate-y-1/2 shrink-0 text-muted-foreground" aria-hidden />
         <Input
           type="text"
@@ -175,9 +175,10 @@ export default function WatchlistWidget() {
           className="h-7 pl-8 text-xs"
         />
       </div>
-      <WidgetToolbar className="py-0.5">
-        <Tabs value={cat} onValueChange={setCat} className="w-full">
-          <TabsList variant="line" className="scroll-panel-x no-scrollbar h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
+      <WidgetToolbar compact className="p-0">
+        <div className="scroll-fade-x watchlist-cat-scroll">
+          <Tabs value={cat} onValueChange={setCat} className="w-full">
+            <TabsList variant="line" className="scroll-panel-x no-scrollbar h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
             {[['ALL', 'All'], ['CRYPTO', 'Crypto'], ['EQUITY', 'Equity'], ['ETF', 'ETF']].map(([key, label]) => (
               <TabsTrigger key={key} value={key} className="px-2 text-[0.68rem]">
                 {label}
@@ -188,28 +189,37 @@ export default function WatchlistWidget() {
             ))}
           </TabsList>
         </Tabs>
+        </div>
       </WidgetToolbar>
     </>
   );
 
   return (
     <WidgetShell icon={Activity} title="Watchlist" toolbar={toolbar} contentClassName="flex min-h-0 flex-col overflow-hidden p-0">
-      <ScrollTablePanel>
-        <table className="w-full min-w-[280px] border-collapse text-xs">
+      <ScrollTablePanel className="watchlist-table-panel">
+        <table className="watchlist-table text-xs">
+        <colgroup>
+          <col className="watchlist-col-symbol" />
+          <col className="watchlist-col-spark" />
+          <col className="watchlist-col-price" />
+          <col className="watchlist-col-chg" />
+          <col className="watchlist-col-vol" />
+        </colgroup>
         <thead>
           <tr>
             {[
-              { field: 'symbol', label: 'Symbol', align: 'left' },
-              { field: null, label: '', align: 'left' },
-              { field: 'price', label: 'Price', align: 'right' },
-              { field: 'change_24h', label: '24h%', align: 'right' },
-              { field: 'volume_24h', label: 'Vol', align: 'right' },
-            ].map(({ field, label, align }) => (
+              { field: 'symbol', label: 'Symbol', align: 'left', col: 'watchlist-col-symbol' },
+              { field: null, label: '', align: 'left', col: 'watchlist-col-spark' },
+              { field: 'price', label: 'Price', align: 'right', col: 'watchlist-col-price' },
+              { field: 'change_24h', label: '24h%', align: 'right', col: 'watchlist-col-chg' },
+              { field: 'volume_24h', label: 'Vol', align: 'right', col: 'watchlist-col-vol' },
+            ].map(({ field, label, align, col }) => (
               <th
                 key={label || 'spark'}
                 onClick={field ? () => handleSort(field) : undefined}
                 className={cn(
-                  'sticky top-0 z-[1] border-b border-border bg-background/95 px-2 py-1.5 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur-sm',
+                  col,
+                  'sticky top-0 z-[1] border-b border-border bg-background/95 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur-sm',
                   align === 'right' ? 'text-right' : 'text-left',
                   field && 'cursor-pointer hover:text-foreground',
                   sort.field === field && 'text-trading-accent'

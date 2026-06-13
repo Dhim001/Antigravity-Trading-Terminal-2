@@ -175,20 +175,22 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   );
 
   const renderCell = (i, extraClassName) => (
-    <MiniChartWidget
-      key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
-      defaultSymbol={symbols[i] || layout.defaults[i]}
-      isFocused={focusedIdx === i}
-      onFocus={(sym) => {
-        const next = [...symbols];
-        next[i] = sym;
-        setSymbols(next);
-        handleFocus(i, sym);
-      }}
-      isMaximized={maximizedIdx === i}
-      onToggleMaximize={() => setMaximizedIdx(maximizedIdx === i ? null : i)}
-      className={cn(getCellClassName(i), extraClassName)}
-    />
+    <div key={`wrap-${i}`} className={cn('multi-chart-cell', extraClassName)}>
+      <MiniChartWidget
+        key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
+        defaultSymbol={symbols[i] || layout.defaults[i]}
+        isFocused={focusedIdx === i}
+        onFocus={(sym) => {
+          const next = [...symbols];
+          next[i] = sym;
+          setSymbols(next);
+          handleFocus(i, sym);
+        }}
+        isMaximized={maximizedIdx === i}
+        onToggleMaximize={() => setMaximizedIdx(maximizedIdx === i ? null : i)}
+        className={getCellClassName(i)}
+      />
+    </div>
   );
 
   const renderCells = () => {
@@ -196,7 +198,7 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
 
     if (layout.id === '1+2') {
       return (
-        <div className="relative grid min-h-0 flex-1 grid-cols-[1.6fr_1fr] grid-rows-2 gap-1 p-1">
+        <div className="multi-chart-grid multi-chart-grid--1plus2">
           {renderCell(0, 'row-span-2')}
           {renderCell(1)}
           {renderCell(2)}
@@ -206,7 +208,7 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
 
     return (
       <div className={cn(
-        'relative grid min-h-0 flex-1 gap-1 overflow-hidden p-1',
+        'multi-chart-grid',
         GRID_CLASS[layout.cols],
         layout.rows === 2 && 'grid-rows-2',
         layout.rows === 1 && 'grid-rows-1',
@@ -217,10 +219,10 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-      <div className="flex h-[42px] shrink-0 items-center justify-between gap-3 border-b border-border bg-muted/30 px-3.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <LayoutGrid size={14} className="shrink-0 text-primary" />
+    <div className="multi-chart-root">
+      <div className="multi-chart-toolbar">
+        <div className="multi-chart-toolbar__title">
+          <LayoutGrid size={14} className="shrink-0 text-primary" aria-hidden />
           <span className="text-xs font-bold uppercase tracking-wide text-secondary-foreground">
             Multi-Chart View
           </span>
@@ -229,35 +231,35 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
           </span>
         </div>
 
-        <ToggleGroup
-          type="single"
-          size="sm"
-          spacing={1}
-          value={layoutId}
-          onValueChange={handleLayoutChange}
-          className="shrink-0 rounded-md bg-muted/40 p-0.5"
-        >
-          {LAYOUTS.map(l => (
-            <ToggleGroupItem
-              key={l.id}
-              value={l.id}
-              title={l.description}
-              className="gap-1 px-2 data-[state=on]:bg-primary/20 data-[state=on]:text-primary"
-            >
-              {l.icon}
-              <span className="text-[0.68rem] font-semibold">{l.label}</span>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+        <div className="scroll-fade-x shrink-0">
+          <ToggleGroup
+            type="single"
+            size="sm"
+            spacing={1}
+            value={layoutId}
+            onValueChange={handleLayoutChange}
+            className="scroll-panel-x no-scrollbar shrink-0 rounded-md bg-muted/40 p-0.5"
+          >
+            {LAYOUTS.map(l => (
+              <ToggleGroupItem
+                key={l.id}
+                value={l.id}
+                title={l.description}
+                className="gap-1 px-2 data-[state=on]:bg-primary/20 data-[state=on]:text-primary"
+              >
+                {l.icon}
+                <span className="text-[0.68rem] font-semibold">{l.label}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </div>
 
         <Button variant="outline" size="sm" className="shrink-0 text-xs" onClick={onSwitchToSingle}>
           ← Single Chart
         </Button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {renderCells()}
-      </div>
+      {renderCells()}
     </div>
   );
 }

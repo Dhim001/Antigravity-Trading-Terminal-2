@@ -21,6 +21,8 @@ import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestMiniChart from './BacktestMiniChart';
 import BotDetailDrawer from './BotDetailDrawer';
+import StrategyTemplateCard from './StrategyTemplateCard';
+import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -40,7 +42,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
 
-const DOCK_MIN = 160;
+const DOCK_MIN = 200;
 const DOCK_MAX = 560;
 const DOCK_DEFAULT = 320;
 const STORAGE_KEY = 'terminal_dock_height';
@@ -264,6 +266,15 @@ function AlgoTab() {
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [botDrawerOpen, setBotDrawerOpen] = useState(false);
+  const logScrollRef = useRef(null);
+  const logCountRef = useRef(0);
+
+  useEffect(() => {
+    if (botLogs.length > logCountRef.current && logScrollRef.current) {
+      logScrollRef.current.scrollTop = 0;
+    }
+    logCountRef.current = botLogs.length;
+  }, [botLogs]);
 
   const confirmDeploy = () => {
     setDeployOpen(false);
@@ -381,14 +392,14 @@ function AlgoTab() {
           </div>
         </header>
         <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body">
-          <div className="flex flex-col gap-2.5">
-            <div className="space-y-1.5">
+          <div className="algo-deploy-fields">
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Symbol</Label>
               <Select value={activeSymbol} onValueChange={setActiveSymbol}>
                 <SelectTrigger className="h-8 w-full text-xs" aria-label="Bot symbol">
                   <SelectValue placeholder="Select symbol" />
                 </SelectTrigger>
-                <SelectContent className="max-h-56">
+                <SelectContent position="popper" className="max-h-56 min-w-[var(--radix-select-trigger-width)]">
                   {symbolsList.map(sym => (
                     <SelectItem key={sym} value={sym} className="text-xs">{sym}</SelectItem>
                   ))}
@@ -396,29 +407,21 @@ function AlgoTab() {
               </Select>
             </div>
 
-            <div className="flex flex-col gap-1.5">
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Strategy Templates</Label>
               <div className="algo-template-grid">
                 {strategyTemplates.map(t => (
-                  <button
+                  <StrategyTemplateCard
                     key={t.id}
-                    type="button"
-                    onClick={() => selectTemplate(t)}
-                    className={cn(
-                      'algo-template-btn',
-                      botStrategy === t.strategy && 'algo-template-btn--active',
-                    )}
-                  >
-                    <div className="algo-template-btn__name">{t.name}</div>
-                    <div className="algo-template-btn__meta">
-                      {t.strategy} · ${t.allocation} · SL {t.config.trailing_stop_percent || 0}%
-                    </div>
-                  </button>
+                    template={t}
+                    active={botStrategy === t.strategy}
+                    onSelect={selectTemplate}
+                  />
                 ))}
               </div>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Capital Allocation</Label>
               <InputGroup className="h-8">
                 <InputGroupInput
@@ -514,7 +517,10 @@ function AlgoTab() {
             </DialogDescription>
           </DialogHeader>
           <div className="algo-dialog-summary">
-            <div><span className="text-muted-foreground">Strategy:</span> <strong>{botStrategy}</strong></div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground shrink-0">Strategy:</span>
+              <StrategyBadge strategy={botStrategy} />
+            </div>
             <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
             <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
             <div><span className="text-muted-foreground">Timeframe:</span> <strong>1m (closed-bar signals)</strong></div>
@@ -594,7 +600,9 @@ function AlgoTab() {
                     onClick={() => selectBot(bot.id)}
                   >
                     <td className="font-bold">{bot.symbol}</td>
-                    <td className="text-xs text-secondary-foreground">{bot.strategy}</td>
+                    <td className="text-xs">
+                      <StrategyBadge strategy={bot.strategy} compact />
+                    </td>
                     <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
                     <td className={cn(
                       'num-mono text-right font-semibold',
@@ -656,12 +664,12 @@ function AlgoTab() {
           </Button>
         </header>
 
-        <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0">
+        <div ref={logScrollRef} className="algo-tab__scroll algo-bot-log-scroll scroll-panel-y scroll-panel-y-0">
           <div className="algo-tab__log-list">
             {botLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
             ) : botLogs.map((log, i) => (
-              <div key={i} className={logLineClass(log)}>{log}</div>
+              <div key={`${i}-${log.slice(0, 24)}`} className={logLineClass(log)}>{log}</div>
             ))}
           </div>
         </div>
@@ -749,32 +757,42 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
 
   return (
     <>
-      <div className="bottom-dock flex flex-col" style={{ gridArea: 'dock', height: dockH }}>
+      <div
+        className="bottom-dock flex flex-col"
+        data-compact={dockH < 280 ? '' : undefined}
+        style={{ gridArea: 'dock', height: dockH, minHeight: DOCK_MIN }}
+      >
         <div className="dock-resize-handle" onMouseDown={onMouseDown} />
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
-          <div className="flex shrink-0 items-center border-b border-border bg-muted/20 pr-1 pt-1">
-          <div className="scroll-fade-x flex min-w-0 flex-1 items-center">
-            <TabsList variant="line" className="scroll-panel-x no-scrollbar h-9 min-w-0 flex-1 justify-start rounded-none border-0 bg-transparent px-1">
-              {TABS.map(tab => {
-                const Icon = tab.icon;
-                return (
-                  <TabsTrigger key={tab.id} value={tab.id} className="shrink-0 px-2 text-xs xl:px-3" title={tab.label}>
-                    <Icon data-icon="inline-start" />
-                    <span className="header-label">{tab.label}</span>
-                    {tab.badge != null && (
-                      <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-bold">
-                        {tab.badge}
-                      </Badge>
-                    )}
-                    {tab.id === 'algo' && isBotRunning && (
-                      <span className="dock-algo-pulse" aria-hidden />
-                    )}
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-          </div>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="dock-tabs-root gap-0">
+          <div className="dock-tab-bar">
+            <div className="dock-tab-bar-inner scroll-fade-x">
+              <TabsList variant="line" className="dock-tab-switch scroll-panel-x no-scrollbar min-w-0 flex-1 justify-start rounded-none border-0 bg-transparent">
+                {TABS.map(tab => {
+                  const Icon = tab.icon;
+                  return (
+                    <TabsTrigger
+                      key={tab.id}
+                      value={tab.id}
+                      className="dock-tab-trigger shrink-0 px-2 text-xs xl:px-3"
+                      title={tab.label}
+                    >
+                      <Icon data-icon="inline-start" />
+                      <span className="header-label">{tab.label}</span>
+                      {tab.badge != null && (
+                        <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-bold">
+                          {tab.badge}
+                        </Badge>
+                      )}
+                      {tab.id === 'algo' && isBotRunning && (
+                        <span className="dock-algo-pulse" aria-hidden />
+                      )}
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
+            </div>
+            <div className="dock-tab-actions">
             {activeTab === 'history' && (
               <Button
                 variant="ghost"
@@ -786,30 +804,31 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
                 {historyFullscreen ? <Minimize2 /> : <Maximize2 />}
               </Button>
             )}
+            </div>
           </div>
 
-          <TabsContent value="positions" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="positions" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ScrollTablePanel>
               <PositionsTab />
             </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="orders" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="orders" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ScrollTablePanel>
               <OrdersTab />
             </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="balances" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="balances" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ScrollTablePanel>
               <BalancesTab />
             </ScrollTablePanel>
           </TabsContent>
-          <TabsContent value="algo" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <AlgoTab />
           </TabsContent>
-          <TabsContent value="equity" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="equity" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <EquityCurveTab />
           </TabsContent>
-          <TabsContent value="history" className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsContent value="history" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             {!historyFullscreen && <TradeHistoryContent embedded />}
           </TabsContent>
         </Tabs>
@@ -820,7 +839,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
         <SheetContent
           side="bottom"
           showCloseButton={false}
-          className="h-[72vh] max-h-[85vh] gap-0 rounded-t-xl border-t p-0 sm:max-w-full"
+          className="flex h-[85vh] max-h-[85vh] min-h-0 flex-col gap-0 overflow-hidden rounded-t-xl border-t p-0 sm:max-w-full"
         >
           <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
         </SheetContent>

@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:perf": "playwright test e2e/performance.spec.js"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",

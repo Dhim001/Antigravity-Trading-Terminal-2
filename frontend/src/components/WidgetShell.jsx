@@ -63,11 +63,12 @@ export function ScrollTablePanel({ children, className, horizontal = false }) {
 }
 
 /** Compact toolbar row below widget header (timeframes, filters, etc.) */
-export function WidgetToolbar({ children, className }) {
+export function WidgetToolbar({ children, className, compact = false }) {
   return (
     <div
       className={cn(
-        'flex shrink-0 flex-wrap items-center gap-[var(--icon-gap)] border-b border-border bg-muted/25 px-3 py-1.5',
+        'widget-toolbar',
+        compact && 'widget-toolbar--compact',
         className,
       )}
     >

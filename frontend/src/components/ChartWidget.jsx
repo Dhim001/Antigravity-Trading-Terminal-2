@@ -976,60 +976,68 @@ export default function ChartWidget() {
   }, [chartInteractionMode, activeSymbol, setChartInteractionMode]);
 
   const chartToolbar = (
-    <>
-      <WidgetToolbar className="scroll-panel-x no-scrollbar h-8 flex-nowrap py-0">
-        <ToggleGroup type="single" value={timeframe} onValueChange={(v) => v && setTimeframe(v)} spacing={0}>
-          {TF_CONFIGS.map(tf => (
-            <ToggleGroupItem key={tf.label} value={tf.label} size="sm" className="px-2 text-[0.68rem] font-bold">
-              {tf.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-        <WidgetToolbarDivider />
-        <ToggleGroup type="single" value={chartType} onValueChange={(v) => v && setChartType(v)} spacing={0}>
-          <ToggleGroupItem value="candle" size="sm" className="px-2 text-[0.68rem] font-bold">
-            <AreaChart data-icon="inline-start" />
-            Candle
-          </ToggleGroupItem>
-          <ToggleGroupItem value="line" size="sm" className="px-2 text-[0.68rem] font-bold">
-            <TrendingUp data-icon="inline-start" />
-            Line
-          </ToggleGroupItem>
-        </ToggleGroup>
-        {chartInteractionMode !== 'normal' && (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="ml-auto h-6 text-[0.62rem]"
-            onClick={() => setChartInteractionMode('normal')}
-          >
-            Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
-          </Button>
-        )}
-      </WidgetToolbar>
-      <WidgetToolbar className="scroll-panel-x no-scrollbar min-h-8 flex-nowrap py-1">
-        <ToggleGroup
-          type="multiple"
-          value={activeIndicatorKeys}
-          onValueChange={handleIndicatorsChange}
-          className="flex flex-nowrap gap-[var(--icon-gap)]"
-          spacing={1}
-        >
-          {Object.entries(INDICATORS).map(([key, ind]) => (
-            <ToggleGroupItem
-              key={key}
-              value={key}
-              size="sm"
-              className="gap-[var(--icon-gap)] text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
-              style={{ '--ind-c': ind.color }}
+    <div className="chart-toolbar-stack">
+      <div className="chart-toolbar-row">
+        <div className="scroll-fade-x">
+          <WidgetToolbar className="scroll-panel-x no-scrollbar flex-nowrap border-0 py-0">
+            <ToggleGroup type="single" value={timeframe} onValueChange={(v) => v && setTimeframe(v)} spacing={0}>
+              {TF_CONFIGS.map(tf => (
+                <ToggleGroupItem key={tf.label} value={tf.label} size="sm" className="px-2 text-[0.68rem] font-bold">
+                  {tf.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+            <WidgetToolbarDivider />
+            <ToggleGroup type="single" value={chartType} onValueChange={(v) => v && setChartType(v)} spacing={0}>
+              <ToggleGroupItem value="candle" size="sm" className="px-2 text-[0.68rem] font-bold">
+                <AreaChart data-icon="inline-start" />
+                Candle
+              </ToggleGroupItem>
+              <ToggleGroupItem value="line" size="sm" className="px-2 text-[0.68rem] font-bold">
+                <TrendingUp data-icon="inline-start" />
+                Line
+              </ToggleGroupItem>
+            </ToggleGroup>
+            {chartInteractionMode !== 'normal' && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="ml-auto h-6 shrink-0 text-[0.62rem]"
+                onClick={() => setChartInteractionMode('normal')}
+              >
+                Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
+              </Button>
+            )}
+          </WidgetToolbar>
+        </div>
+      </div>
+      <div className="chart-toolbar-row">
+        <div className="scroll-fade-x">
+          <WidgetToolbar compact className="scroll-panel-x no-scrollbar flex-nowrap border-0">
+            <ToggleGroup
+              type="multiple"
+              value={activeIndicatorKeys}
+              onValueChange={handleIndicatorsChange}
+              className="flex flex-nowrap gap-[var(--icon-gap)]"
+              spacing={1}
             >
-              <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
-              {ind.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </WidgetToolbar>
-    </>
+              {Object.entries(INDICATORS).map(([key, ind]) => (
+                <ToggleGroupItem
+                  key={key}
+                  value={key}
+                  size="sm"
+                  className="gap-[var(--icon-gap)] text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+                  style={{ '--ind-c': ind.color }}
+                >
+                  <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
+                  {ind.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </WidgetToolbar>
+        </div>
+      </div>
+    </div>
   );
 
   return (

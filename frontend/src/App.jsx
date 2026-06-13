@@ -3,7 +3,7 @@ import { useStore } from './store/useStore';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useBootstrap } from './hooks/useBootstrap';
 
-import WatchlistWidget       from './components/WatchlistWidget';
+import ResizableWatchlistSidebar from './components/ResizableWatchlistSidebar';
 import ChartWidget           from './components/ChartWidget';
 import MultiChartGrid        from './components/MultiChartGrid';
 import OrderBookWidget       from './components/OrderBookWidget';
@@ -42,10 +42,12 @@ export default function App() {
 
   const [showAdmin, setShowAdmin]   = useState(false);
   const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [stopBotsOpen, setStopBotsOpen] = useState(false);
 
   const handleDockHeightChange = useCallback(h => setDockHeight(h), []);
+  const handleSidebarLayout = useCallback(({ width }) => setSidebarWidth(width), []);
 
   const connected = connectionStatus === 'connected';
   const apiReady = apiStatus === 'ready';
@@ -75,6 +77,10 @@ export default function App() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === '[') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('sidebar-toggle'));
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -83,7 +89,12 @@ export default function App() {
   return (
     <div
       className="dashboard-container"
-      style={{ '--dock-h': `${dockHeight}px` }}
+      data-sidebar-user=""
+      style={{
+        '--dock-h': `${dockHeight}px`,
+        '--dock-min': '200px',
+        '--sidebar-w': `${sidebarWidth}px`,
+      }}
     >
       <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
       <SymbolCommandPalette
@@ -126,6 +137,7 @@ export default function App() {
         </div>
 
         <div className="header-controls">
+          <div className="header-controls-inner">
           <Tabs value={viewMode} onValueChange={setViewMode}>
             <TabsList className="header-view-switch">
               <TabsTrigger value="single" className="header-view-tab flex-none shadow-none" title="Chart view (⌘1)">
@@ -138,6 +150,7 @@ export default function App() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
+          </div>
         </div>
 
         <div className="header-actions">
@@ -233,9 +246,7 @@ export default function App() {
 
       <MarketOverviewStrip />
 
-      <aside className="watchlist-sidebar">
-        <WatchlistWidget />
-      </aside>
+      <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
 
       <main className="workspace-main">
         {viewMode === 'single'

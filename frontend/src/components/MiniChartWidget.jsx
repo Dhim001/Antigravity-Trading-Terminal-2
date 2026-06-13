@@ -213,7 +213,7 @@ export default function MiniChartWidget({
       onClick={handleFocusClick}
     >
       <div
-        className="flex shrink-0 select-none items-center justify-between gap-2 border-b border-border bg-muted/30 px-2.5 py-1.5"
+        className="mini-chart-header select-none"
         onClick={e => e.stopPropagation()}
         onDoubleClick={(e) => {
           e.stopPropagation();

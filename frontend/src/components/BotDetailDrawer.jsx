@@ -7,6 +7,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollTablePanel } from './WidgetShell';
+import StrategyBadge from './StrategyBadge';
+import { getStrategyMeta } from '@/config/strategies';
 import { Pause, PlayCircle, OctagonX } from 'lucide-react';
 
 export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, onResume }) {
@@ -18,6 +20,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const bot = botDetail?.bot;
   const stats = botDetail?.stats;
   const trades = botDetail?.trades ?? [];
+  const strategyMeta = bot ? getStrategyMeta(bot.strategy) : null;
 
   const handleClose = () => {
     onOpenChange(false);
@@ -44,20 +47,28 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             ) : 'Bot detail'}
           </SheetTitle>
           <SheetDescription className="text-xs">
-            {bot ? `${bot.strategy} · ${bot.timeframe} · $${Number(bot.allocation).toLocaleString()} alloc` : 'Select a bot'}
+            {bot && strategyMeta ? (
+              <span className="flex flex-col gap-1.5">
+                <StrategyBadge strategy={bot.strategy} />
+                <span className="text-muted-foreground">{strategyMeta.tagline}</span>
+                <span className="text-muted-foreground">
+                  {bot.timeframe} · ${Number(bot.allocation).toLocaleString()} alloc
+                </span>
+              </span>
+            ) : 'Select a bot'}
           </SheetDescription>
         </SheetHeader>
 
         {bot && stats && (
-          <div className="flex flex-col gap-3 pt-3 min-h-0 flex-1">
-            <div className="bot-detail-stats grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <div><span className="text-muted-foreground text-[0.62rem] uppercase">Trades</span><strong className="block">{stats.trade_count}</strong></div>
-              <div><span className="text-muted-foreground text-[0.62rem] uppercase">Win rate</span><strong className="block">{stats.win_rate}%</strong></div>
-              <div><span className="text-muted-foreground text-[0.62rem] uppercase">Total PnL</span><strong className={cn('block', stats.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>${stats.total_pnl}</strong></div>
-              <div><span className="text-muted-foreground text-[0.62rem] uppercase">Today</span><strong className={cn('block', stats.daily_pnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>${stats.daily_pnl}</strong></div>
+          <div className="bot-detail-drawer__body">
+            <div className="bot-detail-stats shrink-0">
+              <div><span>Trades</span><strong>{stats.trade_count}</strong></div>
+              <div><span>Win rate</span><strong>{stats.win_rate}%</strong></div>
+              <div><span>Total PnL</span><strong className={stats.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${stats.total_pnl}</strong></div>
+              <div><span>Today</span><strong className={stats.daily_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${stats.daily_pnl}</strong></div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex shrink-0 flex-wrap gap-2">
               {bot.status === 'RUNNING' && (
                 <>
                   <Button variant="outline" size="xs" onClick={() => onPause(bot.id)}><Pause /> Pause</Button>
@@ -73,12 +84,12 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             </div>
 
             {bot?.config && Object.keys(bot.config).length > 0 && (
-              <pre className="algo-config-preview text-[0.58rem] overflow-x-auto rounded-md border border-border bg-muted/20 p-2">
+              <pre className="algo-config-preview text-[0.58rem] rounded-md border border-border bg-muted/20 p-2">
                 {JSON.stringify(bot.config, null, 2)}
               </pre>
             )}
 
-            <ScrollTablePanel horizontal className="min-h-[200px] flex-1">
+            <ScrollTablePanel className="bot-detail-drawer__trades">
               <table className="terminal-table m-0 text-[0.62rem]">
                 <thead>
                   <tr>

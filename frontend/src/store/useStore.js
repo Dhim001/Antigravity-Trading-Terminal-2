@@ -211,10 +211,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     return { botLogs: newLogs };
   }),
   setBotLogs: (logsArray) => set({
-    botLogs: logsArray.map(log => {
-      const time = new Date(log.timestamp + "Z").toLocaleTimeString();
-      return `[${time}] ${log.level || 'INFO'} - ${log.message}`;
-    }),
+    botLogs: [...logsArray]
+      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+      .map(log => {
+        const time = new Date(log.timestamp + 'Z').toLocaleTimeString();
+        return `[${time}] ${log.level || 'INFO'} - ${log.message}`;
+      }),
   }),
   clearBotLogs: () => set({ botLogs: [] }),
 
