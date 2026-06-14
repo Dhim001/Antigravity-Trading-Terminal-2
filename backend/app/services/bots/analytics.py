@@ -2,7 +2,10 @@
 
 import uuid
 
+from app.config import BOT_SNAPSHOT_RETENTION
 from app.database import get_connection
+
+_snapshot_writes = 0
 
 
 def signal_bar_time_from_id(signal_id: str | None) -> int | None:
@@ -17,6 +20,31 @@ def signal_bar_time_from_id(signal_id: str | None) -> int | None:
     except (TypeError, ValueError):
         return None
     return val if val > 1_000_000_000 else None
+
+
+def _utc_day_bounds():
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.isoformat(), (start + timedelta(days=1)).isoformat()
+
+
+def _stats_row(
+    trade_count: int,
+    exit_count: int,
+    win_count: int,
+    total_pnl: float,
+    daily_pnl: float,
+) -> dict:
+    win_rate = round((win_count / exit_count) * 100, 1) if exit_count else 0.0
+    return {
+        "trade_count": int(trade_count or 0),
+        "exit_count": int(exit_count or 0),
+        "win_count": int(win_count or 0),
+        "win_rate": win_rate,
+        "total_pnl": round(float(total_pnl or 0), 2),
+        "daily_pnl": round(float(daily_pnl or 0), 2),
+    }
 
 
 def record_trade(
@@ -67,10 +95,7 @@ def get_trades(bot_id: str, limit: int = 50) -> list:
 
 
 def get_daily_pnl(bot_id: str) -> float:
-    from datetime import datetime, timedelta, timezone
-
-    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
+    day_start, day_end = _utc_day_bounds()
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -78,7 +103,7 @@ def get_daily_pnl(bot_id: str) -> float:
         SELECT COALESCE(SUM(pnl), 0) FROM bot_trades
         WHERE bot_id = ? AND pnl IS NOT NULL AND timestamp >= ? AND timestamp < ?
         """,
-        (bot_id, start.isoformat(), end.isoformat()),
+        (bot_id, day_start, day_end),
     )
     val = float(cursor.fetchone()[0] or 0)
     conn.close()
@@ -86,52 +111,57 @@ def get_daily_pnl(bot_id: str) -> float:
 
 
 def get_bot_stats(bot_id: str) -> dict:
+    return get_all_bot_stats([bot_id]).get(
+        bot_id,
+        _stats_row(0, 0, 0, 0.0, 0.0),
+    )
+
+
+def get_all_bot_stats(bot_ids: list[str]) -> dict[str, dict]:
+    """Batch stats for many bots in one query (avoids N+1 round-trips)."""
+    if not bot_ids:
+        return {}
+
+    day_start, day_end = _utc_day_bounds()
+    placeholders = ",".join("?" * len(bot_ids))
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """
-        SELECT COUNT(*) FROM bot_trades WHERE bot_id = ? AND is_exit = 1
+        f"""
+        SELECT
+            bot_id,
+            COUNT(*) AS trade_count,
+            SUM(CASE WHEN is_exit = 1 THEN 1 ELSE 0 END) AS exit_count,
+            SUM(CASE WHEN is_exit = 1 AND pnl > 0 THEN 1 ELSE 0 END) AS win_count,
+            COALESCE(SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END), 0) AS total_pnl,
+            COALESCE(SUM(
+                CASE WHEN pnl IS NOT NULL AND timestamp >= ? AND timestamp < ?
+                THEN pnl ELSE 0 END
+            ), 0) AS daily_pnl
+        FROM bot_trades
+        WHERE bot_id IN ({placeholders})
+        GROUP BY bot_id
         """,
-        (bot_id,),
+        (day_start, day_end, *bot_ids),
     )
-    exit_count = cursor.fetchone()[0] or 0
-
-    cursor.execute(
-        """
-        SELECT COUNT(*) FROM bot_trades
-        WHERE bot_id = ? AND is_exit = 1 AND pnl > 0
-        """,
-        (bot_id,),
-    )
-    win_count = cursor.fetchone()[0] or 0
-
-    cursor.execute(
-        """
-        SELECT COALESCE(SUM(pnl), 0) FROM bot_trades
-        WHERE bot_id = ? AND pnl IS NOT NULL
-        """,
-        (bot_id,),
-    )
-    total_pnl = float(cursor.fetchone()[0] or 0)
-
-    cursor.execute(
-        """
-        SELECT COUNT(*) FROM bot_trades WHERE bot_id = ?
-        """,
-        (bot_id,),
-    )
-    trade_count = cursor.fetchone()[0] or 0
-    conn.close()
-
-    win_rate = round((win_count / exit_count) * 100, 1) if exit_count else 0.0
-    return {
-        "trade_count": trade_count,
-        "exit_count": exit_count,
-        "win_count": win_count,
-        "win_rate": win_rate,
-        "total_pnl": round(total_pnl, 2),
-        "daily_pnl": round(get_daily_pnl(bot_id), 2),
+    out = {
+        bot_id: _stats_row(0, 0, 0, 0.0, 0.0)
+        for bot_id in bot_ids
     }
+    for row in cursor.fetchall():
+        bid = row["bot_id"] if isinstance(row, dict) else row[0]
+        if isinstance(row, dict):
+            out[bid] = _stats_row(
+                row["trade_count"],
+                row["exit_count"],
+                row["win_count"],
+                row["total_pnl"],
+                row["daily_pnl"],
+            )
+        else:
+            out[bid] = _stats_row(row[1], row[2], row[3], row[4], row[5])
+    conn.close()
+    return out
 
 
 def record_snapshot(
@@ -141,6 +171,7 @@ def record_snapshot(
     realized_pnl: float,
     open_positions: int,
 ):
+    global _snapshot_writes
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -152,6 +183,9 @@ def record_snapshot(
     )
     conn.commit()
     conn.close()
+    _snapshot_writes += 1
+    if _snapshot_writes % 25 == 0:
+        prune_bot_snapshots(BOT_SNAPSHOT_RETENTION)
 
 
 def get_snapshots(bot_id: str, limit: int = 30) -> list:
@@ -177,6 +211,22 @@ def prune_bot_logs(keep: int = 500):
         """
         DELETE FROM bot_logs WHERE id NOT IN (
             SELECT id FROM bot_logs ORDER BY timestamp DESC LIMIT ?
+        )
+        """,
+        (keep,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def prune_bot_snapshots(keep: int = 2000):
+    """Keep the most recent snapshot rows globally (append-only table)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        DELETE FROM bot_snapshots WHERE id NOT IN (
+            SELECT id FROM bot_snapshots ORDER BY timestamp DESC LIMIT ?
         )
         """,
         (keep,),

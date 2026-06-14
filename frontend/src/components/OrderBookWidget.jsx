@@ -73,24 +73,54 @@ export default function OrderBookWidget() {
   const askVol = processedAsks.reduce((s, r) => s + r.qty, 0);
   const totalVol = bidVol + askVol || 1;
   const bidPct = (bidVol / totalVol) * 100;
-  const isLong = bidPct >= 50;
+  const askPct = 100 - bidPct;
+  const skew = bidPct - 50;
   const displayAsks = [...processedAsks].reverse();
 
   const imbalanceToolbar = (
-    <WidgetToolbar className="flex-col items-stretch gap-1 py-1.5">
-      <div className="flex items-center justify-between text-[0.62rem]">
-        <span className="font-bold text-trading-up">B {bidPct.toFixed(0)}%</span>
-        <span className="text-muted-foreground">Order Imbalance</span>
-        <span className="font-bold text-trading-down">{(100 - bidPct).toFixed(0)}% A</span>
-      </div>
-      <div className="imbalance-bar">
-        <div
-          className={cn(
-            'imbalance-fill h-full rounded-sm transition-all',
-            isLong ? 'bg-gradient-to-r from-trading-up/60 to-trading-up' : 'bg-gradient-to-r from-trading-down/60 to-trading-down',
-          )}
-          style={{ width: `${bidPct}%` }}
-        />
+    <WidgetToolbar compact className="depth-imbalance-toolbar">
+      <div className="depth-imbalance">
+        <div className="depth-imbalance__meta">
+          <div className="depth-imbalance__side depth-imbalance__side--bid">
+            <span className="depth-imbalance__label">Bids</span>
+            <span className="depth-imbalance__pct num-mono">{bidPct.toFixed(1)}%</span>
+          </div>
+
+          <div className="depth-imbalance__center">
+            <span className="depth-imbalance__title">Order Imbalance</span>
+            <span
+              className={cn(
+                'depth-imbalance__bias num-mono',
+                skew > 0.5 && 'depth-imbalance__bias--bid',
+                skew < -0.5 && 'depth-imbalance__bias--ask',
+              )}
+            >
+              {Math.abs(skew) <= 0.5
+                ? 'Balanced'
+                : `${skew > 0 ? '+' : ''}${skew.toFixed(1)}% ${skew > 0 ? 'bid' : 'ask'}`}
+            </span>
+          </div>
+
+          <div className="depth-imbalance__side depth-imbalance__side--ask">
+            <span className="depth-imbalance__label">Asks</span>
+            <span className="depth-imbalance__pct num-mono">{askPct.toFixed(1)}%</span>
+          </div>
+        </div>
+
+        <div className="depth-imbalance__track" aria-hidden>
+          <div
+            className="depth-imbalance__fill depth-imbalance__fill--bid"
+            style={{ width: `${bidPct}%` }}
+          />
+          <div
+            className="depth-imbalance__fill depth-imbalance__fill--ask"
+            style={{ width: `${askPct}%` }}
+          />
+          <div
+            className="depth-imbalance__marker"
+            style={{ left: `${bidPct}%` }}
+          />
+        </div>
       </div>
     </WidgetToolbar>
   );

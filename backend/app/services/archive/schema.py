@@ -56,3 +56,6 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ticks_time_ms ON market_ticks (time_ms)"
     )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_time ON market_ticks (symbol, time_ms)"
+    )

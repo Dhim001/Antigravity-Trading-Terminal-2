@@ -52,34 +52,44 @@ def _merge_hour(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str,
     }
 
 
-def _fetch_existing_1h(symbol: str, hour_time: int) -> dict[str, Any] | None:
+def _fetch_existing_1h_map(rows: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+    if not rows:
+        return {}
+    pairs = list({(r["symbol"], int(r["time"])) for r in rows})
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        clause = " OR ".join(["(symbol = ? AND time = ?)"] * len(pairs))
+        params: list[Any] = []
+        for sym, t in pairs:
+            params.extend([sym, t])
         cursor.execute(
-            """
+            f"""
             SELECT symbol, time, open, high, low, close, volume, source, bar_count
             FROM market_bars_1h
-            WHERE symbol = ? AND time = ?
+            WHERE {clause}
             """,
-            (symbol, hour_time),
+            params,
         )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        if isinstance(row, dict):
-            return dict(row)
-        return {
-            "symbol": row[0],
-            "time": row[1],
-            "open": row[2],
-            "high": row[3],
-            "low": row[4],
-            "close": row[5],
-            "volume": row[6],
-            "source": row[7],
-            "bar_count": row[8],
-        }
+        out: dict[tuple[str, int], dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            if isinstance(row, dict):
+                key = (row["symbol"], int(row["time"]))
+                out[key] = dict(row)
+            else:
+                key = (row[0], int(row[1]))
+                out[key] = {
+                    "symbol": row[0],
+                    "time": row[1],
+                    "open": row[2],
+                    "high": row[3],
+                    "low": row[4],
+                    "close": row[5],
+                    "volume": row[6],
+                    "source": row[7],
+                    "bar_count": row[8],
+                }
+        return out
     finally:
         conn.close()
 
@@ -88,9 +98,11 @@ def _upsert_1h_rows(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
 
+    existing_map = _fetch_existing_1h_map(rows)
     merged_rows: list[dict[str, Any]] = []
     for row in rows:
-        existing = _fetch_existing_1h(row["symbol"], row["time"])
+        key = (row["symbol"], int(row["time"]))
+        existing = existing_map.get(key)
         merged_rows.append(_merge_hour(existing, row) if existing else row)
 
     conn = get_connection()

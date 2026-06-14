@@ -13,7 +13,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, LayoutGrid, Settings, Bitcoin, LineChart,
+  BarChart2, LayoutGrid, Settings, Search, Sparkles,
 } from 'lucide-react';
 
 function assetKind(sym) {
@@ -22,10 +22,16 @@ function assetKind(sym) {
   return 'equity';
 }
 
+const KIND_LABEL = {
+  crypto: 'Crypto',
+  etf: 'ETF',
+  equity: 'Equity',
+};
+
 const KIND_CLASS = {
-  crypto: 'text-trading-warn',
-  etf: 'text-trading-accent',
-  equity: 'text-primary',
+  crypto: 'command-palette__dot--crypto',
+  etf: 'command-palette__dot--etf',
+  equity: 'command-palette__dot--equity',
 };
 
 export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }) {
@@ -58,72 +64,109 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }
       onOpenChange={onOpenChange}
       title="Command palette"
       description="Search symbols and quick actions"
+      className="command-palette"
+      overlayClassName="command-palette-overlay"
     >
-      <Command>
-        <CommandInput placeholder="Search symbol or command…" />
-        <CommandList>
-          <CommandEmpty>No matches found.</CommandEmpty>
+      <Command className="command-palette__command">
+        <div className="command-palette__header">
+          <div className="command-palette__header-lead">
+            <div className="command-palette__header-icon" aria-hidden>
+              <Sparkles size={14} />
+            </div>
+            <div className="command-palette__header-copy">
+              <span className="command-palette__title">Quick Search</span>
+              <span className="command-palette__subtitle">
+                {sortedSymbols.length} symbols · navigation & commands
+              </span>
+            </div>
+          </div>
+          <kbd className="command-palette__esc">esc</kbd>
+        </div>
 
-          <CommandGroup heading="Symbols">
+        <CommandInput placeholder="Search symbol or command…" />
+
+        <CommandList className="command-palette__list">
+          <CommandEmpty className="command-palette__empty">
+            <Search size={18} className="command-palette__empty-icon" aria-hidden />
+            <span>No matches found</span>
+          </CommandEmpty>
+
+          <CommandGroup heading="Symbols" className="command-palette__group">
             {sortedSymbols.map(sym => {
               const kind = assetKind(sym);
               const price = fmtPrice(sym);
               const change = tickerData[sym]?.change_24h;
               const isActive = sym === activeSymbol;
+              const shortSym = sym.replace('USDT', '');
 
               return (
                 <CommandItem
                   key={sym}
-                  value={`${sym} ${sym.replace('USDT', '')}`}
+                  value={`${sym} ${shortSym} ${KIND_LABEL[kind]}`}
                   data-checked={isActive}
+                  className="command-palette__item command-palette__item--symbol"
                   onSelect={() => run(() => setActiveSymbol(sym))}
                 >
-                  {kind === 'crypto' ? (
-                    <Bitcoin className={cn('shrink-0', KIND_CLASS[kind])} aria-hidden />
-                  ) : (
-                    <LineChart className={cn('shrink-0', KIND_CLASS[kind])} aria-hidden />
-                  )}
-                  <span className="icon-label-tight min-w-0">
-                    <span className="font-semibold">{sym.replace('USDT', '')}</span>
-                    {sym.includes('USDT') && (
-                      <span className="text-[0.62rem] text-muted-foreground">USDT</span>
+                  <span className={cn('command-palette__dot', KIND_CLASS[kind])} aria-hidden />
+                  <div className="command-palette__symbol-main min-w-0">
+                    <span className="command-palette__symbol-name">{shortSym}</span>
+                    <span className="command-palette__symbol-kind">{KIND_LABEL[kind]}</span>
+                  </div>
+                  <div className="command-palette__symbol-meta">
+                    {price != null && (
+                      <span className="command-palette__price num-mono">{price}</span>
                     )}
-                  </span>
-                  {price != null && (
-                    <span className="ml-auto num-mono text-xs text-muted-foreground">{price}</span>
-                  )}
-                  {change != null && (
-                    <span className={cn(
-                      'num-mono text-[0.62rem] font-semibold',
-                      change >= 0 ? 'text-trading-up' : 'text-trading-down',
-                    )}>
-                      {change >= 0 ? '+' : ''}{change.toFixed(2)}%
-                    </span>
-                  )}
+                    {change != null && (
+                      <span className={cn(
+                        'command-palette__change num-mono',
+                        change >= 0 ? 'command-palette__change--up' : 'command-palette__change--down',
+                      )}>
+                        {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
                 </CommandItem>
               );
             })}
           </CommandGroup>
 
-          <CommandSeparator />
+          <CommandSeparator className="command-palette__separator" />
 
-          <CommandGroup heading="Navigation">
-            <CommandItem value="single chart view" onSelect={() => run(() => setViewMode('single'))}>
+          <CommandGroup heading="Navigation" className="command-palette__group">
+            <CommandItem
+              value="single chart view"
+              className="command-palette__item"
+              onSelect={() => run(() => setViewMode('single'))}
+            >
               <BarChart2 aria-hidden />
-              Single Chart View
+              <span>Single Chart View</span>
               <CommandShortcut>⌘1</CommandShortcut>
             </CommandItem>
-            <CommandItem value="multi chart grid" onSelect={() => run(() => setViewMode('multi'))}>
+            <CommandItem
+              value="multi chart grid"
+              className="command-palette__item"
+              onSelect={() => run(() => setViewMode('multi'))}
+            >
               <LayoutGrid aria-hidden />
-              Multi-Chart Grid
+              <span>Multi-Chart Grid</span>
               <CommandShortcut>⌘2</CommandShortcut>
             </CommandItem>
-            <CommandItem value="system settings admin" onSelect={() => run(() => onOpenAdmin?.())}>
+            <CommandItem
+              value="system settings admin"
+              className="command-palette__item"
+              onSelect={() => run(() => onOpenAdmin?.())}
+            >
               <Settings aria-hidden />
-              System Control Panel
+              <span>System Control Panel</span>
             </CommandItem>
           </CommandGroup>
         </CommandList>
+
+        <div className="command-palette__footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+          <span><kbd>↵</kbd> select</span>
+          <span><kbd>esc</kbd> close</span>
+        </div>
       </Command>
     </CommandDialog>
   );

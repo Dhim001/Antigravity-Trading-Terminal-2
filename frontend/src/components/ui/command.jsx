@@ -35,6 +35,7 @@ function CommandDialog({
   description = "Search for a command to run...",
   children,
   className,
+  overlayClassName,
   showCloseButton = false,
   ...props
 }) {
@@ -45,7 +46,8 @@ function CommandDialog({
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <DialogContent
-        className={cn("top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0", className)}
+        className={cn("top-[18%] translate-y-0 overflow-hidden rounded-xl! p-0 sm:max-w-lg", className)}
+        overlayClassName={overlayClassName}
         showCloseButton={showCloseButton}>
         {children}
       </DialogContent>
@@ -61,6 +63,9 @@ function CommandInput({
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
       <InputGroup
         className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
+        <InputGroupAddon align="inline-start">
+          <SearchIcon className="size-4 shrink-0 opacity-50" />
+        </InputGroupAddon>
         <CommandPrimitive.Input
           data-slot="command-input"
           className={cn(
@@ -68,9 +73,6 @@ function CommandInput({
             className
           )}
           {...props} />
-        <InputGroupAddon>
-          <SearchIcon className="size-4 shrink-0 opacity-50" />
-        </InputGroupAddon>
       </InputGroup>
     </div>
   );

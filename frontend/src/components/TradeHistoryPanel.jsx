@@ -19,7 +19,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { WidgetToolbar, WidgetToolbarDivider, WidgetEmpty } from './WidgetShell';
+import { WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
 import { buildBotLookup, parseTradeTimestamp, tradeSourceLabel } from '@/lib/botAttribution';
 
@@ -156,6 +156,19 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
   const filteredPnl = filtered.filter(t => t.realized_pnl != null).reduce((s, t) => s + t.realized_pnl, 0);
   const filteredVol = filtered.reduce((s, t) => s + (t.trade_value || 0), 0);
 
+  const activeFilterCount = [
+    dateRange !== 'All',
+    symFilter !== 'ALL',
+    sideFilter !== 'ALL',
+    statFilter !== 'ALL',
+    sourceFilter !== 'ALL',
+    Boolean(search.trim()),
+  ].filter(Boolean).length;
+
+  const filterSummary = activeFilterCount === 0
+    ? 'All trades'
+    : `${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'} active`;
+
   const toolbarActions = (
     <>
       <Button variant="ghost" size="xs" onClick={() => { setLoading(true); fetchHistory(); }}>
@@ -243,94 +256,129 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         </div>
       )}
 
-      <WidgetToolbar compact className="scroll-panel-x no-scrollbar flex-nowrap">
-        <Filter size={11} className="shrink-0 text-muted-foreground" aria-hidden />
-        <ToggleGroup
-          type="single"
-          size="sm"
-          spacing={1}
-          value={dateRange}
-          onValueChange={v => v && setDateRange(v)}
-        >
-          {DATE_RANGES.map(r => (
-            <ToggleGroupItem key={r.label} value={r.label} className="px-2 text-[0.62rem] font-semibold">
-              {r.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+      <div className="history-filter-bar">
+        <div className="history-filter-bar__header">
+          <div className="history-filter-bar__lead">
+            <Filter size={12} className="history-filter-bar__icon" aria-hidden />
+            <div className="history-filter-bar__titles">
+              <span className="history-filter-bar__title">Trade Filters</span>
+              <span
+                className={cn(
+                  'history-filter-bar__summary num-mono',
+                  activeFilterCount > 0 && 'history-filter-bar__summary--active',
+                )}
+              >
+                {filterSummary}
+              </span>
+            </div>
+          </div>
 
-        <WidgetToolbarDivider />
+          <div className="history-filter-bar__search">
+            <Input
+              type="text"
+              placeholder="Search symbol, ID, type…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="terminal-search-input"
+            />
+          </div>
+        </div>
 
-        <Select value={symFilter} onValueChange={setSymFilter}>
-          <SelectTrigger size="sm" className="h-7 w-[120px] text-[0.62rem]">
-            <SelectValue placeholder="Symbol" />
-          </SelectTrigger>
-          <SelectContent>
-            {symbols.map(s => (
-              <SelectItem key={s} value={s} className="text-xs">
-                {s === 'ALL' ? 'All Symbols' : s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <ToggleGroup
-          type="single"
-          size="sm"
-          spacing={1}
-          value={sideFilter}
-          onValueChange={v => v && setSide(v)}
-        >
-          {['ALL', 'BUY', 'SELL'].map(s => (
-            <ToggleGroupItem
-              key={s}
-              value={s}
-              variant={s === 'BUY' ? 'buy' : s === 'SELL' ? 'sell' : 'default'}
-              className="px-2 text-[0.62rem] font-semibold"
+        <div className="history-filter-bar__groups scroll-panel-x no-scrollbar">
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Period</span>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              spacing={1}
+              value={dateRange}
+              onValueChange={v => v && setDateRange(v)}
+              className="history-filter-group__controls"
             >
-              {s === 'ALL' ? 'All' : s}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+              {DATE_RANGES.map(r => (
+                <ToggleGroupItem key={r.label} value={r.label} className="history-filter-chip">
+                  {r.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
 
-        <ToggleGroup
-          type="single"
-          size="sm"
-          spacing={1}
-          value={statFilter}
-          onValueChange={v => v && setStat(v)}
-        >
-          {['ALL', 'FILLED', 'PENDING', 'CANCELED'].map(s => (
-            <ToggleGroupItem key={s} value={s} className="px-2 text-[0.62rem] font-semibold">
-              {s === 'ALL' ? 'All Status' : s.charAt(0) + s.slice(1).toLowerCase()}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Symbol</span>
+            <Select value={symFilter} onValueChange={setSymFilter}>
+              <SelectTrigger size="sm" className="history-filter-select">
+                <SelectValue placeholder="Symbol" />
+              </SelectTrigger>
+              <SelectContent>
+                {symbols.map(s => (
+                  <SelectItem key={s} value={s} className="text-xs">
+                    {s === 'ALL' ? 'All Symbols' : s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-        <ToggleGroup
-          type="single"
-          size="sm"
-          spacing={1}
-          value={sourceFilter}
-          onValueChange={v => v && setSourceFilter(v)}
-        >
-          {['ALL', 'BOT', 'MANUAL'].map(s => (
-            <ToggleGroupItem key={s} value={s} className="px-2 text-[0.62rem] font-semibold">
-              {s === 'ALL' ? 'All sources' : s === 'BOT' ? 'Bot' : 'Manual'}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Side</span>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              spacing={1}
+              value={sideFilter}
+              onValueChange={v => v && setSide(v)}
+              className="history-filter-group__controls"
+            >
+              {['ALL', 'BUY', 'SELL'].map(s => (
+                <ToggleGroupItem
+                  key={s}
+                  value={s}
+                  variant={s === 'BUY' ? 'buy' : s === 'SELL' ? 'sell' : 'default'}
+                  className="history-filter-chip"
+                >
+                  {s === 'ALL' ? 'All' : s}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
 
-        <WidgetToolbarDivider />
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Status</span>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              spacing={1}
+              value={statFilter}
+              onValueChange={v => v && setStat(v)}
+              className="history-filter-group__controls"
+            >
+              {['ALL', 'FILLED', 'PENDING', 'CANCELED'].map(s => (
+                <ToggleGroupItem key={s} value={s} className="history-filter-chip">
+                  {s === 'ALL' ? 'All' : s.charAt(0) + s.slice(1).toLowerCase()}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
 
-        <Input
-          type="text"
-          placeholder="Search…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="ml-auto h-7 w-40 text-[0.62rem]"
-        />
-      </WidgetToolbar>
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Source</span>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              spacing={1}
+              value={sourceFilter}
+              onValueChange={v => v && setSourceFilter(v)}
+              className="history-filter-group__controls"
+            >
+              {['ALL', 'BOT', 'MANUAL'].map(s => (
+                <ToggleGroupItem key={s} value={s} className="history-filter-chip">
+                  {s === 'ALL' ? 'All' : s === 'BOT' ? 'Bot' : 'Manual'}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
+        </div>
+      </div>
 
       <div className="history-table-scroll scroll-panel-y scroll-panel-y-0">
         {loading ? (

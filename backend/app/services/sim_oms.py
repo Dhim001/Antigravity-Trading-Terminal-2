@@ -5,10 +5,16 @@ from app.database import get_connection
 from app.config import MAX_ORDER_VALUE
 from app.services.base_oms import BaseOMSService
 from app.services.bots import positions as bot_positions
+from app.services.fifo_pnl import backfill_missing_order_pnl, enrich_orders_with_pnl, record_order_fifo_pnl
 
 class SimulatedOMSService(BaseOMSService):
     def __init__(self, feed):
         self.feed = feed
+        self._trade_history_cache: list | None = None
+        self._pnl_backfill_done = False
+
+    def invalidate_trade_history_cache(self) -> None:
+        self._trade_history_cache = None
 
     async def initialize(self) -> None:
         pass
@@ -65,69 +71,35 @@ class SimulatedOMSService(BaseOMSService):
         }
 
     def get_trade_history(self) -> List[dict]:
+        if self._trade_history_cache is not None:
+            return self._trade_history_cache
+
         conn = get_connection()
         cursor = conn.cursor()
 
+        if not self._pnl_backfill_done:
+            try:
+                updated = backfill_missing_order_pnl(cursor)
+                if updated:
+                    conn.commit()
+                self._pnl_backfill_done = True
+            except Exception:
+                conn.rollback()
+
         cursor.execute("""
             SELECT id, symbol, type, side, price, quantity, status,
-                   filled_quantity, average_fill_price, timestamp, bot_id, signal_id
+                   filled_quantity, average_fill_price, timestamp, bot_id, signal_id,
+                   realized_pnl, cost_basis
             FROM orders
-            ORDER BY timestamp ASC
+            WHERE status = 'FILLED'
+            ORDER BY timestamp ASC, id ASC
         """)
         all_orders = [dict(row) for row in cursor.fetchall()]
         conn.close()
 
-        cost_queues = {}
-        enriched = []
-
-        for order in all_orders:
-            sym = order["symbol"]
-            side = order["side"]
-            status = order["status"]
-            fill_price = order["average_fill_price"] or 0.0
-            fill_qty = order["filled_quantity"] or 0.0
-
-            realized_pnl = None
-            cost_basis = None
-
-            if status == "FILLED" and fill_qty > 0:
-                if sym not in cost_queues:
-                    cost_queues[sym] = []
-
-                if side == "BUY":
-                    cost_queues[sym].append([fill_price, fill_qty])
-                elif side == "SELL":
-                    queue = cost_queues.get(sym, [])
-                    remaining = fill_qty
-                    total_cost = 0.0
-                    total_qty = 0.0
-
-                    while remaining > 1e-9 and queue:
-                        lot_price, lot_qty = queue[0]
-                        used = min(lot_qty, remaining)
-                        total_cost += lot_price * used
-                        total_qty += used
-                        remaining -= used
-                        queue[0][1] -= used
-                        if queue[0][1] < 1e-9:
-                            queue.pop(0)
-
-                    if total_qty > 0:
-                        cost_basis = total_cost / total_qty
-                        realized_pnl = (fill_price - cost_basis) * fill_qty
-
-            trade_value = (fill_price * fill_qty) if fill_qty > 0 else (
-                (order["price"] or 0.0) * order["quantity"]
-            )
-
-            enriched.append({
-                **order,
-                "realized_pnl": round(realized_pnl, 4) if realized_pnl is not None else None,
-                "cost_basis": round(cost_basis, 4) if cost_basis is not None else None,
-                "trade_value": round(trade_value, 4),
-            })
-
+        enriched = enrich_orders_with_pnl(all_orders)
         enriched.reverse()
+        self._trade_history_cache = enriched
         return enriched
 
     def get_trades(self, limit: int = 100) -> List[dict]:
@@ -233,6 +205,7 @@ class SimulatedOMSService(BaseOMSService):
                     stop_loss_percent, take_profit_percent,
                     take_profit_price=take_profit_price,
                     bot_id=bot_id,
+                    order_id=order_id,
                 )
             else:
                 pending_bot_fill = None
@@ -243,6 +216,9 @@ class SimulatedOMSService(BaseOMSService):
             if pending_bot_fill:
                 bid, fsym, fside, fqty, fprice = pending_bot_fill
                 bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+
+            if order_type == "MARKET":
+                self.invalidate_trade_history_cache()
             
             return {
                 "status": "success",
@@ -339,6 +315,7 @@ class SimulatedOMSService(BaseOMSService):
                         cursor, symbol, side, market_price, qty, quote,
                         order["stop_loss_percent"], order["take_profit_percent"],
                         bot_id=order.get("bot_id"),
+                        order_id=order["id"],
                     )
                     if bot_fill:
                         pending_bot_fills.append(bot_fill)
@@ -361,6 +338,8 @@ class SimulatedOMSService(BaseOMSService):
         for bot_fill in pending_bot_fills:
             bid, fsym, fside, fqty, fprice = bot_fill
             bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+        if filled_order_updates:
+            self.invalidate_trade_history_cache()
         return filled_order_updates
 
     def _process_fill(
@@ -376,6 +355,7 @@ class SimulatedOMSService(BaseOMSService):
         *,
         take_profit_price=None,
         bot_id=None,
+        order_id=None,
     ):
         """Apply account/position updates on cursor. Returns bot fill tuple after commit."""
         base_asset = self.feed._symbols[symbol]["asset"]
@@ -452,6 +432,9 @@ class SimulatedOMSService(BaseOMSService):
                 SET size = ?, avg_price = ?, stop_loss_percent = ?, take_profit_percent = ?, stop_loss_price = ?, take_profit_price = ?
                 WHERE symbol = ?
             """, (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, symbol))
+
+        if order_id:
+            record_order_fifo_pnl(cursor, order_id, symbol, side, price, quantity)
 
         if bot_id:
             return (bot_id, symbol, side, quantity, price)
@@ -649,6 +632,7 @@ class SimulatedOMSService(BaseOMSService):
                     bot_fill = self._process_fill(
                         cursor, symbol, side, market_price, qty, quote,
                         bot_id=bot_id,
+                        order_id=order_id,
                     )
                     if bot_fill:
                         pending_bot_fills.append(bot_fill)
@@ -690,6 +674,9 @@ class SimulatedOMSService(BaseOMSService):
         for bot_fill in pending_bot_fills:
             bid, fsym, fside, fqty, fprice = bot_fill
             bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+
+        if filled_exits:
+            self.invalidate_trade_history_cache()
 
         return filled_exits, triggered_logs, bot_exits
 

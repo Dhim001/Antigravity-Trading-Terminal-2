@@ -8,7 +8,7 @@
  *  - History tab can be expanded to full-screen overlay
  *  - Badge counts on Positions and Orders tabs
  */
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
@@ -140,41 +140,111 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
 // ── Positions Tab ─────────────────────────────────────────────────
 function PositionsTab() {
   const positions = useStore(state => state.positions);
+  const tickerData = useStore(state => state.tickerData);
   const activeBots = useStore(state => state.activeBots);
   const tradeHistory = useStore(state => state.tradeHistory);
   const entries = Object.entries(positions);
 
-  if (entries.length === 0) {
-    return <WidgetEmpty icon={Briefcase} message="No open positions" />;
-  }
+  const stats = useMemo(() => {
+    let totalPnl = 0;
+    let longCount = 0;
+    let shortCount = 0;
+    for (const [sym, pos] of entries) {
+      const mark = tickerData[sym]?.price ?? pos.avg_price;
+      totalPnl += pos.size * (mark - pos.avg_price);
+      if (pos.size >= 0) longCount += 1;
+      else shortCount += 1;
+    }
+    return { totalPnl, longCount, shortCount };
+  }, [entries, tickerData]);
 
   const botCtx = { activeBots, tradeHistory };
+  const pnlPositive = stats.totalPnl >= 0;
 
   return (
-    <table className="terminal-table min-w-[880px]">
-      <thead>
-        <tr>
-          <th>Symbol</th>
-          <th>Side</th>
-          <th className="text-right">Size</th>
-          <th className="text-right">Avg Entry</th>
-          <th className="text-right">Mark Price</th>
-          <th className="text-right">Unrealized P&L</th>
-          <th className="text-right">% Return</th>
-          <th className="text-center">Close</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map(([sym, pos]) => (
-          <PositionRow
-            key={sym}
-            sym={sym}
-            pos={pos}
-            ownerBots={getPositionBots(sym, pos, botCtx)}
-          />
-        ))}
-      </tbody>
-    </table>
+    <div className="positions-tab">
+      <header className="positions-tab__toolbar">
+        <div className="positions-tab__toolbar-lead">
+          <div className="positions-tab__toolbar-icon" aria-hidden>
+            <Briefcase size={14} />
+          </div>
+          <div className="positions-tab__toolbar-copy">
+            <span className="positions-tab__toolbar-title">Open Positions</span>
+            <span className="positions-tab__toolbar-subtitle num-mono">
+              {entries.length} position{entries.length === 1 ? '' : 's'}
+              {entries.length > 0 && (
+                <> · {stats.longCount}L / {stats.shortCount}S</>
+              )}
+            </span>
+          </div>
+        </div>
+        {entries.length > 0 && (
+          <div className="positions-tab__toolbar-meta">
+            <span className="positions-tab__meta-label">Unrealized</span>
+            <span
+              className={cn(
+                'positions-tab__meta-value num-mono',
+                pnlPositive ? 'positions-tab__meta-value--up' : 'positions-tab__meta-value--down',
+              )}
+            >
+              {pnlPositive ? '+' : ''}${fmtP(stats.totalPnl)}
+            </span>
+          </div>
+        )}
+      </header>
+
+      {entries.length === 0 ? (
+        <div className="positions-tab__empty">
+          <WidgetEmpty icon={Briefcase} message="No open positions" />
+        </div>
+      ) : (
+        <>
+          <div className="positions-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+            <table className="terminal-table positions-tab__table min-w-[880px]">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th className="text-right">Size</th>
+                  <th className="text-right">Avg Entry</th>
+                  <th className="text-right">Mark Price</th>
+                  <th className="text-right">Unrealized P&L</th>
+                  <th className="text-right">% Return</th>
+                  <th className="text-center">Close</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map(([sym, pos]) => (
+                  <PositionRow
+                    key={sym}
+                    sym={sym}
+                    pos={pos}
+                    ownerBots={getPositionBots(sym, pos, botCtx)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <footer className="positions-tab__footer">
+            <span>
+              {entries.length} open · {stats.longCount} long · {stats.shortCount} short
+            </span>
+            <span className="positions-tab__footer-pnl">
+              Total unrealized:{' '}
+              <span
+                className={cn(
+                  'num-mono font-bold',
+                  pnlPositive ? 'text-trading-up' : 'text-trading-down',
+                )}
+              >
+                {pnlPositive ? '+' : ''}${fmtP(stats.totalPnl)}
+              </span>
+            </span>
+          </footer>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -441,6 +511,37 @@ function AlgoTab() {
 
   return (
     <div className="algo-tab">
+      <header className="algo-tab__toolbar">
+        <div className="algo-tab__toolbar-lead">
+          <div className="algo-tab__toolbar-icon" aria-hidden>
+            <Cpu size={14} />
+          </div>
+          <div className="algo-tab__toolbar-copy">
+            <span className="algo-tab__toolbar-title">Algo Trading</span>
+            <span className="algo-tab__toolbar-subtitle num-mono">
+              {runningCount} running · {activeBots.length} bot{activeBots.length === 1 ? '' : 's'} · {activeSymbol}
+            </span>
+          </div>
+        </div>
+        <div className="algo-tab__toolbar-meta">
+          {isLive ? (
+            <Badge variant="live" className="header-mode-badge header-mode-badge--live px-2 py-0.5 text-[0.58rem] font-extrabold tracking-wider">
+              LIVE
+            </Badge>
+          ) : (
+            <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-[0.58rem] font-bold">
+              SIM
+            </Badge>
+          )}
+          {liveBotsBlocked && (
+            <Badge variant="outline" className="algo-tab__toolbar-warn px-2 py-0.5 text-[0.58rem]">
+              Exec locked
+            </Badge>
+          )}
+        </div>
+      </header>
+
+      <div className="algo-tab__workspace">
       {liveBotsBlocked && (
         <Alert className="algo-tab__banner border-trading-warn/40 bg-trading-warn/10 text-trading-warn xl:col-span-3">
           <ShieldAlert aria-hidden />
@@ -515,9 +616,12 @@ function AlgoTab() {
 
       <section className="algo-tab__panel algo-tab__panel--deploy">
         <header className="algo-tab__panel-header">
-          <div className="algo-tab__panel-title">
-            <Settings size={13} className="text-primary" aria-hidden />
-            Deploy Bot
+          <div className="algo-tab__panel-heading">
+            <div className="algo-tab__panel-title">
+              <Settings size={13} className="text-primary" aria-hidden />
+              Deploy Bot
+            </div>
+            <span className="algo-tab__panel-subtitle">Strategy · allocation · backtest</span>
           </div>
         </header>
         <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body">
@@ -700,7 +804,7 @@ function AlgoTab() {
       </section>
 
       <Dialog open={deployOpen} onOpenChange={setDeployOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="algo-dialog sm:max-w-md" overlayClassName="admin-panel-overlay">
           <DialogHeader>
             <DialogTitle>Deploy trading bot</DialogTitle>
             <DialogDescription className="text-xs leading-relaxed">
@@ -736,7 +840,7 @@ function AlgoTab() {
       </Dialog>
 
       <Dialog open={stopAllOpen} onOpenChange={setStopAllOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="algo-dialog sm:max-w-md" overlayClassName="admin-panel-overlay">
           <DialogHeader>
             <DialogTitle>Stop all bots?</DialogTitle>
             <DialogDescription className="text-xs leading-relaxed">
@@ -752,10 +856,13 @@ function AlgoTab() {
 
       <section className="algo-tab__panel algo-tab__panel--bots">
         <header className="algo-tab__panel-header">
-          <div className="algo-tab__panel-title">
-            <Cpu size={13} className={runningCount > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
-            Active Bots
-            <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount}</Badge>
+          <div className="algo-tab__panel-heading">
+            <div className="algo-tab__panel-title">
+              <Cpu size={13} className={runningCount > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
+              Active Bots
+              <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount}</Badge>
+            </div>
+            <span className="algo-tab__panel-subtitle">Pause · resume · stop · details</span>
           </div>
           <div className="algo-tab__panel-actions">
             {activeBots.length > 0 && (
@@ -875,9 +982,12 @@ function AlgoTab() {
 
       <section className="algo-tab__panel algo-tab__panel--log">
         <header className="algo-tab__panel-header">
-          <div className="algo-tab__panel-title">
-            <Activity size={13} className="text-muted-foreground" aria-hidden />
-            Bot Log
+          <div className="algo-tab__panel-heading">
+            <div className="algo-tab__panel-title">
+              <Activity size={13} className="text-muted-foreground" aria-hidden />
+              Bot Log
+            </div>
+            <span className="algo-tab__panel-subtitle">{botLogs.length} entries</span>
           </div>
           <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
             <Trash2 />
@@ -894,6 +1004,7 @@ function AlgoTab() {
           </div>
         </div>
       </section>
+      </div>
     </div>
   );
 }
@@ -1030,9 +1141,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           </div>
 
           <TabsContent value="positions" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <ScrollTablePanel>
-              <PositionsTab />
-            </ScrollTablePanel>
+            <PositionsTab />
           </TabsContent>
           <TabsContent value="orders" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ScrollTablePanel>

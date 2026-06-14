@@ -164,18 +164,35 @@ export default function WatchlistWidget() {
   }), [symbolsList]);
 
   const toolbar = (
-    <>
+    <div className="watchlist-toolbar-stack">
       <div className="watchlist-search-bar">
-        <Search size={12} className="pointer-events-none absolute top-1/2 left-[calc(0.625rem+var(--icon-gap))] -translate-y-1/2 shrink-0 text-muted-foreground" aria-hidden />
-        <Input
-          type="text"
-          placeholder="Filter symbols…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="h-7 pl-8 text-xs"
-        />
+        <div className="watchlist-search-bar__meta">
+          <span className="watchlist-search-bar__title">Symbol Search</span>
+          <span
+            className={cn(
+              'watchlist-search-bar__summary num-mono',
+              search.trim() && 'watchlist-search-bar__summary--active',
+            )}
+          >
+            {search.trim()
+              ? `${displaySymbols.length} match${displaySymbols.length === 1 ? '' : 'es'}`
+              : `${symbolsList.length} symbols`}
+          </span>
+        </div>
+
+        <div className="watchlist-search-bar__input-wrap">
+          <Search size={12} className="watchlist-search-bar__input-icon" aria-hidden />
+          <Input
+            type="text"
+            placeholder="Filter by symbol…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="terminal-search-input watchlist-search-input"
+          />
+        </div>
       </div>
-      <WidgetToolbar compact className="p-0">
+
+      <WidgetToolbar compact className="watchlist-cat-toolbar">
         <div className="scroll-fade-x watchlist-cat-scroll">
           <Tabs value={cat} onValueChange={setCat} className="w-full">
             <TabsList variant="line" className="scroll-panel-x no-scrollbar h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
@@ -191,7 +208,7 @@ export default function WatchlistWidget() {
         </Tabs>
         </div>
       </WidgetToolbar>
-    </>
+    </div>
   );
 
   return (

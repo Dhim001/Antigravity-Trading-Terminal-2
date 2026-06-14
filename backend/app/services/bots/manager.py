@@ -665,10 +665,12 @@ class BotManagerService:
         return len(bot_ids)
 
     def list_bots_public(self) -> list:
+        bot_ids = [bot["id"] for bot in self.active_bots.values()]
+        stats_map = bot_analytics.get_all_bot_stats(bot_ids)
         out = []
         for bot in self.active_bots.values():
             bot_id = bot["id"]
-            stats = bot_analytics.get_bot_stats(bot_id)
+            stats = stats_map.get(bot_id, bot_analytics.get_bot_stats(bot_id))
             out.append({
                 "id": bot_id,
                 "strategy": bot["strategy"],
@@ -698,6 +700,9 @@ class BotManagerService:
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()
 
+        bot_ids = [row["id"] for row in rows]
+        stats_map = bot_analytics.get_all_bot_stats(bot_ids)
+
         out = []
         for row in rows:
             bot_id = row["id"]
@@ -708,7 +713,7 @@ class BotManagerService:
                     **row,
                     "config": json.loads(row.get("config") or "{}"),
                 }
-            stats = bot_analytics.get_bot_stats(bot_id)
+            stats = stats_map.get(bot_id, bot_analytics.get_bot_stats(bot_id))
             out.append({
                 "id": bot_id,
                 "strategy": bot["strategy"],

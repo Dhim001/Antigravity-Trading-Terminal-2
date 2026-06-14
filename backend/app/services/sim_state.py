@@ -14,23 +14,20 @@ logger = logging.getLogger(__name__)
 MAX_PERSISTED_CANDLES = 500
 
 
-def _ensure_table(cursor):
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sim_market_state (
-            symbol TEXT PRIMARY KEY,
-            price REAL NOT NULL,
-            candles_json TEXT NOT NULL,
-            target_json TEXT,
-            updated_at REAL NOT NULL
-        )
-    """)
-
-
 def load_sim_market_state() -> dict[str, dict[str, Any]]:
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        _ensure_table(cursor)
+        # Table also created in init_db(); keep for older DB files opened before migrate.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sim_market_state (
+                symbol TEXT PRIMARY KEY,
+                price REAL NOT NULL,
+                candles_json TEXT NOT NULL,
+                target_json TEXT,
+                updated_at REAL NOT NULL
+            )
+        """)
         cursor.execute(
             "SELECT symbol, price, candles_json, target_json FROM sim_market_state"
         )
@@ -68,7 +65,6 @@ def save_sim_market_state(feed) -> None:
     cursor = conn.cursor()
     now = time.time()
     try:
-        _ensure_table(cursor)
         for symbol, info in feed._symbols.items():
             candles = feed.candles.get(symbol, [])
             if not candles:
@@ -112,7 +108,6 @@ def clear_sim_market_state() -> None:
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        _ensure_table(cursor)
         cursor.execute("DELETE FROM sim_market_state")
         conn.commit()
     except Exception as exc:

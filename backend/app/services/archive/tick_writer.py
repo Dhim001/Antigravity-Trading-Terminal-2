@@ -49,7 +49,6 @@ def flush_ticks() -> int:
 
     conn = get_connection()
     cursor = conn.cursor()
-    written = 0
     try:
         from app.db.connection import is_postgres
 
@@ -68,13 +67,13 @@ def flush_ticks() -> int:
                 VALUES (?, ?, ?, ?, ?)
             """
         cutoff_ms = int((time.time() - ARCHIVE_TICK_RETENTION_HOURS * 3600) * 1000)
+        params = [
+            (row["symbol"], row["time_ms"], row["price"], row["volume"], row["source"])
+            for row in batch
+        ]
         cursor.execute("DELETE FROM market_ticks WHERE time_ms < ?", (cutoff_ms,))
-        for row in batch:
-            cursor.execute(
-                sql,
-                (row["symbol"], row["time_ms"], row["price"], row["volume"], row["source"]),
-            )
-            written += 1
+        cursor.executemany(sql, params)
+        written = len(params)
         conn.commit()
     except Exception as exc:
         logger.error("Tick flush failed: %s", exc)

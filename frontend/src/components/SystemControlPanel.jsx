@@ -156,7 +156,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="admin-panel gap-0 overflow-hidden p-0 sm:max-w-[560px]"
+        className="admin-panel gap-0 overflow-hidden p-0 sm:max-w-[580px]"
         overlayClassName="admin-panel-overlay"
         closeButtonClassName="admin-panel-close"
         showCloseButton
@@ -164,29 +164,39 @@ export default function SystemControlPanel({ isOpen, onClose }) {
         aria-describedby="admin-panel-desc"
       >
         <DialogHeader className="admin-panel-header">
-          <div className="admin-panel-header-row">
-            <DialogTitle className="icon-label-loose min-w-0 text-sm font-bold tracking-wide">
-              <Cpu className="size-4 shrink-0 text-primary" aria-hidden />
-              <span className="truncate">System Admin</span>
-            </DialogTitle>
-            {isLive ? (
-              <Badge
-                variant="live"
-                className="icon-label shrink-0 px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider"
-                aria-label={`Live trading mode: ${terminalMode}`}
-              >
-                <span className="size-1.5 rounded-full bg-current" aria-hidden />
-                LIVE · {terminalMode}
-              </Badge>
-            ) : (
-              <Badge
-                variant="secondary"
-                className="shrink-0 px-2 py-0.5 text-[0.62rem] font-bold tracking-wide"
-                aria-label="Simulated trading mode"
-              >
-                SIMULATED
-              </Badge>
-            )}
+          <div className="admin-panel-header__top">
+            <div className="admin-panel-header__lead">
+              <div className="admin-panel-header__icon" aria-hidden>
+                <Cpu size={16} />
+              </div>
+              <div className="admin-panel-header__copy">
+                <DialogTitle className="admin-panel-header__title">System Admin</DialogTitle>
+                <p className="admin-panel-header__subtitle">
+                  Market simulation · account · diagnostics
+                </p>
+              </div>
+            </div>
+            <div className="admin-panel-header__meta">
+              {isLive ? (
+                <Badge
+                  variant="live"
+                  className="header-mode-badge header-mode-badge--live icon-label shrink-0 px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider"
+                  aria-label={`Live trading mode: ${terminalMode}`}
+                >
+                  <span className="size-1.5 rounded-full bg-current" aria-hidden />
+                  LIVE · {terminalMode}
+                </Badge>
+              ) : (
+                <Badge
+                  variant="secondary"
+                  className="header-mode-badge shrink-0 px-2 py-0.5 text-[0.62rem] font-bold tracking-wide"
+                  aria-label="Simulated trading mode"
+                >
+                  SIMULATED
+                </Badge>
+              )}
+              <kbd className="admin-panel-kbd admin-panel-kbd--esc">esc</kbd>
+            </div>
           </div>
           <DialogDescription id="admin-panel-desc" className="sr-only">
             Configure market simulation, account balances, and view system diagnostics.
@@ -195,7 +205,9 @@ export default function SystemControlPanel({ isOpen, onClose }) {
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-0">
-          <div className="admin-panel-tabs-wrap scroll-panel-x no-scrollbar">
+          <div className="admin-panel-tabs-wrap">
+            <span className="admin-panel-tabs-label">Sections</span>
+            <div className="admin-panel-tabs-scroll scroll-panel-x no-scrollbar">
             <TabsList variant="line" className="admin-panel-tabs" aria-label="Admin panel sections">
               {ADMIN_TABS.map(tab => {
                 const Icon = tab.icon;
@@ -213,9 +225,10 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                 );
               })}
             </TabsList>
+            </div>
           </div>
 
-          <div className="admin-panel-body scroll-panel-y scroll-panel-y-0 px-5 py-5">
+          <div className="admin-panel-body scroll-panel-y scroll-panel-y-0 px-4 py-4">
             <TabsContent value="simulation" className="mt-0">
               {isLive && (
                 <Alert variant="destructive" className="mb-4">
@@ -557,10 +570,10 @@ export default function SystemControlPanel({ isOpen, onClose }) {
         </Tabs>
 
         <DialogFooter className="admin-panel-footer sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-[0.65rem] text-muted-foreground">
+          <p className="admin-panel-footer__hint">
             {isLive ? `Live broker · ${terminalMode}` : 'Simulated environment'}
             {' · '}
-            <span className="admin-panel-kbd">Esc</span> to close
+            <kbd className="admin-panel-kbd">Esc</kbd> to close
           </p>
           <Button variant="outline" size="sm" onClick={onClose} disabled={isResetting}>
             Close Panel
