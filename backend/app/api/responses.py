@@ -3,6 +3,7 @@ from app.api.outbound import (
     account_update,
     backtest_result,
     bot_detail,
+    bots_history,
     bots_update,
     error,
     history_update,
@@ -79,6 +80,11 @@ async def broadcast_trade_history(ctx: RequestContext) -> None:
 
 async def send_bots_update(ctx: RequestContext) -> None:
     await send_to(ctx, bots_update(ctx.bot_manager.list_bots_public()))
+
+
+async def send_bots_history(ctx: RequestContext, data: list | None = None) -> None:
+    payload = data if data is not None else ctx.bot_manager.list_all_bots_public()
+    await send_to(ctx, bots_history(payload))
 
 
 async def send_system_stats(ctx: RequestContext, data: dict) -> None:

@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
+import BotSnapshotChart from './BotSnapshotChart';
 import { Pause, PlayCircle, OctagonX, Loader2, GripVertical } from 'lucide-react';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
@@ -44,6 +45,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const bot = botDetail?.bot;
   const stats = botDetail?.stats;
   const trades = botDetail?.trades ?? [];
+  const snapshots = botDetail?.snapshots ?? [];
   const strategyMeta = bot ? getStrategyMeta(bot.strategy) : null;
   const loading = open && selectedBotId && !bot;
 
@@ -191,6 +193,14 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 </strong>
               </div>
             </div>
+
+            <section className="bot-detail-drawer__equity" aria-label="Bot equity snapshots">
+              <header className="bot-detail-drawer__trades-header">
+                <span>Equity curve</span>
+                <Badge variant="secondary">{snapshots.length}</Badge>
+              </header>
+              <BotSnapshotChart snapshots={snapshots} allocation={bot.allocation} />
+            </section>
 
             <div className="bot-detail-drawer__actions">
               {bot.status === 'RUNNING' && (

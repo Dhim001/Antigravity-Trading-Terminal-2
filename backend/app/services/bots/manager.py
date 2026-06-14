@@ -520,6 +520,47 @@ class BotManagerService:
             })
         return out
 
+    def list_all_bots_public(self, limit: int = 100) -> list:
+        """All bots from DB (active + stopped) with aggregated stats."""
+        limit = max(1, min(limit, 500))
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM bots ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+
+        out = []
+        for row in rows:
+            bot_id = row["id"]
+            if bot_id in self.active_bots:
+                bot = self.active_bots[bot_id]
+            else:
+                bot = {
+                    **row,
+                    "config": json.loads(row.get("config") or "{}"),
+                }
+            stats = bot_analytics.get_bot_stats(bot_id)
+            out.append({
+                "id": bot_id,
+                "strategy": bot["strategy"],
+                "symbol": bot["symbol"],
+                "timeframe": bot["timeframe"],
+                "status": bot["status"],
+                "allocation": bot["allocation"],
+                "config": bot.get("config", {}),
+                "daily_pnl": stats["daily_pnl"],
+                "total_pnl": stats["total_pnl"],
+                "trade_count": stats["trade_count"],
+                "win_rate": stats["win_rate"],
+                "exit_count": stats["exit_count"],
+                "created_at": row.get("created_at"),
+                "last_signal_at": bot.get("last_signal_at"),
+            })
+        return out
+
     async def handle_sl_tp_exits(self, bot_exits: list[dict]):
         """Record SIM stop-loss / take-profit exits in bot analytics."""
         if not bot_exits:

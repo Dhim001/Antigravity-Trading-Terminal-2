@@ -39,6 +39,13 @@ export const HTTP_ROUTES = Object.freeze({
     },
   },
   [Action.BOT_GET_ALL]: { method: 'GET', path: () => '/api/v1/bots' },
+  [Action.BOT_LIST_ALL]: {
+    method: 'GET',
+    path: (p) => {
+      const qs = p.limit != null ? `?limit=${encodeURIComponent(p.limit)}` : '';
+      return `/api/v1/bots/all${qs}`;
+    },
+  },
   [Action.BOT_CREATE]: { method: 'POST', path: () => '/api/v1/bots', body: (p) => p },
   [Action.BOT_GET_DETAIL]: {
     method: 'GET',

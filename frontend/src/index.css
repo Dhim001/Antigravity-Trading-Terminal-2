@@ -1943,6 +1943,41 @@ body {
   gap: 0.25rem 0.75rem;
 }
 
+.algo-backtest-lab__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.algo-backtest-metrics--expanded {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.bot-snapshot-chart {
+  height: 120px;
+  min-height: 100px;
+  width: 100%;
+}
+
+.bot-snapshot-chart-empty {
+  padding: 0.5rem 0;
+}
+
+.bot-detail-drawer__equity {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+}
+
+.tick-viewer-chart {
+  width: 100%;
+  min-height: 140px;
+}
+
+.bot-history-tab__toolbar {
+  flex-shrink: 0;
+}
+
 .backtest-mini-chart {
   margin-top: 0.5rem;
   height: 100px;

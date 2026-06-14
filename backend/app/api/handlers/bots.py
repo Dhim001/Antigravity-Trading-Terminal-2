@@ -4,6 +4,7 @@ from app.api.responses import (
     broadcast_bots_update,
     send_backtest_result,
     send_bot_detail,
+    send_bots_history,
     send_bots_update,
     send_order_result,
 )
@@ -99,6 +100,16 @@ async def bot_get_detail(ctx: RequestContext) -> None:
 @route(Action.BOT_GET_ALL, tags=["bots"])
 async def bot_get_all(ctx: RequestContext) -> None:
     await send_bots_update(ctx)
+
+
+@route(Action.BOT_LIST_ALL, tags=["bots"])
+async def bot_list_all(ctx: RequestContext) -> None:
+    try:
+        limit = int(ctx.message.get("limit", 100))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    await send_bots_history(ctx, ctx.bot_manager.list_all_bots_public(limit=limit))
 
 
 @route(Action.RUN_BACKTEST, tags=["bots"])

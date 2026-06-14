@@ -1,7 +1,7 @@
 /**
  * ResizableDock.jsx
- * Bottom docked panel with 6 tabs:
- *   Positions | Orders | Balances | Algo Bot | History | Equity Curve
+ * Bottom docked panel with tabs:
+ *   Positions | Orders | Balances | Algo Bot | Bot History | Ticks | History | Equity Curve
  *
  * Features:
  *  - Drag-to-resize via top handle (persists to localStorage)
@@ -16,12 +16,14 @@ import { Action } from '../api/protocol';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle,
+  RefreshCw, AlertTriangle, Zap, History,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
-import BacktestMiniChart from './BacktestMiniChart';
+import BacktestResultsPanel from './BacktestResultsPanel';
 import BotDetailDrawer from './BotDetailDrawer';
+import TickViewerTab from './TickViewerTab';
+import BotHistoryTab from './BotHistoryTab';
 import StrategyTemplateCard from './StrategyTemplateCard';
 import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
@@ -296,7 +298,7 @@ function AlgoTab() {
     strategyTemplates, backtestResults, setChartInteractionMode,
     isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
-    selectedBotId, setSelectedBotId, botDetail, setBotDetail,
+    selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
     ambiguousOrders, setAmbiguousOrders,
   } = useStore();
   const positions = useStore(state => state.positions);
@@ -305,7 +307,6 @@ function AlgoTab() {
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
-  const [botDrawerOpen, setBotDrawerOpen] = useState(false);
   const [backtestDays, setBacktestDays] = useState('7');
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
@@ -403,11 +404,9 @@ function AlgoTab() {
   };
 
   useEffect(() => {
-    if (selectedBotId && activeBots.some(b => b.id === selectedBotId)) {
+    if (!selectedBotId) return;
+    if (activeBots.some(b => b.id === selectedBotId)) {
       sendAction(Action.BOT_GET_DETAIL, { bot_id: selectedBotId });
-    } else if (selectedBotId && !activeBots.some(b => b.id === selectedBotId)) {
-      setSelectedBotId(null);
-      setBotDetail(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBotId, activeBots.length]);
@@ -579,57 +578,12 @@ function AlgoTab() {
             </div>
 
             {backtestResults && (
-              <div className={cn(
-                'algo-backtest-lab',
-                (backtestResults.total_pnl ?? 0) < 0 && 'algo-backtest-lab--down',
-              )}>
-                <div className="algo-backtest-lab__title">
-                  {backtestResults.meta?.days ?? backtestDays}-Day Backtest Lab
-                  {backtestResults.meta?.count != null && (
-                    <span className="text-muted-foreground font-normal ml-1">
-                      ({backtestResults.meta.count.toLocaleString()} bars)
-                    </span>
-                  )}
-                </div>
-                <div className="algo-backtest-metrics">
-                  <div>Win Rate: <span className="text-foreground">{backtestResults.win_rate}%</span></div>
-                  <div>Est PnL: <span className={backtestResults.total_pnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>${backtestResults.total_pnl}</span></div>
-                  <div>Max DD: <span className="text-trading-down">{backtestResults.max_drawdown}%</span></div>
-                  <div>Trades: <span className="text-foreground">{backtestResults.trade_count}</span></div>
-                </div>
-                <BacktestMiniChart
-                  equityCurve={backtestResults.equity_curve}
-                  totalPnl={backtestResults.total_pnl}
-                />
-                {backtestResults.trades?.length > 0 && (
-                  <div className="algo-backtest-trades scroll-panel-y scroll-panel-y-0 max-h-36">
-                    <table className="terminal-table m-0 text-[0.58rem]">
-                      <thead>
-                        <tr>
-                          <th>Time</th>
-                          <th>Side</th>
-                          <th className="text-right">Qty</th>
-                          <th className="text-right">Price</th>
-                          <th className="text-right">PnL</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {backtestResults.trades.filter(t => t.is_exit).slice(-12).reverse().map((t, i) => (
-                          <tr key={`${t.time}-${i}`}>
-                            <td className="text-muted-foreground">{t.time ? new Date(t.time * 1000).toLocaleString() : '—'}</td>
-                            <td>{t.side}{t.is_exit ? ' ↗' : ''}</td>
-                            <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
-                            <td className="num-mono text-right">{Number(t.price).toFixed(2)}</td>
-                            <td className={cn('num-mono text-right', t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'))}>
-                              {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
+              <BacktestResultsPanel
+                results={backtestResults}
+                backtestDays={backtestDays}
+                symbol={activeSymbol}
+                strategy={botStrategy}
+              />
             )}
           </div>
         </div>
@@ -832,14 +786,6 @@ function AlgoTab() {
           </div>
         </div>
       </section>
-
-      <BotDetailDrawer
-        open={botDrawerOpen && !!selectedBotId}
-        onOpenChange={setBotDrawerOpen}
-        onStop={handleStopBot}
-        onPause={handlePauseBot}
-        onResume={handleResumeBot}
-      />
     </div>
   );
 }
@@ -850,6 +796,10 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   const orders = useStore(state => state.orders);
   const tradeHistory = useStore(state => state.tradeHistory);
   const isBotRunning = useStore(state => state.isBotRunning);
+  const botHistory = useStore(state => state.botHistory);
+  const selectedBotId = useStore(state => state.selectedBotId);
+  const botDrawerOpen = useStore(state => state.botDrawerOpen);
+  const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
   const [activeTab, setActiveTab] = useState('positions');
   const [dockH, setDockH]   = useState(() => {
     try { return parseInt(localStorage.getItem(STORAGE_KEY)) || DOCK_DEFAULT; }
@@ -909,6 +859,8 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
     { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null },
     { id: 'balances',  label: 'Balances',  icon: Landmark  },
     { id: 'algo',      label: 'Algo Bot',  icon: Cpu       },
+    { id: 'bots',      label: 'Bot History', icon: History, badge: botHistory.length || null },
+    { id: 'ticks',     label: 'Ticks',     icon: Zap       },
     { id: 'history',   label: 'History',   icon: Activity, badge: tradeHistory.length || null },
     { id: 'equity',    label: 'Equity Curve', icon: TrendingUp },
   ];
@@ -983,6 +935,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <AlgoTab />
           </TabsContent>
+          <TabsContent value="bots" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+            <BotHistoryTab />
+          </TabsContent>
+          <TabsContent value="ticks" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+            <TickViewerTab />
+          </TabsContent>
           <TabsContent value="equity" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <EquityCurveTab />
           </TabsContent>
@@ -1002,6 +960,14 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
         </SheetContent>
       </Sheet>
+
+      <BotDetailDrawer
+        open={botDrawerOpen && !!selectedBotId}
+        onOpenChange={setBotDrawerOpen}
+        onStop={(bot_id) => sendAction(Action.BOT_STOP, { bot_id })}
+        onPause={(bot_id) => sendAction(Action.BOT_PAUSE, { bot_id })}
+        onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
+      />
     </>
   );
 }

@@ -86,6 +86,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   ],
   selectedBotId: null,
   botDetail: null,
+  botDrawerOpen: false,
+  botHistory: [],
+  tickData: {},
+  tickMeta: null,
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setApiStatus: (status) => set({ apiStatus: status }),
@@ -274,6 +278,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setChartInteractionMode: (mode) => set({ chartInteractionMode: mode }),
   setSelectedBotId: (id) => set({ selectedBotId: id }),
   setBotDetail: (detail) => set({ botDetail: detail }),
+  setBotDrawerOpen: (open) => set({ botDrawerOpen: !!open }),
+  setBotHistory: (bots) => set({ botHistory: Array.isArray(bots) ? bots : [] }),
+  setTickData: (data, meta) => set({
+    tickData: data && typeof data === 'object' ? { ...data } : {},
+    tickMeta: meta ?? null,
+  }),
 
   setOrderResult: (result) => {
     set({ orderResult: result });

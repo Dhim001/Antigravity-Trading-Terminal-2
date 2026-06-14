@@ -16,7 +16,8 @@ ALLOWED_FILES = {
 WIRE_TYPE_PATTERN = re.compile(
     r'["\']type["\']\s*:\s*["\'](terminal_config|market_update|orderbook_update|'
     r"account_update|trade_history|order_result|history_update|system_stats|"
-    r"bots_update|bot_detail|bot_log|bot_logs_history|backtest_result|error)['\"]"
+    r"bots_update|bot_detail|bot_log|bot_logs_history|backtest_result|"
+    r"ticks_update|bots_history|error)['\"]"
 )
 
 

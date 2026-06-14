@@ -30,7 +30,8 @@ ACTION_DESCRIPTIONS: dict[str, str] = {
     Action.BOT_RESUME: "Resume a paused bot",
     Action.BOT_STOP_ALL: "Stop every active bot",
     Action.BOT_GET_DETAIL: "Fetch trades, snapshots, and config for one bot",
-    Action.BOT_GET_ALL: "List all bots (active and stopped)",
+    Action.BOT_GET_ALL: "List active bots",
+    Action.BOT_LIST_ALL: "List all bots including stopped (with stats)",
     Action.RUN_BACKTEST: "Run offline backtest for symbol + strategy",
 }
 
@@ -48,6 +49,8 @@ MESSAGE_DESCRIPTIONS: dict[str, str] = {
     MessageType.BOT_LOG: "Streaming bot log line",
     MessageType.BOT_LOGS_HISTORY: "Recent bot logs on connect",
     MessageType.BACKTEST_RESULT: "Backtest metrics and equity curve",
+    MessageType.TICKS_UPDATE: "Sub-minute tick archive for a symbol",
+    MessageType.BOTS_HISTORY: "Full bot registry including stopped bots",
     MessageType.ERROR: "Unknown action or handler exception",
 }
 

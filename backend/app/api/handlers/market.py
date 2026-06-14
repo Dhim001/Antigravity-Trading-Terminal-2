@@ -1,7 +1,7 @@
 from app.api.context import RequestContext
 from app.api.protocol import Action
 from app.api.responses import send_error, send_history_update, send_to
-from app.api.outbound import history_update, orderbook_update
+from app.api.outbound import history_update, orderbook_update, ticks_update
 from app.api.router import route
 from app.services.archive.query import query_market_history
 from app.config import ARCHIVE_RETENTION_1M_DAYS
@@ -98,8 +98,7 @@ async def get_market_ticks(ctx: RequestContext) -> None:
     from_ms = _parse_ms(ctx.message.get("from"), now_ms - 3600_000)
     to_ms = _parse_ms(ctx.message.get("to"), now_ms)
     ticks = query_ticks(symbol, from_ms, to_ms)
-    await send_to(ctx, {
-        "type": "ticks_update",
-        "data": {symbol: ticks},
-        "meta": {"symbol": symbol, "from_ms": from_ms, "to_ms": to_ms, "count": len(ticks)},
-    })
+    await send_to(ctx, ticks_update(
+        {symbol: ticks},
+        meta={"symbol": symbol, "from_ms": from_ms, "to_ms": to_ms, "count": len(ticks)},
+    ))

@@ -25,14 +25,14 @@ function attachWebSocketHandlers(socket) {
   socket.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
-      const { type, data, message } = payload;
+      const { type, data, message, meta } = payload;
 
       if (type === MessageType.ERROR) {
         console.error('Server execution error:', message);
         return;
       }
 
-      applyServerMessage(type, data, storeActions);
+      applyServerMessage(type, data, storeActions, meta);
     } catch (err) {
       console.error('Failed to parse WebSocket message:', err);
     }

@@ -29,6 +29,7 @@ class Action(StrEnum):
     BOT_STOP_ALL = "bot_stop_all"
     BOT_GET_DETAIL = "bot_get_detail"
     BOT_GET_ALL = "bot_get_all"
+    BOT_LIST_ALL = "bot_list_all"
     RUN_BACKTEST = "run_backtest"
 
 
@@ -46,4 +47,6 @@ class MessageType(StrEnum):
     BOT_LOG = "bot_log"
     BOT_LOGS_HISTORY = "bot_logs_history"
     BACKTEST_RESULT = "backtest_result"
+    TICKS_UPDATE = "ticks_update"
+    BOTS_HISTORY = "bots_history"
     ERROR = "error"

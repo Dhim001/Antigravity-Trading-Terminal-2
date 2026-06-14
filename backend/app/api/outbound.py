@@ -73,6 +73,17 @@ def backtest_result(data: dict) -> dict:
     return frame(MessageType.BACKTEST_RESULT, data)
 
 
+def ticks_update(data: dict, *, meta: dict | None = None) -> dict:
+    payload = frame(MessageType.TICKS_UPDATE, data)
+    if meta is not None:
+        payload["meta"] = meta
+    return payload
+
+
+def bots_history(data: list) -> dict:
+    return frame(MessageType.BOTS_HISTORY, data)
+
+
 def error(message: str) -> dict:
     return frame(MessageType.ERROR, message=message)
 

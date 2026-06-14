@@ -23,6 +23,8 @@ export function getStoreActions() {
     setBacktestResults: s.setBacktestResults,
     setBotDetail: s.setBotDetail,
     setAmbiguousOrders: s.setAmbiguousOrders,
+    setTickData: s.setTickData,
+    setBotHistory: s.setBotHistory,
   };
 }
 
@@ -30,7 +32,7 @@ export function getStoreActions() {
  * Apply a server → client wire frame to the store.
  * Shared by WebSocket onmessage and HTTP bootstrap.
  */
-export function applyServerMessage(type, data, storeActions) {
+export function applyServerMessage(type, data, storeActions, meta) {
   switch (type) {
     case MessageType.TERMINAL_CONFIG:
       storeActions.setTerminalConfig(data);
@@ -91,6 +93,12 @@ export function applyServerMessage(type, data, storeActions) {
         console.error('Backtest failed:', data?.message);
       }
       break;
+    case MessageType.TICKS_UPDATE:
+      storeActions.setTickData(data, meta);
+      break;
+    case MessageType.BOTS_HISTORY:
+      storeActions.setBotHistory(data);
+      break;
     case MessageType.ERROR:
       console.error('Server execution error:', data?.message ?? data);
       break;
@@ -104,12 +112,12 @@ export function applyHttpEnvelope(body, storeActions) {
   if (Array.isArray(body.messages)) {
     for (const msg of body.messages) {
       if (msg?.type) {
-        applyServerMessage(msg.type, msg.data, storeActions);
+        applyServerMessage(msg.type, msg.data, storeActions, msg.meta);
       }
     }
     return;
   }
   if (body.type) {
-    applyServerMessage(body.type, body.data, storeActions);
+    applyServerMessage(body.type, body.data, storeActions, body.meta);
   }
 }
