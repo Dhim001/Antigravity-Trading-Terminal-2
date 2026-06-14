@@ -9,6 +9,7 @@ from app.database import init_db
 from app.db.connection import DB_DRIVER
 from app.services.bots.runtime import (
     bot_snapshot_loop,
+    bot_reconcile_loop,
     create_bot_stack,
     create_feed_and_oms,
     register_worker_handlers,
@@ -55,10 +56,10 @@ async def main():
     await event_bus.start()
     logger.info("Bot worker listening on %s", channels.BAR_CLOSE)
 
-    await asyncio.gather(
-        bot_snapshot_loop(bot_manager),
-        worker_keepalive(),
-    )
+    tasks = [bot_snapshot_loop(bot_manager), worker_keepalive()]
+    if TERMINAL_MODE != "SIMULATED":
+        tasks.append(bot_reconcile_loop(bot_manager))
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

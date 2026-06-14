@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
+import { parseTradeTimestamp, parseSignalBarTime } from '@/lib/botAttribution';
 
 const INDICATORS = {
   ema9:   { label: 'EMA 9',  color: '#f59e0b' },
@@ -55,10 +56,91 @@ function formatTimeLabel(timeSec) {
   return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
-function buildCategoryLabels(bars) {
-  const labels = bars.map(c => formatTimeLabel(c.time));
-  for (let i = 0; i < FUTURE_PADDING; i++) labels.push('');
-  return labels;
+function buildCategoryAxisData(bars) {
+  const keys = bars.map((c) => toUnixSeconds(c.time));
+  for (let i = 0; i < FUTURE_PADDING; i++) keys.push(`__pad_${i}__`);
+  return keys;
+}
+
+function indexOfCategoryKey(categoryData, key) {
+  if (key == null || !categoryData.length) return -1;
+  const sec = toUnixSeconds(key);
+  for (let i = 0; i < categoryData.length; i++) {
+    const k = categoryData[i];
+    if (k === key) return i;
+    if (sec != null && toUnixSeconds(k) === sec) return i;
+  }
+  return -1;
+}
+
+function lastRealCategoryIndex(categoryData) {
+  return Math.max(0, categoryData.length - FUTURE_PADDING - 1);
+}
+
+function defaultDataZoomPercent(candleCount, totalCategoryCount, visibleBars = 50) {
+  const endPct = (candleCount / totalCategoryCount) * 100;
+  const startPct = Math.max(0, ((candleCount - visibleBars) / totalCategoryCount) * 100);
+  return { start: startPct, end: endPct };
+}
+
+function preserveDataZoomPercent(prevCategoryData, nextCategoryData, prevDz, candleCount, nextCandleCount) {
+  if (prevDz?.start == null || prevDz?.end == null) return null;
+
+  const prevRealEnd = lastRealCategoryIndex(prevCategoryData);
+  const prevEndIdx = prevDz.endValue != null
+    ? indexOfCategoryKey(prevCategoryData, prevDz.endValue)
+    : Math.round((prevDz.end / 100) * prevCategoryData.length);
+  const wasAtEnd = prevEndIdx >= prevRealEnd - 1;
+  const diff = nextCategoryData.length - prevCategoryData.length;
+
+  if (diff > 0 && wasAtEnd) {
+    return defaultDataZoomPercent(nextCandleCount, nextCategoryData.length);
+  }
+
+  return { start: prevDz.start, end: prevDz.end };
+}
+
+function isDataZoomNearLeftEdge(dz, categoryData) {
+  if (!dz || !categoryData.length) return false;
+  if (typeof dz.start === 'number' && dz.start <= 2) return true;
+  const start = dz.startValue;
+  if (start == null) return false;
+  let idx = indexOfCategoryKey(categoryData, start);
+  if (idx < 0 && typeof start === 'number' && start <= 10) idx = Math.floor(start);
+  if (idx < 0) return false;
+  return idx <= 10;
+}
+
+/** TOS-style: buys below bar, sells above; exits at fill price. */
+function markerYForTrade(candle, side, { isExit = false, fillPrice } = {}) {
+  if (isExit) return fillPrice ?? candle?.close;
+  if (side === 'BUY') return candle?.low ?? fillPrice;
+  if (side === 'SELL') return candle?.high ?? fillPrice;
+  return fillPrice ?? candle?.close;
+}
+
+function categoryAxisLabelFormatter(val) {
+  if (val == null || val === '' || String(val).startsWith('__pad_')) return '';
+  const sec = toUnixSeconds(val);
+  return sec == null ? '' : formatTimeLabel(sec);
+}
+
+/** Shared x-axis category config — unix keys with human-readable labels. */
+function categoryXAxisOpts(categoryData, gridIndex, { showLabels = true } = {}) {
+  return {
+    type: 'category',
+    data: categoryData,
+    gridIndex,
+    scale: true,
+    boundaryGap: false,
+    axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+    splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+    axisLabel: {
+      show: showLabels,
+      color: '#9ca3af',
+      formatter: categoryAxisLabelFormatter,
+    },
+  };
 }
 
 function buildMainSeriesData(bars, chartType) {
@@ -267,39 +349,117 @@ function buildMarkLineData(symbolPosition, dec) {
   return markLineData;
 }
 
-function buildBotTradeMarkers(botTrades, candles, categoryData) {
-  if (!botTrades?.length || !candles.length) return [];
-  return botTrades.map(t => {
-    const ts = Math.floor(new Date(`${t.timestamp}Z`).getTime() / 1000);
-    let idx = candles.findIndex(c => c.time >= ts);
-    if (idx === -1) idx = candles.length - 1;
-    const isExit = t.is_exit === 1 || t.is_exit === true;
+/** Map a bar open-time (unix sec) to the displayed candle index. */
+function findBarIndexForBarTime(candles, barTimeSec, bucketSecs = 60) {
+  if (!candles.length) return -1;
+
+  const tsSec = toUnixSeconds(barTimeSec);
+  if (tsSec == null) return -1;
+
+  const bucketTs = Math.floor(tsSec / bucketSecs) * bucketSecs;
+  const first = toUnixSeconds(candles[0].time);
+  const last = toUnixSeconds(candles[candles.length - 1].time);
+  if (first != null && bucketTs < first) return -1;
+  if (last != null && bucketTs > last) return -1;
+
+  for (let i = 0; i < candles.length; i++) {
+    if (toUnixSeconds(candles[i].time) === bucketTs) return i;
+  }
+
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (toUnixSeconds(candles[i].time) <= tsSec) return i;
+  }
+  return -1;
+}
+
+/** Resolve marker x/y — bot signals anchor to the closed bar, not fill clock time. */
+function resolveBotMarkerAnchor(trade, candles, bucketSecs) {
+  const isExit = trade.is_exit === 1 || trade.is_exit === true;
+  const signalBar = parseSignalBarTime(trade);
+  if (signalBar != null) {
+    const idx = findBarIndexForBarTime(candles, signalBar, bucketSecs);
+    if (idx < 0) return null;
+    const candle = candles[idx];
     return {
-      coord: [categoryData[idx], t.price],
+      idx,
+      yPrice: markerYForTrade(candle, trade.side, { isExit, fillPrice: trade.price }),
+    };
+  }
+
+  const d = parseTradeTimestamp(trade.timestamp);
+  const tsSec = d ? Math.floor(d.getTime() / 1000) : null;
+  if (tsSec == null) return null;
+  const idx = findBarIndexForBarTime(candles, tsSec, bucketSecs);
+  if (idx < 0) return null;
+  const candle = candles[idx];
+  return {
+    idx,
+    yPrice: markerYForTrade(candle, trade.side, { isExit, fillPrice: trade.price }),
+  };
+}
+
+/** Map a trade timestamp to the candle index that contains it (bucket-aligned). */
+function findBarIndexForTrade(candles, timestamp, bucketSecs = 60) {
+  const d = parseTradeTimestamp(timestamp);
+  const tsSec = d ? Math.floor(d.getTime() / 1000) : null;
+  if (tsSec == null) return -1;
+  return findBarIndexForBarTime(candles, tsSec, bucketSecs);
+}
+
+function toSignalScatterPoint(candles, barIndex, yPrice, { value, symbol, symbolSize, itemStyle }) {
+  if (barIndex < 0) return null;
+  const clamped = Math.max(0, Math.min(barIndex, candles.length - 1));
+  const cat = toUnixSeconds(candles[clamped]?.time);
+  if (cat == null) return null;
+  return {
+    value: [cat, yPrice],
+    name: value,
+    symbol,
+    symbolSize,
+    itemStyle,
+  };
+}
+
+function tradeMarkerPoint(candles, timestamp, price, bucketSecs, marker) {
+  const idx = findBarIndexForTrade(candles, timestamp, bucketSecs);
+  if (idx < 0) return null;
+  const candle = candles[idx];
+  const side = marker.side ?? (String(marker.value).startsWith('BUY') ? 'BUY' : 'SELL');
+  const yPrice = markerYForTrade(candle, side, { fillPrice: price });
+  return toSignalScatterPoint(candles, idx, yPrice, marker);
+}
+
+function buildBotTradeMarkers(botTrades, candles, bucketSecs) {
+  if (!botTrades?.length || !candles.length) return [];
+  return botTrades.map((t) => {
+    const isExit = t.is_exit === 1 || t.is_exit === true;
+    const anchor = resolveBotMarkerAnchor(t, candles, bucketSecs);
+    if (!anchor) return null;
+    return toSignalScatterPoint(candles, anchor.idx, anchor.yPrice, {
       value: `${t.side}${isExit ? ' exit' : ''}`,
       symbol: isExit ? 'pin' : (t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z'),
       symbolSize: isExit ? 14 : 11,
       itemStyle: { color: isExit ? '#f59e0b' : (t.side === 'BUY' ? '#10b981' : '#ef4444') },
-    };
-  });
+    });
+  }).filter(Boolean);
 }
 
-function buildTradeMarkers(tradeHistory, activeSymbol, candles, categoryData) {
+function buildTradeMarkers(tradeHistory, activeSymbol, candles, bucketSecs, { excludeBotId } = {}) {
   return tradeHistory
-    .filter(t => t.symbol === activeSymbol && t.status === 'FILLED')
-    .map(t => {
-      const timeVal = Math.floor(new Date(t.timestamp).getTime() / 1000);
-      let categoryIndex = candles.findIndex(c => c.time >= timeVal);
-      if (categoryIndex === -1) categoryIndex = candles.length - 1;
-
-      return {
-        coord: [categoryData[categoryIndex], t.average_fill_price || t.price],
-        value: `${t.side} ${(t.filled_quantity ?? t.quantity)?.toFixed(4)}`,
+    .filter((t) => t.symbol === activeSymbol && t.status === 'FILLED')
+    .filter((t) => !(excludeBotId && t.bot_id === excludeBotId))
+    .map((t) => {
+      const price = t.average_fill_price || t.price;
+      const qty = (t.filled_quantity ?? t.quantity)?.toFixed(4);
+      return tradeMarkerPoint(candles, t.timestamp, price, bucketSecs, {
+        side: t.side,
+        value: `${t.side} ${qty}`,
         symbol: t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z',
         symbolSize: 10,
         itemStyle: { color: t.side === 'BUY' ? '#10b981' : '#ef4444' },
-      };
-    });
+      });
+    })
+    .filter(Boolean);
 }
 
 // ─── Child Component: Header Ticker ──────────────────────────────────
@@ -442,7 +602,9 @@ export default function ChartWidget() {
   const botDetail = useStore(state => state.botDetail);
   const botOverlayKey = useStore(state => {
     if (!state.selectedBotId || !state.botDetail?.trades) return '';
-    return state.botDetail.trades.map(t => `${t.id}:${t.timestamp}:${t.side}`).join(';');
+    return state.botDetail.trades.map(
+      (t) => `${t.id}:${t.signal_bar_time ?? ''}:${t.signal_id ?? ''}:${t.side}`,
+    ).join(';');
   });
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
@@ -539,15 +701,11 @@ export default function ChartWidget() {
     const candles = aggregatedCandles;
     const dec = getPriceDecimals(candles[candles.length - 1]?.close);
 
-    const categoryData = candles.map(c => formatTimeLabel(c.time));
-    for (let i = 0; i < FUTURE_PADDING; i++) {
-      categoryData.push('');
-    }
+    const categoryData = buildCategoryAxisData(candles);
 
-    // Dynamic Zoom preservation using absolute indices
-    let startVal = null;
-    let endVal = null;
-    const totalCount = categoryData.length;
+    // Preserve zoom (% window) — stable under indicator toggles; timestamp keys on scatter x
+    let zoomStart = null;
+    let zoomEnd = null;
 
     if (prevConfigRef.current.symbol === activeSymbol && prevConfigRef.current.timeframe === timeframe && chartRef.current) {
       try {
@@ -555,27 +713,16 @@ export default function ChartWidget() {
         const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
         const xAxisList = normalizeEchartsList(currentOption?.xAxis);
         if (dataZoomList[0] && xAxisList[0]?.data) {
-          const prevStart = dataZoomList[0].startValue;
-          const prevEnd = dataZoomList[0].endValue;
-
-          if (prevStart !== undefined && prevEnd !== undefined && prevStart !== null && prevEnd !== null) {
-            const prevTotal = xAxisList[0].data.length;
-            const diff = totalCount - prevTotal;
-            if (diff > 0) {
-              // If the user was looking at the end of the chart, auto-scroll to the right
-              const wasAtEnd = prevEnd >= prevTotal - 2;
-              if (wasAtEnd) {
-                startVal = prevStart + diff;
-                endVal = prevEnd + diff;
-              } else {
-                // Keep the view fixed at the same historical candles (indices)
-                startVal = prevStart;
-                endVal = prevEnd;
-              }
-            } else {
-              startVal = prevStart;
-              endVal = prevEnd;
-            }
+          const preserved = preserveDataZoomPercent(
+            xAxisList[0].data,
+            categoryData,
+            dataZoomList[0],
+            candles.length,
+            candles.length,
+          );
+          if (preserved) {
+            zoomStart = preserved.start;
+            zoomEnd = preserved.end;
           }
         }
       } catch (err) {
@@ -583,10 +730,8 @@ export default function ChartWidget() {
       }
     }
 
-    if (startVal === null || endVal === null || startVal === undefined || endVal === undefined) {
-      // Default view: show last 50 candles (including future padding)
-      startVal = Math.max(0, totalCount - 50);
-      endVal = totalCount - 1;
+    if (zoomStart == null || zoomEnd == null) {
+      ({ start: zoomStart, end: zoomEnd } = defaultDataZoomPercent(candles.length, categoryData.length));
     }
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
 
@@ -636,14 +781,7 @@ export default function ChartWidget() {
     // Main grid axis
     xAxes.push({
       id: 'x-0',
-      type: 'category',
-      data: categoryData,
-      gridIndex: 0,
-      scale: true,
-      boundaryGap: false,
-      axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-      splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
-      axisLabel: { show: grids.length === 1, color: '#9ca3af' }
+      ...categoryXAxisOpts(categoryData, 0, { showLabels: grids.length === 1 }),
     });
 
     yAxes.push({
@@ -663,15 +801,8 @@ export default function ChartWidget() {
 
       xAxes.push({
         id: `x-${xAxes.length}`,
-        type: 'category',
-        data: categoryData,
-        gridIndex: gIdx,
-        scale: true,
-        boundaryGap: false,
-        axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
-        axisLabel: { show: isLowest, color: '#9ca3af' },
-        axisTick: { show: isLowest }
+        ...categoryXAxisOpts(categoryData, gIdx, { showLabels: isLowest }),
+        axisTick: { show: isLowest },
       });
 
       let yAxisOpt = {
@@ -726,6 +857,20 @@ export default function ChartWidget() {
         },
       });
     }
+
+    // Signal markers — scatter layer shares the category x-axis (stable under zoom/pan)
+    series.push({
+      id: 'signal-markers',
+      name: 'Signals',
+      type: 'scatter',
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      data: [],
+      clip: true,
+      z: 6,
+      animation: false,
+      tooltip: { show: false },
+    });
 
     // Overlay indicators
     if (active.ema9) {
@@ -831,8 +976,8 @@ export default function ChartWidget() {
       xAxis: xAxes,
       yAxis: yAxes,
       dataZoom: [
-        { type: 'inside', xAxisIndex: zoomXIndices, startValue: startVal, endValue: endVal },
-        { type: 'slider', xAxisIndex: zoomXIndices, startValue: startVal, endValue: endVal, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: 'rgba(37,99,235,0.12)', textStyle: { color: '#9ca3af' } }
+        { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd },
+        { type: 'slider', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: 'rgba(37,99,235,0.12)', textStyle: { color: '#9ca3af' } }
       ],
       series: series
     };
@@ -845,38 +990,53 @@ export default function ChartWidget() {
     // Initial legend display
     const lastBar = candles[candles.length - 1];
     updateLegendDOM(lastBar);
+
+    requestAnimationFrame(() => applyOverlayPatchRef.current?.());
   }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM]);
 
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
     const chart = chartRef.current;
     const bars = candlesRef.current;
-    if (!chart || !bars.length) return;
+    if (!chart || !bars.length || !chartReadyRef.current) return;
 
+    const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
+    const bucketSecs = cfg.secs;
     const dec = getPriceDecimals(bars[bars.length - 1]?.close);
-    const categoryData = buildCategoryLabels(bars);
     const markLineData = buildMarkLineData(symbolPosition, dec);
-    const tradeMarkers = buildTradeMarkers(tradeHistory, activeSymbol, bars, categoryData);
     const showBotMarkers = selectedBotId
       && botDetail?.bot?.symbol === activeSymbol
       && botDetail?.trades?.length;
+    const tradeMarkers = buildTradeMarkers(
+      tradeHistory,
+      activeSymbol,
+      bars,
+      bucketSecs,
+      { excludeBotId: showBotMarkers ? selectedBotId : null },
+    );
     const botMarkers = showBotMarkers
-      ? buildBotTradeMarkers(botDetail.trades, bars, categoryData)
+      ? buildBotTradeMarkers(botDetail.trades, bars, bucketSecs)
       : [];
-    const allMarkers = [...tradeMarkers, ...botMarkers];
+    const scatterData = [...tradeMarkers, ...botMarkers];
 
     try {
       chart.setOption({
-        series: [{
-          id: 'main',
-          markLine: { symbol: ['none', 'none'], data: markLineData },
-          markPoint: { data: allMarkers, label: { show: false } },
-        }],
-      }, { lazyUpdate: true });
+        series: [
+          {
+            id: 'main',
+            markLine: { symbol: ['none', 'none'], animation: false, data: markLineData },
+            markPoint: { data: [] },
+          },
+          {
+            id: 'signal-markers',
+            data: scatterData,
+          },
+        ],
+      }, { lazyUpdate: false });
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey]);
+  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey]);
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -915,77 +1075,102 @@ export default function ChartWidget() {
 
   loadOlderRef.current = loadOlderHistory;
 
-  // Init ECharts Instance
+  // Init ECharts once the container has non-zero layout (avoids zero-size init warning).
   useEffect(() => {
-    if (!containerRef.current) return;
+    const el = containerRef.current;
+    if (!el) return;
 
-    const chart = echarts.init(containerRef.current, 'dark');
-    chartRef.current = chart;
-    chartReadyRef.current = false;
+    let chart = null;
+    let disposed = false;
 
-    chart.on('updateAxisPointer', (event) => {
-      const axesInfo = event.axesInfo;
-      if (axesInfo && axesInfo[0]) {
-        const dataIndex = axesInfo[0].value;
+    const mountChart = () => {
+      if (disposed || chart) return false;
+      const { clientWidth, clientHeight } = el;
+      if (clientWidth < 2 || clientHeight < 2) return false;
+
+      chart = echarts.init(el, 'dark');
+      chartRef.current = chart;
+      chartReadyRef.current = false;
+
+      chart.on('updateAxisPointer', (event) => {
+        const axesInfo = event.axesInfo;
         const candles = candlesRef.current;
-        if (candles && candles[dataIndex]) {
-          updateLegendDOM(candles[dataIndex]);
+        if (axesInfo && axesInfo[0] && candles?.length) {
+          const info = axesInfo[0];
+          let idx = info.value;
+          if (typeof idx !== 'number' || idx >= candles.length || idx < 0) {
+            idx = candles.findIndex((c) => toUnixSeconds(c.time) === toUnixSeconds(info.value));
+          }
+          if (idx >= 0 && idx < candles.length && candles[idx]) {
+            updateLegendDOM(candles[idx]);
+            return;
+          }
         }
-      } else {
-        const candles = candlesRef.current;
-        if (candles && candles.length > 0) {
+        if (candles?.length) {
           updateLegendDOM(candles[candles.length - 1]);
         }
-      }
-    });
-
-    chart.on('datazoom', () => {
-      if (!chartReadyRef.current) return;
-      try {
-        const currentOption = chart.getOption();
-        const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
-        const dz = dataZoomList[0];
-        if (dz && typeof dz.startValue === 'number' && dz.startValue <= 10) {
-          loadOlderRef.current?.();
-        }
-      } catch (err) {
-        console.warn('[ChartWidget] datazoom handler failed:', err);
-      }
-    });
-
-    // Click coordinate to price conversion for interactive mode
-    chart.getZr().on('click', (params) => {
-      const mode = useStore.getState().chartInteractionMode;
-      if (mode === 'normal') return;
-
-      const pointInPixel = [params.offsetX, params.offsetY];
-      if (chart.containPoint({ gridIndex: 0 }, pointInPixel)) {
-        const pointInValue = chart.convertFromPixel({ gridIndex: 0 }, pointInPixel);
-        const price = pointInValue[1];
-        if (price !== null && price > 0) {
-          window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
-        }
-      }
-    });
-
-    // Resize observer
-    const ro = new ResizeObserver(() => {
-      chart.resize();
-    });
-    ro.observe(containerRef.current);
-
-    if (displayBarsRef.current.length > 0) {
-      requestAnimationFrame(() => {
-        configureChartRef.current();
-        applyOverlayPatchRef.current();
       });
-    }
+
+      chart.on('datazoom', () => {
+        if (!chartReadyRef.current) return;
+        try {
+          const currentOption = chart.getOption();
+          const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
+          const xAxisList = normalizeEchartsList(currentOption?.xAxis);
+          const dz = dataZoomList[0];
+          const cats = xAxisList[0]?.data ?? [];
+          if (isDataZoomNearLeftEdge(dz, cats)) {
+            loadOlderRef.current?.();
+          }
+        } catch (err) {
+          console.warn('[ChartWidget] datazoom handler failed:', err);
+        }
+      });
+
+      chart.getZr().on('click', (params) => {
+        const mode = useStore.getState().chartInteractionMode;
+        if (mode === 'normal') return;
+
+        const pointInPixel = [params.offsetX, params.offsetY];
+        if (chart.containPoint({ gridIndex: 0 }, pointInPixel)) {
+          const pointInValue = chart.convertFromPixel({ gridIndex: 0 }, pointInPixel);
+          const price = pointInValue[1];
+          if (price !== null && price > 0) {
+            window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+          }
+        }
+      });
+
+      if (import.meta.env.DEV) {
+        el.__chartInstance = chart;
+      }
+
+      if (displayBarsRef.current.length > 0) {
+        requestAnimationFrame(() => {
+          configureChartRef.current();
+          applyOverlayPatchRef.current();
+        });
+      }
+      return true;
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (chart) {
+        chart.resize();
+        return;
+      }
+      mountChart();
+    });
+    ro.observe(el);
+    mountChart();
 
     return () => {
+      disposed = true;
       ro.disconnect();
-      chart.dispose();
+      chart?.dispose();
       chartRef.current = null;
       chartReadyRef.current = false;
+      if (el.__chartInstance) delete el.__chartInstance;
     };
   }, [updateLegendDOM]);
 
@@ -1024,12 +1209,12 @@ export default function ChartWidget() {
 
     candlesRef.current = bars;
 
-    const labels = buildCategoryLabels(bars);
+    const categoryData = buildCategoryAxisData(bars);
     const { xAxisCount } = chartLayoutRef.current;
     const patch = {
       xAxis: Array.from({ length: xAxisCount }, (_, i) => ({
         id: `x-${i}`,
-        data: labels,
+        data: categoryData,
       })),
       series: [
         {
@@ -1044,10 +1229,11 @@ export default function ChartWidget() {
     try {
       chart.setOption(patch, { lazyUpdate: false });
       updateLegendDOM(aggregatedLive);
+      applyOverlayPatchRef.current?.();
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit]);
 
   useEffect(() => {
     const symbol = activeSymbol;
@@ -1210,7 +1396,7 @@ export default function ChartWidget() {
           <span id="chart-legend-pct" className="text-[10px] font-bold opacity-90">—</span>
         </div>
 
-        <div ref={containerRef} className="h-full w-full" />
+        <div ref={containerRef} className="h-full w-full" data-chart-root="main" />
       </div>
     </WidgetShell>
   );

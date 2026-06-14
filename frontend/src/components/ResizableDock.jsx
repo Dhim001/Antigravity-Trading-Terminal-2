@@ -42,6 +42,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
+import { buildBotLookup, getPositionBots, shortBotId } from '@/lib/botAttribution';
 
 const DOCK_MIN = 200;
 const DOCK_MAX = 560;
@@ -56,7 +57,7 @@ const fmtP = (n, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
 // ── Position Row ──────────────────────────────────────────────────
-const PositionRow = React.memo(function PositionRow({ sym, pos }) {
+const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }) {
   const mark = useStore(state => state.tickerData[sym]?.price ?? pos.avg_price);
   const activeSymbol = useStore(state => state.activeSymbol);
 
@@ -79,6 +80,21 @@ const PositionRow = React.memo(function PositionRow({ sym, pos }) {
     <tr className={cn(isActive && 'row-active')}>
       <td>
         <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
+        {ownerBots.length > 0 && (
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            {ownerBots.map((bot) => (
+              <span key={bot.id} className="inline-flex items-center">
+                <StrategyBadge strategy={bot.strategy} compact />
+                <span className="ml-1 text-[0.58rem] text-muted-foreground num-mono" title={bot.id}>
+                  {shortBotId(bot.id)}
+                  {bot._size != null && (
+                    <span className="ml-0.5 opacity-70">({Math.abs(bot._size).toFixed(3)})</span>
+                  )}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
         {(pos.stop_loss_price || pos.take_profit_price) && (
           <div className="mt-0.5 icon-label-tight text-[0.62rem] text-muted-foreground">
             {pos.stop_loss_price && (
@@ -120,11 +136,15 @@ const PositionRow = React.memo(function PositionRow({ sym, pos }) {
 // ── Positions Tab ─────────────────────────────────────────────────
 function PositionsTab() {
   const positions = useStore(state => state.positions);
+  const activeBots = useStore(state => state.activeBots);
+  const tradeHistory = useStore(state => state.tradeHistory);
   const entries = Object.entries(positions);
 
   if (entries.length === 0) {
     return <WidgetEmpty icon={Briefcase} message="No open positions" />;
   }
+
+  const botCtx = { activeBots, tradeHistory };
 
   return (
     <table className="terminal-table min-w-[880px]">
@@ -142,7 +162,12 @@ function PositionsTab() {
       </thead>
       <tbody>
         {entries.map(([sym, pos]) => (
-          <PositionRow key={sym} sym={sym} pos={pos} />
+          <PositionRow
+            key={sym}
+            sym={sym}
+            pos={pos}
+            ownerBots={getPositionBots(sym, pos, botCtx)}
+          />
         ))}
       </tbody>
     </table>
@@ -152,6 +177,8 @@ function PositionsTab() {
 // ── Orders Tab ────────────────────────────────────────────────────
 function OrdersTab() {
   const orders = useStore(state => state.orders);
+  const activeBots = useStore(state => state.activeBots);
+  const { byId } = buildBotLookup(activeBots);
   const active = orders.filter(o => o.status === 'PENDING');
 
   if (active.length === 0) {
@@ -163,6 +190,7 @@ function OrdersTab() {
       <thead>
         <tr>
           <th>Symbol</th>
+          <th>Source</th>
           <th>Type</th>
           <th>Side</th>
           <th className="text-right">Price</th>
@@ -176,9 +204,17 @@ function OrdersTab() {
           const dec = priceDecimals(ord.symbol, ord.price);
           const isBuy = ord.side === 'BUY';
           const value = (ord.price || 0) * ord.quantity;
+          const bot = ord.bot_id ? byId[ord.bot_id] : null;
           return (
             <tr key={ord.id}>
               <td className="font-bold">{ord.symbol}</td>
+              <td className="text-xs">
+                {bot ? (
+                  <StrategyBadge strategy={bot.strategy} compact />
+                ) : (
+                  <span className="text-muted-foreground">Manual</span>
+                )}
+              </td>
               <td className="text-xs text-secondary-foreground">{ord.type}</td>
               <td><Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge></td>
               <td className="num-mono text-right">
@@ -263,6 +299,7 @@ function AlgoTab() {
     selectedBotId, setSelectedBotId, botDetail, setBotDetail,
     ambiguousOrders, setAmbiguousOrders,
   } = useStore();
+  const positions = useStore(state => state.positions);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
@@ -685,6 +722,7 @@ function AlgoTab() {
               <tr>
                 <th>Symbol</th>
                 <th>Strategy</th>
+                <th className="text-center">Position</th>
                 <th className="text-right">Alloc</th>
                 <th className="text-right">Today PnL</th>
                 <th>Last signal</th>
@@ -695,12 +733,15 @@ function AlgoTab() {
             <tbody>
               {activeBots.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="algo-table-empty">
+                  <td colSpan="8" className="algo-table-empty">
                     No active bots. Pick a template and deploy.
                   </td>
                 </tr>
               ) : (
-                activeBots.map(bot => (
+                activeBots.map(bot => {
+                  const pos = positions[bot.symbol];
+                  const inPosition = pos && Math.abs(pos.size) > 0;
+                  return (
                   <tr
                     key={bot.id}
                     className={cn('algo-bot-row', selectedBotId === bot.id && 'row-active')}
@@ -709,6 +750,15 @@ function AlgoTab() {
                     <td className="font-bold">{bot.symbol}</td>
                     <td className="text-xs">
                       <StrategyBadge strategy={bot.strategy} compact />
+                    </td>
+                    <td className="text-center">
+                      {inPosition ? (
+                        <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
+                          {pos.size > 0 ? 'LONG' : 'SHORT'}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-[0.62rem]">FLAT</span>
+                      )}
                     </td>
                     <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
                     <td className={cn(
@@ -753,7 +803,8 @@ function AlgoTab() {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

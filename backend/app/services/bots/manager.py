@@ -5,14 +5,24 @@ from datetime import datetime, timezone
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
-from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update
+from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
 from app.services.bots.indicators import prepare_strategy_df
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
+from app.services.bots import positions as bot_positions
 
 ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
+
+
+def _coerce_bar_time(bar_time) -> int | None:
+    if bar_time is None:
+        return None
+    try:
+        return int(bar_time)
+    except (TypeError, ValueError):
+        return None
 
 
 class BotManagerService:
@@ -71,6 +81,12 @@ class BotManagerService:
             return usd
         return balances.get("USDT", {}).get("balance", 0)
 
+    def _get_bot_position(self, bot_id: str, symbol: str) -> dict:
+        return bot_positions.get_bot_position(bot_id, symbol)
+
+    def _get_bot_position_size(self, bot_id: str, symbol: str) -> float:
+        return bot_positions.get_bot_size(bot_id, symbol)
+
     def _get_position(self, symbol: str) -> dict:
         positions = self.oms.get_account_data().get("positions", {})
         return positions.get(symbol) or {}
@@ -102,9 +118,9 @@ class BotManagerService:
         symbol = bot["symbol"]
         stats = bot_analytics.get_bot_stats(bot_id)
         realized = stats["total_pnl"]
-        pos = self._get_position(symbol)
-        pos_size = float(pos.get("size", 0) or 0)
-        avg = float(pos.get("avg_price") or 0)
+        bot_pos = self._get_bot_position(bot_id, symbol)
+        pos_size = float(bot_pos.get("size") or 0)
+        avg = float(bot_pos.get("avg_price") or 0)
         mark = avg
         if hasattr(self.oms, "feed") and hasattr(self.oms.feed, "_symbols"):
             mark = float(self.oms.feed._symbols.get(symbol, {}).get("price", mark))
@@ -206,21 +222,21 @@ class BotManagerService:
     async def _handle_signal(self, bot, signal: str, signal_data: dict, eval_price: float, bar_time):
         bot_id = bot["id"]
         symbol = bot["symbol"]
-        pos_size = self._get_position_size(symbol)
-        pos = self._get_position(symbol)
+        bot_pos = self._get_bot_position(bot_id, symbol)
+        pos_size = float(bot_pos.get("size") or 0)
 
         if signal == "CLOSE":
             if pos_size > 0:
                 await self._execute_order(
                     bot, "SELL", abs(pos_size), eval_price, signal_data,
                     is_exit=True, bar_time=bar_time,
-                    entry_price=float(pos.get("avg_price") or eval_price),
+                    entry_price=float(bot_pos.get("avg_price") or eval_price),
                 )
             elif pos_size < 0:
                 await self._execute_order(
                     bot, "BUY", abs(pos_size), eval_price, signal_data,
                     is_exit=True, bar_time=bar_time,
-                    entry_price=float(pos.get("avg_price") or eval_price),
+                    entry_price=float(bot_pos.get("avg_price") or eval_price),
                 )
             return
 
@@ -238,7 +254,7 @@ class BotManagerService:
                 await self._execute_order(
                     bot, "SELL", abs(pos_size), eval_price, signal_data,
                     is_exit=True, bar_time=bar_time,
-                    entry_price=float(pos.get("avg_price") or eval_price),
+                    entry_price=float(bot_pos.get("avg_price") or eval_price),
                 )
             return
 
@@ -280,7 +296,7 @@ class BotManagerService:
 
             quantity = risk_amount / price_diff
 
-        pos_size = self._get_position_size(symbol)
+        pos_size = self._get_bot_position_size(bot_id, symbol)
         decision = self._risk_gate.validate_trade(
             bot,
             side,
@@ -337,25 +353,57 @@ class BotManagerService:
                 if bar_time is not None:
                     bot["last_signal_bar_time"] = bar_time
                 order_id = result.get("order_id")
-                await self.log_bot_event(bot_id, "SUCCESS", f"Placed {side} order {order_id}.")
+                fill_price = float(result.get("average_fill_price") or current_price)
+                filled_qty = float(result.get("filled_quantity") or quantity or 0)
+                live_submitted = TERMINAL_MODE != "SIMULATED" and result.get("average_fill_price") is None
 
-                trade_pnl = None
-                if is_exit and entry_price is not None:
-                    trade_pnl = self._calc_exit_pnl(side, quantity, current_price, entry_price)
+                if live_submitted:
+                    bot_analytics.record_pending_fill(
+                        bot_id,
+                        order_id,
+                        symbol,
+                        side,
+                        filled_qty,
+                        current_price,
+                        signal_id=signal_id,
+                        is_exit=is_exit,
+                        entry_price=entry_price,
+                    )
+                    await self.log_bot_event(
+                        bot_id,
+                        "SUCCESS",
+                        f"Submitted {side} {filled_qty:.4f} @ ~{current_price:.4f} (order {order_id}). Awaiting broker fill.",
+                    )
+                else:
+                    await self.log_bot_event(
+                        bot_id,
+                        "SUCCESS",
+                        f"Filled {side} {filled_qty:.4f} @ {fill_price:.4f} (order {order_id}).",
+                    )
 
-                bot_analytics.record_trade(
-                    bot_id,
-                    order_id,
-                    symbol,
-                    side,
-                    quantity,
-                    current_price,
-                    pnl=trade_pnl,
-                    signal_id=signal_id,
-                    is_exit=is_exit,
+                    trade_pnl = None
+                    if is_exit and entry_price is not None:
+                        trade_pnl = self._calc_exit_pnl(side, filled_qty, fill_price, entry_price)
+
+                    bot_analytics.record_trade(
+                        bot_id,
+                        order_id,
+                        symbol,
+                        side,
+                        filled_qty,
+                        fill_price,
+                        pnl=trade_pnl,
+                        signal_id=signal_id,
+                        signal_bar_time=_coerce_bar_time(bar_time),
+                        is_exit=is_exit,
+                    )
+                    self.record_snapshot_for_bot(bot_id)
+
+                await publish_post_trade_bundle(
+                    self.broadcast_cb,
+                    self.oms.get_account_data(),
+                    self.oms.get_trade_history(),
                 )
-                self.record_snapshot_for_bot(bot_id)
-
                 await publish_bots_update(self.broadcast_cb, self.list_bots_public())
                 detail = self.get_bot_detail(bot_id)
                 if detail:
@@ -471,3 +519,144 @@ class BotManagerService:
                 "last_signal_at": bot.get("last_signal_at"),
             })
         return out
+
+    async def handle_sl_tp_exits(self, bot_exits: list[dict]):
+        """Record SIM stop-loss / take-profit exits in bot analytics."""
+        if not bot_exits:
+            return
+
+        touched: set[str] = set()
+        for exit_info in bot_exits:
+            bot_id = exit_info["bot_id"]
+            side = exit_info["side"]
+            qty = float(exit_info["quantity"])
+            price = float(exit_info["price"])
+            entry_price = float(exit_info.get("entry_price") or price)
+            trigger = exit_info.get("trigger_type", "SL/TP")
+            trade_pnl = self._calc_exit_pnl(side, qty, price, entry_price)
+
+            bot_analytics.record_trade(
+                bot_id,
+                exit_info.get("order_id"),
+                exit_info["symbol"],
+                side,
+                qty,
+                price,
+                pnl=trade_pnl,
+                signal_id=exit_info.get("signal_id"),
+                is_exit=True,
+            )
+            self.record_snapshot_for_bot(bot_id)
+            touched.add(bot_id)
+
+            await self.log_bot_event(
+                bot_id,
+                "INFO",
+                f"{trigger} exit {side} {qty:.4f} @ {price:.4f} (PnL {trade_pnl:+.2f}).",
+            )
+
+        await publish_post_trade_bundle(
+            self.broadcast_cb,
+            self.oms.get_account_data(),
+            self.oms.get_trade_history(),
+        )
+        await publish_bots_update(self.broadcast_cb, self.list_bots_public())
+        for bot_id in touched:
+            detail = self.get_bot_detail(bot_id)
+            if detail:
+                await publish_bot_detail(self.broadcast_cb, detail)
+
+    async def reconcile_pending_fills(self) -> int:
+        """Confirm live bot orders against broker trade history before recording analytics."""
+        pending = bot_analytics.list_pending_fills()
+        if not pending:
+            return 0
+
+        history = self.oms.get_trade_history()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT order_id FROM bot_trades WHERE order_id IS NOT NULL")
+        recorded_order_ids = {str(r[0]) for r in cursor.fetchall()}
+        conn.close()
+
+        confirmed = 0
+        touched: set[str] = set()
+
+        for p in pending:
+            order_id = p.get("order_id")
+            match = None
+
+            if order_id:
+                for trade in history:
+                    if str(trade.get("id")) == str(order_id):
+                        match = trade
+                        break
+
+            if not match:
+                for trade in history:
+                    tid = str(trade.get("id", ""))
+                    if tid and tid in recorded_order_ids:
+                        continue
+                    if trade.get("symbol") != p["symbol"]:
+                        continue
+                    if trade.get("side") != p["side"]:
+                        continue
+                    tqty = float(trade.get("filled_quantity") or trade.get("quantity") or 0)
+                    pqty = float(p["quantity"])
+                    if pqty <= 0:
+                        continue
+                    if abs(tqty - pqty) / pqty > 0.08:
+                        continue
+                    match = trade
+                    break
+
+            if not match:
+                continue
+
+            fill_price = float(match.get("average_fill_price") or p["signal_price"])
+            filled_qty = float(match.get("filled_quantity") or match.get("quantity") or p["quantity"])
+            resolved_order_id = order_id or str(match.get("id"))
+            is_exit = bool(p.get("is_exit"))
+            entry_price = p.get("entry_price")
+            trade_pnl = None
+            if is_exit and entry_price is not None:
+                trade_pnl = self._calc_exit_pnl(
+                    p["side"], filled_qty, fill_price, float(entry_price)
+                )
+
+            bot_analytics.record_trade(
+                p["bot_id"],
+                resolved_order_id,
+                p["symbol"],
+                p["side"],
+                filled_qty,
+                fill_price,
+                pnl=trade_pnl,
+                signal_id=p.get("signal_id"),
+                signal_bar_time=bot_analytics.signal_bar_time_from_id(p.get("signal_id")),
+                is_exit=is_exit,
+            )
+            bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price)
+            bot_analytics.delete_pending_fill(p["id"])
+            if resolved_order_id:
+                recorded_order_ids.add(str(resolved_order_id))
+            confirmed += 1
+            touched.add(p["bot_id"])
+
+            await self.log_bot_event(
+                p["bot_id"],
+                "SUCCESS",
+                f"Broker confirmed {p['side']} {filled_qty:.4f} @ {fill_price:.4f} (order {resolved_order_id}).",
+            )
+
+        if confirmed:
+            for bot_id in touched:
+                self.record_snapshot_for_bot(bot_id)
+            await publish_post_trade_bundle(
+                self.broadcast_cb,
+                self.oms.get_account_data(),
+                self.oms.get_trade_history(),
+            )
+            await publish_bots_update(self.broadcast_cb, self.list_bots_public())
+
+        return confirmed

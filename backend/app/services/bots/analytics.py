@@ -1,6 +1,22 @@
 """Persistent bot trade history, snapshots, and aggregated stats."""
 
+import uuid
+
 from app.database import get_connection
+
+
+def signal_bar_time_from_id(signal_id: str | None) -> int | None:
+    """Extract closed-bar unix time embedded in bot signal_id (bot_id:bar_time:side)."""
+    if not signal_id:
+        return None
+    parts = str(signal_id).split(":")
+    if len(parts) < 3 or parts[1] == "sltp":
+        return None
+    try:
+        val = int(float(parts[1]))
+    except (TypeError, ValueError):
+        return None
+    return val if val > 1_000_000_000 else None
 
 
 def record_trade(
@@ -13,16 +29,21 @@ def record_trade(
     *,
     pnl: float | None = None,
     signal_id: str | None = None,
+    signal_bar_time: int | None = None,
     is_exit: bool = False,
 ):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO bot_trades (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, is_exit)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bot_trades
+        (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, 1 if is_exit else 0),
+        (
+            bot_id, order_id, symbol, side, quantity, price, pnl, signal_id,
+            signal_bar_time, 1 if is_exit else 0,
+        ),
     )
     conn.commit()
     conn.close()
@@ -33,7 +54,8 @@ def get_trades(bot_id: str, limit: int = 50) -> list:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, is_exit, timestamp
+        SELECT id, bot_id, order_id, symbol, side, quantity, price, pnl, signal_id,
+               signal_bar_time, is_exit, timestamp
         FROM bot_trades WHERE bot_id = ?
         ORDER BY timestamp DESC LIMIT ?
         """,
@@ -166,5 +188,82 @@ def clear_bot_analytics():
     cursor.execute("DELETE FROM bot_trades")
     cursor.execute("DELETE FROM bot_snapshots")
     cursor.execute("DELETE FROM bot_logs")
+    cursor.execute("DELETE FROM bot_pending_fills")
+    cursor.execute("DELETE FROM bot_positions")
+    conn.commit()
+    conn.close()
+
+
+def record_pending_fill(
+    bot_id: str,
+    order_id: str | None,
+    symbol: str,
+    side: str,
+    quantity: float,
+    signal_price: float,
+    *,
+    signal_id: str | None = None,
+    is_exit: bool = False,
+    entry_price: float | None = None,
+) -> str:
+    """Queue a live order for broker confirmation before bot_trades write."""
+    pending_id = str(uuid.uuid4())
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO bot_pending_fills
+        (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            pending_id,
+            bot_id,
+            order_id,
+            symbol,
+            side,
+            quantity,
+            signal_price,
+            signal_id,
+            1 if is_exit else 0,
+            entry_price,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return pending_id
+
+
+def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    if bot_id:
+        cursor.execute(
+            """
+            SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
+                   signal_id, is_exit, entry_price, created_at
+            FROM bot_pending_fills WHERE bot_id = ?
+            ORDER BY created_at ASC
+            """,
+            (bot_id,),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
+                   signal_id, is_exit, entry_price, created_at
+            FROM bot_pending_fills
+            ORDER BY created_at ASC
+            """
+        )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def delete_pending_fill(pending_id: str) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM bot_pending_fills WHERE id = ?", (pending_id,))
     conn.commit()
     conn.close()

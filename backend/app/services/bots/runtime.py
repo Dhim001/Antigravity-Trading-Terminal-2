@@ -125,3 +125,16 @@ async def bot_snapshot_loop(bot_manager: BotManagerService):
         except Exception as exc:
             logger.error("Error in bot snapshot loop: %s", exc)
         await asyncio.sleep(BOT_SNAPSHOT_INTERVAL)
+
+
+async def bot_reconcile_loop(bot_manager: BotManagerService, interval: float = 12.0):
+    """Poll broker trade history to confirm live bot fills."""
+    logger.info("Starting bot pending-fill reconcile loop (interval=%.0fs)...", interval)
+    while True:
+        try:
+            confirmed = await bot_manager.reconcile_pending_fills()
+            if confirmed:
+                logger.info("Reconciled %d pending bot fill(s).", confirmed)
+        except Exception as exc:
+            logger.error("Error in bot reconcile loop: %s", exc)
+        await asyncio.sleep(interval)

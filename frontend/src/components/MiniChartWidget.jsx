@@ -1,7 +1,7 @@
 /**
  * MiniChartWidget.jsx — Compact ECharts panel for multi-chart grid.
  */
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import { calcEMA } from '../utils/indicators';
@@ -22,6 +22,37 @@ const SYMBOL_COLORS = {
 };
 
 const pad = (n) => String(n).padStart(2, '0');
+const DEFAULT_ZOOM = { start: 75, end: 100 };
+
+function normalizeEchartsList(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function readDataZoomWindow(chart) {
+  try {
+    const dz = normalizeEchartsList(chart.getOption()?.dataZoom)[0];
+    if (dz && typeof dz.start === 'number' && typeof dz.end === 'number') {
+      return { start: dz.start, end: dz.end };
+    }
+  } catch (_) {}
+  return null;
+}
+
+function buildMiniChartSeriesData(candles, symbol) {
+  const categoryData = candles.map((c) => {
+    const d = new Date(c.time * 1000);
+    return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  });
+
+  const candlestickData = candles.map((c) => [c.open, c.close, c.low, c.high]);
+  const ema9 = calcEMA(candles, 9);
+  const ema9Data = candles.map((_, i) => (i >= 8 ? ema9[i - 8]?.value : null));
+  const ema21 = calcEMA(candles, 21);
+  const ema21Data = candles.map((_, i) => (i >= 20 ? ema21[i - 20]?.value : null));
+
+  return { categoryData, candlestickData, ema9Data, ema21Data, symbol };
+}
 
 function MiniChartHeaderPrice({ symbol }) {
   const ticker = useStore(state => state.tickerData[symbol]);
@@ -63,45 +94,37 @@ export default function MiniChartWidget({
   onFocus,
   isMaximized = false,
   onToggleMaximize,
-  className,
 }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
+  const chartReadyRef = useRef(false);
+  const liveRafRef = useRef(null);
+  const prevSymbolRef = useRef(defaultSymbol);
+  const configureChartRef = useRef(() => {});
 
   const [symbol, setSymbol] = useState(defaultSymbol);
 
-  const candleRev = useStore(state => state.candleRevision[symbol] || 0);
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
   const symbolsList = useStore(state => state.symbolsList);
 
   const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
 
-  const symbolCandles = useMemo(() => {
+  const priceDecimals = useCallback((candles) => (
+    symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE') ||
+    candles[candles.length - 1]?.close < 2.0
+  ) ? 4 : 2, [symbol]);
+
+  const getDisplayCandles = useCallback(() => {
     const raw = getCandles(symbol);
     return raw.length > MINI_DISPLAY_BARS ? raw.slice(-MINI_DISPLAY_BARS) : raw;
-  }, [symbol, candleRev]);
+  }, [symbol]);
 
-  const configureChart = useCallback(() => {
-    if (!chartRef.current || symbolCandles.length === 0) return;
+  const buildFullOption = useCallback((candles, zoomWindow) => {
+    const dec = priceDecimals(candles);
+    const { categoryData, candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles, symbol);
+    const zoom = zoomWindow ?? DEFAULT_ZOOM;
 
-    const candles = symbolCandles;
-    const dec = (
-      symbol.includes('XRP') || symbol.includes('ADA') || symbol.includes('DOGE') ||
-      candles[candles.length - 1]?.close < 2.0
-    ) ? 4 : 2;
-
-    const categoryData = candles.map(c => {
-      const d = new Date(c.time * 1000);
-      return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-    });
-
-    const candlestickData = candles.map(c => [c.open, c.close, c.low, c.high]);
-    const ema9 = calcEMA(candles, 9);
-    const ema9Data = candles.map((c, i) => i >= 8 ? ema9[i - 8]?.value : null);
-    const ema21 = calcEMA(candles, 21);
-    const ema21Data = candles.map((c, i) => i >= 20 ? ema21[i - 20]?.value : null);
-
-    const option = {
+    return {
       backgroundColor: '#0b0f19',
       grid: { left: '2%', right: '8%', top: '6%', bottom: '18%' },
       tooltip: { show: false },
@@ -119,9 +142,9 @@ export default function MiniChartWidget({
         position: 'right',
         splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
         axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        axisLabel: { color: '#9ca3af', fontSize: 9, formatter: val => val.toFixed(dec) },
+        axisLabel: { color: '#9ca3af', fontSize: 9, formatter: (val) => val.toFixed(dec) },
       },
-      dataZoom: [{ type: 'inside', start: 75, end: 100 }],
+      dataZoom: [{ type: 'inside', start: zoom.start, end: zoom.end }],
       series: [
         {
           name: symbol,
@@ -150,41 +173,121 @@ export default function MiniChartWidget({
         },
       ],
     };
+  }, [priceDecimals, symbol]);
 
-    chartRef.current.setOption(option, { notMerge: true });
-  }, [symbolCandles, symbol]);
+  const configureChart = useCallback((opts = {}) => {
+    const chart = chartRef.current;
+    const candles = getDisplayCandles();
+    if (!chart || candles.length === 0) return;
+
+    const resetZoom = opts.resetZoom === true;
+    const zoomWindow = resetZoom
+      ? DEFAULT_ZOOM
+      : (readDataZoomWindow(chart) ?? DEFAULT_ZOOM);
+
+    chart.setOption(buildFullOption(candles, zoomWindow), { notMerge: true });
+    chartReadyRef.current = true;
+  }, [buildFullOption, getDisplayCandles]);
+
+  const applyLiveUpdate = useCallback(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartReadyRef.current) return;
+
+    const candles = getDisplayCandles();
+    if (!candles.length) return;
+
+    const { categoryData, candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles, symbol);
+
+    try {
+      chart.setOption({
+        xAxis: { data: categoryData },
+        series: [
+          { data: candlestickData },
+          { data: ema9Data },
+          { data: ema21Data },
+        ],
+      }, { lazyUpdate: false });
+    } catch (err) {
+      console.warn('[MiniChartWidget] live update failed:', err);
+    }
+  }, [getDisplayCandles, symbol]);
+
+  configureChartRef.current = configureChart;
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    const el = containerRef.current;
+    if (!el) return;
 
-    const chart = echarts.init(containerRef.current, 'dark');
-    chartRef.current = chart;
+    let chart = null;
+    let disposed = false;
 
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(containerRef.current);
+    const mountChart = () => {
+      if (disposed || chart) return false;
+      const { clientWidth, clientHeight } = el;
+      if (clientWidth < 2 || clientHeight < 2) return false;
+
+      chart = echarts.init(el, 'dark');
+      chartRef.current = chart;
+      requestAnimationFrame(() => configureChartRef.current({ resetZoom: true }));
+      return true;
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (chart) {
+        chart.resize();
+        return;
+      }
+      mountChart();
+    });
+    ro.observe(el);
+    mountChart();
 
     return () => {
+      disposed = true;
       ro.disconnect();
-      chart.dispose();
+      chart?.dispose();
       chartRef.current = null;
+      chartReadyRef.current = false;
     };
   }, []);
 
   useEffect(() => {
-    configureChart();
-  }, [configureChart]);
+    if (!chartRef.current) return;
+    if (prevSymbolRef.current === symbol) return;
+    prevSymbolRef.current = symbol;
+    configureChart({ resetZoom: true });
+  }, [symbol, configureChart]);
 
   useEffect(() => {
-    const unsub = useStore.subscribe(
-      state => state.candleRevision[symbol] || 0,
-      () => configureChart(),
+    const sym = symbol;
+    const unsubscribe = useStore.subscribe(
+      (state) => state.candleRevision[sym] || 0,
+      () => {
+        if (liveRafRef.current != null) return;
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null;
+          applyLiveUpdate();
+        });
+      },
     );
-    return unsub;
-  }, [symbol, configureChart]);
+    return () => {
+      unsubscribe();
+      if (liveRafRef.current != null) {
+        cancelAnimationFrame(liveRafRef.current);
+        liveRafRef.current = null;
+      }
+    };
+  }, [symbol, applyLiveUpdate]);
 
   useEffect(() => {
     setSymbol(defaultSymbol);
   }, [defaultSymbol]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    requestAnimationFrame(() => chart.resize());
+  }, [isMaximized]);
 
   const handleFocusClick = () => {
     setActiveSymbol(symbol);
@@ -200,11 +303,9 @@ export default function MiniChartWidget({
   return (
     <div
       className={cn(
-        'flex cursor-pointer flex-col overflow-hidden rounded-md bg-card transition-all duration-200',
+        'relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-md bg-card transition-all duration-200',
         isFocused ? 'border-[1.5px] shadow-[0_0_12px]' : 'border border-border',
-        isMaximized && 'absolute top-1 left-1 z-50 h-[calc(100%-8px)] w-[calc(100%-8px)] shadow-2xl',
-        !isMaximized && 'relative h-full w-full',
-        className,
+        isMaximized && 'shadow-2xl',
       )}
       style={{
         borderColor: isFocused ? accentCol : undefined,
@@ -217,7 +318,7 @@ export default function MiniChartWidget({
         onClick={e => e.stopPropagation()}
         onDoubleClick={(e) => {
           e.stopPropagation();
-          if (onToggleMaximize) onToggleMaximize();
+          onToggleMaximize?.();
         }}
       >
         <Select value={symbol} onValueChange={handleSymbolChange}>
@@ -255,8 +356,7 @@ export default function MiniChartWidget({
           className="shrink-0 text-muted-foreground hover:text-foreground"
           onClick={(e) => {
             e.stopPropagation();
-            if (onToggleMaximize) onToggleMaximize();
-            else handleFocusClick();
+            onToggleMaximize?.();
           }}
           title={isMaximized ? 'Restore grid layout' : 'Maximize chart'}
         >

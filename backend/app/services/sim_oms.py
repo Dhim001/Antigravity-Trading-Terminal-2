@@ -4,6 +4,7 @@ from typing import Dict, List, Any
 from app.database import get_connection
 from app.config import MAX_ORDER_VALUE
 from app.services.base_oms import BaseOMSService
+from app.services.bots import positions as bot_positions
 
 class SimulatedOMSService(BaseOMSService):
     def __init__(self, feed):
@@ -20,16 +21,20 @@ class SimulatedOMSService(BaseOMSService):
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
         
         cursor.execute("SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price FROM positions WHERE size != 0.0")
-        positions = {
-            row["symbol"]: {
+        positions = {}
+        for row in cursor.fetchall():
+            sym = row["symbol"]
+            owners = bot_positions.owners_for_account_payload(sym)
+            positions[sym] = {
                 "size": row["size"],
                 "avg_price": row["avg_price"],
                 "stop_loss_percent": row["stop_loss_percent"],
                 "take_profit_percent": row["take_profit_percent"],
                 "stop_loss_price": row["stop_loss_price"],
-                "take_profit_price": row["take_profit_price"]
-            } for row in cursor.fetchall()
-        }
+                "take_profit_price": row["take_profit_price"],
+                "bot_id": owners[0]["bot_id"] if len(owners) == 1 else None,
+                "bot_owners": owners,
+            }
         
         cursor.execute("SELECT id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, timestamp, bot_id, signal_id FROM orders ORDER BY timestamp DESC LIMIT 50")
         orders = [dict(row) for row in cursor.fetchall()]
@@ -204,7 +209,10 @@ class SimulatedOMSService(BaseOMSService):
             ))
             
             if order_type == "MARKET":
-                self._process_fill(cursor, symbol, side, market_price, quantity, quote, stop_loss_percent, take_profit_percent)
+                self._process_fill(
+                    cursor, symbol, side, market_price, quantity, quote,
+                    stop_loss_percent, take_profit_percent, bot_id=bot_id,
+                )
                 
             conn.commit()
             conn.close()
@@ -212,7 +220,9 @@ class SimulatedOMSService(BaseOMSService):
             return {
                 "status": "success",
                 "message": f"Order placed: {side} {quantity} {symbol} @ {order_price}",
-                "order_id": order_id
+                "order_id": order_id,
+                "average_fill_price": market_price if order_type == "MARKET" else None,
+                "filled_quantity": quantity if order_type == "MARKET" else 0.0,
             }
             
         except Exception as e:
@@ -257,7 +267,10 @@ class SimulatedOMSService(BaseOMSService):
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT id, symbol, side, price, quantity, stop_loss_percent, take_profit_percent FROM orders WHERE status = 'PENDING'")
+        cursor.execute(
+            "SELECT id, symbol, side, price, quantity, stop_loss_percent, take_profit_percent, bot_id "
+            "FROM orders WHERE status = 'PENDING'"
+        )
         pending_orders = cursor.fetchall()
         
         if not pending_orders:
@@ -294,7 +307,11 @@ class SimulatedOMSService(BaseOMSService):
                         locked_val = limit_price * qty
                         cursor.execute("UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?", (locked_val, quote))
                         
-                    self._process_fill(cursor, symbol, side, market_price, qty, quote, order["stop_loss_percent"], order["take_profit_percent"])
+                    self._process_fill(
+                        cursor, symbol, side, market_price, qty, quote,
+                        order["stop_loss_percent"], order["take_profit_percent"],
+                        bot_id=order.get("bot_id"),
+                    )
                     
                     filled_order_updates.append({
                         "id": order["id"],
@@ -313,7 +330,19 @@ class SimulatedOMSService(BaseOMSService):
         conn.close()
         return filled_order_updates
 
-    def _process_fill(self, cursor, symbol, side, price, quantity, quote, stop_loss_percent=None, take_profit_percent=None):
+    def _process_fill(
+        self,
+        cursor,
+        symbol,
+        side,
+        price,
+        quantity,
+        quote,
+        stop_loss_percent=None,
+        take_profit_percent=None,
+        *,
+        bot_id=None,
+    ):
         base_asset = self.feed._symbols[symbol]["asset"]
         order_value = price * quantity
         
@@ -381,6 +410,9 @@ class SimulatedOMSService(BaseOMSService):
                 SET size = ?, avg_price = ?, stop_loss_percent = ?, take_profit_percent = ?, stop_loss_price = ?, take_profit_price = ?
                 WHERE symbol = ?
             """, (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, symbol))
+
+        if bot_id:
+            bot_positions.apply_fill(bot_id, symbol, side, quantity, price)
 
     async def update_position_sl_tp(self, symbol: str, stop_loss_percent: float=None, take_profit_percent: float=None, stop_loss_price: float=None, take_profit_price: float=None) -> dict:
         conn = get_connection()
@@ -450,10 +482,11 @@ class SimulatedOMSService(BaseOMSService):
         
         if not active_positions:
             conn.close()
-            return [], []
+            return [], [], []
             
         filled_exits = []
         triggered_logs = []
+        bot_exits = []
         
         for pos in active_positions:
             symbol = pos["symbol"]
@@ -490,42 +523,86 @@ class SimulatedOMSService(BaseOMSService):
                 elif tp_price is not None and market_price <= tp_price:
                     trigger_type = 'TP'
                     
-            if trigger_type:
+            if not trigger_type:
+                continue
+
+            side = "SELL" if size > 0 else "BUY"
+            if trigger_type == 'SL':
+                log_msg = (
+                    f"🚨 STOP LOSS TRIGGERED for {symbol} at ${market_price:.2f} "
+                    f"(Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting..."
+                )
+            else:
+                log_msg = (
+                    f"🎯 TAKE PROFIT TRIGGERED for {symbol} at ${market_price:.2f} "
+                    f"(Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting..."
+                )
+            triggered_logs.append(log_msg)
+
+            owners = bot_positions.get_symbol_owners(symbol)
+            exit_slices: list[dict] = []
+            if owners:
+                for owner in owners:
+                    osize = abs(float(owner["size"]))
+                    if osize > 1e-8:
+                        exit_slices.append({
+                            "bot_id": owner["bot_id"],
+                            "qty": osize,
+                            "entry_price": float(owner["avg_price"]),
+                        })
+                bot_total = sum(s["qty"] for s in exit_slices)
+                remainder = max(0.0, abs(size) - bot_total)
+            else:
+                remainder = abs(size)
+
+            def _execute_exit_slice(qty: float, bot_id=None, entry_price=None):
+                if qty <= 1e-8:
+                    return
+                order_id = str(uuid.uuid4())
                 try:
-                    order_id = str(uuid.uuid4())
-                    side = "SELL" if size > 0 else "BUY"
-                    qty = abs(size)
-                    
-                    if trigger_type == 'SL':
-                        log_msg = f"🚨 STOP LOSS TRIGGERED for {symbol} at ${market_price:.2f} (Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting..."
-                    else:
-                        log_msg = f"🎯 TAKE PROFIT TRIGGERED for {symbol} at ${market_price:.2f} (Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting..."
-                        
-                    triggered_logs.append(log_msg)
-                    
                     cursor.execute("""
-                        INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price))
-                    
-                    self._process_fill(cursor, symbol, side, market_price, qty, quote)
-                    
+                        INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, bot_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price, bot_id))
+
+                    self._process_fill(
+                        cursor, symbol, side, market_price, qty, quote,
+                        bot_id=bot_id,
+                    )
+
                     filled_exits.append({
                         "id": order_id,
                         "symbol": symbol,
                         "side": side,
                         "price": market_price,
-                        "quantity": qty
+                        "quantity": qty,
                     })
-                    
+
+                    if bot_id:
+                        bot_exits.append({
+                            "bot_id": bot_id,
+                            "order_id": order_id,
+                            "symbol": symbol,
+                            "side": side,
+                            "quantity": qty,
+                            "price": market_price,
+                            "entry_price": entry_price or avg_price,
+                            "trigger_type": trigger_type,
+                            "signal_id": f"{bot_id}:sltp:{order_id}",
+                        })
                 except Exception as e:
                     print(f"Error executing SL/TP exit for {symbol}: {str(e)}")
+
+            for sl in exit_slices:
+                _execute_exit_slice(sl["qty"], bot_id=sl["bot_id"], entry_price=sl["entry_price"])
+            if remainder > 1e-8:
+                _execute_exit_slice(remainder)
                     
         if filled_exits:
             conn.commit()
             
         conn.close()
-        return filled_exits, triggered_logs
+        return filled_exits, triggered_logs, bot_exits
 
     async def emergency_stop(self) -> dict:
         """Cancel all pending orders and close all open positions."""

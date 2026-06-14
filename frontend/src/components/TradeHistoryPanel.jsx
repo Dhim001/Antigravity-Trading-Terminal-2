@@ -21,6 +21,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WidgetToolbar, WidgetToolbarDivider, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
+import { buildBotLookup, parseTradeTimestamp, tradeSourceLabel } from '@/lib/botAttribution';
 
 const fmt = (n, dec = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -66,12 +67,14 @@ function SortTh({ children, field, sort, onSort, className }) {
 }
 
 export function TradeHistoryContent({ embedded = true, onClose }) {
-  const { tradeHistory, tradeStats } = useStore();
+  const { tradeHistory, tradeStats, activeBots } = useStore();
+  const botLookup = useMemo(() => buildBotLookup(activeBots), [activeBots]);
 
   const [loading, setLoading] = useState(false);
   const [symFilter, setSymFilter] = useState('ALL');
   const [sideFilter, setSide] = useState('ALL');
   const [statFilter, setStat] = useState('ALL');
+  const [sourceFilter, setSourceFilter] = useState('ALL');
   const [dateRange, setDateRange] = useState('All');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'timestamp', dir: 'desc' });
@@ -108,6 +111,8 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     if (symFilter !== 'ALL') rows = rows.filter(t => t.symbol === symFilter);
     if (sideFilter !== 'ALL') rows = rows.filter(t => t.side === sideFilter);
     if (statFilter !== 'ALL') rows = rows.filter(t => t.status === statFilter);
+    if (sourceFilter === 'BOT') rows = rows.filter(t => t.bot_id);
+    if (sourceFilter === 'MANUAL') rows = rows.filter(t => !t.bot_id);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       rows = rows.filter(t =>
@@ -123,17 +128,20 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
       if (typeof av === 'string') av = av.toLowerCase(), bv = String(bv).toLowerCase();
       return sort.dir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
     });
-  }, [tradeHistory, cutoff, symFilter, sideFilter, statFilter, search, sort]);
+  }, [tradeHistory, cutoff, symFilter, sideFilter, statFilter, sourceFilter, search, sort]);
 
   const exportCSV = () => {
-    const headers = ['Time', 'ID', 'Symbol', 'Type', 'Side', 'Status', 'Qty', 'Fill Price', 'Value', 'Cost Basis', 'Realized P&L'];
-    const rows = filtered.map(t => [
+    const headers = ['Time', 'ID', 'Symbol', 'Source', 'Type', 'Side', 'Status', 'Qty', 'Fill Price', 'Value', 'Cost Basis', 'Realized P&L'];
+    const rows = filtered.map(t => {
+      const src = tradeSourceLabel(t, botLookup);
+      return [
       new Date(t.timestamp).toISOString(),
-      t.id, t.symbol, t.type, t.side, t.status,
+      t.id, t.symbol, src.label, t.type, t.side, t.status,
       t.filled_quantity ?? t.quantity,
       t.average_fill_price ?? t.price ?? '',
       t.trade_value ?? '', t.cost_basis ?? '', t.realized_pnl ?? '',
-    ]);
+    ];
+    });
     const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -299,6 +307,22 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
           ))}
         </ToggleGroup>
 
+        <ToggleGroup
+          type="single"
+          size="sm"
+          spacing={1}
+          value={sourceFilter}
+          onValueChange={v => v && setSourceFilter(v)}
+        >
+          {['ALL', 'BOT', 'MANUAL'].map(s => (
+            <ToggleGroupItem key={s} value={s} className="px-2 text-[0.62rem] font-semibold">
+              {s === 'ALL' ? 'All sources' : s === 'BOT' ? 'Bot' : 'Manual'}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+
+        <WidgetToolbarDivider />
+
         <Input
           type="text"
           placeholder="Search…"
@@ -322,6 +346,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               <tr>
                 <SortTh field="timestamp" sort={sort} onSort={handleSort}>Time</SortTh>
                 <SortTh field="symbol" sort={sort} onSort={handleSort}>Symbol</SortTh>
+                <th>Source</th>
                 <SortTh field="side" sort={sort} onSort={handleSort}>Side</SortTh>
                 <SortTh field="type" sort={sort} onSort={handleSort}>Type</SortTh>
                 <SortTh field="status" sort={sort} onSort={handleSort}>Status</SortTh>
@@ -335,6 +360,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               {filtered.map(trade => {
                 const meta = STATUS_META[trade.status] || STATUS_META.PENDING;
                 const StatusIcon = meta.icon;
+                const src = tradeSourceLabel(trade, botLookup);
                 const qty = trade.filled_quantity ?? trade.quantity;
                 const fp = trade.average_fill_price || trade.price;
                 const pdec = (
@@ -346,17 +372,23 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
 
                 return (
                   <tr key={trade.id}>
-                    <td className="text-muted-foreground">
-                      <span className="num-mono text-[0.62rem]">
-                        {trade.timestamp
-                          ? new Date(trade.timestamp).toLocaleString('en-GB', {
+                    <td>
+                      <span className="num-mono text-[0.62rem] text-muted-foreground">
+                        {(() => {
+                          const d = parseTradeTimestamp(trade.timestamp);
+                          return d ? d.toLocaleString('en-GB', {
                             day: '2-digit', month: 'short',
                             hour: '2-digit', minute: '2-digit', second: '2-digit',
-                          })
-                          : '—'}
+                          }) : '—';
+                        })()}
                       </span>
                     </td>
                     <td><span className="font-bold">{trade.symbol}</span></td>
+                    <td>
+                      <Badge variant={src.kind === 'bot' ? 'secondary' : 'outline'} className="text-[0.58rem]">
+                        {src.label}
+                      </Badge>
+                    </td>
                     <td>
                       <Badge variant={trade.side === 'BUY' ? 'buy' : 'sell'}>{trade.side}</Badge>
                     </td>

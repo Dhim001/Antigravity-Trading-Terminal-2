@@ -122,17 +122,36 @@ export default function EquityCurveTab() {
   }, [equitySeries, filteredStats.totalPnl]);
 
   useEffect(() => {
-    if (!chartRef.current) return;
+    const el = chartRef.current;
+    if (!el) return;
 
-    const chart = echarts.init(chartRef.current, 'dark');
-    chartInst.current = chart;
+    let chart = null;
+    let disposed = false;
 
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(chartRef.current);
+    const mountChart = () => {
+      if (disposed || chart) return false;
+      const { clientWidth, clientHeight } = el;
+      if (clientWidth < 2 || clientHeight < 2) return false;
+
+      chart = echarts.init(el, 'dark');
+      chartInst.current = chart;
+      return true;
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (chart) {
+        chart.resize();
+        return;
+      }
+      mountChart();
+    });
+    ro.observe(el);
+    mountChart();
 
     return () => {
+      disposed = true;
       ro.disconnect();
-      chart.dispose();
+      chart?.dispose();
       chartInst.current = null;
     };
   }, []);

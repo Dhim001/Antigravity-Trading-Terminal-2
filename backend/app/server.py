@@ -36,6 +36,7 @@ from app.services.bots.runtime import (
     bar_publish_loop,
     bot_market_loop,
     bot_snapshot_loop,
+    bot_reconcile_loop,
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
@@ -64,6 +65,7 @@ async def simulated_market_loop():
     feed = state.feed
     oms = state.oms
     manager = state.manager
+    bot_manager = state.bot_manager
     tick_count = 0
     while True:
         try:
@@ -72,12 +74,15 @@ async def simulated_market_loop():
                 market_data = feed.get_market_data(symbol)
                 data[symbol] = market_data
             fills = oms.match_pending_orders()
-            sl_tp_fills, sl_tp_logs = oms.check_sl_tp_triggers()
+            sl_tp_fills, sl_tp_logs, bot_exits = oms.check_sl_tp_triggers()
 
             if sl_tp_logs:
                 for log_msg in sl_tp_logs:
                     logging.info(log_msg)
                     await publish_bot_log(manager.broadcast, "system", "INFO", log_msg)
+
+            if bot_exits:
+                await bot_manager.handle_sl_tp_exits(bot_exits)
 
             total_fills = fills + sl_tp_fills
             slim_data = {}
@@ -208,6 +213,8 @@ async def main():
         if runs_bot_engine_inline():
             tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
             tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
+            if TERMINAL_MODE != "SIMULATED":
+                tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
         elif runs_bar_publisher():
             tasks.append(asyncio.create_task(bar_publish_loop(state.feed, state.event_bus)))
             tasks.append(asyncio.create_task(redis_forward_loop()))

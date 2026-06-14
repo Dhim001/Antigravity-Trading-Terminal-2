@@ -27,6 +27,7 @@ from app.config import (
 from app.services.base_oms import BaseOMSService
 from app.api.outbound import publish_account_update
 from app.services.sim_oms import SimulatedOMSService
+from app.services.bots import positions as bot_positions
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,10 @@ class EtoroOMSService(BaseOMSService):
                 "stop_loss_price": pos.get("stopLossRate"),
                 "take_profit_price": pos.get("takeProfitRate"),
             }
+        for sym, pdata in out.items():
+            owners = bot_positions.owners_for_account_payload(sym)
+            pdata["bot_id"] = owners[0]["bot_id"] if len(owners) == 1 else None
+            pdata["bot_owners"] = owners
         return out
 
     def _map_orders(self, portfolio: dict) -> List[dict]:

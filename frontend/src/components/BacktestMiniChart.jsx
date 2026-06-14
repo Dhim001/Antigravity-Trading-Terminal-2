@@ -9,11 +9,43 @@ export default function BacktestMiniChart({ equityCurve, totalPnl }) {
   const chartRef = useRef(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    if (!chartRef.current) {
-      chartRef.current = echarts.init(containerRef.current, 'dark');
-    }
+    const el = containerRef.current;
+    if (!el) return;
+
+    let chart = null;
+    let disposed = false;
+
+    const mountChart = () => {
+      if (disposed || chart) return false;
+      const { clientWidth, clientHeight } = el;
+      if (clientWidth < 2 || clientHeight < 2) return false;
+
+      chart = echarts.init(el, 'dark');
+      chartRef.current = chart;
+      return true;
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (chart) {
+        chart.resize();
+        return;
+      }
+      mountChart();
+    });
+    ro.observe(el);
+    mountChart();
+
+    return () => {
+      disposed = true;
+      ro.disconnect();
+      chart?.dispose();
+      chartRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     const chart = chartRef.current;
+    if (!chart) return;
 
     if (!equityCurve?.length) {
       chart.clear();
@@ -65,16 +97,7 @@ export default function BacktestMiniChart({ equityCurve, totalPnl }) {
         },
       },
     }, { notMerge: true });
-
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
   }, [equityCurve, totalPnl]);
-
-  useEffect(() => () => {
-    chartRef.current?.dispose();
-    chartRef.current = null;
-  }, []);
 
   if (!equityCurve?.length) return null;
 

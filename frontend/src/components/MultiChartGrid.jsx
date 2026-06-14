@@ -170,12 +170,13 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   };
 
   const getCellClassName = (idx) => cn(
+    maximizedIdx === idx && 'multi-chart-cell--maximized',
     maximizedIdx !== null && maximizedIdx !== idx && 'pointer-events-none opacity-15',
     'transition-opacity duration-200',
   );
 
   const renderCell = (i, extraClassName) => (
-    <div key={`wrap-${i}`} className={cn('multi-chart-cell', extraClassName)}>
+    <div key={`wrap-${i}`} className={cn('multi-chart-cell', getCellClassName(i), extraClassName)}>
       <MiniChartWidget
         key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
         defaultSymbol={symbols[i] || layout.defaults[i]}
@@ -187,8 +188,7 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
           handleFocus(i, sym);
         }}
         isMaximized={maximizedIdx === i}
-        onToggleMaximize={() => setMaximizedIdx(maximizedIdx === i ? null : i)}
-        className={getCellClassName(i)}
+        onToggleMaximize={() => setMaximizedIdx((prev) => (prev === i ? null : i))}
       />
     </div>
   );

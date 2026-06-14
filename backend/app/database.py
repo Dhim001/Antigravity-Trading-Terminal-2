@@ -99,6 +99,7 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN bot_id TEXT DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN signal_id TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_trades ADD COLUMN signal_bar_time INTEGER DEFAULT NULL")
 
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS bot_trades (
@@ -132,6 +133,36 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_snapshots_bot_id ON bot_snapshots(bot_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_bot_id ON orders(bot_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_logs_bot_id ON bot_logs(bot_id)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_positions (
+            bot_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            size REAL NOT NULL DEFAULT 0.0,
+            avg_price REAL NOT NULL DEFAULT 0.0,
+            PRIMARY KEY (bot_id, symbol),
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_pending_fills (
+            id TEXT PRIMARY KEY,
+            bot_id TEXT NOT NULL,
+            order_id TEXT,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            signal_price REAL NOT NULL,
+            signal_id TEXT,
+            is_exit INTEGER NOT NULL DEFAULT 0,
+            entry_price REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_pending_fills_bot ON bot_pending_fills (bot_id)"
+    )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ambiguous_orders (

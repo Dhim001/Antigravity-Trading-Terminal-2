@@ -247,8 +247,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     if (typeof log === 'string') {
       entry = `[${time}] ${log}`;
     } else {
+      const botTag = log.bot_id ? `[${String(log.bot_id).slice(0, 8)}] ` : '';
       const level = log.level ? `${log.level} - ` : '';
-      entry = `[${time}] ${level}${log.message || ''}`;
+      entry = `[${time}] ${botTag}${level}${log.message || ''}`;
     }
     const newLogs = [entry, ...state.botLogs];
     if (newLogs.length > 100) newLogs.pop();
@@ -258,8 +259,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     botLogs: [...logsArray]
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
       .map(log => {
-        const time = new Date(log.timestamp + 'Z').toLocaleTimeString();
-        return `[${time}] ${log.level || 'INFO'} - ${log.message}`;
+        const ts = log.timestamp;
+        const d = typeof ts === 'string' && !ts.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(ts)
+          ? new Date(`${ts}Z`)
+          : new Date(ts);
+        const time = Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString();
+        const botTag = log.bot_id ? `[${String(log.bot_id).slice(0, 8)}] ` : '';
+        return `[${time}] ${botTag}${log.level || 'INFO'} - ${log.message}`;
       }),
   }),
   clearBotLogs: () => set({ botLogs: [] }),
