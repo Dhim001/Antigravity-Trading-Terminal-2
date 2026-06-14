@@ -5,6 +5,8 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
 import MiniChartWidget from './MiniChartWidget';
+import { subscribeChartSymbols } from '../api/bootstrap';
+import { getStoreActions } from '../api/dispatch';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -149,6 +151,12 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
 
   useEffect(() => {
     try { localStorage.setItem('terminal_multi_chart_symbols', JSON.stringify(symbols)); } catch (_) {}
+  }, [symbols]);
+
+  useEffect(() => {
+    const unique = [...new Set(symbols.filter(Boolean))];
+    if (unique.length === 0) return;
+    subscribeChartSymbols(unique, getStoreActions());
   }, [symbols]);
 
   const handleLayoutChange = (newLayoutId) => {

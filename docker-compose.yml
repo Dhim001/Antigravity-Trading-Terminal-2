@@ -78,6 +78,18 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,time,redis; r=redis.from_url(os.environ['REDIS_URL']); v=r.get('terminal:worker:heartbeat'); assert v and time.time()-float(v)<35",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
 
   frontend:
     build:

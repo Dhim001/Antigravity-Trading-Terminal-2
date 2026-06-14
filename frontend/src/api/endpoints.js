@@ -9,9 +9,37 @@ export async function fetchHealth(storeActions) {
     storeActions.setTerminalConfig({
       terminalMode: body.terminal_mode,
       terminalRole: body.terminal_role,
+      distributed: body.worker != null,
     });
   }
   return body;
+}
+
+export async function fetchStrategies(storeActions) {
+  try {
+    const body = await apiRequest('/api/v1/strategies');
+    if (body.strategies) {
+      storeActions.setStrategyCatalog(body.strategies);
+    }
+    return body;
+  } catch (e) {
+    console.warn('[bootstrap] Strategy catalog unavailable:', e.message);
+    return null;
+  }
+}
+
+export async function fetchBacktestRuns(storeActions, symbol) {
+  try {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}&limit=20` : '?limit=20';
+    const body = await apiRequest(`/api/v1/backtest/runs${qs}`);
+    if (body.runs) {
+      storeActions.setBacktestRuns(body.runs);
+    }
+    return body;
+  } catch (e) {
+    console.warn('[bootstrap] Backtest runs unavailable:', e.message);
+    return null;
+  }
 }
 
 export async function fetchAccount(storeActions) {

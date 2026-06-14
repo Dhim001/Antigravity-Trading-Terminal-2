@@ -1,5 +1,6 @@
 from app.services.bots.indicators import first_eval_index, prepare_strategy_df
 from app.services.bots.strategies import get_strategy
+from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 
 
 class BacktesterService:
@@ -20,6 +21,7 @@ class BacktesterService:
 
         df = prepare_strategy_df(df, strategy_name, config)
         strategy = get_strategy(strategy_name, config)
+        merged_config = merge_tp_config(strategy_name, config)
 
         position = None
         trade_log = []
@@ -62,6 +64,13 @@ class BacktesterService:
                 elif position["side"] == "SELL" and current_price >= position["stop_loss"]:
                     _close_position(bar_time, position["stop_loss"], "SL")
 
+                if position and position.get("take_profit") is not None:
+                    tp = position["take_profit"]
+                    if position["side"] == "BUY" and current_price >= tp:
+                        _close_position(bar_time, tp, "TP")
+                    elif position["side"] == "SELL" and current_price <= tp:
+                        _close_position(bar_time, tp, "TP")
+
                 if position and config.get("trailing_stop_percent"):
                     if position["side"] == "BUY":
                         position["high_watermark"] = max(position["high_watermark"], current_price)
@@ -95,11 +104,15 @@ class BacktesterService:
                     price_diff = abs(current_price - stop_loss)
                     if price_diff > 0:
                         qty = risk_amount / price_diff
+                        _, tp_price = resolve_take_profit(
+                            merged_config, signal_data, signal, current_price
+                        )
                         position = {
                             "side": signal,
                             "entry_price": current_price,
                             "qty": qty,
                             "stop_loss": stop_loss,
+                            "take_profit": tp_price,
                             "high_watermark": current_price,
                             "low_watermark": current_price,
                         }

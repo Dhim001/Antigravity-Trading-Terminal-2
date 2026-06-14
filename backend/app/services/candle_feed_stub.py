@@ -22,9 +22,19 @@ class CandleFeedStub:
         return
 
     def sync_bar(self, symbol: str, candles: list):
-        self._candles[symbol] = candles
-        if candles:
-            self._symbols[symbol]["price"] = candles[-1]["close"]
+        if len(candles) == 1:
+            bar = candles[0]
+            buf = list(self._candles.get(symbol, []))
+            if buf and buf[-1].get("time") == bar.get("time"):
+                buf[-1] = bar
+            elif not buf or buf[-1].get("time") < bar.get("time"):
+                buf.append(bar)
+            self._candles[symbol] = buf
+        else:
+            self._candles[symbol] = candles
+        merged = self._candles.get(symbol, [])
+        if merged:
+            self._symbols[symbol]["price"] = merged[-1]["close"]
 
     def get_candles(self, symbol: str):
         return self._candles.get(symbol, [])

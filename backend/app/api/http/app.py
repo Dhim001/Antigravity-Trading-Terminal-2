@@ -15,15 +15,21 @@ from app.api.http.dispatch import http_status_and_body, invoke_action
 from app.api.openapi import build_openapi_spec
 from app.api.router import ensure_routes_loaded, list_routes
 from app.api.state import AppState
-from app.config import HTTP_API_KEY, HTTP_CORS_ORIGINS, HTTP_HOST, HTTP_PORT, TERMINAL_MODE, TERMINAL_ROLE, WS_HOST, WS_PORT
+from app.config import HTTP_API_KEY, HTTP_CORS_ORIGINS, HTTP_HOST, HTTP_PORT, REDIS_URL, TERMINAL_MODE, TERMINAL_ROLE, WS_HOST, WS_PORT
 from app.api.http.auth import ApiKeyMiddleware
+from app.database import get_db_stats
+from app.services.bots.strategy_catalog import list_strategy_catalog
+from app.services.bots.backtest_store import list_backtest_runs
+from app.services.events import channels
 
 ensure_routes_loaded()
 
 
 async def health(request: Request) -> JSONResponse:
+    import time
+
     state: AppState = request.app.state.terminal
-    return JSONResponse({
+    body = {
         "ok": True,
         "service": "trading-terminal",
         "terminal_mode": TERMINAL_MODE,
@@ -31,7 +37,47 @@ async def health(request: Request) -> JSONResponse:
         "ws_clients": len(state.manager.connected_clients),
         "websocket": f"ws://{WS_HOST}:{WS_PORT}",
         "http": f"http://{HTTP_HOST}:{HTTP_PORT}",
-    })
+    }
+
+    try:
+        stats = get_db_stats()
+        body["metrics"] = {
+            "open_positions": stats.get("positions_count", 0),
+            "pending_orders": stats.get("pending_orders_count", 0),
+            "ambiguous_orders": (stats.get("reconciliation") or {}).get("pending_count", 0),
+        }
+    except Exception:
+        pass
+
+    if REDIS_URL and TERMINAL_ROLE == "server":
+        try:
+            import redis
+
+            client = redis.from_url(REDIS_URL)
+            raw = client.get(channels.WORKER_HEARTBEAT_KEY)
+            if raw:
+                age = time.time() - float(raw)
+                body["worker"] = {"alive": age < 35, "heartbeat_age_sec": round(age, 1)}
+            else:
+                body["worker"] = {"alive": False, "heartbeat_age_sec": None}
+        except Exception as exc:
+            body["worker"] = {"alive": False, "error": str(exc)}
+
+    return JSONResponse(body)
+
+
+async def list_strategies(request: Request) -> JSONResponse:
+    return JSONResponse({"ok": True, "strategies": list_strategy_catalog()})
+
+
+async def list_backtest_runs_handler(request: Request) -> JSONResponse:
+    symbol = request.query_params.get("symbol")
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    runs = list_backtest_runs(limit=limit, symbol=symbol or None)
+    return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
 
 
 async def list_api_routes(request: Request) -> JSONResponse:
@@ -119,6 +165,8 @@ def _make_endpoint(binding):
 def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health", health, methods=["GET"]),
+        Route("/api/v1/strategies", list_strategies, methods=["GET"]),
+        Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),
     ]

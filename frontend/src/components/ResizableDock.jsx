@@ -24,6 +24,8 @@ import BacktestResultsPanel from './BacktestResultsPanel';
 import BotDetailDrawer from './BotDetailDrawer';
 import TickViewerTab from './TickViewerTab';
 import BotHistoryTab from './BotHistoryTab';
+import ReconciliationTab from './ReconciliationTab';
+import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
 import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
@@ -293,9 +295,9 @@ function BalancesTab() {
 // ── Algo Bot Tab ──────────────────────────────────────────────────
 function AlgoTab() {
   const {
-    activeBots, botStrategy, botConfig, activeSymbol, symbolsList,
-    setBotStrategy, updateBotConfig, clearBotLogs, botLogs,
-    strategyTemplates, backtestResults, setChartInteractionMode,
+    activeBots, botStrategy, botExecutionMode, botConfig, activeSymbol, symbolsList,
+    setBotStrategy, setBotExecutionMode, updateBotConfig, clearBotLogs, botLogs,
+    strategyTemplates, backtestResults, backtestRuns, setChartInteractionMode,
     isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
@@ -336,11 +338,16 @@ function AlgoTab() {
     sendAction(Action.BOT_CREATE, {
       strategy: botStrategy,
       symbol: activeSymbol,
-      timeframe: "1m",
+      timeframe: botExecutionMode === 'TICK' ? 'tick' : '1m',
       allocation: botConfig.allocation,
-      config: botConfig
+      execution_mode: botExecutionMode,
+      config: botConfig,
     });
   };
+
+  const filteredTemplates = strategyTemplates.filter(
+    t => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode,
+  );
 
   const handleRunBacktest = () => {
     sendAction(Action.RUN_BACKTEST, {
@@ -353,6 +360,9 @@ function AlgoTab() {
 
   const selectTemplate = (template) => {
     setBotStrategy(template.strategy);
+    if (template.execution_mode) {
+      setBotExecutionMode(template.execution_mode);
+    }
     updateBotConfig({ ...template.config, allocation: template.allocation });
   };
 
@@ -527,9 +537,32 @@ function AlgoTab() {
             </div>
 
             <div className="algo-deploy-field">
+              <Label className="algo-field-label">Execution Mode</Label>
+              <Select
+                value={botExecutionMode}
+                onValueChange={(mode) => {
+                  setBotExecutionMode(mode);
+                  const first = strategyTemplates.find(t => (t.execution_mode || 'BAR_CLOSE') === mode);
+                  if (first) selectTemplate(first);
+                }}
+              >
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Bot execution mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="BAR_CLOSE" className="text-xs">Bar Close — 1m indicator signals</SelectItem>
+                  <SelectItem value="TICK" className="text-xs">Tick — sub-minute microstructure</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Tick bots evaluate every price update with cooldown; bar bots fire on closed 1m candles only.
+              </span>
+            </div>
+
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Strategy Templates</Label>
               <div className="algo-template-grid">
-                {strategyTemplates.map(t => (
+                {filteredTemplates.map(t => (
                   <StrategyTemplateCard
                     key={t.id}
                     template={t}
@@ -538,6 +571,58 @@ function AlgoTab() {
                   />
                 ))}
               </div>
+            </div>
+
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Take Profit</Label>
+              <Select
+                value={botConfig?.tp_mode ?? 'percent'}
+                onValueChange={(mode) => {
+                  if (mode === 'none') {
+                    updateBotConfig({ tp_mode: 'none', take_profit_percent: undefined });
+                  } else if (mode === 'strategy') {
+                    updateBotConfig({ tp_mode: 'strategy', take_profit_percent: undefined });
+                  } else {
+                    updateBotConfig({
+                      tp_mode: 'percent',
+                      take_profit_percent: botConfig?.take_profit_percent ?? 3,
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Take profit mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="percent" className="text-xs">Fixed % from entry</SelectItem>
+                  <SelectItem value="strategy" className="text-xs" disabled={botStrategy !== 'BRS_SCALPING'}>
+                    Strategy target (BRS mid-band)
+                  </SelectItem>
+                  <SelectItem value="none" className="text-xs">None — trailing stop only</SelectItem>
+                </SelectContent>
+              </Select>
+              {(botConfig?.tp_mode ?? 'percent') === 'percent' && (
+                <InputGroup className="h-8 mt-2">
+                  <InputGroupInput
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={botConfig?.take_profit_percent ?? ''}
+                    onChange={e => updateBotConfig({
+                      take_profit_percent: parseFloat(e.target.value) || 0,
+                      tp_mode: 'percent',
+                    })}
+                    className="text-xs"
+                    aria-label="Take profit percent"
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupText className="text-xs">%</InputGroupText>
+                  </InputGroupAddon>
+                </InputGroup>
+              )}
+              <span className="algo-field-hint">
+                TP closes the position when price reaches target. Trailing stop still applies.
+              </span>
             </div>
 
             <div className="algo-deploy-field">
@@ -583,12 +668,20 @@ function AlgoTab() {
                 backtestDays={backtestDays}
                 symbol={activeSymbol}
                 strategy={botStrategy}
+                recentRuns={backtestRuns}
               />
             )}
           </div>
         </div>
         <footer className="algo-tab__panel-footer">
-          <Button variant="outline" size="sm" className="flex-1 text-xs" onClick={handleRunBacktest}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 text-xs"
+            onClick={handleRunBacktest}
+            disabled={botExecutionMode === 'TICK'}
+            title={botExecutionMode === 'TICK' ? 'Backtest applies to bar-close strategies only' : undefined}
+          >
             <Activity data-icon="inline-start" />
             BACKTEST
           </Button>
@@ -621,7 +714,19 @@ function AlgoTab() {
             </div>
             <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
             <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
-            <div><span className="text-muted-foreground">Timeframe:</span> <strong>1m (closed-bar signals)</strong></div>
+            <div>
+              <span className="text-muted-foreground">Stop / TP:</span>{' '}
+              <strong>
+                SL {botConfig?.trailing_stop_percent ?? botConfig?.stop_loss_percent ?? '—'}%
+                {' · '}
+                {botConfig?.tp_mode === 'none'
+                  ? 'no TP'
+                  : botConfig?.tp_mode === 'strategy'
+                    ? 'strategy target'
+                    : `${botConfig?.take_profit_percent ?? '—'}% TP`}
+              </strong>
+            </div>
+            <div><span className="text-muted-foreground">Timeframe:</span> <strong>{botExecutionMode === 'TICK' ? 'tick (sub-minute)' : '1m (closed-bar signals)'}</strong></div>
           </div>
           <DialogFooter showCloseButton={false}>
             <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
@@ -704,6 +809,9 @@ function AlgoTab() {
                     <td className="font-bold">{bot.symbol}</td>
                     <td className="text-xs">
                       <StrategyBadge strategy={bot.strategy} compact />
+                      {bot.execution_mode === 'TICK' && (
+                        <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.55rem]">TICK</Badge>
+                      )}
                     </td>
                     <td className="text-center">
                       {inPosition ? (
@@ -797,6 +905,8 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   const tradeHistory = useStore(state => state.tradeHistory);
   const isBotRunning = useStore(state => state.isBotRunning);
   const botHistory = useStore(state => state.botHistory);
+  const ambiguousOrders = useStore(state => state.ambiguousOrders);
+  const isLive = useStore(state => state.isLive);
   const selectedBotId = useStore(state => state.selectedBotId);
   const botDrawerOpen = useStore(state => state.botDrawerOpen);
   const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
@@ -859,6 +969,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
     { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null },
     { id: 'balances',  label: 'Balances',  icon: Landmark  },
     { id: 'algo',      label: 'Algo Bot',  icon: Cpu       },
+    { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: isLive && ambiguousOrders.length ? ambiguousOrders.length : null },
     { id: 'bots',      label: 'Bot History', icon: History, badge: botHistory.length || null },
     { id: 'ticks',     label: 'Ticks',     icon: Zap       },
     { id: 'history',   label: 'History',   icon: Activity, badge: tradeHistory.length || null },
@@ -866,6 +977,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   ];
 
   return (
+    <ErrorBoundary name="Trading dock">
     <>
       <div
         className="bottom-dock flex flex-col"
@@ -933,7 +1045,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
             </ScrollTablePanel>
           </TabsContent>
           <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <AlgoTab />
+            <ErrorBoundary name="Algo Bot">
+              <AlgoTab />
+            </ErrorBoundary>
+          </TabsContent>
+          <TabsContent value="reconcile" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+            <ReconciliationTab />
           </TabsContent>
           <TabsContent value="bots" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <BotHistoryTab />
@@ -969,5 +1086,6 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
         onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
       />
     </>
+    </ErrorBoundary>
   );
 }

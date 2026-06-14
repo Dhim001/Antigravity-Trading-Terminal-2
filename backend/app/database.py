@@ -27,6 +27,9 @@ def init_db():
 
     if not is_postgres():
         cursor.execute("PRAGMA foreign_keys = ON;")
+        cursor.execute("PRAGMA journal_mode = WAL;")
+        cursor.execute("PRAGMA busy_timeout = 5000;")
+        cursor.execute("PRAGMA synchronous = NORMAL;")
     
     # Create accounts table
     cursor.execute("""
@@ -75,6 +78,7 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _safe_alter(cursor, "ALTER TABLE bots ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'BAR_CLOSE'")
     
     # Create bot_logs table
     serial = _serial_type()
@@ -165,6 +169,21 @@ def init_db():
     )
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_signal_ledger (
+            signal_id TEXT PRIMARY KEY,
+            bot_id TEXT NOT NULL,
+            bar_time INTEGER,
+            signal_kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'claimed',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_signal_ledger_bot ON bot_signal_ledger (bot_id)"
+    )
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS ambiguous_orders (
             id TEXT PRIMARY KEY,
             symbol TEXT NOT NULL,
@@ -183,6 +202,21 @@ def init_db():
     """)
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ambiguous_orders_status ON ambiguous_orders (status)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_runs (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            config TEXT,
+            days INTEGER NOT NULL DEFAULT 7,
+            results TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backtest_runs_symbol ON backtest_runs (symbol, created_at DESC)"
     )
 
     from app.services.archive.schema import init_archive_schema
@@ -228,6 +262,7 @@ def reset_db():
     cursor.execute("DELETE FROM bot_trades;")
     cursor.execute("DELETE FROM bot_snapshots;")
     cursor.execute("DELETE FROM bot_logs;")
+    cursor.execute("DELETE FROM bot_signal_ledger;")
     cursor.execute("UPDATE bots SET status = 'STOPPED'")
     
     # Collect all unique base assets dynamically from config

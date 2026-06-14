@@ -34,7 +34,7 @@ function exportTradesCsv(trades, symbol, strategy) {
   URL.revokeObjectURL(url);
 }
 
-export default function BacktestResultsPanel({ results, backtestDays, symbol, strategy }) {
+export default function BacktestResultsPanel({ results, backtestDays, symbol, strategy, recentRuns = [] }) {
   const startingEquity = results?.starting_equity ?? 10000;
   const returnPct = useMemo(() => {
     if (!results?.total_pnl || !startingEquity) return 0;
@@ -98,6 +98,41 @@ export default function BacktestResultsPanel({ results, backtestDays, symbol, st
       </div>
 
       <BacktestMiniChart equityCurve={results.equity_curve} totalPnl={results.total_pnl} />
+
+      {recentRuns.length > 1 && (
+        <div className="algo-backtest-compare mt-2 rounded border border-border/60 p-2">
+          <p className="mb-1 text-[0.62rem] font-semibold text-muted-foreground">Recent runs (same symbol)</p>
+          <table className="terminal-table m-0 w-full text-[0.58rem]">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Strategy</th>
+                <th>Days</th>
+                <th className="text-right">PnL</th>
+                <th className="text-right">Win%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentRuns.slice(0, 5).map(run => (
+                <tr key={run.id} className={run.id === results.run_id ? 'bg-primary/5' : ''}>
+                  <td className="text-muted-foreground">{run.created_at?.slice(0, 16) ?? '—'}</td>
+                  <td>{run.strategy}</td>
+                  <td>{run.days}</td>
+                  <td className={cn(
+                    'num-mono text-right',
+                    (run.summary?.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                  )}>
+                    {run.summary?.total_pnl != null ? `$${Number(run.summary.total_pnl).toFixed(2)}` : '—'}
+                  </td>
+                  <td className="num-mono text-right">
+                    {run.summary?.win_rate != null ? `${Number(run.summary.win_rate).toFixed(1)}%` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {allTrades.length > 0 && (
         <div className="algo-backtest-trades scroll-panel-y scroll-panel-y-0 max-h-48">

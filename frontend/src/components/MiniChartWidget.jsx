@@ -280,6 +280,18 @@ export default function MiniChartWidget({
   }, [symbol, applyLiveUpdate]);
 
   useEffect(() => {
+    const sym = symbol;
+    const unsubscribe = useStore.subscribe(
+      (state) => state.candleHistoryRevision[sym] || 0,
+      () => {
+        if (!chartRef.current) return;
+        configureChart({ resetZoom: false });
+      },
+    );
+    return unsubscribe;
+  }, [symbol, configureChart]);
+
+  useEffect(() => {
     setSymbol(defaultSymbol);
   }, [defaultSymbol]);
 

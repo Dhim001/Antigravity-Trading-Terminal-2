@@ -1,17 +1,22 @@
 import logging
 import json
 import uuid
+import asyncio
 from datetime import datetime, timezone
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
-from app.services.bots.indicators import prepare_strategy_df
+from app.services.bots.indicators import prepare_strategy_df, config_cache_key
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
+from app.services.bots.take_profit import format_tp_summary, merge_tp_config, resolve_take_profit
+from app.services.bots.tick_strategies import get_tick_strategy, is_tick_strategy, merge_tick_config
+from app.services.bots.tick_screener import TickScreener
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
+from app.services.bots import signal_ledger
 
 ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
 
@@ -34,8 +39,10 @@ class BotManagerService:
         self.active_bots = {}
         self._bar_tracker = BarCloseTracker()
         self._risk_gate = RiskGate()
-        self._executed_signals: set[str] = set()
         self._log_writes = 0
+        self._log_buffer: list[tuple[str, str, str]] = []
+        self._log_flush_task = None
+        self._tick_screener = TickScreener()
 
     def _get_daily_pnl(self, bot_id: str) -> float:
         return bot_analytics.get_daily_pnl(bot_id)
@@ -51,28 +58,61 @@ class BotManagerService:
             self.active_bots[bot_id]["config"] = json.loads(row["config"])
             self.active_bots[bot_id]["last_signal_bar_time"] = None
             self.active_bots[bot_id]["last_signal_at"] = None
-            self.active_bots[bot_id]["strategy_instance"] = get_strategy(
-                row["strategy"], self.active_bots[bot_id]["config"]
-            )
+            self.active_bots[bot_id]["last_tick_signal_at"] = 0
+            mode = (row["execution_mode"] or "BAR_CLOSE").upper()
+            self.active_bots[bot_id]["execution_mode"] = mode
+            config = self.active_bots[bot_id]["config"]
+            strategy = row["strategy"]
+            if mode == "TICK" or is_tick_strategy(strategy):
+                self.active_bots[bot_id]["execution_mode"] = "TICK"
+                self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, config)
+                self.active_bots[bot_id]["strategy_instance"] = None
+            else:
+                self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, config)
+                self.active_bots[bot_id]["tick_strategy_instance"] = None
         conn.close()
         self.logger.info(f"Loaded {len(self.active_bots)} bots from DB.")
 
-    async def log_bot_event(self, bot_id: str, level: str, message: str):
-        self.logger.info(f"[BOT {bot_id}] {level} - {message}")
+    async def _flush_log_buffer(self):
+        if not self._log_buffer:
+            return
+        batch = self._log_buffer[:]
+        self._log_buffer.clear()
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)",
-            (bot_id, level, message),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor.executemany(
+                "INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)",
+                batch,
+            )
+            conn.commit()
+            self._log_writes += len(batch)
+            if self._log_writes % 25 == 0:
+                bot_analytics.prune_bot_logs(BOT_LOG_RETENTION)
+        finally:
+            conn.close()
 
-        self._log_writes += 1
-        if self._log_writes % 25 == 0:
-            bot_analytics.prune_bot_logs(BOT_LOG_RETENTION)
+        for bot_id, level, message in batch:
+            await publish_bot_log(self.broadcast_cb, bot_id, level, message)
 
-        await publish_bot_log(self.broadcast_cb, bot_id, level, message)
+    async def _schedule_log_flush(self):
+        if self._log_flush_task and not self._log_flush_task.done():
+            return
+
+        async def _delayed():
+            await asyncio.sleep(0.4)
+            await self._flush_log_buffer()
+            self._log_flush_task = None
+
+        self._log_flush_task = asyncio.create_task(_delayed())
+
+    async def log_bot_event(self, bot_id: str, level: str, message: str):
+        self.logger.info(f"[BOT {bot_id}] {level} - {message}")
+        self._log_buffer.append((bot_id, level, message))
+        if len(self._log_buffer) >= 12:
+            await self._flush_log_buffer()
+        else:
+            await self._schedule_log_flush()
 
     def get_account_balance(self):
         balances = self.oms.get_account_data().get("balances", {})
@@ -188,36 +228,98 @@ class BotManagerService:
         if not self._bar_tracker.check(symbol, ohlcv_data):
             return
 
-        for bot_id, bot in list(self.active_bots.items()):
-            if bot["symbol"] != symbol or bot.get("status") != "RUNNING":
-                continue
+        running = [
+            (bot_id, bot)
+            for bot_id, bot in list(self.active_bots.items())
+            if bot["symbol"] == symbol
+            and bot.get("status") == "RUNNING"
+            and bot.get("execution_mode", "BAR_CLOSE") != "TICK"
+            and bot.get("strategy_instance")
+        ]
+        if not running:
+            return
 
-            strat = bot.get("strategy_instance")
-            if not strat:
-                continue
-
-            bot_config = bot.get("config", {})
+        screener_groups: dict[tuple, list[tuple]] = {}
+        for bot_id, bot in running:
             bot_strategy = bot["strategy"]
-            df = self.screener.process_candles(
-                symbol, ohlcv_data, bot_config, bot_strategy
+            bot_config = bot.get("config", {})
+            strat_key = normalize_strategy_name(bot_strategy)
+            key = (strat_key, config_cache_key(strat_key, bot_config))
+            screener_groups.setdefault(key, []).append((bot_id, bot))
+
+        for (strat_key, _), bot_list in screener_groups.items():
+            sample_bot = bot_list[0][1]
+            bot_config = sample_bot.get("config", {})
+            df = await asyncio.to_thread(
+                self.screener.process_candles,
+                symbol,
+                ohlcv_data,
+                bot_config,
+                strat_key,
             )
             if df.empty or len(df) < 2:
                 continue
 
-            df = prepare_strategy_df(df, bot_strategy, bot_config)
-            eval_row = df.iloc[-2].to_dict()
-            bar_time = eval_row.get("time")
-            eval_price = eval_row.get("close")
+            for bot_id, bot in bot_list:
+                bot_strategy = bot["strategy"]
+                bot_config = bot.get("config", {})
+                strat = bot.get("strategy_instance")
+                if not strat:
+                    continue
 
-            signal_data = strat.evaluate(eval_row)
+                bot_df = prepare_strategy_df(df.copy(), bot_strategy, bot_config)
+                eval_row = bot_df.iloc[-2].to_dict()
+                bar_time = eval_row.get("time")
+                eval_price = eval_row.get("close")
+
+                signal_data = strat.evaluate(eval_row)
+                signal = signal_data.get("signal")
+                if signal not in ("BUY", "SELL", "CLOSE"):
+                    continue
+
+                if bar_time is not None and bot.get("last_signal_bar_time") == bar_time:
+                    continue
+
+                await self._handle_signal(bot, signal, signal_data, eval_price, bar_time)
+
+    async def process_price_tick(self, symbol: str, price: float, time_ms: int):
+        """Evaluate tick-mode bots on each price update (separate from bar-close path)."""
+        if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
+            return
+        if not self.active_bots or price <= 0:
+            return
+
+        self._tick_screener.record(symbol, price, time_ms)
+
+        for bot_id, bot in list(self.active_bots.items()):
+            if bot.get("execution_mode") != "TICK":
+                continue
+            if bot["symbol"] != symbol or bot.get("status") != "RUNNING":
+                continue
+
+            strat = bot.get("tick_strategy_instance")
+            if not strat:
+                continue
+
+            cfg = merge_tick_config(bot["strategy"], bot.get("config", {}))
+            cooldown_ms = int(float(cfg.get("tick_cooldown_sec", 10)) * 1000)
+            last_at = int(bot.get("last_tick_signal_at") or 0)
+            if last_at and (time_ms - last_at) < cooldown_ms:
+                continue
+
+            lookback = int(cfg.get("lookback_ticks", 20))
+            ctx = self._tick_screener.context(symbol, price, time_ms, lookback)
+            if ctx is None:
+                continue
+
+            signal_data = strat.evaluate(ctx, price)
             signal = signal_data.get("signal")
             if signal not in ("BUY", "SELL", "CLOSE"):
                 continue
 
-            if bar_time is not None and bot.get("last_signal_bar_time") == bar_time:
-                continue
-
-            await self._handle_signal(bot, signal, signal_data, eval_price, bar_time)
+            tick_bucket = time_ms // 1000
+            await self._handle_signal(bot, signal, signal_data, price, tick_bucket)
+            bot["last_tick_signal_at"] = time_ms
 
     async def _handle_signal(self, bot, signal: str, signal_data: dict, eval_price: float, bar_time):
         bot_id = bot["id"]
@@ -275,7 +377,7 @@ class BotManagerService:
         signal_kind = "CLOSE" if is_exit else side
         signal_id = f"{bot_id}:{bar_time}:{signal_kind}"
 
-        if signal_id in self._executed_signals:
+        if not signal_ledger.claim_signal(signal_id, bot_id, bar_time, signal_kind):
             return
 
         if not is_exit:
@@ -291,6 +393,7 @@ class BotManagerService:
 
             price_diff = abs(current_price - stop_loss_price)
             if price_diff <= 0:
+                signal_ledger.release_signal(signal_id)
                 await self.log_bot_event(bot_id, "ERROR", "Stop loss distance is 0. Aborting trade.")
                 return
 
@@ -308,6 +411,7 @@ class BotManagerService:
         )
 
         if not decision.allowed:
+            signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "WARN", f"Risk blocked: {decision.reason}")
             if "Daily loss limit" in decision.reason:
                 await self._halt_bot(bot_id, decision.reason)
@@ -317,7 +421,30 @@ class BotManagerService:
         if decision.reason not in ("OK",):
             await self.log_bot_event(bot_id, "INFO", decision.reason)
 
+        if not is_exit:
+            port_decision = self._risk_gate.validate_portfolio(
+                self.oms,
+                symbol,
+                side,
+                quantity,
+                current_price,
+                is_exit=False,
+            )
+            if not port_decision.allowed:
+                signal_ledger.release_signal(signal_id)
+                await self.log_bot_event(bot_id, "WARN", f"Portfolio risk blocked: {port_decision.reason}")
+                return
+            if port_decision.quantity is not None and port_decision.quantity < quantity:
+                quantity = port_decision.quantity
+                if port_decision.reason not in ("OK",):
+                    await self.log_bot_event(bot_id, "INFO", port_decision.reason)
+
+        if quantity <= 0:
+            signal_ledger.release_signal(signal_id)
+            return
+
         if quantity < 0.001:
+            signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "INFO", "Signal ignored: quantity too small.")
             return
 
@@ -329,7 +456,11 @@ class BotManagerService:
             f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f}",
         )
 
-        self._executed_signals.add(signal_id)
+        tp_pct = None
+        tp_price = None
+        if not is_exit:
+            bot_cfg = merge_tp_config(bot.get("strategy", ""), bot.get("config", {}))
+            tp_pct, tp_price = resolve_take_profit(bot_cfg, signal_data, side, current_price)
 
         try:
             result = await self.oms.place_order({
@@ -342,9 +473,8 @@ class BotManagerService:
                     else bot.get("config", {}).get("trailing_stop_percent")
                     or bot.get("config", {}).get("stop_loss_percent")
                 ),
-                "take_profit_percent": (
-                    None if is_exit else bot.get("config", {}).get("take_profit_percent")
-                ),
+                "take_profit_percent": None if is_exit else tp_pct,
+                "take_profit_price": None if is_exit else tp_price,
                 "bot_id": bot_id,
                 "signal_id": signal_id,
             })
@@ -375,11 +505,10 @@ class BotManagerService:
                         f"Submitted {side} {filled_qty:.4f} @ ~{current_price:.4f} (order {order_id}). Awaiting broker fill.",
                     )
                 else:
-                    await self.log_bot_event(
-                        bot_id,
-                        "SUCCESS",
-                        f"Filled {side} {filled_qty:.4f} @ {fill_price:.4f} (order {order_id}).",
-                    )
+                    fill_msg = f"Filled {side} {filled_qty:.4f} @ {fill_price:.4f} (order {order_id})."
+                    if not is_exit and (tp_pct is not None or tp_price is not None):
+                        fill_msg += f" {format_tp_summary(tp_pct, tp_price)}."
+                    await self.log_bot_event(bot_id, "SUCCESS", fill_msg)
 
                     trade_pnl = None
                     if is_exit and entry_price is not None:
@@ -408,18 +537,28 @@ class BotManagerService:
                 detail = self.get_bot_detail(bot_id)
                 if detail:
                     await publish_bot_detail(self.broadcast_cb, detail)
+                signal_ledger.mark_signal_filled(signal_id)
+                self._risk_gate.invalidate_portfolio_cache()
             else:
-                self._executed_signals.discard(signal_id)
+                signal_ledger.release_signal(signal_id)
                 msg = result.get("message", "Unknown error")
-                await self.log_bot_event(bot_id, "ERROR", f"Order failed: {msg}")
-                if TERMINAL_MODE != "SIMULATED":
+                status = result.get("status", "error")
+                if status == "ambiguous":
+                    await self.log_bot_event(
+                        bot_id,
+                        "WARN",
+                        f"Ambiguous order outcome: {msg}",
+                    )
+                else:
+                    await self.log_bot_event(bot_id, "ERROR", f"Order failed: {msg}")
+                if TERMINAL_MODE != "SIMULATED" and status != "ambiguous":
                     await self.log_bot_event(
                         bot_id,
                         "WARN",
                         "Live order not retried (at-most-once). Reconcile manually if needed.",
                     )
         except Exception as e:
-            self._executed_signals.discard(signal_id)
+            signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
             if TERMINAL_MODE != "SIMULATED":
                 await self.log_bot_event(
@@ -428,7 +567,15 @@ class BotManagerService:
                     "Ambiguous live outcome — do not resend; reconcile via broker.",
                 )
 
-    async def create_bot(self, strategy: str, symbol: str, timeframe: str, allocation: float, config: dict):
+    async def create_bot(
+        self,
+        strategy: str,
+        symbol: str,
+        timeframe: str,
+        allocation: float,
+        config: dict,
+        execution_mode: str = "BAR_CLOSE",
+    ):
         if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
             raise ValueError(
                 "Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true in .env to enable."
@@ -439,12 +586,19 @@ class BotManagerService:
             raise ValueError(decision.reason)
 
         strategy = normalize_strategy_name(strategy)
+        mode = (execution_mode or "BAR_CLOSE").upper()
+        if is_tick_strategy(strategy):
+            mode = "TICK"
+
         bot_id = str(uuid.uuid4())
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (bot_id, strategy, symbol, timeframe, "RUNNING", allocation, json.dumps(config)),
+            """
+            INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config, execution_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (bot_id, strategy, symbol, timeframe, "RUNNING", allocation, json.dumps(config), mode),
         )
         conn.commit()
         conn.close()
@@ -457,12 +611,23 @@ class BotManagerService:
             "status": "RUNNING",
             "allocation": allocation,
             "config": config,
+            "execution_mode": mode,
             "last_signal_bar_time": None,
             "last_signal_at": None,
-            "strategy_instance": get_strategy(strategy, config),
+            "last_tick_signal_at": 0,
         }
+        if mode == "TICK":
+            self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, config)
+            self.active_bots[bot_id]["strategy_instance"] = None
+        else:
+            self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, config)
+            self.active_bots[bot_id]["tick_strategy_instance"] = None
 
-        await self.log_bot_event(bot_id, "INFO", f"Bot created and started for {symbol} using {strategy}.")
+        await self.log_bot_event(
+            bot_id,
+            "INFO",
+            f"Bot created ({mode}) for {symbol} using {strategy}.",
+        )
         self.record_snapshot_for_bot(bot_id)
         return bot_id
 
@@ -512,6 +677,7 @@ class BotManagerService:
                 "status": bot["status"],
                 "allocation": bot["allocation"],
                 "config": bot.get("config", {}),
+                "execution_mode": bot.get("execution_mode", "BAR_CLOSE"),
                 "daily_pnl": stats["daily_pnl"],
                 "total_pnl": stats["total_pnl"],
                 "trade_count": stats["trade_count"],
@@ -551,6 +717,7 @@ class BotManagerService:
                 "status": bot["status"],
                 "allocation": bot["allocation"],
                 "config": bot.get("config", {}),
+                "execution_mode": bot.get("execution_mode") or row.get("execution_mode", "BAR_CLOSE"),
                 "daily_pnl": stats["daily_pnl"],
                 "total_pnl": stats["total_pnl"],
                 "trade_count": stats["trade_count"],

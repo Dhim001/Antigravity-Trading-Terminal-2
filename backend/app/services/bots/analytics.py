@@ -67,14 +67,18 @@ def get_trades(bot_id: str, limit: int = 50) -> list:
 
 
 def get_daily_pnl(bot_id: str) -> float:
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         SELECT COALESCE(SUM(pnl), 0) FROM bot_trades
-        WHERE bot_id = ? AND pnl IS NOT NULL AND date(timestamp) = date('now')
+        WHERE bot_id = ? AND pnl IS NOT NULL AND timestamp >= ? AND timestamp < ?
         """,
-        (bot_id,),
+        (bot_id, start.isoformat(), end.isoformat()),
     )
     val = float(cursor.fetchone()[0] or 0)
     conn.close()
@@ -190,6 +194,7 @@ def clear_bot_analytics():
     cursor.execute("DELETE FROM bot_logs")
     cursor.execute("DELETE FROM bot_pending_fills")
     cursor.execute("DELETE FROM bot_positions")
+    cursor.execute("DELETE FROM bot_signal_ledger")
     conn.commit()
     conn.close()
 

@@ -61,6 +61,8 @@ async def redis_forward_loop():
 
 
 async def simulated_market_loop():
+    import time
+
     logging.info("Starting simulated market data broadcast loop...")
     feed = state.feed
     oms = state.oms
@@ -70,9 +72,19 @@ async def simulated_market_loop():
     while True:
         try:
             data = {}
+            now_ms = int(time.time() * 1000)
             for symbol in feed.symbols:
                 market_data = feed.get_market_data(symbol)
                 data[symbol] = market_data
+                if runs_bot_engine_inline():
+                    await bot_manager.process_price_tick(
+                        symbol, float(market_data["price"]), now_ms
+                    )
+                elif state.event_bus and runs_bar_publisher():
+                    await state.event_bus.publish(
+                        channels.TICK_PRICE,
+                        {"symbol": symbol, "price": market_data["price"], "time_ms": now_ms},
+                    )
             fills = oms.match_pending_orders()
             sl_tp_fills, sl_tp_logs, bot_exits = oms.check_sl_tp_triggers()
 
@@ -192,6 +204,11 @@ async def main():
             await state.manager.broadcast(payload)
 
         event_publish.register_publisher(channels.BOT_RELOAD, _publish_reload)
+
+        async def _publish_emergency(payload):
+            await state.event_bus.publish(channels.EMERGENCY_STOP, payload)
+
+        event_publish.register_publisher(channels.EMERGENCY_STOP, _publish_emergency)
         state.event_bus.subscribe(channels.WS_BROADCAST, on_ws_broadcast)
         await state.event_bus.start()
 
@@ -211,7 +228,8 @@ async def main():
             tasks.append(asyncio.create_task(run_http_server(state)))
 
         if runs_bot_engine_inline():
-            tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
+            if not state.bot_engine_uses_bar_hooks:
+                tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
             tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
             if TERMINAL_MODE != "SIMULATED":
                 tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))

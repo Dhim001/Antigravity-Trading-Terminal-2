@@ -183,6 +183,7 @@ class AlpacaOMSService(BaseOMSService):
         quantity = order_req.get("quantity")
         sl_pct = order_req.get("stop_loss_percent")
         tp_pct = order_req.get("take_profit_percent")
+        tp_price_abs = order_req.get("take_profit_price")
         
         # Formulate bracket payload if SL or TP is specified
         payload = {
@@ -196,7 +197,7 @@ class AlpacaOMSService(BaseOMSService):
         if order_type == "limit":
             payload["limit_price"] = str(price)
             
-        if sl_pct or tp_pct:
+        if sl_pct or tp_pct or tp_price_abs:
             payload["order_class"] = "bracket"
             
             # Mid price reference
@@ -205,7 +206,9 @@ class AlpacaOMSService(BaseOMSService):
             if sl_pct:
                 sl_price = mid_price * (1 - sl_pct / 100.0) if side == "buy" else mid_price * (1 + sl_pct / 100.0)
                 payload["stop_loss"] = {"stop_price": f"{sl_price:.2f}"}
-            if tp_pct:
+            if tp_price_abs:
+                payload["take_profit"] = {"limit_price": f"{float(tp_price_abs):.2f}"}
+            elif tp_pct:
                 tp_price = mid_price * (1 + tp_pct / 100.0) if side == "buy" else mid_price * (1 - tp_pct / 100.0)
                 payload["take_profit"] = {"limit_price": f"{tp_price:.2f}"}
                 
@@ -218,19 +221,39 @@ class AlpacaOMSService(BaseOMSService):
                 json=payload,
                 timeout=5
             )
-            
-            if resp.status_code != 200:
-                err_msg = resp.json().get("message", "Unknown broker error")
-                return {"status": "error", "message": f"Alpaca rejected order: {err_msg}"}
-                
-            data = resp.json()
-            return {
-                "status": "success",
-                "message": f"Alpaca order submitted: {side.upper()} {quantity} {symbol}",
-                "order_id": data.get("id")
-            }
+
+            if resp.status_code == 429:
+                await asyncio.sleep(15)
+                resp = await asyncio.to_thread(
+                    requests.post,
+                    f"{ALPACA_BASE_URL}/v2/orders",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=5,
+                )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                result = {
+                    "status": "success",
+                    "message": f"Alpaca order submitted: {side.upper()} {quantity} {symbol}",
+                    "order_id": data.get("id"),
+                }
+                return result
+
+            from app.services.oms_http import classify_http_status, record_ambiguous_if_needed
+
+            outcome = classify_http_status(resp.status_code, resp.text)
+            if outcome is None:
+                outcome = {"status": "error", "message": f"Alpaca rejected order: {resp.text[:200]}"}
+            record_ambiguous_if_needed({**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity}, outcome)
+            return outcome
         except Exception as e:
-            return {"status": "error", "message": f"Failed to submit Alpaca order: {str(e)}"}
+            from app.services.oms_http import record_ambiguous_if_needed, request_exception_outcome
+
+            outcome = request_exception_outcome(e)
+            record_ambiguous_if_needed({**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity}, outcome)
+            return outcome
 
     async def cancel_order(self, order_id: str) -> dict:
         if self.use_fallback:

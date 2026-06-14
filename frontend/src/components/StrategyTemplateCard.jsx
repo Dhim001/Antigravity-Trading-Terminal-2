@@ -8,6 +8,13 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
   const meta = getStrategyMeta(template.strategy);
   const Icon = meta.icon;
   const sl = template.config?.trailing_stop_percent ?? 0;
+  const tpMode = template.config?.tp_mode ?? 'percent';
+  const tpPct = template.config?.take_profit_percent;
+  const tpLabel = tpMode === 'strategy'
+    ? 'TP strategy'
+    : tpPct != null
+      ? `TP ${tpPct}%`
+      : 'no TP';
 
   return (
     <button
@@ -29,6 +36,7 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
         <span className="algo-template-btn__chips">
           <span className="algo-template-chip">${template.allocation.toLocaleString()}</span>
           <span className="algo-template-chip">SL {sl}%</span>
+          <span className="algo-template-chip">{tpLabel}</span>
         </span>
       </span>
     </button>

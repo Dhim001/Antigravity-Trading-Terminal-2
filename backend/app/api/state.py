@@ -17,6 +17,7 @@ class AppState:
     feed: Any | None = None
     event_bus: Any | None = None
     screener: Any | None = None
+    bot_engine_uses_bar_hooks: bool = False
 
     def context_kwargs(self, backtester=None) -> dict:
         """Keyword args for RequestContext / handle_client_message."""

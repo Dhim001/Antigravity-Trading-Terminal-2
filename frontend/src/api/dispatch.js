@@ -89,6 +89,10 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.BACKTEST_RESULT:
       if (data?.status === 'success') {
         storeActions.setBacktestResults(data.results);
+        import('./endpoints').then(({ fetchBacktestRuns }) => {
+          const sym = data.results?.meta?.symbol;
+          fetchBacktestRuns(storeActions, sym);
+        });
       } else {
         console.error('Backtest failed:', data?.message);
       }

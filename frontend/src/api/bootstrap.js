@@ -8,6 +8,7 @@ import {
   fetchCandles,
   fetchHealth,
   fetchHistory,
+  fetchStrategies,
 } from './endpoints';
 
 /**
@@ -29,6 +30,7 @@ export async function runBootstrap(opts = {}) {
     fetchAccount(storeActions),
     fetchHistory(storeActions),
     fetchBots(storeActions),
+    fetchStrategies(storeActions),
   ];
 
   if (!skipCandles) {
@@ -53,11 +55,19 @@ export function resubscribeMarketSymbols() {
   const { activeSymbol, symbolsList } = useStore.getState();
   const storeActions = getStoreActions();
   const symbols = [...new Set([activeSymbol, ...(symbolsList || [])].filter(Boolean))].slice(0, 12);
+  subscribeChartSymbols(symbols, storeActions);
+}
 
-  symbols.forEach((sym, i) => {
-    if (sym === activeSymbol) return;
-    setTimeout(() => fetchCandles(sym, storeActions), i * 80);
+/**
+ * Subscribe + fetch candle history for a set of symbols (multi-chart, watchlist).
+ * Staggers requests slightly to avoid burst load on the server.
+ */
+export function subscribeChartSymbols(symbols, storeActions) {
+  const unique = [...new Set((symbols || []).filter(Boolean))];
+  unique.forEach((sym, i) => {
+    setTimeout(() => {
+      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol: sym });
+      fetchCandles(sym, storeActions);
+    }, i * 80);
   });
-
-  sendAction(Action.SUBSCRIBE_SYMBOL, { symbol: activeSymbol });
 }

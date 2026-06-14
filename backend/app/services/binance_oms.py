@@ -219,29 +219,62 @@ class BinanceOMSService(BaseOMSService):
             params["timeInForce"] = "GTC"
             
         try:
-            res = await asyncio.to_thread(
-                self._private_request,
-                "POST",
-                "/api/v3/order",
-                params
-            )
-            
-            if "code" in res:
-                return {"status": "error", "message": f"Binance error: {res.get('msg')}"}
-                
-            # If SL/TP percentages exist, store them in our local tracker database for monitoring
-            sl_pct = order_req.get("stop_loss_percent")
-            tp_pct = order_req.get("take_profit_percent")
-            if sl_pct or tp_pct:
-                await self.update_position_sl_tp(symbol, sl_pct, tp_pct)
-                
-            return {
-                "status": "success",
-                "message": f"Binance order filled: {side} {quantity} {symbol}",
-                "order_id": str(res.get("orderId"))
-            }
+            params["timestamp"] = int(time.time() * 1000)
+            query_str = "&".join([f"{k}={v}" for k, v in params.items()])
+            signature = self._sign(query_str)
+            signed_query = f"{query_str}&signature={signature}"
+            headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+            url = f"{BINANCE_BASE_URL}/api/v3/order?{signed_query}"
+
+            resp = await asyncio.to_thread(requests.post, url, headers=headers, timeout=5)
+
+            if resp.status_code == 429:
+                await asyncio.sleep(15)
+                params["timestamp"] = int(time.time() * 1000)
+                query_str = "&".join([f"{k}={v}" for k, v in params.items()])
+                signature = self._sign(query_str)
+                signed_query = f"{query_str}&signature={signature}"
+                url = f"{BINANCE_BASE_URL}/api/v3/order?{signed_query}"
+                resp = await asyncio.to_thread(requests.post, url, headers=headers, timeout=5)
+
+            if resp.status_code == 200:
+                res = resp.json()
+                sl_pct = order_req.get("stop_loss_percent")
+                tp_pct = order_req.get("take_profit_percent")
+                tp_price_abs = order_req.get("take_profit_price")
+                if sl_pct or tp_pct or tp_price_abs:
+                    await self.update_position_sl_tp(
+                        symbol,
+                        sl_pct,
+                        tp_pct,
+                        take_profit_price=tp_price_abs,
+                    )
+                return {
+                    "status": "success",
+                    "message": f"Binance order filled: {side} {quantity} {symbol}",
+                    "order_id": str(res.get("orderId")),
+                }
+
+            from app.services.oms_http import classify_http_status, record_ambiguous_if_needed
+
+            body_text = resp.text
+            try:
+                err_json = resp.json()
+                if err_json.get("code"):
+                    body_text = err_json.get("msg", body_text)
+            except Exception:
+                pass
+            outcome = classify_http_status(resp.status_code, body_text)
+            if outcome is None:
+                outcome = {"status": "error", "message": f"Binance error: {body_text[:200]}"}
+            record_ambiguous_if_needed({**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity}, outcome)
+            return outcome
         except Exception as e:
-            return {"status": "error", "message": f"Failed to place Binance order: {str(e)}"}
+            from app.services.oms_http import record_ambiguous_if_needed, request_exception_outcome
+
+            outcome = request_exception_outcome(e)
+            record_ambiguous_if_needed({**order_req, "symbol": symbol, "side": side, "type": order_type, "quantity": quantity}, outcome)
+            return outcome
 
     async def cancel_order(self, order_id: str) -> dict:
         if self.use_fallback:
@@ -271,7 +304,14 @@ class BinanceOMSService(BaseOMSService):
         except Exception as e:
             return {"status": "error", "message": f"Failed to cancel Binance order: {str(e)}"}
 
-    async def update_position_sl_tp(self, symbol: str, sl_pct: float, tp_pct: float) -> dict:
+    async def update_position_sl_tp(
+        self,
+        symbol: str,
+        sl_pct: float,
+        tp_pct: float,
+        *,
+        take_profit_price: float = None,
+    ) -> dict:
         # Save SL/TP boundaries in local tracking table for local monitoring loops
         conn = get_connection()
         cursor = conn.cursor()
@@ -288,7 +328,11 @@ class BinanceOMSService(BaseOMSService):
                 
             avg_price = self.feed._symbols[symbol]["price"]
             sl_price = avg_price * (1 - sl_pct / 100.0) if sl_pct else None
-            tp_price = avg_price * (1 + tp_pct / 100.0) if tp_pct else None
+            if take_profit_price is not None:
+                tp_price = float(take_profit_price)
+                tp_pct = None
+            else:
+                tp_price = avg_price * (1 + tp_pct / 100.0) if tp_pct else None
             
             if not row:
                 cursor.execute("""

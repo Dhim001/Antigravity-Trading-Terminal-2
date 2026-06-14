@@ -35,9 +35,12 @@ async def bot_create(ctx: RequestContext) -> None:
     timeframe = msg.get("timeframe", "1m")
     allocation = float(msg.get("allocation", 1000))
     config = msg.get("config", {})
+    execution_mode = msg.get("execution_mode", "BAR_CLOSE")
 
     try:
-        bot_id = await ctx.bot_manager.create_bot(strategy, symbol, timeframe, allocation, config)
+        bot_id = await ctx.bot_manager.create_bot(
+            strategy, symbol, timeframe, allocation, config, execution_mode=execution_mode
+        )
         await send_order_result(ctx, {
             "status": "success",
             "message": f"Bot {bot_id} created successfully",
@@ -138,6 +141,10 @@ async def run_backtest(ctx: RequestContext) -> None:
         results = ctx.backtester.run_backtest(symbol, strategy, config, candles)
         if isinstance(results, dict) and "error" not in results:
             results["meta"] = meta
+            from app.services.bots.backtest_store import save_backtest_run
+
+            run_id = save_backtest_run(symbol, strategy, config, days, results)
+            results["run_id"] = run_id
         await send_backtest_result(ctx, {"status": "success", "results": results})
     else:
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})

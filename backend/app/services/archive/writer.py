@@ -64,16 +64,29 @@ class ArchiveWriter:
             return 0
 
         rows = list(self._buffer.values())
-        self._buffer.clear()
-        self._last_flush = time.time()
+        last_error: Exception | None = None
 
-        try:
-            written = _upsert_1m_rows(rows)
-            self._total_flushed += written
-            return written
-        except Exception as exc:
-            logger.warning("Archive flush failed (%d rows dropped): %s", len(rows), exc)
-            return 0
+        for attempt in range(3):
+            try:
+                written = _upsert_1m_rows(rows)
+                self._buffer.clear()
+                self._last_flush = time.time()
+                self._total_flushed += written
+                return written
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+
+        from app.services.archive.wal import append_wal_rows
+
+        append_wal_rows(rows)
+        logger.warning(
+            "Archive flush failed after retries (%d rows → WAL): %s",
+            len(rows),
+            last_error,
+        )
+        return 0
 
 
 def _upsert_1m_rows(rows: list[dict[str, Any]]) -> int:
@@ -144,5 +157,8 @@ def _upsert_1m_rows(rows: list[dict[str, Any]]) -> int:
 def get_archive_writer() -> ArchiveWriter:
     global _writer
     if _writer is None:
+        from app.services.archive.wal import replay_wal
+
+        replay_wal(_upsert_1m_rows)
         _writer = ArchiveWriter()
     return _writer

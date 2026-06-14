@@ -42,6 +42,33 @@ def get_bot_size(bot_id: str, symbol: str) -> float:
         conn.close()
 
 
+def list_owners_grouped() -> dict[str, list[dict]]:
+    """All bot position slices keyed by symbol (single query)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT bot_id, symbol, size, avg_price
+            FROM bot_positions
+            WHERE ABS(size) > ?
+            ORDER BY symbol, ABS(size) DESC
+            """,
+            (_EPS,),
+        )
+        grouped: dict[str, list[dict]] = {}
+        for row in cursor.fetchall():
+            sym = row["symbol"]
+            grouped.setdefault(sym, []).append({
+                "bot_id": row["bot_id"],
+                "size": float(row["size"]),
+                "avg_price": float(row["avg_price"]),
+            })
+        return grouped
+    finally:
+        conn.close()
+
+
 def get_symbol_owners(symbol: str) -> list[dict]:
     if not symbol:
         return []

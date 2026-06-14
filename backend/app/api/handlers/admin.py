@@ -115,7 +115,8 @@ async def admin_reset_system(ctx: RequestContext) -> None:
     try:
         reset_db()
         ctx.bot_manager.active_bots.clear()
-        ctx.bot_manager._executed_signals.clear()
+        from app.services.bots import signal_ledger
+        signal_ledger.clear_signal_ledger()
         feed = getattr(ctx.oms, "feed", None)
         if feed is not None:
             if hasattr(feed, "tick_interval"):
@@ -146,6 +147,7 @@ async def admin_emergency_stop(ctx: RequestContext) -> None:
     result = await ctx.oms.emergency_stop()
     msg = result.get("message", "Emergency stop executed.")
     result["message"] = f"{msg} Stopped {bot_count} bot(s)."
+    await event_publish.publish(channels.EMERGENCY_STOP, {"source": "admin"})
     await _notify_bot_registry_change()
     await send_order_result(ctx, result)
     await broadcast_account_update(ctx)
@@ -162,6 +164,27 @@ async def admin_get_stats(ctx: RequestContext) -> None:
     else:
         stats["tick_interval"] = 1.0
         stats["volatility_multiplier"] = 1.0
+
+    try:
+        from app.services.bots.portfolio_risk import build_portfolio_snapshot
+        from app.config import (
+            PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
+            PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
+        )
+
+        snap = build_portfolio_snapshot(ctx.oms)
+        stats["portfolio"] = {
+            "equity": round(snap.account_equity, 2),
+            "gross_exposure": round(snap.gross_exposure, 2),
+            "gross_exposure_pct": round(
+                snap.gross_exposure / snap.account_equity * 100, 1
+            ) if snap.account_equity else 0,
+            "max_gross_pct": PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
+            "max_group_pct": PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
+            "group_exposure": {k: round(v, 2) for k, v in snap.group_exposure.items()},
+        }
+    except Exception:
+        pass
 
     await send_system_stats(ctx, stats)
 

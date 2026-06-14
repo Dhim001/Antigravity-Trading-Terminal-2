@@ -26,7 +26,15 @@ def _archive_source() -> str:
 
 async def archive_startup_backfill(feed) -> None:
     """Seed market_bars_1m from parquet / feed buffer once at startup (Option A DB)."""
-    if not ARCHIVE_ENABLED or not ARCHIVE_BACKFILL_ON_STARTUP:
+    if not ARCHIVE_ENABLED:
+        return
+
+    from app.services.archive.wal import replay_wal
+    from app.services.archive.writer import _upsert_1m_rows
+
+    replay_wal(_upsert_1m_rows)
+
+    if not ARCHIVE_BACKFILL_ON_STARTUP:
         return
     try:
         result = run_archive_backfill(

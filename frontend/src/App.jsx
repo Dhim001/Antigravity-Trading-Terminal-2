@@ -12,6 +12,7 @@ import SystemControlPanel    from './components/SystemControlPanel';
 import MarketOverviewStrip   from './components/MarketOverviewStrip';
 import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
+import ErrorBoundary         from './components/ErrorBoundary';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -249,12 +250,15 @@ export default function App() {
       <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
 
       <main className="workspace-main">
-        <div className={viewMode === 'single' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} aria-hidden={viewMode !== 'single'}>
-          <ChartWidget />
-        </div>
-        <div className={viewMode === 'multi' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} aria-hidden={viewMode !== 'multi'}>
-          <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
-        </div>
+        {viewMode === 'single' ? (
+          <ErrorBoundary name="Chart">
+            <ChartWidget />
+          </ErrorBoundary>
+        ) : (
+          <ErrorBoundary name="Multi-chart grid">
+            <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
+          </ErrorBoundary>
+        )}
       </main>
 
       <section className="trading-panel">

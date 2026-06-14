@@ -71,18 +71,22 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   activeBots: [],
   isBotRunning: false,
   botStrategy: getLocal('terminal_bot_strategy', 'MACD_RSI'),
+  botExecutionMode: getLocal('terminal_bot_execution_mode', 'BAR_CLOSE'),
   botConfig: getLocal('terminal_bot_config', {
     allocation: 1000,
   }),
   botLogs: [],
 
   backtestResults: null,
+  backtestRuns: [],
   chartInteractionMode: 'normal',
   strategyTemplates: [
-    { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5 } },
-    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND_ADX', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3 } },
-    { id: 't3', name: 'Mean Reversion Scalp', strategy: 'BRS_SCALPING', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1 } },
-    { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', allocation: 1500, config: { trailing_stop_percent: 2 } },
+    { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
+    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND_ADX', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent' } },
+    { id: 't3', name: 'Mean Reversion Scalp', strategy: 'BRS_SCALPING', execution_mode: 'BAR_CLOSE', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1, tp_mode: 'strategy' } },
+    { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', execution_mode: 'BAR_CLOSE', allocation: 1500, config: { trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent' } },
+    { id: 't5', name: 'Tick Momentum', strategy: 'TICK_MOMENTUM', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 20, tick_cooldown_sec: 10, take_profit_percent: 0.2, tp_mode: 'percent' } },
+    { id: 't6', name: 'Tick Mean Revert', strategy: 'TICK_MEAN_REVERT', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 30, tick_cooldown_sec: 15, take_profit_percent: 0.15, tp_mode: 'percent' } },
   ],
   selectedBotId: null,
   botDetail: null,
@@ -240,6 +244,11 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     setLocal('terminal_bot_strategy', strategy);
     set({ botStrategy: strategy });
   },
+  setBotExecutionMode: (mode) => {
+    const normalized = mode === 'TICK' ? 'TICK' : 'BAR_CLOSE';
+    setLocal('terminal_bot_execution_mode', normalized);
+    set({ botExecutionMode: normalized });
+  },
   updateBotConfig: (config) => set((state) => {
     const next = { ...state.botConfig, ...config };
     setLocal('terminal_bot_config', next);
@@ -275,6 +284,24 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   clearBotLogs: () => set({ botLogs: [] }),
 
   setBacktestResults: (results) => set({ backtestResults: results }),
+  setBacktestRuns: (runs) => set({ backtestRuns: Array.isArray(runs) ? runs : [] }),
+
+  setStrategyCatalog: (strategies) => {
+    if (!Array.isArray(strategies) || strategies.length === 0) return;
+    const templates = strategies
+      .filter(s => !s.custom)
+      .map((s) => ({
+        id: `catalog-${s.id}`,
+        name: s.name,
+        strategy: s.id,
+        execution_mode: s.execution_mode || 'BAR_CLOSE',
+        allocation: 1000,
+        config: { ...(s.defaults || {}), allocation: 1000 },
+      }));
+    if (templates.length > 0) {
+      set({ strategyTemplates: templates });
+    }
+  },
   setChartInteractionMode: (mode) => set({ chartInteractionMode: mode }),
   setSelectedBotId: (id) => set({ selectedBotId: id }),
   setBotDetail: (detail) => set({ botDetail: detail }),

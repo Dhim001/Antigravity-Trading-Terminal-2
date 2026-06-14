@@ -417,6 +417,7 @@ class EtoroOMSService(BaseOMSService):
         quantity = float(order_req.get("quantity") or 0)
         sl_pct = order_req.get("stop_loss_percent")
         tp_pct = order_req.get("take_profit_percent")
+        tp_price_abs = order_req.get("take_profit_price")
 
         if symbol not in self.feed._symbols:
             return {"status": "error", "message": f"Invalid symbol: {symbol}"}
@@ -496,7 +497,9 @@ class EtoroOMSService(BaseOMSService):
         if sl_pct is not None:
             payload["stopLossRate"] = mid * (1 - sl_pct / 100.0)
             payload["stopLossType"] = "fixed"
-        if tp_pct is not None:
+        if tp_price_abs is not None:
+            payload["takeProfitRate"] = float(tp_price_abs)
+        elif tp_pct is not None:
             payload["takeProfitRate"] = mid * (1 + tp_pct / 100.0)
 
         result = await self._post_order(payload)

@@ -8,7 +8,7 @@ from app.api.state import AppState
 from app.config import REDIS_URL, TERMINAL_MODE, TERMINAL_ROLE
 from app.db.connection import DB_DRIVER
 from app.services.bots.live_hooks import register_live_bot_hooks
-from app.services.bots.runtime import create_bot_stack, create_feed_and_oms
+from app.services.bots.runtime import create_bot_stack, create_feed_and_oms, runs_bot_engine_inline
 from app.services.events.event_bus import create_event_bus
 from app.services.events import channels
 from app.websocket.connection_manager import ConnectionManager
@@ -38,7 +38,14 @@ def create_app_state() -> AppState:
         oms.register_broadcast_callback(broadcast_wrapper)
 
     screener_service, backtester_service, bot_manager = create_bot_stack(broadcast_wrapper, oms)
-    register_live_bot_hooks(feed, bot_manager)
+
+    bot_engine_uses_bar_hooks = False
+    # Server role publishes bar-close to Redis; worker executes bots — no inline hooks.
+    if runs_bot_engine_inline():
+        if hasattr(feed, "register_bar_close_callback"):
+            register_live_bot_hooks(feed, bot_manager)
+            bot_engine_uses_bar_hooks = True
+            logger.info("Bot engine using feed bar-close hooks (poll loop disabled)")
 
     return AppState(
         oms=oms,
@@ -48,4 +55,5 @@ def create_app_state() -> AppState:
         feed=feed,
         event_bus=event_bus,
         screener=screener_service,
+        bot_engine_uses_bar_hooks=bot_engine_uses_bar_hooks,
     )

@@ -1,11 +1,17 @@
 """Pre-trade risk checks for algo bot orders."""
 
 from dataclasses import dataclass
+
 from app.config import (
     BOT_MIN_NOTIONAL,
     BOT_DAILY_LOSS_LIMIT_PCT,
     BOT_MAX_ACTIVE_BOTS,
     MAX_ORDER_VALUE,
+)
+from app.services.bots.portfolio_risk import (
+    PortfolioSnapshot,
+    build_portfolio_snapshot,
+    validate_portfolio_entry,
 )
 
 
@@ -17,6 +23,24 @@ class RiskDecision:
 
 
 class RiskGate:
+    def __init__(self):
+        self._portfolio_cache: PortfolioSnapshot | None = None
+        self._portfolio_cache_at: float = 0.0
+
+    def invalidate_portfolio_cache(self) -> None:
+        self._portfolio_cache = None
+
+    def get_portfolio_snapshot(self, oms, *, max_age_sec: float = 2.0) -> PortfolioSnapshot:
+        import time
+
+        now = time.time()
+        if self._portfolio_cache and (now - self._portfolio_cache_at) < max_age_sec:
+            return self._portfolio_cache
+        snap = build_portfolio_snapshot(oms)
+        self._portfolio_cache = snap
+        self._portfolio_cache_at = now
+        return snap
+
     def validate_create(self, active_bot_count: int) -> RiskDecision:
         if active_bot_count >= BOT_MAX_ACTIVE_BOTS:
             return RiskDecision(
@@ -24,6 +48,26 @@ class RiskGate:
                 f"Maximum active bots ({BOT_MAX_ACTIVE_BOTS}) reached.",
             )
         return RiskDecision(True, "OK")
+
+    def validate_portfolio(
+        self,
+        oms,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        *,
+        is_exit: bool,
+    ) -> RiskDecision:
+        if is_exit:
+            return RiskDecision(True, "OK", quantity)
+        snapshot = self.get_portfolio_snapshot(oms)
+        allowed, reason, capped = validate_portfolio_entry(
+            snapshot, symbol, side, quantity, price
+        )
+        if not allowed:
+            return RiskDecision(False, reason)
+        return RiskDecision(True, reason, capped if capped is not None else quantity)
 
     def validate_trade(
         self,
