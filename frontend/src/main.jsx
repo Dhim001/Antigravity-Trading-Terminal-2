@@ -19,7 +19,7 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ThemeProvider attribute="class" defaultTheme="dark" forcedTheme="dark">
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <TooltipProvider delayDuration={300}>
         <App />
         <Toaster position="top-right" richColors closeButton />

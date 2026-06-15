@@ -1,0 +1,121 @@
+/** @typedef {'light' | 'dark' | 'system'} ThemeMode */
+/** @typedef {'candle' | 'line'} ChartType */
+
+/**
+ * @typedef {Object} ChartAppearanceSettings
+ * @property {string} background
+ * @property {string} gridColor
+ * @property {string} crosshairColor
+ * @property {string} bullishColor
+ * @property {string} bearishColor
+ */
+
+/**
+ * @typedef {Object} ChartLayoutSettings
+ * @property {string} timeframe
+ * @property {ChartType} chartType
+ * @property {Record<string, boolean>} activeIndicators
+ * @property {string} multiChartLayoutId
+ * @property {string[]} multiChartSymbols
+ */
+
+/**
+ * @typedef {Object} TerminalSettings
+ * @property {1} version
+ * @property {ThemeMode} theme
+ * @property {string} accentColor
+ * @property {string} bullishColor
+ * @property {string} bearishColor
+ * @property {ChartAppearanceSettings} chart
+ * @property {ChartLayoutSettings} chartLayout
+ * @property {boolean} [syncChartToTheme] Auto-match chart canvas to light/dark theme
+ * @property {string} updatedAt
+ */
+
+export const SETTINGS_STORAGE_KEY = 'terminal_settings_v1';
+
+export const CHART_LAYOUT_RESET_EVENT = 'terminal:chart-layout-reset';
+
+/** Legacy keys cleared by "Reset chart layout" */
+export const CHART_LAYOUT_STORAGE_KEYS = [
+  'terminal_tf',
+  'terminal_chart_indicators_active',
+  'terminal_chart_type',
+  'terminal_multi_chart_layout_id',
+  'terminal_multi_chart_symbols',
+];
+
+/** @type {TerminalSettings} */
+export const DEFAULT_TERMINAL_SETTINGS = {
+  version: 1,
+  theme: 'dark',
+  accentColor: '#2563eb',
+  bullishColor: '#10b981',
+  bearishColor: '#ef4444',
+  chart: {
+    background: '#080d14',
+    gridColor: 'rgba(255,255,255,0.03)',
+    crosshairColor: '#3b82f6',
+    bullishColor: '#10b981',
+    bearishColor: '#ef4444',
+  },
+  syncChartToTheme: true,
+  chartLayout: {
+    timeframe: '1m',
+    chartType: 'candle',
+    activeIndicators: {
+      ema9: true,
+      ema21: true,
+      ema50: false,
+      bb: true,
+      vwap: false,
+      rsi: true,
+      macd: true,
+      atr: false,
+      volume: true,
+    },
+    multiChartLayoutId: '2x2',
+    multiChartSymbols: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'],
+  },
+  updatedAt: new Date().toISOString(),
+};
+
+/**
+ * @param {unknown} raw
+ * @returns {TerminalSettings}
+ */
+export function migrateSettings(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_TERMINAL_SETTINGS, updatedAt: new Date().toISOString() };
+  }
+
+  const base = { ...DEFAULT_TERMINAL_SETTINGS };
+  const input = /** @type {Partial<TerminalSettings>} */ (raw);
+
+  return {
+    version: 1,
+    theme: input.theme === 'light' || input.theme === 'system' ? input.theme : 'dark',
+    accentColor: input.accentColor || base.accentColor,
+    bullishColor: input.bullishColor || base.bullishColor,
+    bearishColor: input.bearishColor || base.bearishColor,
+    chart: {
+      ...base.chart,
+      ...(input.chart || {}),
+      bullishColor: input.chart?.bullishColor || input.bullishColor || base.chart.bullishColor,
+      bearishColor: input.chart?.bearishColor || input.bearishColor || base.chart.bearishColor,
+    },
+    syncChartToTheme: input.syncChartToTheme !== false,
+    chartLayout: {
+      ...base.chartLayout,
+      ...(input.chartLayout || {}),
+      activeIndicators: {
+        ...base.chartLayout.activeIndicators,
+        ...(input.chartLayout?.activeIndicators || {}),
+      },
+      multiChartSymbols: Array.isArray(input.chartLayout?.multiChartSymbols)
+        ? input.chartLayout.multiChartSymbols
+        : base.chartLayout.multiChartSymbols,
+    },
+    updatedAt: input.updatedAt || new Date().toISOString(),
+  };
+}

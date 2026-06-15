@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useStore } from './store/useStore';
+import { useSettingsStore } from './store/useSettingsStore';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useBootstrap } from './hooks/useBootstrap';
 
@@ -9,6 +10,8 @@ import MultiChartGrid        from './components/MultiChartGrid';
 import OrderBookWidget       from './components/OrderBookWidget';
 import OrderEntryWidget      from './components/OrderEntryWidget';
 import SystemControlPanel    from './components/SystemControlPanel';
+import SettingsPanel         from './components/SettingsPanel';
+import SettingsBootstrap     from './components/SettingsBootstrap';
 import MarketOverviewStrip   from './components/MarketOverviewStrip';
 import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
@@ -19,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { TrendingUp, LayoutGrid, BarChart2, Settings, Search, OctagonX } from 'lucide-react';
+import { TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX } from 'lucide-react';
 import { sendAction } from './api/transport';
 import { Action } from './api/protocol';
 import {
@@ -42,6 +45,8 @@ export default function App() {
   useWebSocket();
 
   const [showAdmin, setShowAdmin]   = useState(false);
+  const settingsOpen = useSettingsStore(state => state.panelOpen);
+  const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);
   const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -62,6 +67,10 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setPaletteOpen(open => !open);
@@ -85,7 +94,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [setViewMode]);
+  }, [setViewMode, setSettingsOpen]);
 
   return (
     <div
@@ -97,11 +106,18 @@ export default function App() {
         '--sidebar-w': `${sidebarWidth}px`,
       }}
     >
+      <SettingsBootstrap />
       <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
+      <SettingsPanel
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onOpenAdmin={() => setShowAdmin(true)}
+      />
       <SymbolCommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onOpenAdmin={() => setShowAdmin(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <header className="terminal-header">
@@ -126,21 +142,6 @@ export default function App() {
                 SIMULATED
               </Badge>
             )}
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setShowAdmin(true)}
-                  className="header-icon-btn text-muted-foreground hover:text-trading-accent"
-                >
-                  <Settings aria-hidden />
-                  <span className="sr-only">System Control & Admin Panel</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>System Control & Admin Panel</TooltipContent>
-            </Tooltip>
           </div>
         </div>
 
@@ -207,6 +208,22 @@ export default function App() {
                 </AlertDialog>
               </>
             )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setSettingsOpen(true)}
+                  className="header-icon-btn text-muted-foreground hover:text-trading-accent"
+                  title="Preferences (⌘,)"
+                >
+                  <SlidersHorizontal aria-hidden />
+                  <span className="sr-only">Preferences</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Preferences (⌘,)</TooltipContent>
+            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>

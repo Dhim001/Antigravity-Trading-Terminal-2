@@ -1,9 +1,11 @@
 /**
  * MiniChartWidget.jsx — Compact ECharts panel for multi-chart grid.
  */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
+import { getChartEchartsTheme } from '../settings/applySettings';
 import { calcEMA } from '../utils/indicators';
 import { cn } from '@/lib/utils';
 import { getCandles } from '../services/candleBuffer';
@@ -106,6 +108,12 @@ export default function MiniChartWidget({
 
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
   const symbolsList = useStore(state => state.symbolsList);
+  const settings = useSettingsStore(state => state.settings);
+  const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
+  const chartTheme = useMemo(
+    () => getChartEchartsTheme(settings, resolvedTheme),
+    [settings, resolvedTheme],
+  );
 
   const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
 
@@ -125,7 +133,7 @@ export default function MiniChartWidget({
     const zoom = zoomWindow ?? DEFAULT_ZOOM;
 
     return {
-      backgroundColor: '#0b0f19',
+      backgroundColor: chartTheme.backgroundColor,
       grid: { left: '2%', right: '8%', top: '6%', bottom: '18%' },
       tooltip: { show: false },
       xAxis: {
@@ -133,16 +141,16 @@ export default function MiniChartWidget({
         data: categoryData,
         scale: true,
         boundaryGap: false,
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
-        axisLabel: { color: '#9ca3af', fontSize: 9 },
+        axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
+        splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
+        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9 },
       },
       yAxis: {
         scale: true,
         position: 'right',
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        axisLabel: { color: '#9ca3af', fontSize: 9, formatter: (val) => val.toFixed(dec) },
+        splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
+        axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
+        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9, formatter: (val) => val.toFixed(dec) },
       },
       dataZoom: [{ type: 'inside', start: zoom.start, end: zoom.end }],
       series: [
@@ -151,10 +159,10 @@ export default function MiniChartWidget({
           type: 'candlestick',
           data: candlestickData,
           itemStyle: {
-            color: '#10b981',
-            color0: '#ef4444',
-            borderColor: '#10b981',
-            borderColor0: '#ef4444',
+            color: chartTheme.bullishColor,
+            color0: chartTheme.bearishColor,
+            borderColor: chartTheme.bullishColor,
+            borderColor0: chartTheme.bearishColor,
           },
         },
         {
@@ -173,7 +181,7 @@ export default function MiniChartWidget({
         },
       ],
     };
-  }, [priceDecimals, symbol]);
+  }, [priceDecimals, symbol, chartTheme]);
 
   const configureChart = useCallback((opts = {}) => {
     const chart = chartRef.current;
@@ -226,7 +234,7 @@ export default function MiniChartWidget({
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, 'dark');
+      chart = echarts.init(el, chartTheme.echartsTheme || undefined);
       chartRef.current = chart;
       requestAnimationFrame(() => configureChartRef.current({ resetZoom: true }));
       return true;
@@ -249,7 +257,7 @@ export default function MiniChartWidget({
       chartRef.current = null;
       chartReadyRef.current = false;
     };
-  }, []);
+  }, [chartTheme.echartsTheme, resolvedTheme]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -257,6 +265,11 @@ export default function MiniChartWidget({
     prevSymbolRef.current = symbol;
     configureChart({ resetZoom: true });
   }, [symbol, configureChart]);
+
+  useEffect(() => {
+    if (!chartRef.current || !chartReadyRef.current) return;
+    configureChart();
+  }, [chartTheme, configureChart]);
 
   useEffect(() => {
     const sym = symbol;

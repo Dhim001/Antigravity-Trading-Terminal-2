@@ -13,7 +13,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, LayoutGrid, Settings, Search, Sparkles,
+  BarChart2, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
 } from 'lucide-react';
 
 function assetKind(sym) {
@@ -34,7 +34,7 @@ const KIND_CLASS = {
   equity: 'command-palette__dot--equity',
 };
 
-export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }) {
+export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, onOpenSettings }) {
   const symbolsList = useStore(state => state.symbolsList);
   const activeSymbol = useStore(state => state.activeSymbol);
   const tickerData = useStore(state => state.tickerData);
@@ -152,11 +152,20 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin }
               <CommandShortcut>⌘2</CommandShortcut>
             </CommandItem>
             <CommandItem
-              value="system settings admin"
+              value="preferences settings appearance theme"
+              className="command-palette__item"
+              onSelect={() => run(() => onOpenSettings?.())}
+            >
+              <SlidersHorizontal aria-hidden />
+              <span>Preferences</span>
+              <CommandShortcut>⌘,</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="system control admin"
               className="command-palette__item"
               onSelect={() => run(() => onOpenAdmin?.())}
             >
-              <Settings aria-hidden />
+              <ShieldAlert aria-hidden />
               <span>System Control Panel</span>
             </CommandItem>
           </CommandGroup>

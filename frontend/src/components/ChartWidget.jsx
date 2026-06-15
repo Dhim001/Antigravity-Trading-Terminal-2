@@ -4,6 +4,9 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
+import { getChartEchartsTheme, hexToRgba } from '../settings/applySettings';
+import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import {
   calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcVWAP, calcATR, generateSignal
 } from '../utils/indicators';
@@ -126,18 +129,21 @@ function categoryAxisLabelFormatter(val) {
 }
 
 /** Shared x-axis category config — unix keys with human-readable labels. */
-function categoryXAxisOpts(categoryData, gridIndex, { showLabels = true } = {}) {
+function categoryXAxisOpts(categoryData, gridIndex, { showLabels = true, chartTheme } = {}) {
+  const gridColor = chartTheme?.gridColor ?? 'rgba(255,255,255,0.03)';
+  const axisLineColor = chartTheme?.axisLineColor ?? 'rgba(255,255,255,0.06)';
+  const axisLabelColor = chartTheme?.axisLabelColor ?? '#9ca3af';
   return {
     type: 'category',
     data: categoryData,
     gridIndex,
     scale: true,
     boundaryGap: false,
-    axisLine: { onZero: false, lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-    splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+    axisLine: { onZero: false, lineStyle: { color: axisLineColor } },
+    splitLine: { show: true, lineStyle: { color: gridColor } },
     axisLabel: {
       show: showLabels,
-      color: '#9ca3af',
+      color: axisLabelColor,
       formatter: categoryAxisLabelFormatter,
     },
   };
@@ -151,8 +157,8 @@ function buildMainSeriesData(bars, chartType) {
   return data;
 }
 
-function buildVolumeSeriesData(bars) {
-  const data = bars.map(c => volumeSeriesEntry(c));
+function buildVolumeSeriesData(bars, chartTheme) {
+  const data = bars.map(c => volumeSeriesEntry(c, chartTheme));
   for (let i = 0; i < FUTURE_PADDING; i++) data.push(null);
   return data;
 }
@@ -201,11 +207,15 @@ function bucketCandles(raw, intervalSecs) {
   return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
 }
 
-function volumeSeriesEntry(bar) {
+function volumeSeriesEntry(bar, chartTheme) {
+  const bullish = chartTheme?.bullishColor ?? '#10b981';
+  const bearish = chartTheme?.bearishColor ?? '#ef4444';
   return {
     value: bar.volume || 0,
     itemStyle: {
-      color: bar.close >= bar.open ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)',
+      color: bar.close >= bar.open
+        ? hexToRgba(bullish, 0.35)
+        : hexToRgba(bearish, 0.35),
     },
   };
 }
@@ -269,7 +279,7 @@ function mapVwapSeries(candles) {
 }
 
 /** Series patches for live candle updates — keeps sub-panes in sync with price/volume. */
-function buildIndicatorSeriesPatches(bars, active) {
+function buildIndicatorSeriesPatches(bars, active, chartTheme) {
   const patches = [];
   if (active.ema9) patches.push({ id: 'ema9', data: mapEmaSeries(bars, 9) });
   if (active.ema21) patches.push({ id: 'ema21', data: mapEmaSeries(bars, 21) });
@@ -281,7 +291,7 @@ function buildIndicatorSeriesPatches(bars, active) {
     patches.push({ id: 'bb-lower', data: bb.lower });
   }
   if (active.vwap) patches.push({ id: 'vwap', data: mapVwapSeries(bars) });
-  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars) });
+  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars, chartTheme) });
   if (active.rsi) patches.push({ id: 'rsi', data: mapRsiSeries(bars) });
   if (active.macd) {
     const m = mapMacdSeries(bars);
@@ -609,6 +619,14 @@ export default function ChartWidget() {
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
 
+  const settings = useSettingsStore(state => state.settings);
+  const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
+  const updateChartLayout = useSettingsStore(state => state.updateChartLayout);
+  const chartTheme = useMemo(
+    () => getChartEchartsTheme(settings, resolvedTheme),
+    [settings, resolvedTheme],
+  );
+
   const [timeframe, setTimeframe] = useState(() => { try { return localStorage.getItem('terminal_tf') || '1m'; } catch { return '1m'; } });
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
 
@@ -616,18 +634,42 @@ export default function ChartWidget() {
     setDisplayBarLimit(CHART_DISPLAY_BARS);
     olderExhaustedRef.current[activeSymbol] = false;
   }, [activeSymbol, timeframe]);
-  const [chartType, setChartType] = useState('candle');
+  const [chartType, setChartType] = useState(() => {
+    try {
+      const saved = localStorage.getItem('terminal_chart_type');
+      if (saved === 'line' || saved === 'candle') return saved;
+    } catch (_) {}
+    return 'candle';
+  });
   const [active, setActive] = useState(() => {
     try {
       const s = localStorage.getItem('terminal_chart_indicators_active');
       if (s) return JSON.parse(s);
     } catch (_) {}
-    return { ema9: true, ema21: true, ema50: false, bb: true, vwap: false, rsi: true, macd: true, atr: false, volume: true };
+    return { ...DEFAULT_TERMINAL_SETTINGS.chartLayout.activeIndicators };
   });
 
 
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
+  useEffect(() => { try { localStorage.setItem('terminal_chart_type', chartType); } catch {} }, [chartType]);
   useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
+
+  useEffect(() => {
+    updateChartLayout({ timeframe, chartType, activeIndicators: active });
+  }, [timeframe, chartType, active, updateChartLayout]);
+
+  useEffect(() => {
+    const onReset = (e) => {
+      const cl = e.detail?.chartLayout ?? DEFAULT_TERMINAL_SETTINGS.chartLayout;
+      setTimeframe(cl.timeframe);
+      setChartType(cl.chartType);
+      setActive({ ...cl.activeIndicators });
+      chartReadyRef.current = false;
+      try { chartRef.current?.clear(); } catch (_) {}
+    };
+    window.addEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+    return () => window.removeEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+  }, []);
 
   const activeIndicatorKeys = useMemo(
     () => Object.entries(active).filter(([, on]) => on).map(([k]) => k),
@@ -781,16 +823,16 @@ export default function ChartWidget() {
     // Main grid axis
     xAxes.push({
       id: 'x-0',
-      ...categoryXAxisOpts(categoryData, 0, { showLabels: grids.length === 1 }),
+      ...categoryXAxisOpts(categoryData, 0, { showLabels: grids.length === 1, chartTheme }),
     });
 
     yAxes.push({
       scale: true,
       gridIndex: 0,
       position: 'right',
-      splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-      axisLabel: { color: '#9ca3af', formatter: val => val.toFixed(dec) }
+      splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
+      axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
+      axisLabel: { color: chartTheme.axisLabelColor, formatter: val => val.toFixed(dec) }
     });
 
     // Sub grids axes
@@ -801,7 +843,7 @@ export default function ChartWidget() {
 
       xAxes.push({
         id: `x-${xAxes.length}`,
-        ...categoryXAxisOpts(categoryData, gIdx, { showLabels: isLowest }),
+        ...categoryXAxisOpts(categoryData, gIdx, { showLabels: isLowest, chartTheme }),
         axisTick: { show: isLowest },
       });
 
@@ -809,9 +851,9 @@ export default function ChartWidget() {
         scale: true,
         gridIndex: gIdx,
         position: 'right',
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.03)' } },
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        axisLabel: { color: '#9ca3af', fontSize: 9 }
+        splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
+        axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
+        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9 }
       };
 
       if (pane === 'volume') {
@@ -839,7 +881,7 @@ export default function ChartWidget() {
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
-        lineStyle: { color: '#3b82f6', width: 2 },
+        lineStyle: { color: chartTheme.crosshairLabelBg, width: 2 },
       });
     } else {
       series.push({
@@ -850,10 +892,10 @@ export default function ChartWidget() {
         xAxisIndex: 0,
         yAxisIndex: 0,
         itemStyle: {
-          color: '#10b981',
-          color0: '#ef4444',
-          borderColor: '#10b981',
-          borderColor0: '#ef4444',
+          color: chartTheme.bullishColor,
+          color0: chartTheme.bearishColor,
+          borderColor: chartTheme.bullishColor,
+          borderColor0: chartTheme.bearishColor,
         },
       });
     }
@@ -919,7 +961,7 @@ export default function ChartWidget() {
         type: 'bar',
         xAxisIndex: gIdx,
         yAxisIndex: gIdx,
-        data: buildVolumeSeriesData(candles),
+        data: buildVolumeSeriesData(candles, chartTheme),
       });
     }
 
@@ -962,10 +1004,10 @@ export default function ChartWidget() {
     const zoomXIndices = grids.map((_, i) => i);
 
     const option = {
-      backgroundColor: '#080d14',
+      backgroundColor: chartTheme.backgroundColor,
       axisPointer: {
         link: [{ xAxisIndex: 'all' }],
-        label: { backgroundColor: '#1d4ed8' }
+        label: { backgroundColor: chartTheme.crosshairLabelBg }
       },
       tooltip: {
         trigger: 'axis',
@@ -977,7 +1019,7 @@ export default function ChartWidget() {
       yAxis: yAxes,
       dataZoom: [
         { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd },
-        { type: 'slider', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: 'rgba(37,99,235,0.12)', textStyle: { color: '#9ca3af' } }
+        { type: 'slider', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: chartTheme.dataZoomFiller, textStyle: { color: chartTheme.axisLabelColor } }
       ],
       series: series
     };
@@ -992,7 +1034,7 @@ export default function ChartWidget() {
     updateLegendDOM(lastBar);
 
     requestAnimationFrame(() => applyOverlayPatchRef.current?.());
-  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM]);
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme]);
 
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
@@ -1088,7 +1130,7 @@ export default function ChartWidget() {
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, 'dark');
+      chart = echarts.init(el, chartTheme.echartsTheme || undefined);
       chartRef.current = chart;
       chartReadyRef.current = false;
 
@@ -1172,7 +1214,7 @@ export default function ChartWidget() {
       chartReadyRef.current = false;
       if (el.__chartInstance) delete el.__chartInstance;
     };
-  }, [updateLegendDOM]);
+  }, [updateLegendDOM, chartTheme.echartsTheme, resolvedTheme]);
 
   // Full rebuild when structure/data/indicators change
   useEffect(() => {
@@ -1222,7 +1264,7 @@ export default function ChartWidget() {
           type: chartType === 'line' ? 'line' : 'candlestick',
           data: buildMainSeriesData(bars, chartType),
         },
-        ...buildIndicatorSeriesPatches(bars, active),
+        ...buildIndicatorSeriesPatches(bars, active, chartTheme),
       ],
     };
 
@@ -1233,7 +1275,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, chartTheme]);
 
   useEffect(() => {
     const symbol = activeSymbol;

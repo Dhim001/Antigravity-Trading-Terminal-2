@@ -9,26 +9,26 @@
    DESIGN SYSTEM TOKENS
 ═══════════════════════════════════════════════════════════════════ */
 :root {
-  /* Surface palette — dark navy spectrum */
-  --bg-primary:   #070b14;
-  --bg-secondary: #0a0f1e;
-  --bg-tertiary:  #0f1629;
-  --bg-card:      #111827;
-  --bg-elevated:  #162038;
-  --bg-hover:     rgba(255,255,255,0.04);
-  --bg-active:    rgba(37,99,235,0.12);
+  /* Surface palette — light (default) */
+  --bg-primary:   #f1f5f9;
+  --bg-secondary: #e2e8f0;
+  --bg-tertiary:  #f8fafc;
+  --bg-card:      #ffffff;
+  --bg-elevated:  #f8fafc;
+  --bg-hover:     rgba(15,23,42,0.04);
+  --bg-active:    rgba(37,99,235,0.08);
 
   /* Borders */
-  --border-subtle: rgba(255,255,255,0.04);
-  --border-color:  rgba(255,255,255,0.08);
-  --border-strong: rgba(255,255,255,0.14);
+  --border-subtle: rgba(15,23,42,0.04);
+  --border-color:  rgba(15,23,42,0.10);
+  --border-strong: rgba(15,23,42,0.16);
   --border-focus:  #3b82f6;
 
   /* Text */
-  --text-primary:   #f1f5f9;
-  --text-secondary: #94a3b8;
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
   --text-muted:     #64748b;
-  --text-disabled:  #475569;
+  --text-disabled:  #94a3b8;
 
   /* Trading colors */
   --color-up:       #10b981;
@@ -98,9 +98,9 @@
   --dock-min:  200px;
 
   /* Effects */
-  --shadow-sm:   0 2px 8px rgba(0,0,0,0.3);
-  --shadow-md:   0 8px 24px rgba(0,0,0,0.4);
-  --shadow-lg:   0 16px 48px rgba(0,0,0,0.55);
+  --shadow-sm:   0 2px 8px rgba(15,23,42,0.08);
+  --shadow-md:   0 8px 24px rgba(15,23,42,0.10);
+  --shadow-lg:   0 16px 48px rgba(15,23,42,0.14);
   --glass:       blur(14px);
   --transition:  all 0.15s ease;
 
@@ -109,6 +109,27 @@
   --widget-header-h:  36px;
   --panel-header-h:   32px;
   --dock-tab-h:       var(--widget-header-h);
+
+  /* shadcn tokens — light */
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-card);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--color-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg-elevated);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-tertiary);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--bg-elevated);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--color-down);
+  --border: var(--border-color);
+  --input: var(--border-color);
+  --ring: var(--color-accent-light);
+  --radius: var(--r-md);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -254,17 +275,8 @@ body {
   gap: var(--sp-4);
   min-height: var(--header-h);
   z-index: 100;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.035) 0%,
-    rgba(10, 15, 30, 0.97) 22%,
-    rgba(7, 11, 20, 0.99) 100%
-  );
   backdrop-filter: var(--glass);
   border-bottom: 1px solid var(--border-color);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 .terminal-header::after {
@@ -4191,6 +4203,28 @@ body {
 }
 
 .dark {
+  /* Surface palette — dark navy spectrum */
+  --bg-primary:   #070b14;
+  --bg-secondary: #0a0f1e;
+  --bg-tertiary:  #0f1629;
+  --bg-card:      #111827;
+  --bg-elevated:  #162038;
+  --bg-hover:     rgba(255,255,255,0.04);
+  --bg-active:    rgba(37,99,235,0.12);
+
+  --border-subtle: rgba(255,255,255,0.04);
+  --border-color:  rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.14);
+
+  --text-primary:   #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted:     #64748b;
+  --text-disabled:  #475569;
+
+  --shadow-sm:   0 2px 8px rgba(0,0,0,0.3);
+  --shadow-md:   0 8px 24px rgba(0,0,0,0.4);
+  --shadow-lg:   0 16px 48px rgba(0,0,0,0.55);
+
   /* shadcn tokens ← legacy terminal palette */
   --background: var(--bg-primary);
   --foreground: var(--text-primary);
@@ -4224,6 +4258,148 @@ body {
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-color);
   --sidebar-ring: var(--color-accent-light);
+}
+
+:root .terminal-header {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(241, 245, 249, 0.98) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.dark .terminal-header {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.035) 0%,
+    rgba(10, 15, 30, 0.97) 22%,
+    rgba(7, 11, 20, 0.99) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SETTINGS PANEL
+═══════════════════════════════════════════════════════════════════ */
+.settings-panel {
+  padding: 0 !important;
+  gap: 0 !important;
+}
+
+.settings-panel__tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-panel__tablist {
+  flex-wrap: wrap;
+}
+
+.settings-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.settings-section__title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-section__hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.settings-color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.settings-color-field__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-color-input {
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.settings-color-text {
+  flex: 1;
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  font-size: var(--fs-xs);
+  border: 1px solid var(--border-color);
+  border-radius: var(--r-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.settings-color-presets {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.settings-color-swatch {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  padding: 0;
+}
+
+.settings-defaults-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.settings-defaults-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-defaults-list dt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.settings-defaults-list dd {
+  color: var(--text-secondary);
+  text-align: right;
 }
 
 @layer base {

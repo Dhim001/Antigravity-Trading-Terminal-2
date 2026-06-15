@@ -7,6 +7,7 @@ import { useStore } from '../store/useStore';
 import MiniChartWidget from './MiniChartWidget';
 import { subscribeChartSymbols } from '../api/bootstrap';
 import { getStoreActions } from '../api/dispatch';
+import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -152,6 +153,24 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   useEffect(() => {
     try { localStorage.setItem('terminal_multi_chart_symbols', JSON.stringify(symbols)); } catch (_) {}
   }, [symbols]);
+
+  useEffect(() => {
+    const onReset = (e) => {
+      const cl = e.detail?.chartLayout ?? DEFAULT_TERMINAL_SETTINGS.chartLayout;
+      const newLayout = LAYOUTS.find((l) => l.id === cl.multiChartLayoutId) || LAYOUTS.find((l) => l.id === '2x2');
+      if (!newLayout) return;
+      setLayoutId(newLayout.id);
+      setMaximizedIdx(null);
+      setFocusedIdx(0);
+      const next = [...newLayout.defaults];
+      for (let i = 0; i < Math.min(cl.multiChartSymbols.length, next.length); i++) {
+        if (cl.multiChartSymbols[i]) next[i] = cl.multiChartSymbols[i];
+      }
+      setSymbols(next);
+    };
+    window.addEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+    return () => window.removeEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+  }, []);
 
   useEffect(() => {
     const unique = [...new Set(symbols.filter(Boolean))];
