@@ -4,6 +4,9 @@ import { applyServerMessage, getStoreActions } from '../api/dispatch';
 import { runBootstrap, resubscribeMarketSymbols } from '../api/bootstrap';
 import { WS_URL } from '../api/config';
 import { getHmrData, markHmrActive, setupHmrAccept } from './hmrState';
+import { decode as decodeMsgpack } from '@msgpack/msgpack';
+
+const MSGPACK_MARKER = 0x01;
 
 const hmr = getHmrData();
 
@@ -19,12 +22,24 @@ const clearReconnect = () => {
   }
 };
 
+async function parseWirePayload(raw) {
+  if (typeof raw === 'string') {
+    return JSON.parse(raw);
+  }
+  const buffer = raw instanceof ArrayBuffer ? raw : await raw.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length > 0 && bytes[0] === MSGPACK_MARKER) {
+    return decodeMsgpack(bytes.subarray(1));
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function attachWebSocketHandlers(socket) {
   const storeActions = getStoreActions();
 
-  socket.onmessage = (event) => {
+  socket.onmessage = async (event) => {
     try {
-      const payload = JSON.parse(event.data);
+      const payload = await parseWirePayload(event.data);
       const { type, data, message, meta } = payload;
 
       if (type === MessageType.ERROR) {

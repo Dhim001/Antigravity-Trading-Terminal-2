@@ -100,6 +100,19 @@ async def bot_get_detail(ctx: RequestContext) -> None:
         await send_order_result(ctx, {"status": "error", "message": "Bot not found"})
 
 
+@route(Action.BOT_UPDATE_CONFIG, tags=["bots"])
+async def bot_update_config(ctx: RequestContext) -> None:
+    bot_id = ctx.message.get("bot_id")
+    config_patch = ctx.message.get("config", {})
+    try:
+        detail = await ctx.bot_manager.update_bot_config(bot_id, config_patch)
+        await send_bot_detail(ctx, detail)
+        await send_order_result(ctx, {"status": "success", "message": "Bot config updated"})
+        await broadcast_bots_update(ctx)
+    except Exception as exc:
+        await _bot_mutation_error(ctx, exc)
+
+
 @route(Action.BOT_GET_ALL, tags=["bots"])
 async def bot_get_all(ctx: RequestContext) -> None:
     await send_bots_update(ctx)

@@ -1314,7 +1314,8 @@ body {
   padding-top: 0;
 }
 
-/* ── Positions dock tab ─────────────────────────────────────────── */
+/* ── Dock panel tabs (Positions, Orders, Balances, Equity, Reconcile) ─ */
+.dock-panel-tab,
 .positions-tab {
   display: flex;
   min-height: 0;
@@ -1323,6 +1324,7 @@ body {
   overflow: hidden;
 }
 
+.dock-panel-tab__toolbar,
 .positions-tab__toolbar {
   display: flex;
   flex-shrink: 0;
@@ -1338,6 +1340,7 @@ body {
   );
 }
 
+.dock-panel-tab__toolbar-lead,
 .positions-tab__toolbar-lead {
   display: flex;
   align-items: center;
@@ -1345,6 +1348,7 @@ body {
   min-width: 0;
 }
 
+.dock-panel-tab__toolbar-icon,
 .positions-tab__toolbar-icon {
   display: flex;
   align-items: center;
@@ -1363,6 +1367,7 @@ body {
   box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent-light) 14%, transparent);
 }
 
+.dock-panel-tab__toolbar-copy,
 .positions-tab__toolbar-copy {
   display: flex;
   flex-direction: column;
@@ -1370,6 +1375,7 @@ body {
   min-width: 0;
 }
 
+.dock-panel-tab__toolbar-title,
 .positions-tab__toolbar-title {
   font-size: var(--fs-2xs);
   font-weight: 800;
@@ -1379,6 +1385,7 @@ body {
   white-space: nowrap;
 }
 
+.dock-panel-tab__toolbar-subtitle,
 .positions-tab__toolbar-subtitle {
   font-size: var(--fs-2xs);
   font-weight: 600;
@@ -1387,6 +1394,8 @@ body {
   white-space: nowrap;
 }
 
+.dock-panel-tab__toolbar-actions,
+.dock-panel-tab__toolbar-meta,
 .positions-tab__toolbar-meta {
   display: flex;
   flex-shrink: 0;
@@ -1395,6 +1404,7 @@ body {
   gap: 2px;
 }
 
+.dock-panel-tab__meta-label,
 .positions-tab__meta-label {
   font-size: var(--fs-2xs);
   font-weight: 700;
@@ -1403,20 +1413,81 @@ body {
   color: var(--text-muted);
 }
 
+.dock-panel-tab__meta-value,
 .positions-tab__meta-value {
   font-size: var(--fs-sm);
   font-weight: 800;
   letter-spacing: -0.02em;
 }
 
+.dock-panel-tab__meta-value--up,
 .positions-tab__meta-value--up {
   color: var(--color-up);
   text-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
 }
 
+.dock-panel-tab__meta-value--down,
 .positions-tab__meta-value--down {
   color: var(--color-down);
   text-shadow: 0 0 12px rgba(239, 68, 68, 0.35);
+}
+
+.dock-panel-tab__empty {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.dock-panel-tab__body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dock-panel-tab__stats-row {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-2) var(--sp-3);
+  background: rgba(0, 0, 0, 0.06);
+  scrollbar-width: none;
+}
+
+.dock-panel-tab__stats-row::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-panel-tab__stats-row > * {
+  min-width: 118px;
+  flex-shrink: 0;
+}
+
+.dock-panel-tab__chart-wrap {
+  min-height: 0;
+  flex: 1;
+  padding: var(--sp-1) var(--sp-2);
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.dock-panel-tab__alert {
+  flex-shrink: 0;
+  margin: var(--sp-2) var(--sp-3) 0;
+  border-color: color-mix(in srgb, var(--color-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--color-warn) 6%, transparent);
+}
+
+.dock-panel-tab__toolbar-actions {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-1);
 }
 
 .positions-tab__empty {
@@ -1427,6 +1498,7 @@ body {
   justify-content: center;
 }
 
+.dock-panel-tab__table-wrap,
 .positions-tab__table-wrap {
   min-height: 0;
   flex: 1;
@@ -1435,6 +1507,7 @@ body {
   background: rgba(0, 0, 0, 0.08);
 }
 
+.dock-panel-tab__table thead th,
 .positions-tab__table thead th {
   position: sticky;
   top: 0;
@@ -1453,14 +1526,17 @@ body {
   color: var(--text-muted);
 }
 
+.dock-panel-tab__table tbody tr,
 .positions-tab__table tbody tr {
   transition: background 0.12s ease;
 }
 
+.dock-panel-tab__table tbody tr:hover,
 .positions-tab__table tbody tr:hover {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.dock-panel-tab__footer,
 .positions-tab__footer {
   display: flex;
   flex-shrink: 0;
@@ -1480,6 +1556,7 @@ body {
   color: var(--text-muted);
 }
 
+.dock-panel-tab__footer-highlight,
 .positions-tab__footer-pnl {
   color: var(--text-secondary);
 }
@@ -3122,15 +3199,6 @@ body {
 .bot-detail-drawer__equity {
   flex-shrink: 0;
   padding: 0 0.25rem;
-}
-
-.tick-viewer-chart {
-  width: 100%;
-  min-height: 140px;
-}
-
-.bot-history-tab__toolbar {
-  flex-shrink: 0;
 }
 
 .backtest-mini-chart {

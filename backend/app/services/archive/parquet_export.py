@@ -17,6 +17,43 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+def append_bars_parquet(rows: list[dict[str, Any]]) -> int:
+    """Append flushed 1m bar rows to date-partitioned Parquet files."""
+    if not rows:
+        return 0
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required for Parquet export") from exc
+
+    from datetime import datetime, timezone
+
+    written = 0
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_symbol.setdefault(row["symbol"], []).append(row)
+
+    for symbol, sym_rows in by_symbol.items():
+        sym_dir = os.path.join(ARCHIVE_PARQUET_DIR, symbol.replace("/", "_"))
+        _ensure_dir(sym_dir)
+        by_date: dict[str, list[dict[str, Any]]] = {}
+        for row in sym_rows:
+            date_key = datetime.fromtimestamp(int(row["time"]), tz=timezone.utc).strftime("%Y-%m-%d")
+            by_date.setdefault(date_key, []).append(row)
+
+        for date_key, date_rows in by_date.items():
+            path = os.path.join(sym_dir, f"1m_{date_key}.parquet")
+            table = pa.Table.from_pylist(date_rows)
+            if os.path.isfile(path):
+                existing = pq.read_table(path)
+                table = pa.concat_tables([existing, table])
+            pq.write_table(table, path, compression="snappy")
+            written += len(date_rows)
+
+    return written
+
+
 def export_bars_to_parquet(
     symbol: str,
     *,

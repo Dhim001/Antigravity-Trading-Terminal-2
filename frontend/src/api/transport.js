@@ -51,6 +51,14 @@ export const HTTP_ROUTES = Object.freeze({
     method: 'GET',
     path: (p) => `/api/v1/bots/${encodeURIComponent(p.bot_id)}`,
   },
+  [Action.BOT_UPDATE_CONFIG]: {
+    method: 'PATCH',
+    path: (p) => `/api/v1/bots/${encodeURIComponent(p.bot_id)}/config`,
+    body: (p) => {
+      const { bot_id: _botId, ...rest } = p;
+      return rest;
+    },
+  },
   [Action.BOT_STOP]: {
     method: 'POST',
     path: (p) => `/api/v1/bots/${encodeURIComponent(p.bot_id)}/stop`,

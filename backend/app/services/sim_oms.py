@@ -214,8 +214,7 @@ class SimulatedOMSService(BaseOMSService):
             conn.close()
 
             if pending_bot_fill:
-                bid, fsym, fside, fqty, fprice = pending_bot_fill
-                bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+                self._apply_bot_fill(pending_bot_fill)
 
             if order_type == "MARKET":
                 self.invalidate_trade_history_cache()
@@ -336,11 +335,20 @@ class SimulatedOMSService(BaseOMSService):
 
         conn.close()
         for bot_fill in pending_bot_fills:
-            bid, fsym, fside, fqty, fprice = bot_fill
-            bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+            self._apply_bot_fill(bot_fill)
         if filled_order_updates:
             self.invalidate_trade_history_cache()
         return filled_order_updates
+
+    def _apply_bot_fill(self, fill_tuple) -> None:
+        if not fill_tuple:
+            return
+        if len(fill_tuple) == 5:
+            bid, fsym, fside, fqty, fprice = fill_tuple
+            risk = None
+        else:
+            bid, fsym, fside, fqty, fprice, risk = fill_tuple
+        bot_positions.apply_fill(bid, fsym, fside, fqty, fprice, risk=risk)
 
     def _process_fill(
         self,
@@ -437,7 +445,18 @@ class SimulatedOMSService(BaseOMSService):
             record_order_fifo_pnl(cursor, order_id, symbol, side, price, quantity)
 
         if bot_id:
-            return (bot_id, symbol, side, quantity, price)
+            risk = None
+            if (
+                stop_loss_percent is not None
+                or take_profit_percent is not None
+                or take_profit_price is not None
+            ):
+                risk = {
+                    "stop_loss_percent": stop_loss_percent,
+                    "take_profit_percent": take_profit_percent,
+                    "take_profit_price": take_profit_price,
+                }
+            return (bot_id, symbol, side, quantity, price, risk)
         return None
 
     async def update_position_sl_tp(self, symbol: str, stop_loss_percent: float=None, take_profit_percent: float=None, stop_loss_price: float=None, take_profit_price: float=None) -> dict:
@@ -496,52 +515,112 @@ class SimulatedOMSService(BaseOMSService):
             return {"status": "error", "message": f"Failed to update SL/TP: {str(e)}"}
 
     def check_sl_tp_triggers(self):
+        owners_map = bot_positions.list_owners_grouped()
+
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price
+            SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent,
+                   stop_loss_price, take_profit_price
             FROM positions
-            WHERE size != 0.0 AND (stop_loss_price IS NOT NULL OR take_profit_price IS NOT NULL)
+            WHERE size != 0.0
         """)
-        active_positions = [dict(row) for row in cursor.fetchall()]
+        account_positions = {row["symbol"]: dict(row) for row in cursor.fetchall()}
         conn.close()
 
-        if not active_positions:
+        symbols = set(account_positions.keys()) | set(owners_map.keys())
+        if not symbols:
             return [], [], []
 
-        owners_map = bot_positions.list_owners_grouped()
-        trailing_updates: list[tuple[str, float]] = []
+        trailing_bot_updates: list[tuple[str, str, float]] = []
+        trailing_account_updates: list[tuple[str, float]] = []
         exit_plans: list[dict] = []
         triggered_logs: list[str] = []
 
-        for pos in active_positions:
-            symbol = pos["symbol"]
+        for symbol in symbols:
             if symbol not in self.feed._symbols:
                 continue
 
-            size = pos["size"]
-            avg_price = pos["avg_price"]
-            sl_price = pos["stop_loss_price"]
-            tp_price = pos["take_profit_price"]
             market_price = self.feed._symbols[symbol]["price"]
-            trigger_type = None
+            quote = self.feed._symbols[symbol]["quote"]
+            account = account_positions.get(symbol, {})
+            acc_size = float(account.get("size") or 0.0)
+            owners = owners_map.get(symbol, [])
+            bot_total = sum(abs(float(o["size"])) for o in owners)
 
-            if size > 0:
-                if pos["stop_loss_percent"] is not None:
-                    potential_sl = market_price * (1 - pos["stop_loss_percent"] / 100)
+            for owner in owners:
+                osize = float(owner["size"])
+                if abs(osize) <= 1e-8:
+                    continue
+
+                trigger_type, trailing_sl = bot_positions.evaluate_risk_trigger(
+                    osize,
+                    float(owner["avg_price"]),
+                    market_price,
+                    stop_loss_percent=owner["stop_loss_percent"],
+                    take_profit_percent=owner["take_profit_percent"],
+                    stop_loss_price=owner["stop_loss_price"],
+                    take_profit_price=owner["take_profit_price"],
+                )
+                if trailing_sl is not None and owner.get("stop_loss_percent") is not None:
+                    if owner.get("stop_loss_price") is None or abs(trailing_sl - owner["stop_loss_price"]) > 1e-9:
+                        trailing_bot_updates.append((owner["bot_id"], symbol, trailing_sl))
+
+                if not trigger_type:
+                    continue
+
+                side = "SELL" if osize > 0 else "BUY"
+                sl_ref = owner.get("stop_loss_price")
+                tp_ref = owner.get("take_profit_price")
+                if trigger_type == "SL":
+                    triggered_logs.append(
+                        f"🚨 BOT STOP LOSS ({owner['bot_id'][:8]}) for {symbol} at ${market_price:.2f} "
+                        f"(SL limit: ${sl_ref:.2f}). Exiting slice..."
+                    )
+                else:
+                    triggered_logs.append(
+                        f"🎯 BOT TAKE PROFIT ({owner['bot_id'][:8]}) for {symbol} at ${market_price:.2f} "
+                        f"(TP limit: ${tp_ref:.2f}). Exiting slice..."
+                    )
+                exit_plans.append({
+                    "symbol": symbol,
+                    "side": side,
+                    "market_price": market_price,
+                    "quote": quote,
+                    "avg_price": float(owner["avg_price"]),
+                    "trigger_type": trigger_type,
+                    "qty": abs(osize),
+                    "bot_id": owner["bot_id"],
+                })
+
+            remainder = max(0.0, abs(acc_size) - bot_total)
+            if remainder <= 1e-8 or not account:
+                continue
+
+            sl_price = account.get("stop_loss_price")
+            tp_price = account.get("take_profit_price")
+            sl_pct = account.get("stop_loss_percent")
+            tp_pct = account.get("take_profit_percent")
+            if sl_price is None and tp_price is None and sl_pct is None and tp_pct is None:
+                continue
+
+            trigger_type = None
+            if acc_size > 0:
+                if sl_pct is not None:
+                    potential_sl = market_price * (1 - sl_pct / 100)
                     if sl_price is None or potential_sl > sl_price:
                         sl_price = potential_sl
-                        trailing_updates.append((symbol, sl_price))
+                        trailing_account_updates.append((symbol, sl_price))
                 if sl_price is not None and market_price <= sl_price:
                     trigger_type = "SL"
                 elif tp_price is not None and market_price >= tp_price:
                     trigger_type = "TP"
-            elif size < 0:
-                if pos["stop_loss_percent"] is not None:
-                    potential_sl = market_price * (1 + pos["stop_loss_percent"] / 100)
+            elif acc_size < 0:
+                if sl_pct is not None:
+                    potential_sl = market_price * (1 + sl_pct / 100)
                     if sl_price is None or potential_sl < sl_price:
                         sl_price = potential_sl
-                        trailing_updates.append((symbol, sl_price))
+                        trailing_account_updates.append((symbol, sl_price))
                 if sl_price is not None and market_price >= sl_price:
                     trigger_type = "SL"
                 elif tp_price is not None and market_price <= tp_price:
@@ -550,50 +629,50 @@ class SimulatedOMSService(BaseOMSService):
             if not trigger_type:
                 continue
 
-            side = "SELL" if size > 0 else "BUY"
+            side = "SELL" if acc_size > 0 else "BUY"
+            avg_price = float(account.get("avg_price") or 0)
             if trigger_type == "SL":
                 triggered_logs.append(
                     f"🚨 STOP LOSS TRIGGERED for {symbol} at ${market_price:.2f} "
-                    f"(Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting..."
+                    f"(Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting manual slice..."
                 )
             else:
                 triggered_logs.append(
                     f"🎯 TAKE PROFIT TRIGGERED for {symbol} at ${market_price:.2f} "
-                    f"(Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting..."
+                    f"(Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting manual slice..."
                 )
-
-            owners = owners_map.get(symbol, [])
-            exit_slices: list[dict] = []
-            if owners:
-                for owner in owners:
-                    osize = abs(float(owner["size"]))
-                    if osize > 1e-8:
-                        exit_slices.append({
-                            "bot_id": owner["bot_id"],
-                            "qty": osize,
-                            "entry_price": float(owner["avg_price"]),
-                        })
-                bot_total = sum(s["qty"] for s in exit_slices)
-                remainder = max(0.0, abs(size) - bot_total)
-            else:
-                remainder = abs(size)
-
             exit_plans.append({
                 "symbol": symbol,
                 "side": side,
                 "market_price": market_price,
-                "quote": self.feed._symbols[symbol]["quote"],
+                "quote": quote,
                 "avg_price": avg_price,
                 "trigger_type": trigger_type,
-                "exit_slices": exit_slices,
-                "remainder": remainder,
+                "qty": remainder,
+                "bot_id": None,
             })
 
-        if trailing_updates:
+        if trailing_bot_updates:
             conn = get_connection()
             cursor = conn.cursor()
             try:
-                for symbol, sl_price in trailing_updates:
+                for bot_id, symbol, sl_price in trailing_bot_updates:
+                    cursor.execute(
+                        """
+                        UPDATE bot_positions SET stop_loss_price = ?
+                        WHERE bot_id = ? AND symbol = ?
+                        """,
+                        (sl_price, bot_id, symbol),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+        if trailing_account_updates:
+            conn = get_connection()
+            cursor = conn.cursor()
+            try:
+                for symbol, sl_price in trailing_account_updates:
                     cursor.execute(
                         "UPDATE positions SET stop_loss_price = ? WHERE symbol = ?",
                         (sl_price, symbol),
@@ -619,61 +698,57 @@ class SimulatedOMSService(BaseOMSService):
                 quote = plan["quote"]
                 trigger_type = plan["trigger_type"]
                 avg_price = plan["avg_price"]
+                qty = plan["qty"]
+                bot_id = plan.get("bot_id")
 
-                def _execute_exit_slice(qty: float, bot_id=None, entry_price=None):
-                    if qty <= 1e-8:
-                        return
-                    order_id = str(uuid.uuid4())
-                    cursor.execute("""
-                        INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, bot_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price, bot_id))
+                if qty <= 1e-8:
+                    continue
 
-                    bot_fill = self._process_fill(
-                        cursor, symbol, side, market_price, qty, quote,
-                        bot_id=bot_id,
-                        order_id=order_id,
-                    )
-                    if bot_fill:
-                        pending_bot_fills.append(bot_fill)
+                order_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, bot_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price, bot_id))
 
-                    filled_exits.append({
-                        "id": order_id,
+                bot_fill = self._process_fill(
+                    cursor, symbol, side, market_price, qty, quote,
+                    bot_id=bot_id,
+                    order_id=order_id,
+                )
+                if bot_fill:
+                    pending_bot_fills.append(bot_fill)
+
+                filled_exits.append({
+                    "id": order_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "price": market_price,
+                    "quantity": qty,
+                })
+
+                if bot_id:
+                    bot_exits.append({
+                        "bot_id": bot_id,
+                        "order_id": order_id,
                         "symbol": symbol,
                         "side": side,
-                        "price": market_price,
                         "quantity": qty,
+                        "price": market_price,
+                        "entry_price": avg_price,
+                        "trigger_type": trigger_type,
+                        "signal_id": f"{bot_id}:sltp:{order_id}",
                     })
-
-                    if bot_id:
-                        bot_exits.append({
-                            "bot_id": bot_id,
-                            "order_id": order_id,
-                            "symbol": symbol,
-                            "side": side,
-                            "quantity": qty,
-                            "price": market_price,
-                            "entry_price": entry_price or avg_price,
-                            "trigger_type": trigger_type,
-                            "signal_id": f"{bot_id}:sltp:{order_id}",
-                        })
-
-                for sl in plan["exit_slices"]:
-                    _execute_exit_slice(sl["qty"], bot_id=sl["bot_id"], entry_price=sl["entry_price"])
-                if plan["remainder"] > 1e-8:
-                    _execute_exit_slice(plan["remainder"])
 
             if filled_exits:
                 conn.commit()
-        except Exception as e:
+        except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
 
         for bot_fill in pending_bot_fills:
-            bid, fsym, fside, fqty, fprice = bot_fill
-            bot_positions.apply_fill(bid, fsym, fside, fqty, fprice)
+            self._apply_bot_fill(bot_fill)
 
         if filled_exits:
             self.invalidate_trade_history_cache()

@@ -189,6 +189,10 @@ class BotManagerService:
         else:
             bot = self.active_bots[bot_id]
         stats = bot_analytics.get_bot_stats(bot_id)
+        position = bot_positions.get_bot_position(bot_id, bot["symbol"])
+        pos_payload = None
+        if abs(position["size"]) > 1e-8:
+            pos_payload = position
         return {
             "bot": {
                 "id": bot["id"],
@@ -199,10 +203,74 @@ class BotManagerService:
                 "allocation": bot["allocation"],
                 "config": bot.get("config", {}),
             },
+            "position": pos_payload,
             "stats": stats,
             "trades": bot_analytics.get_trades(bot_id, 50),
             "snapshots": bot_analytics.get_snapshots(bot_id, 30),
         }
+
+    async def update_bot_config(self, bot_id: str, config_patch: dict) -> dict:
+        if not bot_id:
+            raise ValueError("bot_id is required")
+        if not isinstance(config_patch, dict):
+            raise ValueError("config patch must be an object")
+
+        if bot_id in self.active_bots:
+            bot = self.active_bots[bot_id]
+        else:
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM bots WHERE id = ?", (bot_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                raise ValueError("Bot not found")
+            bot = dict(row)
+            bot["config"] = json.loads(bot["config"])
+
+        merged_config = {**(bot.get("config") or {}), **config_patch}
+        bot_cfg = merge_tp_config(bot.get("strategy", ""), merged_config)
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE bots SET config = ? WHERE id = ?",
+            (json.dumps(merged_config), bot_id),
+        )
+        conn.commit()
+        conn.close()
+
+        if bot_id in self.active_bots:
+            self.active_bots[bot_id]["config"] = merged_config
+
+        symbol = bot["symbol"]
+        pos = bot_positions.get_bot_position(bot_id, symbol)
+        if abs(pos["size"]) > 1e-8:
+            side = "BUY" if pos["size"] > 0 else "SELL"
+            sl_pct = merged_config.get("trailing_stop_percent") or merged_config.get("stop_loss_percent")
+            tp_pct, tp_price = resolve_take_profit(bot_cfg, {}, side, pos["avg_price"])
+            bot_positions.update_bot_risk(
+                bot_id,
+                symbol,
+                pos["avg_price"],
+                side,
+                stop_loss_percent=sl_pct,
+                take_profit_percent=tp_pct,
+                take_profit_price=tp_price,
+            )
+            owners = bot_positions.get_symbol_owners(symbol)
+            if len(owners) == 1 and abs(owners[0]["size"] - pos["size"]) < 1e-6:
+                await self.oms.update_position_sl_tp(
+                    symbol,
+                    stop_loss_percent=sl_pct,
+                    take_profit_percent=tp_pct,
+                    take_profit_price=tp_price,
+                )
+
+        detail = self.get_bot_detail(bot_id)
+        if not detail:
+            raise ValueError("Bot not found after config update")
+        return detail
 
     async def _set_bot_status(self, bot_id: str, status: str):
         if bot_id in self.active_bots:

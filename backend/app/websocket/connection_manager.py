@@ -1,6 +1,8 @@
 import logging
-import json
+
 import websockets.exceptions
+
+from app.api.wire_codec import encode_wire_payload
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,10 @@ class ConnectionManager:
             self.client_symbols[websocket] = symbol
 
     async def broadcast(self, payload):
-        """Broadcasts a JSON-serializable payload to all registered clients."""
+        """Broadcasts a wire payload to all registered clients (JSON or MessagePack)."""
         if not self.connected_clients:
             return
-        message = json.dumps(payload)
+        message = encode_wire_payload(payload)
         dead = []
         for client in list(self.connected_clients):
             try:
@@ -50,9 +52,9 @@ class ConnectionManager:
             self.unregister(client)
 
     async def send_to(self, websocket, payload) -> bool:
-        """Sends a JSON-serializable payload to a specific client. Returns False if disconnected."""
+        """Sends a wire payload to a specific client. Returns False if disconnected."""
         try:
-            await websocket.send(json.dumps(payload))
+            await websocket.send(encode_wire_payload(payload))
             return True
         except Exception as exc:
             if _is_disconnect_error(exc):

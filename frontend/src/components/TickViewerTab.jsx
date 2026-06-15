@@ -1,14 +1,16 @@
 /**
  * Sub-minute tick archive viewer (GET_MARKET_TICKS).
  */
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WidgetEmpty } from './WidgetShell';
 import { RefreshCw, Zap } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 const RANGES = [
   { label: '15m', ms: 15 * 60_000 },
@@ -23,6 +25,7 @@ export default function TickViewerTab() {
   const tickMeta = useStore(s => s.tickMeta);
   const chartRef = useRef(null);
   const instRef = useRef(null);
+  const [rangeLabel, setRangeLabel] = useState('1h');
   const rangeRef = useRef(RANGES[1].ms);
 
   const fetchTicks = useCallback((rangeMs = rangeRef.current) => {
@@ -128,52 +131,117 @@ export default function TickViewerTab() {
     }, { notMerge: true });
   }, [ticks]);
 
+  const priceDelta = ticks.length >= 2
+    ? ticks[ticks.length - 1].price - ticks[0].price
+    : 0;
+  const deltaPositive = priceDelta >= 0;
+
   if (!archiveTicksEnabled) {
     return (
-      <WidgetEmpty
-        icon={Zap}
-        title="Tick archive disabled"
-        description="Set ARCHIVE_TICKS_ENABLED=true on the server to capture sub-minute price snapshots."
-      />
+      <div className="dock-panel-tab">
+        <header className="dock-panel-tab__toolbar">
+          <div className="dock-panel-tab__toolbar-lead">
+            <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+              <Zap size={14} />
+            </div>
+            <div className="dock-panel-tab__toolbar-copy">
+              <span className="dock-panel-tab__toolbar-title">Tick Archive</span>
+              <span className="dock-panel-tab__toolbar-subtitle">Sub-minute price snapshots</span>
+            </div>
+          </div>
+        </header>
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty
+            icon={Zap}
+            title="Tick archive disabled"
+            description="Set ARCHIVE_TICKS_ENABLED=true on the server to capture sub-minute price snapshots."
+          />
+        </div>
+      </div>
     );
   }
 
   return (
-    <div className="tick-viewer-tab flex min-h-0 flex-1 flex-col gap-2 p-2">
-      <div className="tick-viewer-tab__toolbar flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold text-foreground">{activeSymbol}</span>
-        <span className="text-[0.62rem] text-muted-foreground">
-          {tickMeta?.count != null ? `${tickMeta.count.toLocaleString()} ticks` : '—'}
-        </span>
-        <div className="ml-auto flex items-center gap-1">
-          {RANGES.map(r => (
-            <Button
-              key={r.label}
-              variant="outline"
-              size="xs"
-              className="h-6 text-[0.62rem]"
-              onClick={() => {
-                rangeRef.current = r.ms;
-                fetchTicks(r.ms);
-              }}
-            >
-              {r.label}
-            </Button>
-          ))}
-          <Button variant="ghost" size="icon-sm" className="h-6 w-6" onClick={() => fetchTicks()} title="Refresh">
-            <RefreshCw className="size-3" />
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+            <Zap size={14} />
+          </div>
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Tick Archive</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
+              {activeSymbol} · {rangeLabel} window
+            </span>
+          </div>
+        </div>
+        <div className="dock-panel-tab__toolbar-actions">
+          {ticks.length > 0 && (
+            <div className="dock-panel-tab__toolbar-meta">
+              <span className="dock-panel-tab__meta-label">Range Δ</span>
+              <span
+                className={cn(
+                  'dock-panel-tab__meta-value num-mono',
+                  deltaPositive ? 'dock-panel-tab__meta-value--up' : 'dock-panel-tab__meta-value--down',
+                )}
+              >
+                {deltaPositive ? '+' : ''}{priceDelta.toFixed(4)}
+              </span>
+            </div>
+          )}
+          <ToggleGroup
+            type="single"
+            size="sm"
+            spacing={1}
+            value={rangeLabel}
+            onValueChange={(v) => {
+              if (!v) return;
+              const r = RANGES.find(x => x.label === v);
+              if (!r) return;
+              setRangeLabel(v);
+              rangeRef.current = r.ms;
+              fetchTicks(r.ms);
+            }}
+            className="shrink-0"
+          >
+            {RANGES.map(r => (
+              <ToggleGroupItem key={r.label} value={r.label} className="px-2 text-[0.62rem] font-semibold">
+                {r.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => fetchTicks()} title="Refresh">
+            <RefreshCw data-icon="inline-start" aria-hidden />
+            Refresh
           </Button>
         </div>
-      </div>
+      </header>
 
       {ticks.length === 0 ? (
-        <WidgetEmpty
-          icon={Zap}
-          title="No ticks yet"
-          description="Ticks accumulate while the server runs with ARCHIVE_TICKS_ENABLED. Try again shortly."
-        />
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty
+            icon={Zap}
+            title="No ticks yet"
+            description="Ticks accumulate while the server runs with ARCHIVE_TICKS_ENABLED. Try again shortly."
+          />
+        </div>
       ) : (
-        <div ref={chartRef} className="tick-viewer-chart min-h-[140px] flex-1" aria-label="Tick price chart" />
+        <>
+          <div ref={chartRef} className="dock-panel-tab__chart-wrap" aria-label="Tick price chart" />
+          <footer className="dock-panel-tab__footer">
+            <span>
+              {tickMeta?.count != null
+                ? `${tickMeta.count.toLocaleString()} ticks loaded`
+                : `${ticks.length.toLocaleString()} ticks displayed`}
+            </span>
+            <span className="dock-panel-tab__footer-highlight">
+              Last:{' '}
+              <span className="num-mono font-bold">
+                ${Number(ticks[ticks.length - 1]?.price ?? 0).toFixed(4)}
+              </span>
+            </span>
+          </footer>
+        </>
       )}
     </div>
   );

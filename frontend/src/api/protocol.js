@@ -28,6 +28,7 @@ export const Action = Object.freeze({
   BOT_RESUME: 'bot_resume',
   BOT_STOP_ALL: 'bot_stop_all',
   BOT_GET_DETAIL: 'bot_get_detail',
+  BOT_UPDATE_CONFIG: 'bot_update_config',
   BOT_GET_ALL: 'bot_get_all',
   BOT_LIST_ALL: 'bot_list_all',
   RUN_BACKTEST: 'run_backtest',

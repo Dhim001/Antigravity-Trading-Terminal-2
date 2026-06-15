@@ -6,7 +6,12 @@ import logging
 import time
 from typing import Any
 
-from app.config import ARCHIVE_ENABLED, ARCHIVE_FLUSH_INTERVAL
+from app.config import (
+    ARCHIVE_BACKEND,
+    ARCHIVE_ENABLED,
+    ARCHIVE_FLUSH_INTERVAL,
+    ARCHIVE_PARQUET_ENABLED,
+)
 from app.db.connection import get_connection, is_postgres
 
 logger = logging.getLogger(__name__)
@@ -69,6 +74,13 @@ class ArchiveWriter:
         for attempt in range(3):
             try:
                 written = _upsert_1m_rows(rows)
+                if ARCHIVE_BACKEND in ("both", "parquet") and ARCHIVE_PARQUET_ENABLED:
+                    try:
+                        from app.services.archive.parquet_export import append_bars_parquet
+
+                        append_bars_parquet(rows)
+                    except Exception as exc:
+                        logger.warning("Parquet append on flush failed: %s", exc)
                 self._buffer.clear()
                 self._last_flush = time.time()
                 self._total_flushed += written

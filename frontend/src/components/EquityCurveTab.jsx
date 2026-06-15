@@ -164,17 +164,57 @@ export default function EquityCurveTab() {
 
   if (tradeHistory.length === 0) {
     return (
-      <WidgetEmpty
-        icon={TrendingUp}
-        message="No trade data yet — place trades to see your equity curve"
-        className="gap-3"
-      />
+      <div className="dock-panel-tab">
+        <header className="dock-panel-tab__toolbar">
+          <div className="dock-panel-tab__toolbar-lead">
+            <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+              <TrendingUp size={14} />
+            </div>
+            <div className="dock-panel-tab__toolbar-copy">
+              <span className="dock-panel-tab__toolbar-title">Equity Curve</span>
+              <span className="dock-panel-tab__toolbar-subtitle">Realized P&L over time</span>
+            </div>
+          </div>
+        </header>
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty
+            icon={TrendingUp}
+            message="No trade data yet — place trades to see your equity curve"
+            className="gap-3"
+          />
+        </div>
+      </div>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="scroll-panel-x no-scrollbar flex shrink-0 flex-nowrap items-center gap-[var(--icon-gap)] border-b border-border bg-muted/20 p-2">
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+            <TrendingUp size={14} />
+          </div>
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Equity Curve</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
+              {filteredStats.count} closed trade{filteredStats.count === 1 ? '' : 's'} · {period}
+            </span>
+          </div>
+        </div>
+        <div className="dock-panel-tab__toolbar-meta">
+          <span className="dock-panel-tab__meta-label">Total P&L</span>
+          <span
+            className={cn(
+              'dock-panel-tab__meta-value num-mono',
+              isPos ? 'dock-panel-tab__meta-value--up' : 'dock-panel-tab__meta-value--down',
+            )}
+          >
+            {isPos ? '+' : ''}${fmt(filteredStats.totalPnl)}
+          </span>
+        </div>
+      </header>
+
+      <div className="dock-panel-tab__stats-row scroll-fade-x">
         <StatCard
           label="Total P&L"
           icon={isPos ? TrendingUp : TrendingDown}
@@ -212,7 +252,7 @@ export default function EquityCurveTab() {
           spacing={1}
           value={period}
           onValueChange={v => v && setPeriod(v)}
-          className="ml-auto shrink-0"
+          className="ml-auto shrink-0 self-center"
         >
           {PERIODS.map(p => (
             <ToggleGroupItem key={p.label} value={p.label} className="px-2 text-[0.62rem] font-semibold">
@@ -223,9 +263,24 @@ export default function EquityCurveTab() {
       </div>
 
       {equitySeries.length === 0 ? (
-        <WidgetEmpty message="No closed trades in this period" />
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty message="No closed trades in this period" />
+        </div>
       ) : (
-        <div ref={chartRef} className="min-h-0 flex-1 py-1" />
+        <>
+          <div ref={chartRef} className="dock-panel-tab__chart-wrap" />
+          <footer className="dock-panel-tab__footer">
+            <span>
+              {filteredStats.wins}W / {filteredStats.losses}L · {fmt(filteredStats.winRate, 1)}% win rate
+            </span>
+            <span className="dock-panel-tab__footer-highlight">
+              Max drawdown:{' '}
+              <span className="num-mono font-bold text-trading-down">
+                {fmt(filteredStats.maxDrawdown, 1)}%
+              </span>
+            </span>
+          </footer>
+        </>
       )}
     </div>
   );

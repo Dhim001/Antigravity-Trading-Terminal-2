@@ -1,7 +1,7 @@
 /**
  * All bots (active + stopped) from bot_list_all.
  */
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
@@ -33,12 +33,26 @@ export default function BotHistoryTab() {
     refresh();
   }, [refresh]);
 
-  const sorted = [...(botHistory ?? [])].sort((a, b) => {
+  const sorted = useMemo(() => [...(botHistory ?? [])].sort((a, b) => {
     const sa = a.status === 'RUNNING' ? 0 : a.status === 'PAUSED' ? 1 : 2;
     const sb = b.status === 'RUNNING' ? 0 : b.status === 'PAUSED' ? 1 : 2;
     if (sa !== sb) return sa - sb;
     return (b.total_pnl ?? 0) - (a.total_pnl ?? 0);
-  });
+  }), [botHistory]);
+
+  const stats = useMemo(() => {
+    let running = 0;
+    let paused = 0;
+    let stopped = 0;
+    let totalPnl = 0;
+    for (const bot of sorted) {
+      if (bot.status === 'RUNNING') running += 1;
+      else if (bot.status === 'PAUSED') paused += 1;
+      else stopped += 1;
+      totalPnl += bot.total_pnl ?? 0;
+    }
+    return { running, paused, stopped, totalPnl };
+  }, [sorted]);
 
   const openDetail = (botId) => {
     setSelectedBotId(botId);
@@ -46,76 +60,119 @@ export default function BotHistoryTab() {
     sendAction(Action.BOT_GET_DETAIL, { bot_id: botId });
   };
 
-  if (!sorted.length) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col p-4">
-        <WidgetEmpty
-          icon={History}
-          title="No bot history"
-          description="Deploy a bot from the Algo tab — stopped bots remain listed here."
-        />
-        <Button variant="outline" size="sm" className="mx-auto mt-2 text-xs" onClick={refresh}>
-          <RefreshCw data-icon="inline-start" />
-          Refresh
-        </Button>
-      </div>
-    );
-  }
+  const pnlPositive = stats.totalPnl >= 0;
 
   return (
-    <div className="bot-history-tab flex min-h-0 flex-1 flex-col">
-      <div className="bot-history-tab__toolbar flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-        <span className="text-[0.62rem] text-muted-foreground">
-          {sorted.length} bot{sorted.length !== 1 ? 's' : ''} total
-        </span>
-        <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={refresh}>
-          <RefreshCw data-icon="inline-start" />
-          Refresh
-        </Button>
-      </div>
-      <div className="scroll-panel-y flex-1">
-        <table className="terminal-table m-0 text-[0.62rem]">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Strategy</th>
-              <th>Status</th>
-              <th className="text-right">PnL</th>
-              <th className="text-right">Win%</th>
-              <th className="text-right">Trades</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(bot => (
-              <tr key={bot.id} className={cn(bot.status === 'STOPPED' && 'opacity-75')}>
-                <td className="font-semibold">{bot.symbol}</td>
-                <td><StrategyBadge strategy={bot.strategy} compact /></td>
-                <td><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></td>
-                <td className={cn(
-                  'num-mono text-right',
-                  (bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                )}>
-                  ${Number(bot.total_pnl ?? 0).toFixed(2)}
-                </td>
-                <td className="num-mono text-right">{bot.win_rate != null ? `${bot.win_rate}%` : '—'}</td>
-                <td className="num-mono text-right">{bot.trade_count ?? 0}</td>
-                <td className="text-right">
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    className="h-6 px-1.5 text-[0.58rem]"
-                    onClick={() => openDetail(bot.id)}
-                    title={`View ${shortBotId(bot.id)}`}
-                  >
-                    <ExternalLink className="size-3" />
-                  </Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+            <History size={14} />
+          </div>
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Bot History</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
+              {sorted.length} bot{sorted.length === 1 ? '' : 's'}
+              {sorted.length > 0 && (
+                <> · {stats.running} run · {stats.paused} pause · {stats.stopped} stop</>
+              )}
+            </span>
+          </div>
+        </div>
+        <div className="dock-panel-tab__toolbar-actions">
+          {sorted.length > 0 && (
+            <div className="dock-panel-tab__toolbar-meta">
+              <span className="dock-panel-tab__meta-label">Total P&L</span>
+              <span
+                className={cn(
+                  'dock-panel-tab__meta-value num-mono',
+                  pnlPositive ? 'dock-panel-tab__meta-value--up' : 'dock-panel-tab__meta-value--down',
+                )}
+              >
+                {pnlPositive ? '+' : ''}${stats.totalPnl.toFixed(2)}
+              </span>
+            </div>
+          )}
+          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={refresh}>
+            <RefreshCw data-icon="inline-start" aria-hidden />
+            Refresh
+          </Button>
+        </div>
+      </header>
+
+      {sorted.length === 0 ? (
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty
+            icon={History}
+            title="No bot history"
+            description="Deploy a bot from the Algo tab — stopped bots remain listed here."
+          />
+        </div>
+      ) : (
+        <>
+          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+            <table className="terminal-table dock-panel-tab__table min-w-[640px] text-[0.62rem]">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Status</th>
+                  <th className="text-right">PnL</th>
+                  <th className="text-right">Win%</th>
+                  <th className="text-right">Trades</th>
+                  <th className="text-center">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map(bot => (
+                  <tr key={bot.id} className={cn(bot.status === 'STOPPED' && 'opacity-75')}>
+                    <td className="font-semibold">{bot.symbol}</td>
+                    <td><StrategyBadge strategy={bot.strategy} compact /></td>
+                    <td><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></td>
+                    <td className={cn(
+                      'num-mono text-right',
+                      (bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                    )}>
+                      ${Number(bot.total_pnl ?? 0).toFixed(2)}
+                    </td>
+                    <td className="num-mono text-right">
+                      {bot.win_rate != null ? `${bot.win_rate}%` : '—'}
+                    </td>
+                    <td className="num-mono text-right">{bot.trade_count ?? 0}</td>
+                    <td className="text-center">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => openDetail(bot.id)}
+                        title={`View ${shortBotId(bot.id)}`}
+                      >
+                        <ExternalLink />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <footer className="dock-panel-tab__footer">
+            <span>
+              {stats.running} running · {stats.paused} paused · {stats.stopped} stopped
+            </span>
+            <span className="dock-panel-tab__footer-highlight">
+              Combined P&L:{' '}
+              <span
+                className={cn(
+                  'num-mono font-bold',
+                  pnlPositive ? 'text-trading-up' : 'text-trading-down',
+                )}
+              >
+                {pnlPositive ? '+' : ''}${stats.totalPnl.toFixed(2)}
+              </span>
+            </span>
+          </footer>
+        </>
+      )}
     </div>
   );
 }

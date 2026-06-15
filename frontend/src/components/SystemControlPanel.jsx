@@ -491,6 +491,59 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                 </div>
               </AdminSection>
 
+              {systemStats.portfolio && (
+                <AdminSection
+                  title="Portfolio Risk"
+                  description="Cross-bot gross and correlation-group exposure caps."
+                >
+                  <div className="flex flex-wrap gap-2">
+                    <StatCard
+                      label="Gross Exposure"
+                      icon={Briefcase}
+                      value={`${systemStats.portfolio.gross_exposure_pct ?? 0}%`}
+                      tone={
+                        (systemStats.portfolio.gross_exposure_pct ?? 0) >=
+                        (systemStats.portfolio.max_gross_pct ?? 80) * 0.9
+                          ? 'down'
+                          : 'neutral'
+                      }
+                      sub={`$${(systemStats.portfolio.gross_exposure ?? 0).toLocaleString()} / max ${systemStats.portfolio.max_gross_pct ?? 80}%`}
+                    />
+                    <StatCard
+                      label="Account Equity"
+                      icon={Activity}
+                      value={`$${(systemStats.portfolio.equity ?? 0).toLocaleString()}`}
+                      tone="accent"
+                      sub="Basis for exposure limits"
+                    />
+                    <StatCard
+                      label="Group Cap"
+                      icon={Zap}
+                      value={`${systemStats.portfolio.max_group_pct ?? 40}%`}
+                      tone="neutral"
+                      sub="Per correlation bucket"
+                    />
+                  </div>
+                  {Object.keys(systemStats.portfolio.group_exposure ?? {}).length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                      {Object.entries(systemStats.portfolio.group_exposure).map(([group, notional]) => {
+                        const pct = systemStats.portfolio.equity
+                          ? ((notional / systemStats.portfolio.equity) * 100).toFixed(1)
+                          : '0.0';
+                        return (
+                          <span
+                            key={group}
+                            className="rounded border border-border/60 bg-muted/30 px-2 py-0.5 font-mono"
+                          >
+                            {group}: ${Number(notional).toLocaleString()} ({pct}%)
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </AdminSection>
+              )}
+
               <AdminSection title="Market Archive (DB)" description="SQLite or Postgres tables — market_bars_1m / market_bars_1h.">
                 <div className="flex flex-wrap gap-2 mb-2">
                   <StatCard

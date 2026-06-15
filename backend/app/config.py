@@ -38,6 +38,9 @@ WS_HOST = os.environ.get("WS_HOST", "127.0.0.1")
 WS_PORT = int(os.environ.get("WS_PORT", "8765"))
 # 7-day 1m history payloads exceed the library default (1 MB); allow up to 4 MB frames.
 WS_MAX_MESSAGE_SIZE = int(os.environ.get("WS_MAX_MESSAGE_SIZE", str(4 * 1024 * 1024)))
+# MessagePack binary frames for large history/tick payloads (Phase 4 transport).
+WS_MSGPACK_ENABLED = os.environ.get("WS_MSGPACK_ENABLED", "true").lower() in ("1", "true", "yes")
+WS_MSGPACK_MIN_BYTES = int(os.environ.get("WS_MSGPACK_MIN_BYTES", "4096"))
 
 # HTTP REST API (Phase 3) — runs alongside WebSocket in server/all roles
 HTTP_ENABLED = os.environ.get("HTTP_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -57,6 +60,7 @@ BOT_DAILY_LOSS_LIMIT_PCT = float(os.environ.get("BOT_DAILY_LOSS_LIMIT_PCT", "5.0
 BOT_MAX_ACTIVE_BOTS = int(os.environ.get("BOT_MAX_ACTIVE_BOTS", "20"))
 BOT_SNAPSHOT_INTERVAL = float(os.environ.get("BOT_SNAPSHOT_INTERVAL", "300"))
 BOT_SNAPSHOT_RETENTION = int(os.environ.get("BOT_SNAPSHOT_RETENTION", "2000"))
+BOT_LOG_RETENTION = int(os.environ.get("BOT_LOG_RETENTION", "5000"))
 
 # Portfolio-level risk (all bots combined)
 PORTFOLIO_MAX_GROSS_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "80"))

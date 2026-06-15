@@ -7,6 +7,7 @@ from app.config import (
     WS_HOST,
     WS_PORT,
     WS_MAX_MESSAGE_SIZE,
+    WS_MSGPACK_ENABLED,
     TERMINAL_MODE,
     TERMINAL_ROLE,
     ALLOW_LIVE_BOTS,
@@ -171,6 +172,7 @@ async def websocket_handler(websocket):
         "distributed": bool(REDIS_URL),
         "botMinCandles": BOT_MIN_CANDLES,
         "archiveTicksEnabled": ARCHIVE_TICKS_ENABLED,
+        "wsMsgpackEnabled": WS_MSGPACK_ENABLED,
     }))
 
     await manager.send_to(websocket, account_update(state.oms.get_account_data()))

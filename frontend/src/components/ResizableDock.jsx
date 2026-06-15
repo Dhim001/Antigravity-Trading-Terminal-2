@@ -60,6 +60,61 @@ const priceDecimals = (sym, price) =>
 const fmtP = (n, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
+const QUOTE_ASSETS = new Set(['USD', 'USDT']);
+
+const assetFromSymbol = (sym) =>
+  sym.includes('USDT') && sym !== 'USDT' ? sym.replace('USDT', '') : sym;
+
+/** Binance maps USD → USDT; skip duplicate row/total when values match. */
+const isQuoteAlias = (usd, usdt) =>
+  Boolean(usd && usdt && usd.balance === usdt.balance && usd.locked === usdt.locked);
+
+function buildBalanceView(balances, assetMark) {
+  const usd = balances.USD;
+  const usdt = balances.USDT;
+  const alias = isQuoteAlias(usd, usdt);
+
+  let cashAvailable = 0;
+  let cashLocked = 0;
+  if (usdt) {
+    cashAvailable += usdt.balance - usdt.locked;
+    cashLocked += usdt.locked;
+  } else if (usd) {
+    cashAvailable += usd.balance - usd.locked;
+    cashLocked += usd.locked;
+  }
+  if (usd && !alias && usdt) {
+    cashAvailable += usd.balance - usd.locked;
+    cashLocked += usd.locked;
+  }
+
+  let holdingsUsd = 0;
+  let totalEquity = 0;
+  const rows = [];
+
+  for (const [asset, bal] of Object.entries(balances)) {
+    if (asset === 'USD' && alias) continue;
+    if (Math.abs(bal.balance) < 1e-8 && bal.locked === 0) continue;
+
+    const avail = bal.balance - bal.locked;
+    const isQuote = QUOTE_ASSETS.has(asset);
+    const mark = isQuote ? 1 : assetMark[asset];
+    const usdValue = mark != null ? bal.balance * mark : null;
+
+    if (usdValue != null) totalEquity += usdValue;
+    if (!isQuote && usdValue != null) holdingsUsd += usdValue;
+
+    rows.push({ asset, bal, avail, usdValue, isQuote });
+  }
+
+  rows.sort((a, b) => {
+    if (a.isQuote !== b.isQuote) return a.isQuote ? -1 : 1;
+    return (b.usdValue ?? 0) - (a.usdValue ?? 0);
+  });
+
+  return { rows, stats: { cashAvailable, cashLocked, holdingsUsd, totalEquity } };
+}
+
 // ── Position Row ──────────────────────────────────────────────────
 const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }) {
   const mark = useStore(state => state.tickerData[sym]?.price ?? pos.avg_price);
@@ -162,15 +217,15 @@ function PositionsTab() {
   const pnlPositive = stats.totalPnl >= 0;
 
   return (
-    <div className="positions-tab">
-      <header className="positions-tab__toolbar">
-        <div className="positions-tab__toolbar-lead">
-          <div className="positions-tab__toolbar-icon" aria-hidden>
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
             <Briefcase size={14} />
           </div>
-          <div className="positions-tab__toolbar-copy">
-            <span className="positions-tab__toolbar-title">Open Positions</span>
-            <span className="positions-tab__toolbar-subtitle num-mono">
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Open Positions</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
               {entries.length} position{entries.length === 1 ? '' : 's'}
               {entries.length > 0 && (
                 <> · {stats.longCount}L / {stats.shortCount}S</>
@@ -179,12 +234,12 @@ function PositionsTab() {
           </div>
         </div>
         {entries.length > 0 && (
-          <div className="positions-tab__toolbar-meta">
-            <span className="positions-tab__meta-label">Unrealized</span>
+          <div className="dock-panel-tab__toolbar-meta">
+            <span className="dock-panel-tab__meta-label">Unrealized</span>
             <span
               className={cn(
-                'positions-tab__meta-value num-mono',
-                pnlPositive ? 'positions-tab__meta-value--up' : 'positions-tab__meta-value--down',
+                'dock-panel-tab__meta-value num-mono',
+                pnlPositive ? 'dock-panel-tab__meta-value--up' : 'dock-panel-tab__meta-value--down',
               )}
             >
               {pnlPositive ? '+' : ''}${fmtP(stats.totalPnl)}
@@ -194,13 +249,13 @@ function PositionsTab() {
       </header>
 
       {entries.length === 0 ? (
-        <div className="positions-tab__empty">
+        <div className="dock-panel-tab__empty">
           <WidgetEmpty icon={Briefcase} message="No open positions" />
         </div>
       ) : (
         <>
-          <div className="positions-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table positions-tab__table min-w-[880px]">
+          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+            <table className="terminal-table dock-panel-tab__table min-w-[880px]">
               <thead>
                 <tr>
                   <th>Symbol</th>
@@ -226,11 +281,11 @@ function PositionsTab() {
             </table>
           </div>
 
-          <footer className="positions-tab__footer">
+          <footer className="dock-panel-tab__footer">
             <span>
               {entries.length} open · {stats.longCount} long · {stats.shortCount} short
             </span>
-            <span className="positions-tab__footer-pnl">
+            <span className="dock-panel-tab__footer-highlight">
               Total unrealized:{' '}
               <span
                 className={cn(
@@ -255,110 +310,233 @@ function OrdersTab() {
   const { byId } = buildBotLookup(activeBots);
   const active = orders.filter(o => o.status === 'PENDING');
 
-  if (active.length === 0) {
-    return <WidgetEmpty icon={List} message="No pending orders" />;
-  }
+  const stats = useMemo(() => {
+    let buyCount = 0;
+    let sellCount = 0;
+    let totalValue = 0;
+    for (const ord of active) {
+      if (ord.side === 'BUY') buyCount += 1;
+      else sellCount += 1;
+      totalValue += (ord.price || 0) * ord.quantity;
+    }
+    return { buyCount, sellCount, totalValue };
+  }, [active]);
 
   return (
-    <table className="terminal-table min-w-[640px]">
-      <thead>
-        <tr>
-          <th>Symbol</th>
-          <th>Source</th>
-          <th>Type</th>
-          <th>Side</th>
-          <th className="text-right">Price</th>
-          <th className="text-right">Qty</th>
-          <th className="text-right">Value</th>
-          <th className="text-center">Cancel</th>
-        </tr>
-      </thead>
-      <tbody>
-        {active.map(ord => {
-          const dec = priceDecimals(ord.symbol, ord.price);
-          const isBuy = ord.side === 'BUY';
-          const value = (ord.price || 0) * ord.quantity;
-          const bot = ord.bot_id ? byId[ord.bot_id] : null;
-          return (
-            <tr key={ord.id}>
-              <td className="font-bold">{ord.symbol}</td>
-              <td className="text-xs">
-                {bot ? (
-                  <StrategyBadge strategy={bot.strategy} compact />
-                ) : (
-                  <span className="text-muted-foreground">Manual</span>
-                )}
-              </td>
-              <td className="text-xs text-secondary-foreground">{ord.type}</td>
-              <td><Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge></td>
-              <td className="num-mono text-right">
-                {ord.price ? ord.price.toFixed(dec) : 'MKT'}
-              </td>
-              <td className="num-mono text-right">
-                {ord.quantity.toLocaleString(undefined, { minimumFractionDigits: 4 })}
-              </td>
-              <td className="num-mono text-right text-secondary-foreground">
-                ${fmtP(value)}
-              </td>
-              <td className="text-center">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => sendAction(Action.CANCEL_ORDER, { order_id: ord.id })}
-                  title="Cancel order"
-                  className="text-trading-down hover:text-trading-down"
-                >
-                  <XSquare />
-                </Button>
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+            <List size={14} />
+          </div>
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Pending Orders</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
+              {active.length} order{active.length === 1 ? '' : 's'}
+              {active.length > 0 && (
+                <> · {stats.buyCount}B / {stats.sellCount}S</>
+              )}
+            </span>
+          </div>
+        </div>
+        {active.length > 0 && (
+          <div className="dock-panel-tab__toolbar-meta">
+            <span className="dock-panel-tab__meta-label">Notional</span>
+            <span className="dock-panel-tab__meta-value num-mono">
+              ${fmtP(stats.totalValue)}
+            </span>
+          </div>
+        )}
+      </header>
+
+      {active.length === 0 ? (
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty icon={List} message="No pending orders" />
+        </div>
+      ) : (
+        <>
+          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+            <table className="terminal-table dock-panel-tab__table min-w-[640px]">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Source</th>
+                  <th>Type</th>
+                  <th>Side</th>
+                  <th className="text-right">Price</th>
+                  <th className="text-right">Qty</th>
+                  <th className="text-right">Value</th>
+                  <th className="text-center">Cancel</th>
+                </tr>
+              </thead>
+              <tbody>
+                {active.map(ord => {
+                  const dec = priceDecimals(ord.symbol, ord.price);
+                  const isBuy = ord.side === 'BUY';
+                  const value = (ord.price || 0) * ord.quantity;
+                  const bot = ord.bot_id ? byId[ord.bot_id] : null;
+                  return (
+                    <tr key={ord.id}>
+                      <td className="font-bold">{ord.symbol}</td>
+                      <td className="text-xs">
+                        {bot ? (
+                          <StrategyBadge strategy={bot.strategy} compact />
+                        ) : (
+                          <span className="text-muted-foreground">Manual</span>
+                        )}
+                      </td>
+                      <td className="text-xs text-secondary-foreground">{ord.type}</td>
+                      <td><Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge></td>
+                      <td className="num-mono text-right">
+                        {ord.price ? ord.price.toFixed(dec) : 'MKT'}
+                      </td>
+                      <td className="num-mono text-right">
+                        {ord.quantity.toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                      </td>
+                      <td className="num-mono text-right text-secondary-foreground">
+                        ${fmtP(value)}
+                      </td>
+                      <td className="text-center">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => sendAction(Action.CANCEL_ORDER, { order_id: ord.id })}
+                          title="Cancel order"
+                          className="text-trading-down hover:text-trading-down"
+                        >
+                          <XSquare />
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <footer className="dock-panel-tab__footer">
+            <span>
+              {active.length} pending · {stats.buyCount} buy · {stats.sellCount} sell
+            </span>
+            <span className="dock-panel-tab__footer-highlight">
+              Total notional:{' '}
+              <span className="num-mono font-bold">${fmtP(stats.totalValue)}</span>
+            </span>
+          </footer>
+        </>
+      )}
+    </div>
   );
 }
 
 // ── Balances Tab ──────────────────────────────────────────────────
 function BalancesTab() {
   const balances = useStore(state => state.balances);
-  const entries = Object.entries(balances);
+  const tickerData = useStore(state => state.tickerData);
+  const symbolsList = useStore(state => state.symbolsList);
 
-  if (entries.length === 0) {
-    return <WidgetEmpty message="Loading balances…" />;
-  }
+  const assetMark = useMemo(() => {
+    const map = {};
+    for (const sym of symbolsList || []) {
+      const asset = assetFromSymbol(sym);
+      const price = tickerData[sym]?.price;
+      if (price != null) map[asset] = price;
+    }
+    return map;
+  }, [symbolsList, tickerData]);
+
+  const { rows, stats } = useMemo(
+    () => buildBalanceView(balances, assetMark),
+    [balances, assetMark],
+  );
 
   return (
-    <table className="terminal-table">
-      <thead>
-        <tr>
-          <th>Asset</th>
-          <th className="text-right">Total Balance</th>
-          <th className="text-right">Locked</th>
-          <th className="text-right">Available</th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map(([asset, bal]) => {
-          const avail = bal.balance - bal.locked;
-          const dec = asset === 'USD' || asset === 'USDT' ? 2 : 6;
-          return (
-            <tr key={asset}>
-              <td className="font-bold">{asset}</td>
-              <td className="num-mono text-right">
-                {bal.balance.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-              </td>
-              <td className="num-mono text-right text-muted-foreground">
-                {bal.locked.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-              </td>
-              <td className={cn('num-mono text-right font-bold', avail > 0 ? 'text-foreground' : 'text-muted-foreground')}>
-                {avail.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="dock-panel-tab">
+      <header className="dock-panel-tab__toolbar">
+        <div className="dock-panel-tab__toolbar-lead">
+          <div className="dock-panel-tab__toolbar-icon" aria-hidden>
+            <Landmark size={14} />
+          </div>
+          <div className="dock-panel-tab__toolbar-copy">
+            <span className="dock-panel-tab__toolbar-title">Account Balances</span>
+            <span className="dock-panel-tab__toolbar-subtitle num-mono">
+              {rows.length} asset{rows.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </div>
+        {rows.length > 0 && (
+          <div className="dock-panel-tab__toolbar-meta">
+            <span className="dock-panel-tab__meta-label">Total equity</span>
+            <span className="dock-panel-tab__meta-value num-mono">
+              ${fmtP(stats.totalEquity)}
+            </span>
+          </div>
+        )}
+      </header>
+
+      {rows.length === 0 ? (
+        <div className="dock-panel-tab__empty">
+          <WidgetEmpty icon={Landmark} message="Loading balances…" />
+        </div>
+      ) : (
+        <>
+          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+            <table className="terminal-table dock-panel-tab__table min-w-[560px]">
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th className="text-right">Total Balance</th>
+                  <th className="text-right">Locked</th>
+                  <th className="text-right">Available</th>
+                  <th className="text-right">USD Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ asset, bal, avail, usdValue, isQuote }) => {
+                  const dec = isQuote ? 2 : 6;
+                  return (
+                    <tr key={asset}>
+                      <td className="font-bold">{asset}</td>
+                      <td className="num-mono text-right">
+                        {bal.balance.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+                      </td>
+                      <td className="num-mono text-right text-muted-foreground">
+                        {bal.locked.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+                      </td>
+                      <td className={cn('num-mono text-right font-bold', avail > 0 ? 'text-foreground' : 'text-muted-foreground')}>
+                        {avail.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
+                      </td>
+                      <td className="num-mono text-right text-secondary-foreground">
+                        {usdValue != null ? `$${fmtP(usdValue)}` : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <footer className="dock-panel-tab__footer">
+            <span>{rows.length} assets · cash + holdings</span>
+            <span className="dock-panel-tab__footer-highlight">
+              Cash available:{' '}
+              <span className="num-mono font-bold">${fmtP(stats.cashAvailable)}</span>
+              {stats.cashLocked > 0 && (
+                <span className="text-muted-foreground">
+                  {' '}· locked ${fmtP(stats.cashLocked)}
+                </span>
+              )}
+              {stats.holdingsUsd > 0 && (
+                <span className="text-muted-foreground">
+                  {' '}· holdings ${fmtP(stats.holdingsUsd)}
+                </span>
+              )}
+              {' '}· total ${fmtP(stats.totalEquity)}
+            </span>
+          </footer>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1144,14 +1322,10 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
             <PositionsTab />
           </TabsContent>
           <TabsContent value="orders" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <ScrollTablePanel>
-              <OrdersTab />
-            </ScrollTablePanel>
+            <OrdersTab />
           </TabsContent>
           <TabsContent value="balances" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <ScrollTablePanel>
-              <BalancesTab />
-            </ScrollTablePanel>
+            <BalancesTab />
           </TabsContent>
           <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Algo Bot">

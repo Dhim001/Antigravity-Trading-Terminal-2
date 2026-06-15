@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
@@ -43,6 +45,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const setBotDetail = useStore(s => s.setBotDetail);
 
   const bot = botDetail?.bot;
+  const position = botDetail?.position;
   const stats = botDetail?.stats;
   const trades = botDetail?.trades ?? [];
   const snapshots = botDetail?.snapshots ?? [];
@@ -96,6 +99,42 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
     onOpenChange(false);
     setSelectedBotId(null);
     setBotDetail(null);
+  };
+
+  const [savingRisk, setSavingRisk] = useState(false);
+  const [tpPercent, setTpPercent] = useState('');
+  const [slPercent, setSlPercent] = useState('');
+
+  useEffect(() => {
+    if (!bot) return;
+    const cfg = bot.config || {};
+    setTpPercent(
+      cfg.take_profit_percent != null ? String(cfg.take_profit_percent) : '',
+    );
+    setSlPercent(
+      cfg.trailing_stop_percent != null
+        ? String(cfg.trailing_stop_percent)
+        : cfg.stop_loss_percent != null
+          ? String(cfg.stop_loss_percent)
+          : '',
+    );
+  }, [bot?.id, bot?.config]);
+
+  const saveRiskConfig = async () => {
+    if (!selectedBotId) return;
+    setSavingRisk(true);
+    const config = {};
+    const tp = parseFloat(tpPercent);
+    const sl = parseFloat(slPercent);
+    if (!Number.isNaN(tp) && tp > 0) config.take_profit_percent = tp;
+    else config.take_profit_percent = null;
+    if (!Number.isNaN(sl) && sl > 0) config.trailing_stop_percent = sl;
+    else config.trailing_stop_percent = null;
+    try {
+      await sendAction(Action.BOT_UPDATE_CONFIG, { bot_id: selectedBotId, config });
+    } finally {
+      setSavingRisk(false);
+    }
   };
 
   const refresh = () => {
@@ -193,6 +232,65 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 </strong>
               </div>
             </div>
+
+            {(position || bot.status === 'RUNNING' || bot.status === 'PAUSED') && (
+              <section className="bot-detail-drawer__risk" aria-label="Position risk">
+                <header className="bot-detail-drawer__trades-header">
+                  <span>Take profit / stop loss</span>
+                  {position && (
+                    <Badge variant="secondary">
+                      {Number(position.size).toFixed(4)} @ {Number(position.avg_price).toFixed(2)}
+                    </Badge>
+                  )}
+                </header>
+                {position?.take_profit_price != null && (
+                  <p className="bot-detail-drawer__risk-active text-xs text-muted-foreground mb-2">
+                    Active TP: {Number(position.take_profit_price).toFixed(4)}
+                    {position.take_profit_percent != null && (
+                      <> ({Number(position.take_profit_percent).toFixed(2)}%)</>
+                    )}
+                  </p>
+                )}
+                <div className="bot-detail-drawer__risk-form grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="bot-tp-pct" className="text-xs">Take profit %</Label>
+                    <Input
+                      id="bot-tp-pct"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="e.g. 3"
+                      value={tpPercent}
+                      onChange={(e) => setTpPercent(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="bot-sl-pct" className="text-xs">Trailing stop %</Label>
+                    <Input
+                      id="bot-sl-pct"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="e.g. 1.5"
+                      value={slPercent}
+                      onChange={(e) => setSlPercent(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="mt-2"
+                  disabled={savingRisk}
+                  onClick={saveRiskConfig}
+                >
+                  {savingRisk ? <Loader2 className="size-3 animate-spin" /> : null}
+                  Save risk settings
+                </Button>
+              </section>
+            )}
 
             <section className="bot-detail-drawer__equity" aria-label="Bot equity snapshots">
               <header className="bot-detail-drawer__trades-header">

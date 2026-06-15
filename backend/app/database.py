@@ -174,10 +174,18 @@ def init_db():
             symbol TEXT NOT NULL,
             size REAL NOT NULL DEFAULT 0.0,
             avg_price REAL NOT NULL DEFAULT 0.0,
+            stop_loss_percent REAL DEFAULT NULL,
+            take_profit_percent REAL DEFAULT NULL,
+            stop_loss_price REAL DEFAULT NULL,
+            take_profit_price REAL DEFAULT NULL,
             PRIMARY KEY (bot_id, symbol),
             FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
         )
     """)
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN take_profit_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_pending_fills (
             id TEXT PRIMARY KEY,
