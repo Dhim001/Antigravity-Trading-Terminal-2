@@ -1,0 +1,39 @@
+{
+  "title": "Trading Terminal",
+  "uid": "trading-terminal",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "title": "Orders placed",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "orders_place_total", "legendFormat": "placed" }]
+    },
+    {
+      "title": "Preview allowed / blocked",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "orders_preview_allowed_total", "legendFormat": "allowed" },
+        { "expr": "orders_preview_blocked_total", "legendFormat": "blocked" }
+      ]
+    },
+    {
+      "title": "Agent analyze duration p99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "agent_analyze_duration_seconds{quantile=\"0.99\"}", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "title": "Market scan duration",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "market_scan_duration_seconds_count", "legendFormat": "scans" }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 
 import unittest
 from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
 
 from starlette.testclient import TestClient
 
@@ -59,6 +60,7 @@ class TestHttpBindings(unittest.TestCase):
         spec = build_openapi_spec()
         self.assertEqual(spec["openapi"], "3.1.0")
         self.assertIn("/api/v1/bots", spec["paths"])
+        self.assertIn("/api/v1/scanner/scan", spec["paths"])
         self.assertIn("/api/v1/admin/emergency-stop", spec["paths"])
 
     def test_openapi_endpoint(self):
@@ -69,6 +71,44 @@ class TestHttpBindings(unittest.TestCase):
     def test_cancel_order_route(self):
         resp = self.client.delete("/api/v1/orders/ord-123")
         self.assertEqual(resp.status_code, 200)
+
+    def test_preview_order_route(self):
+        state = _make_state()
+        state.oms.feed = SimpleNamespace(_symbols={"BTCUSDT": {"price": 50_000}})
+        state.oms.get_account_data.return_value = {
+            "balances": {"USDT": {"balance": 10_000, "locked": 0}},
+            "positions": {},
+            "tickers": {"BTCUSDT": {"price": 50_000}},
+        }
+        client = TestClient(create_http_app(state))
+        resp = client.post("/api/v1/orders/preview", json={
+            "symbol": "BTCUSDT",
+            "type": "MARKET",
+            "side": "BUY",
+            "quantity": 0.01,
+        })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["type"], "order_preview")
+        self.assertTrue(body["data"]["allowed"])
+
+    def test_metrics_route(self):
+        resp = self.client.get("/metrics")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/plain", resp.headers.get("content-type", ""))
+
+    def test_scanner_route(self):
+        resp = self.client.post("/api/v1/scanner/scan", json={
+            "symbols": ["BTCUSDT"],
+            "signal_filter": "any",
+            "sort_by": "score",
+        })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["type"], "scan_results")
+        self.assertIn("rows", body["data"])
 
     def test_bot_stop_route(self):
         resp = self.client.post("/api/v1/bots/bot-1/stop")

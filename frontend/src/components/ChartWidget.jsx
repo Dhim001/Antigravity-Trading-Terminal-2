@@ -643,6 +643,23 @@ export default function ChartWidget() {
     return () => window.removeEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
   }, []);
 
+  useEffect(() => {
+    const onCaptureRequest = (e) => {
+      const sym = e.detail?.symbol;
+      if (sym && sym !== activeSymbol) return;
+      const chart = chartRef.current;
+      if (!chart) return;
+      try {
+        const image = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#0a0a0a' });
+        window.dispatchEvent(new CustomEvent('chart-capture-ready', {
+          detail: { symbol: activeSymbol, image, bar_time: e.detail?.bar_time },
+        }));
+      } catch (_) {}
+    };
+    window.addEventListener('chart-capture-request', onCaptureRequest);
+    return () => window.removeEventListener('chart-capture-request', onCaptureRequest);
+  }, [activeSymbol]);
+
   const activeIndicatorKeys = useMemo(
     () => Object.entries(active).filter(([, on]) => on).map(([k]) => k),
     [active]

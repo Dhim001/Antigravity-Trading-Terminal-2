@@ -32,9 +32,12 @@ async def invoke_action(state: AppState, action: str, message: dict | None = Non
 def _pick_primary_message(messages: list[dict]) -> dict:
     """Prefer command result frames over follow-up account/history pushes."""
     priority = (
+        MessageType.ORDER_PREVIEW,
         MessageType.ORDER_RESULT,
         MessageType.BOT_DETAIL,
         MessageType.BACKTEST_RESULT,
+        MessageType.SCAN_RESULTS,
+        MessageType.VISION_REPORT,
         MessageType.AGENT_INSIGHT,
         MessageType.BOTS_UPDATE,
         MessageType.ACCOUNT_UPDATE,

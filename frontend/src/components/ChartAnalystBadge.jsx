@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Bot } from 'lucide-react';
+import { RefreshCw, Bot, ShoppingCart } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,6 +15,9 @@ import { sendAction } from '../api/transport';
 import { useStore } from '../store/useStore';
 import { getCandles } from '../services/candleBuffer';
 import { generateSignal } from '../utils/indicators';
+import SubReportCards from './SubReportCards';
+import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
+import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 
 const SIGNAL_STYLES = {
   'STRONG BUY': { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e' },
@@ -46,12 +49,13 @@ function fallbackFromCandles(candles) {
   };
 }
 
-/**
- * Backend-authoritative chart analyst badge with local fallback while loading/offline.
- */
 export default function ChartAnalystBadge({ symbol, onDeployAgent }) {
   const agentInsight = useStore((state) => state.agentInsights[symbol]);
+  const setOrderPrefill = useStore((state) => state.setOrderPrefill);
+  const ticker = useStore((state) => state.tickerData[symbol]);
   const [refreshing, setRefreshing] = useState(false);
+  const [previewDraft, setPreviewDraft] = useState(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const lastCandleTime = useStore((state) => {
     const rev = state.candleRevision[symbol];
     if (!rev) return 0;
@@ -75,6 +79,20 @@ export default function ChartAnalystBadge({ symbol, onDeployAgent }) {
     }
     return localFallback;
   }, [agentInsight, localFallback]);
+
+  const handlePreviewOrder = useCallback(() => {
+    const insight = agentInsight || display;
+    const draft = buildOrderDraftFromInsight(
+      { ...insight, symbol },
+      { tickerPrice: ticker?.price },
+    );
+    if (!draft) {
+      toast.message('No actionable BUY/SELL signal to preview');
+      return;
+    }
+    setPreviewDraft(draft);
+    setPreviewOpen(true);
+  }, [agentInsight, display, symbol, ticker?.price]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -101,105 +119,136 @@ export default function ChartAnalystBadge({ symbol, onDeployAgent }) {
   const confidencePct = Math.round((display.confidence ?? 0) * 100);
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-bold tracking-wide"
-          style={{
-            borderColor: sigStyle.border,
-            color: sigStyle.color,
-            backgroundColor: sigStyle.bg,
-          }}
-        >
-          <span
-            className={cn('size-1.5 rounded-full', isStrong && 'animate-pulse')}
-            style={{
-              background: sigStyle.dot,
-              boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : undefined,
-            }}
-          />
-          {display.signal}
-          <span className="text-[0.62rem] opacity-70">
-            ({display.score > 0 ? '+' : ''}{display.score})
-          </span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-3" style={{ borderColor: sigStyle.border }}>
-        <PopoverHeader className="gap-1">
-          <PopoverTitle className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">
-            Chart Analyst {display.source === 'backend' ? '· Server' : '· Local'}
-          </PopoverTitle>
-        </PopoverHeader>
-
-        <div className="mb-2">
-          <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
-            <span>Confidence</span>
-            <span>{confidencePct}%</span>
-          </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{ width: `${confidencePct}%`, background: sigStyle.dot }}
-            />
-          </div>
-        </div>
-
-        {display.reasons?.length ? (
-          <ul className="mb-3 space-y-1 text-xs">
-            {display.reasons.map((r, i) => (
-              <li key={i} className="flex gap-2" style={{ color: sigStyle.color }}>
-                <span className="opacity-40">•</span>
-                <span>{r}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mb-3 text-xs text-muted-foreground">No detailed reasons available.</p>
-        )}
-
-        {display.narrative ? (
-          <p className="mb-3 rounded-md border border-border/60 bg-muted/30 p-2 text-xs leading-relaxed text-foreground/90">
-            {display.narrative}
-          </p>
-        ) : null}
-
-        <div className="flex gap-2">
+    <>
+      <Popover>
+        <PopoverTrigger asChild>
           <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="h-7 flex-1 gap-1 text-xs"
-            disabled={refreshing}
-            onClick={handleRefresh}
-          >
-            <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} />
-            Refresh
-          </Button>
-          <Button
-            type="button"
             variant="outline"
             size="sm"
-            className="h-7 flex-1 gap-1 text-xs"
-            onClick={() => window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }))}
+            className="h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-bold tracking-wide"
+            style={{
+              borderColor: sigStyle.border,
+              color: sigStyle.color,
+              backgroundColor: sigStyle.bg,
+            }}
           >
-            History
+            <span
+              className={cn('size-1.5 rounded-full', isStrong && 'animate-pulse')}
+              style={{
+                background: sigStyle.dot,
+                boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : undefined,
+              }}
+            />
+            {display.signal}
+            <span className="text-[0.62rem] opacity-70">
+              ({display.score > 0 ? '+' : ''}{display.score})
+            </span>
           </Button>
-          {onDeployAgent ? (
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80 max-w-[92vw] p-3" style={{ borderColor: sigStyle.border }}>
+          <PopoverHeader className="gap-1">
+            <PopoverTitle className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">
+              Chart Analyst {display.source === 'backend' ? '· Server' : '· Local'}
+              {display.version >= 2 ? ' · v2' : ''}
+            </PopoverTitle>
+          </PopoverHeader>
+
+          <div className="mb-2">
+            <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
+              <span>Confidence</span>
+              <span>{confidencePct}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full transition-all"
+                style={{ width: `${confidencePct}%`, background: sigStyle.dot }}
+              />
+            </div>
+          </div>
+
+          {display.sub_reports ? (
+            <div className="mb-3">
+              <SubReportCards subReports={display.sub_reports} compact />
+            </div>
+          ) : display.reasons?.length ? (
+            <ul className="mb-3 space-y-1 text-xs">
+              {display.reasons.map((r, i) => (
+                <li key={i} className="flex gap-2" style={{ color: sigStyle.color }}>
+                  <span className="opacity-40">•</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mb-3 text-xs text-muted-foreground">No detailed reasons available.</p>
+          )}
+
+          {display.narrative ? (
+            <p className="mb-3 rounded-md border border-border/60 bg-muted/30 p-2 text-xs leading-relaxed text-foreground/90">
+              {display.narrative}
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="h-7 w-full gap-1 text-xs"
+              onClick={handlePreviewOrder}
+              disabled={!display.signal?.includes('BUY') && !display.signal?.includes('SELL')}
+            >
+              <ShoppingCart className="size-3" />
+              Preview order
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-7 flex-1 gap-1 text-xs"
+              disabled={refreshing}
+              onClick={handleRefresh}
+            >
+              <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} />
+              Refresh
+            </Button>
             <Button
               type="button"
               variant="outline"
               size="sm"
               className="h-7 flex-1 gap-1 text-xs"
-              onClick={onDeployAgent}
+              onClick={() => window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }))}
             >
-              <Bot className="size-3" />
-              Deploy Agent
+              History
             </Button>
-          ) : null}
-        </div>
-      </PopoverContent>
-    </Popover>
+            {onDeployAgent ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 flex-1 gap-1 text-xs"
+                onClick={onDeployAgent}
+              >
+                <Bot className="size-3" />
+                Deploy Agent
+              </Button>
+            ) : null}
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <InsightOrderPreviewDialog
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        draft={previewDraft}
+        onConfirm={() => {
+          if (previewDraft) {
+            setOrderPrefill(previewDraft);
+            toast.message(`Order ticket prefilled (${previewDraft.side})`);
+          }
+          setPreviewOpen(false);
+        }}
+      />
+    </>
   );
 }

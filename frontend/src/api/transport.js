@@ -3,6 +3,7 @@ import { Action } from './protocol';
 import { apiAction } from './client';
 import { applyHttpEnvelope, getStoreActions } from './dispatch';
 import { sendWebSocketAction } from '../services/websocket';
+import { useStore } from '../store/useStore';
 
 /** @typedef {{ method: string, path: (p: object) => string, body?: (p: object) => object | undefined }} HttpRoute */
 
@@ -26,6 +27,7 @@ export const HTTP_ROUTES = Object.freeze({
     },
   },
   [Action.PLACE_ORDER]: { method: 'POST', path: () => '/api/v1/orders', body: (p) => p },
+  [Action.PREVIEW_ORDER]: { method: 'POST', path: () => '/api/v1/orders/preview', body: (p) => p },
   [Action.CANCEL_ORDER]: {
     method: 'DELETE',
     path: (p) => `/api/v1/orders/${encodeURIComponent(p.order_id)}`,
@@ -120,6 +122,9 @@ export const HTTP_ROUTES = Object.freeze({
   },
   [Action.ADMIN_RESET_SYSTEM]: { method: 'POST', path: () => '/api/v1/admin/reset' },
   [Action.ADMIN_EMERGENCY_STOP]: { method: 'POST', path: () => '/api/v1/admin/emergency-stop' },
+  [Action.CHART_ANALYZE]: { method: 'POST', path: () => '/api/v1/agent/analyze', body: (p) => p },
+  [Action.MARKET_SCAN]: { method: 'POST', path: () => '/api/v1/scanner/scan', body: (p) => p },
+  [Action.CHART_VISION]: { method: 'POST', path: () => '/api/v1/agent/vision', body: (p) => p },
 });
 
 export async function invokeHttpAction(action, payload = {}) {
@@ -139,6 +144,63 @@ export async function invokeHttpAction(action, payload = {}) {
   const envelope = await apiAction(route.path(payload), options);
   applyHttpEnvelope(envelope, getStoreActions());
   return envelope;
+}
+
+const STALE_SCANNER_MSG =
+  'Scanner API not found — restart the backend (python main.py in backend/) to load the latest routes.';
+
+function isNotFoundError(err) {
+  const msg = String(err?.message || err || '');
+  return /404|not found/i.test(msg);
+}
+
+/** Wait for SCAN_RESULTS after a WebSocket market_scan dispatch. */
+export function waitForScanResults({ timeoutMs = 30000, previousAt = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const current = useStore.getState().scanResults;
+    if (current?.scanned_at && current.scanned_at !== previousAt) {
+      resolve(current);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      unsub();
+      reject(new Error('Scan timed out waiting for results'));
+    }, timeoutMs);
+
+    const unsub = useStore.subscribe((state) => {
+      const next = state.scanResults;
+      if (next?.scanned_at && next.scanned_at !== previousAt) {
+        clearTimeout(timer);
+        unsub();
+        resolve(next);
+      }
+    });
+  });
+}
+
+/**
+ * Run market scan — HTTP first (reliable response), WebSocket fallback if HTTP route is missing.
+ */
+export async function runMarketScan(payload) {
+  const previousAt = useStore.getState().scanResults?.scanned_at ?? null;
+
+  try {
+    await invokeHttpAction(Action.MARKET_SCAN, payload);
+    return useStore.getState().scanResults;
+  } catch (err) {
+    if (!isNotFoundError(err)) throw err;
+  }
+
+  if (!sendWebSocketAction(Action.MARKET_SCAN, payload)) {
+    throw new Error(STALE_SCANNER_MSG);
+  }
+
+  try {
+    return await waitForScanResults({ previousAt });
+  } catch {
+    throw new Error(STALE_SCANNER_MSG);
+  }
 }
 
 /**

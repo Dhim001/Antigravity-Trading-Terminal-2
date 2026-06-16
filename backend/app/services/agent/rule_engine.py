@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -15,6 +16,12 @@ MACD_COL = f"MACD_{MACD_FAST}_{MACD_SLOW}_{MACD_SIGNAL}"
 MACD_SIGNAL_COL = f"MACDs_{MACD_FAST}_{MACD_SLOW}_{MACD_SIGNAL}"
 EMA_COLS = ("EMA_9", "EMA_21", "EMA_50")
 ATR_LEN = 14
+
+
+@dataclass
+class DomainScore:
+    score: int = 0
+    reasons: list[str] = field(default_factory=list)
 
 
 def _display_signal(score: int) -> str:
@@ -41,11 +48,28 @@ def _confidence(score: int) -> float:
     return round(min(1.0, max(0.0, abs(score) / 4.0)), 3)
 
 
-def _score_row(
-    row: pd.Series,
-    prev: pd.Series | None,
-    price: float,
-) -> tuple[int, list[str]]:
+def _score_trend(row: pd.Series, price: float) -> DomainScore:
+    score = 0
+    reasons: list[str] = []
+    e9, e21, e50 = (row.get(c) for c in EMA_COLS)
+    if all(v is not None and not (isinstance(v, float) and math.isnan(v)) for v in (e9, e21, e50)):
+        e9, e21, e50 = float(e9), float(e21), float(e50)
+        if price > e9 > e21 > e50:
+            score += 2
+            reasons.append("Price above all EMAs (uptrend)")
+        elif price < e9 < e21 < e50:
+            score -= 2
+            reasons.append("Price below all EMAs (downtrend)")
+        elif price > e21:
+            score += 1
+            reasons.append("Price above EMA21")
+        elif price < e21:
+            score -= 1
+            reasons.append("Price below EMA21")
+    return DomainScore(score=score, reasons=reasons)
+
+
+def _score_momentum(row: pd.Series, prev: pd.Series | None) -> DomainScore:
     score = 0
     reasons: list[str] = []
 
@@ -101,23 +125,81 @@ def _score_row(
             score -= 1
             reasons.append("MACD below signal")
 
-    e9, e21, e50 = (row.get(c) for c in EMA_COLS)
-    if all(v is not None and not (isinstance(v, float) and math.isnan(v)) for v in (e9, e21, e50)):
-        e9, e21, e50 = float(e9), float(e21), float(e50)
-        if price > e9 > e21 > e50:
-            score += 2
-            reasons.append("Price above all EMAs (uptrend)")
-        elif price < e9 < e21 < e50:
-            score -= 2
-            reasons.append("Price below all EMAs (downtrend)")
-        elif price > e21:
-            score += 1
-            reasons.append("Price above EMA21")
-        elif price < e21:
-            score -= 1
-            reasons.append("Price below EMA21")
+    return DomainScore(score=score, reasons=reasons)
 
+
+def _risk_report(row: pd.Series, df: pd.DataFrame, idx: int) -> dict:
+    atr = row.get(atr_col(ATR_LEN))
+    if atr is None or (isinstance(atr, float) and math.isnan(atr)):
+        return {
+            "score": 0,
+            "atr_regime": "normal",
+            "suggested_size_factor": 1.0,
+            "reasons": ["ATR unavailable"],
+        }
+
+    atr = float(atr)
+    window = df.iloc[max(0, idx - 19): idx + 1]
+    atr_col_name = atr_col(ATR_LEN)
+    if atr_col_name not in window.columns:
+        return {
+            "score": 0,
+            "atr_regime": "normal",
+            "suggested_size_factor": 1.0,
+            "reasons": [],
+        }
+
+    series = window[atr_col_name].dropna()
+    if series.empty:
+        median_atr = atr
+    else:
+        median_atr = float(series.median())
+
+    ratio = atr / median_atr if median_atr > 0 else 1.0
+    reasons: list[str] = []
+    if ratio >= 1.5:
+        regime = "elevated"
+        factor = 0.8
+        reasons.append(f"ATR {ratio:.1f}× 20-bar median (elevated vol)")
+    elif ratio <= 0.7:
+        regime = "compressed"
+        factor = 1.2
+        reasons.append(f"ATR {ratio:.1f}× 20-bar median (compressed vol)")
+    else:
+        regime = "normal"
+        factor = 1.0
+        reasons.append(f"ATR {ratio:.1f}× 20-bar median")
+
+    return {
+        "score": 0,
+        "atr_regime": regime,
+        "suggested_size_factor": factor,
+        "reasons": reasons,
+    }
+
+
+def _score_row(
+    row: pd.Series,
+    prev: pd.Series | None,
+    price: float,
+) -> tuple[int, list[str]]:
+    """Legacy flat scorer — trend + momentum only."""
+    trend = _score_trend(row, price)
+    momentum = _score_momentum(row, prev)
+    score = trend.score + momentum.score
+    reasons = trend.reasons + momentum.reasons
     return score, reasons
+
+
+def _build_sub_reports(row: pd.Series, prev: pd.Series | None, price: float, df: pd.DataFrame, idx: int) -> dict:
+    trend = _score_trend(row, price)
+    momentum = _score_momentum(row, prev)
+    risk = _risk_report(row, df, idx)
+    return {
+        "trend": {"score": trend.score, "reasons": trend.reasons},
+        "momentum": {"score": momentum.score, "reasons": momentum.reasons},
+        "risk": risk,
+    }
 
 
 def _levels(row: pd.Series, signal: SignalType, price: float) -> dict:
@@ -157,7 +239,11 @@ def score_dataframe(
         return None
 
     price = float(row.get("close", 0))
-    score, reasons = _score_row(row, prev, price)
+    sub_reports = _build_sub_reports(row, prev, price, df, idx)
+    trend_score = sub_reports["trend"]["score"]
+    momentum_score = sub_reports["momentum"]["score"]
+    score = trend_score + momentum_score
+    reasons = sub_reports["trend"]["reasons"] + sub_reports["momentum"]["reasons"]
     bot_sig = _bot_signal(score)
 
     return ChartAgentInsight(
@@ -169,6 +255,8 @@ def score_dataframe(
         score=score,
         reasons=reasons,
         levels=_levels(row, bot_sig, price),
+        version=2,
+        sub_reports=sub_reports,
     )
 
 
@@ -179,3 +267,31 @@ def score_at_index(df: pd.DataFrame, index: int, symbol: str) -> ChartAgentInsig
 
 def display_label(score: int) -> str:
     return _display_signal(score)
+
+
+def macd_cross_label(row: pd.Series, prev: pd.Series | None) -> str:
+    last_macd = row.get(MACD_COL)
+    last_signal = row.get(MACD_SIGNAL_COL)
+    if last_macd is None or last_signal is None:
+        return "none"
+    if (
+        prev is not None
+        and prev.get(MACD_COL) is not None
+        and prev.get(MACD_SIGNAL_COL) is not None
+        and float(last_macd) > float(last_signal)
+        and float(prev.get(MACD_COL)) <= float(prev.get(MACD_SIGNAL_COL))
+    ):
+        return "bullish"
+    if (
+        prev is not None
+        and prev.get(MACD_COL) is not None
+        and prev.get(MACD_SIGNAL_COL) is not None
+        and float(last_macd) < float(last_signal)
+        and float(prev.get(MACD_COL)) >= float(prev.get(MACD_SIGNAL_COL))
+    ):
+        return "bearish"
+    if float(last_macd) > float(last_signal):
+        return "above"
+    if float(last_macd) < float(last_signal):
+        return "below"
+    return "none"

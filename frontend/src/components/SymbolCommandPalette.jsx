@@ -13,7 +13,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, Brain, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
+  BarChart2, Brain, Bot, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
 } from 'lucide-react';
 
 function assetKind(sym) {
@@ -133,6 +133,28 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
           <CommandSeparator className="command-palette__separator" />
 
           <CommandGroup heading="Navigation" className="command-palette__group">
+            <CommandItem
+              value="algo bot tab deploy"
+              className="command-palette__item"
+              onSelect={() => run(() => {
+                window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
+              })}
+            >
+              <Bot aria-hidden />
+              <span>Algo Bot Tab</span>
+              <CommandShortcut>⌘B</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="toggle watchlist sidebar"
+              className="command-palette__item"
+              onSelect={() => run(() => {
+                window.dispatchEvent(new CustomEvent('sidebar-toggle'));
+              })}
+            >
+              <LayoutGrid aria-hidden />
+              <span>Toggle Watchlist Sidebar</span>
+              <CommandShortcut>⌘[</CommandShortcut>
+            </CommandItem>
             <CommandItem
               value="single chart view"
               className="command-palette__item"

@@ -11,12 +11,13 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Zap, History, Brain,
+  RefreshCw, AlertTriangle, Zap, History, Brain, Radar,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
@@ -25,6 +26,7 @@ import BotDetailDrawer from './BotDetailDrawer';
 import TickViewerTab from './TickViewerTab';
 import BotHistoryTab from './BotHistoryTab';
 import AnalystTab from './AnalystTab';
+import ScannerTab from './ScannerTab';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
@@ -53,6 +55,15 @@ const DOCK_MIN = 200;
 const DOCK_MAX = 560;
 const DOCK_DEFAULT = 320;
 const STORAGE_KEY = 'terminal_dock_height';
+
+const DOCK_TAB_IDS = new Set([
+  'positions', 'orders', 'balances', 'algo', 'scanner', 'analyst',
+  'reconcile', 'bots', 'ticks', 'history', 'equity',
+]);
+
+function normalizeDockTab(tab) {
+  return DOCK_TAB_IDS.has(tab) ? tab : 'positions';
+}
 
 // ── Tiny formatters ───────────────────────────────────────────────
 const priceDecimals = (sym, price) =>
@@ -1214,9 +1225,24 @@ function AlgoTab() {
           <div className="algo-tab__log-list">
             {botLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
-            ) : botLogs.map((log, i) => (
-              <div key={`${i}-${log.slice(0, 24)}`} className={logLineClass(log)}>{log}</div>
-            ))}
+            ) : botLogs.map((log, i) => {
+              const isSignal = /Entry (BUY|SELL)|signal @/i.test(log);
+              const showInsight = isSignal && botStrategy === 'CHART_AGENT' && agentInsights[activeSymbol];
+              return (
+                <div key={`${i}-${log.slice(0, 24)}`} className={cn(logLineClass(log), showInsight && 'group relative')}>
+                  <span>{log}</span>
+                  {showInsight && (
+                    <button
+                      type="button"
+                      className="ml-2 text-[0.58rem] text-primary opacity-0 group-hover:opacity-100"
+                      onClick={() => window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }))}
+                    >
+                      Why?
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
@@ -1226,7 +1252,7 @@ function AlgoTab() {
 }
 
 // ── Main ResizableDock ────────────────────────────────────────────
-export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
+export default function ResizableDock({ setDockHeight: setParentDockHeight, initialDockHeight }) {
   const positions = useStore(state => state.positions);
   const orders = useStore(state => state.orders);
   const tradeHistory = useStore(state => state.tradeHistory);
@@ -1239,15 +1265,25 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   const selectedBotId = useStore(state => state.selectedBotId);
   const botDrawerOpen = useStore(state => state.botDrawerOpen);
   const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
-  const [activeTab, setActiveTab] = useState('positions');
-  const [dockH, setDockH]   = useState(() => {
-    try { return parseInt(localStorage.getItem(STORAGE_KEY)) || DOCK_DEFAULT; }
-    catch { return DOCK_DEFAULT; }
-  });
+  const workspaceTab = normalizeDockTab(
+    useSettingsStore(state => state.settings.workspace?.dockActiveTab || 'positions'),
+  );
+  const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
+  const [activeTab, setActiveTab] = useState(workspaceTab);
+  const [dockH, setDockH] = useState(() => initialDockHeight || DOCK_DEFAULT);
   const [historyFullscreen, setHistoryFullscreen] = useState(false);
   const isDragging = useRef(false);
   const startY    = useRef(0);
   const startH    = useRef(0);
+  const dockHRef  = useRef(dockH);
+
+  useEffect(() => {
+    dockHRef.current = dockH;
+  }, [dockH]);
+
+  useEffect(() => {
+    setActiveTab(workspaceTab);
+  }, [workspaceTab]);
 
   // Sync dock height to parent App so CSS variable can update
   useEffect(() => {
@@ -1256,11 +1292,22 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
 
   useEffect(() => {
     const onDockTab = (e) => {
-      if (e.detail) setActiveTab(e.detail);
+      if (e.detail) {
+        const tab = normalizeDockTab(e.detail);
+        setActiveTab(tab);
+        updateWorkspace({ dockActiveTab: tab });
+      }
     };
     window.addEventListener('dock-tab', onDockTab);
     return () => window.removeEventListener('dock-tab', onDockTab);
-  }, []);
+  }, [updateWorkspace]);
+
+  const handleTabChange = useCallback((tab) => {
+    if (!tab) return;
+    const next = normalizeDockTab(tab);
+    setActiveTab(next);
+    updateWorkspace({ dockActiveTab: next });
+  }, [updateWorkspace]);
 
   const pendingOrders = orders.filter(o => o.status === 'PENDING').length;
   const posCount = Object.keys(positions).length;
@@ -1285,21 +1332,26 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
         isDragging.current = false;
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
-        try { localStorage.setItem(STORAGE_KEY, String(dockH)); } catch {}
+        try { updateWorkspace({ dockHeight: dockHRef.current }); } catch {}
       }
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [dockH]);
+  }, [updateWorkspace]);
 
   const analystBadge = (agentInsightHistory[activeSymbol] ?? []).length || null;
+  const scanBadge = useStore((s) => {
+    const rows = s.scanResults?.rows ?? [];
+    return rows.filter((r) => r.signal && r.signal !== 'NONE').length || null;
+  });
 
   const TABS = [
     { id: 'positions', label: 'Positions', icon: Briefcase, badge: posCount || null },
     { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null },
     { id: 'balances',  label: 'Balances',  icon: Landmark  },
     { id: 'algo',      label: 'Algo Bot',  icon: Cpu       },
+    { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge },
     { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge },
     { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: isLive && ambiguousOrders.length ? ambiguousOrders.length : null },
     { id: 'bots',      label: 'Bot History', icon: History, badge: botHistory.length || null },
@@ -1317,7 +1369,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
       >
         <div className="dock-resize-handle" onMouseDown={onMouseDown} />
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="dock-tabs-root gap-0">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="dock-tabs-root gap-0">
           <div className="dock-tab-bar">
             <div className="dock-tab-bar-inner scroll-fade-x">
               <TabsList variant="line" className="dock-tab-switch scroll-panel-x no-scrollbar min-w-0 flex-1 justify-start rounded-none border-0 bg-transparent">
@@ -1380,6 +1432,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
               <AlgoTab />
             </ErrorBoundary>
           </TabsContent>
+          <TabsContent value="scanner" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+            <ErrorBoundary name="Scanner">
+              <ScannerTab />
+            </ErrorBoundary>
+          </TabsContent>
+
           <TabsContent value="analyst" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Chart Analyst">
               <AnalystTab />

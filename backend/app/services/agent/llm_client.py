@@ -15,7 +15,9 @@ TIMEOUT_SEC = 8.0
 
 SYSTEM_PROMPT = (
     "You are a concise trading chart analyst. Summarize ONLY the JSON insight provided. "
-    "Do not invent prices, indicators, or signals. Keep the response under 3 sentences."
+    "Do not invent prices, indicators, or signals. Do not change the signal field. "
+    "When sub_reports are present, mention trend/momentum/risk briefly. "
+    "Keep the response under 3 sentences."
 )
 
 

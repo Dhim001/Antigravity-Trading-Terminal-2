@@ -38,11 +38,47 @@ function formatTradeTime(timestamp) {
   });
 }
 
+function findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory) {
+  if (!trade || trade.is_exit) return null;
+  const barTime = trade.signal_bar_time;
+  if (barTime != null) {
+    const history = agentInsightHistory[symbol] ?? [];
+    const match = history.find((i) => i.bar_time === barTime);
+    if (match) return match;
+  }
+  const current = agentInsights[symbol];
+  if (current && barTime != null && current.bar_time === barTime) return current;
+  return current?.reasons?.length ? current : null;
+}
+
+function TradeExplain({ trade, symbol, botStrategy, agentInsights, agentInsightHistory }) {
+  if (botStrategy !== 'CHART_AGENT' || trade.is_exit) return null;
+  const insight = findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory);
+  if (!insight?.reasons?.length && !insight?.narrative) return null;
+  return (
+    <details className="mt-1 text-[0.65rem] text-muted-foreground">
+      <summary className="cursor-pointer text-trading-accent">Why we entered</summary>
+      {insight.reasons?.length > 0 && (
+        <ul className="mt-1 list-inside list-disc space-y-0.5">
+          {insight.reasons.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+      {insight.narrative && (
+        <p className="mt-1 leading-relaxed">{insight.narrative}</p>
+      )}
+    </details>
+  );
+}
+
 export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, onResume }) {
   const botDetail = useStore(s => s.botDetail);
   const selectedBotId = useStore(s => s.selectedBotId);
   const setSelectedBotId = useStore(s => s.setSelectedBotId);
   const setBotDetail = useStore(s => s.setBotDetail);
+  const agentInsights = useStore(s => s.agentInsights);
+  const agentInsightHistory = useStore(s => s.agentInsightHistory);
 
   const bot = botDetail?.bot;
   const position = botDetail?.position;
@@ -353,27 +389,33 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                     ) : (
                       trades.map(t => (
                         <tr key={t.id ?? `${t.timestamp}-${t.side}-${t.price}`}>
-                          <td className="bot-detail-trades-table__time" title={formatTradeTime(t.timestamp)}>
-                            {formatTradeTime(t.timestamp)}
-                          </td>
-                          <td>
-                            <span className={cn(
-                              'bot-detail-trades-table__side',
-                              t.side === 'BUY' ? 'text-trading-up' : 'text-trading-down',
-                            )}>
-                              {t.side}{t.is_exit ? ' exit' : ''}
-                            </span>
-                          </td>
-                          <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
-                          <td className="num-mono text-right">{Number(t.price).toFixed(4)}</td>
-                          <td className={cn(
-                            'num-mono text-right',
-                            t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
-                          )}>
-                            {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
-                          </td>
-                          <td className="num-mono bot-detail-trades-table__order" title={t.order_id}>
-                            {t.order_id ? shortBotId(t.order_id) : '—'}
+                          <td className="bot-detail-trades-table__time" colSpan={6}>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                              <span title={formatTradeTime(t.timestamp)}>{formatTradeTime(t.timestamp)}</span>
+                              <span className={cn(
+                                'bot-detail-trades-table__side',
+                                t.side === 'BUY' ? 'text-trading-up' : 'text-trading-down',
+                              )}>
+                                {t.side}{t.is_exit ? ' exit' : ''}
+                              </span>
+                              <span className="num-mono">{Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(4)}</span>
+                              <span className={cn(
+                                'num-mono',
+                                t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
+                              )}>
+                                {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
+                              </span>
+                              <span className="num-mono text-muted-foreground" title={t.order_id}>
+                                {t.order_id ? shortBotId(t.order_id) : '—'}
+                              </span>
+                            </div>
+                            <TradeExplain
+                              trade={t}
+                              symbol={bot?.symbol}
+                              botStrategy={bot?.strategy}
+                              agentInsights={agentInsights}
+                              agentInsightHistory={agentInsightHistory}
+                            />
                           </td>
                         </tr>
                       ))

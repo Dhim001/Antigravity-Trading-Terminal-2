@@ -24,6 +24,8 @@ class ChartAgentInsight:
     model: str | None = None
     created_at: str = ""
     insight_id: str = ""
+    version: int = 2
+    sub_reports: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.created_at:
@@ -32,7 +34,10 @@ class ChartAgentInsight:
             self.insight_id = f"{self.symbol}:{self.bar_time}"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if d.get("sub_reports") is None:
+            d.pop("sub_reports", None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChartAgentInsight:
@@ -49,4 +54,21 @@ class ChartAgentInsight:
             model=data.get("model"),
             created_at=data.get("created_at", ""),
             insight_id=data.get("insight_id", ""),
+            version=int(data.get("version", 1)),
+            sub_reports=data.get("sub_reports"),
         )
+
+
+@dataclass
+class VisionReport:
+    symbol: str
+    timeframe: str
+    bar_time: int
+    structure: str = ""
+    patterns: list[str] = field(default_factory=list)
+    notes: str = ""
+    model: str | None = None
+    cached: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

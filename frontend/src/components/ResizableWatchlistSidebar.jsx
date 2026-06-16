@@ -6,6 +6,7 @@ import { PanelLeftClose, PanelLeftOpen, Activity } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 import WatchlistWidget from './WatchlistWidget';
 
 const STORAGE_WIDTH = 'terminal_sidebar_width';
@@ -34,7 +35,11 @@ function readCollapsed() {
 
 export default function ResizableWatchlistSidebar({ onLayoutChange }) {
   const activeSymbol = useStore(s => s.activeSymbol);
-  const [width, setWidth] = useState(readWidth);
+  const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth);
+  const [width, setWidth] = useState(() => {
+    if (workspaceWidth >= SIDEBAR_MIN && workspaceWidth <= SIDEBAR_MAX) return workspaceWidth;
+    return readWidth();
+  });
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [dragging, setDragging] = useState(false);
   const isDragging = useRef(false);

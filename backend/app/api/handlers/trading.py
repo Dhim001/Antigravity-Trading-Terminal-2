@@ -1,7 +1,40 @@
 from app.api.context import RequestContext
-from app.api.protocol import Action
-from app.api.responses import send_order_bundle, send_order_bundle_no_history
+from app.api.protocol import Action, MessageType
+from app.api.responses import send_order_bundle, send_order_bundle_no_history, send_to
 from app.api.router import route
+from app.observability.metrics import inc
+from app.observability.json_log import log_event
+from app.services.order_preview import preview_order
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@route(Action.PREVIEW_ORDER, tags=["trading"])
+async def preview_order_handler(ctx: RequestContext) -> None:
+    msg = ctx.message
+    result = preview_order(ctx.oms, {
+        "symbol": msg.get("symbol"),
+        "type": msg.get("type"),
+        "side": msg.get("side"),
+        "price": float(msg.get("price")) if msg.get("price") is not None else None,
+        "quantity": float(msg.get("quantity") or 0),
+        "stop_loss_price": msg.get("stop_loss_price"),
+        "take_profit_price": msg.get("take_profit_price"),
+        "stop_loss_percent": msg.get("stop_loss_percent"),
+        "take_profit_percent": msg.get("take_profit_percent"),
+    })
+    if result.get("allowed"):
+        inc("orders_preview_allowed_total")
+    else:
+        inc("orders_preview_blocked_total")
+    log_event(
+        logger,
+        "order_preview",
+        symbol=result.get("symbol"),
+        action="preview_order",
+    )
+    await send_to(ctx, {"type": MessageType.ORDER_PREVIEW, "data": result})
 
 
 @route(Action.PLACE_ORDER, tags=["trading"])
@@ -33,6 +66,7 @@ async def place_order(ctx: RequestContext) -> None:
     if take_profit_percent is not None:
         take_profit_percent = float(take_profit_percent)
 
+    inc("orders_place_total", labels={"side": str(side).upper()})
     result = await ctx.oms.place_order({
         "symbol": symbol,
         "type": order_type,

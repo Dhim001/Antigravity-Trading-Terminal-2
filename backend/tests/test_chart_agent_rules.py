@@ -61,6 +61,31 @@ class TestChartAgentRules(unittest.TestCase):
         expected = round(min(1.0, abs(insight.score) / 4.0), 3)
         self.assertEqual(insight.confidence, expected)
 
+    def test_sub_reports_sum_to_composite_score(self):
+        candles = make_trending_candles(200, drift=0.0008)
+        df = self.builder.build("BTCUSDT", candles)
+        insight = score_dataframe(df, "BTCUSDT")
+        self.assertIsNotNone(insight.sub_reports)
+        trend = insight.sub_reports["trend"]["score"]
+        momentum = insight.sub_reports["momentum"]["score"]
+        self.assertEqual(insight.score, trend + momentum)
+        self.assertIn("risk", insight.sub_reports)
+        self.assertEqual(insight.version, 2)
+
+    def test_v1_payload_deserializes_without_sub_reports(self):
+        from app.services.agent.models import ChartAgentInsight
+        payload = {
+            "symbol": "AAPL",
+            "bar_time": 1700000000,
+            "signal": "BUY",
+            "score": 3,
+            "confidence": 0.75,
+            "reasons": ["test"],
+        }
+        insight = ChartAgentInsight.from_dict(payload)
+        self.assertEqual(insight.version, 1)
+        self.assertIsNone(insight.sub_reports)
+
     def test_bot_signal_only_buy_sell_none(self):
         candles = make_trending_candles(200)
         df = self.builder.build("AAPL", candles)

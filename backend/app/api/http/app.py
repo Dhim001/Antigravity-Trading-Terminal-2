@@ -7,7 +7,7 @@ import json
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from app.api.http.bindings import HTTP_BINDINGS
@@ -23,6 +23,12 @@ from app.services.bots.backtest_store import list_backtest_runs
 from app.services.events import channels
 
 ensure_routes_loaded()
+
+
+async def metrics(request: Request) -> PlainTextResponse:
+    from app.observability.metrics import render_prometheus
+
+    return PlainTextResponse(render_prometheus(), media_type="text/plain; version=0.0.4")
 
 
 async def health(request: Request) -> JSONResponse:
@@ -181,6 +187,7 @@ def _make_endpoint(binding):
 def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health", health, methods=["GET"]),
+        Route("/metrics", metrics, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),

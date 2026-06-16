@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
+import { apiAction } from '../api/client';
 import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,6 +25,8 @@ export default function OrderEntryWidget() {
   const balances     = useStore(state => state.balances);
   const positions    = useStore(state => state.positions);
   const orderResult  = useStore(state => state.orderResult);
+  const orderPrefill = useStore(state => state.orderPrefill);
+  const clearOrderPrefill = useStore(state => state.clearOrderPrefill);
 
   const [side,      setSide]      = useState('BUY');
   const [orderType, setOrderType] = useState('LIMIT');
@@ -35,9 +38,31 @@ export default function OrderEntryWidget() {
   const [tpMode,    setTpMode]    = useState('%');
   const [errorMsg,  setErrorMsg]  = useState(null);
   const [showSLTP,  setShowSLTP]  = useState(false);
+  const [preview,   setPreview]   = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [lastFillExplain, setLastFillExplain] = useState(null);
   const buyBtnRef  = useRef(null);
   const sellBtnRef = useRef(null);
   const formRef    = useRef(null);
+  const previewRef = useRef(null);
+
+  useEffect(() => {
+    if (!orderPrefill || orderPrefill.symbol !== activeSymbol) return;
+    if (orderPrefill.side) setSide(orderPrefill.side);
+    if (orderPrefill.orderType) setOrderType(orderPrefill.orderType);
+    if (orderPrefill.quantity) setQuantity(String(orderPrefill.quantity));
+    if (orderPrefill.stop_loss_price != null) {
+      setShowSLTP(true);
+      setSlMode('$');
+      setSlPrice(String(orderPrefill.stop_loss_price));
+    }
+    if (orderPrefill.take_profit_price != null) {
+      setShowSLTP(true);
+      setTpMode('$');
+      setTpPrice(String(orderPrefill.take_profit_price));
+    }
+    clearOrderPrefill();
+  }, [orderPrefill, activeSymbol, clearOrderPrefill]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -59,8 +84,23 @@ export default function OrderEntryWidget() {
 
   useEffect(() => {
     if (!orderResult) return;
-    if (orderResult.status === 'success') toast.success(orderResult.message);
-    else toast.error(orderResult.message);
+    if (orderResult.status === 'success') {
+      toast.success(orderResult.message);
+      if (previewRef.current?.allowed) {
+        const p = previewRef.current;
+        setLastFillExplain({
+          side: p.side,
+          quantity: p.quantity,
+          notional: p.notional,
+          quote: p.quote,
+          stop_loss_price: p.stop_loss_price,
+          take_profit_price: p.take_profit_price,
+          risk_reward_ratio: p.risk_reward_ratio,
+        });
+      }
+    } else {
+      toast.error(orderResult.message);
+    }
   }, [orderResult]);
 
   const isCrypto = activeSymbol.includes('USDT');
@@ -101,6 +141,43 @@ export default function OrderEntryWidget() {
     if (risk === 0) return null;
     return (reward / risk).toFixed(2);
   }, [slAbs, tpAbs, orderPrice]);
+
+  useEffect(() => {
+    const q = parseFloat(quantity);
+    if (!activeSymbol || isNaN(q) || q <= 0) {
+      setPreview(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setPreviewLoading(true);
+      const payload = {
+        symbol: activeSymbol,
+        type: orderType,
+        side,
+        quantity: q,
+      };
+      if (orderType === 'LIMIT') {
+        const lp = parseFloat(price);
+        if (!isNaN(lp) && lp > 0) payload.price = lp;
+      }
+      if (showSLTP && slAbs) payload.stop_loss_price = parseFloat(slAbs.toFixed(8));
+      if (showSLTP && tpAbs) payload.take_profit_price = parseFloat(tpAbs.toFixed(8));
+      try {
+        const body = await apiAction('/api/v1/orders/preview', { method: 'POST', body: payload });
+        const previewMsg = body.messages?.find((m) => m.type === 'order_preview');
+        setPreview(previewMsg?.data ?? body.data ?? null);
+      } catch {
+        setPreview(null);
+      } finally {
+        setPreviewLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [activeSymbol, side, orderType, quantity, price, showSLTP, slAbs, tpAbs]);
+
+  useEffect(() => {
+    previewRef.current = preview;
+  }, [preview]);
 
   const fillQty = (pct) => {
     if (!orderPrice) return;
@@ -372,12 +449,60 @@ export default function OrderEntryWidget() {
       </div>
 
       <div className="order-entry-footer">
+        {lastFillExplain && (
+          <div className="mb-2 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs">
+            <div className="mb-1 font-semibold text-muted-foreground">Last fill</div>
+            <p className="num-mono">
+              {lastFillExplain.side} {lastFillExplain.quantity} · ~
+              {lastFillExplain.notional?.toLocaleString()} {lastFillExplain.quote}
+              {lastFillExplain.stop_loss_price != null && <> · SL {lastFillExplain.stop_loss_price}</>}
+              {lastFillExplain.take_profit_price != null && <> · TP {lastFillExplain.take_profit_price}</>}
+              {lastFillExplain.risk_reward_ratio != null && <> · R:R 1:{lastFillExplain.risk_reward_ratio}</>}
+            </p>
+          </div>
+        )}
+        {(preview || previewLoading) && (
+          <div className={cn(
+            'mb-2 rounded-md border px-2.5 py-2 text-xs',
+            preview?.allowed ? 'border-trading-up/30 bg-trading-up/5' : 'border-trading-down/30 bg-trading-down/5',
+          )}>
+            <div className="mb-1 flex items-center justify-between font-semibold">
+              <span>Pre-trade preview</span>
+              {previewLoading && <span className="text-muted-foreground">Updating…</span>}
+            </div>
+            {preview && (
+              <>
+                {preview.block_reason ? (
+                  <p className="text-trading-down">{preview.block_reason}</p>
+                ) : (
+                  <p className="text-trading-up">Ready to submit</p>
+                )}
+                <p className="mt-1 num-mono text-muted-foreground">
+                  Notional {preview.notional?.toLocaleString()} {preview.quote}
+                  {preview.stop_loss_price != null && (
+                    <> · SL {preview.stop_loss_price}</>
+                  )}
+                  {preview.take_profit_price != null && (
+                    <> · TP {preview.take_profit_price}</>
+                  )}
+                  {preview.risk_reward_ratio != null && (
+                    <> · R:R 1:{preview.risk_reward_ratio}</>
+                  )}
+                </p>
+                {preview.warnings?.length > 0 && (
+                  <p className="mt-1 text-trading-warn">{preview.warnings.join(' · ')}</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
         <Button
           type="submit"
           form="order-entry-form"
           variant={isBuy ? 'buy' : 'sell'}
           size="lg"
           className="w-full font-extrabold tracking-wide"
+          disabled={preview && !preview.allowed}
         >
           {isBuy ? <TrendingUp data-icon="inline-start" /> : <TrendingDown data-icon="inline-start" />}
           Place {side} {orderType}

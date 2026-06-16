@@ -5,6 +5,7 @@
 /** Client → server request actions */
 export const Action = Object.freeze({
   PLACE_ORDER: 'place_order',
+  PREVIEW_ORDER: 'preview_order',
   CANCEL_ORDER: 'cancel_order',
   UPDATE_POSITION_SL_TP: 'update_position_sl_tp',
   GET_ACCOUNT: 'get_account',
@@ -33,12 +34,15 @@ export const Action = Object.freeze({
   BOT_LIST_ALL: 'bot_list_all',
   RUN_BACKTEST: 'run_backtest',
   CHART_ANALYZE: 'chart_analyze',
+  MARKET_SCAN: 'market_scan',
+  CHART_VISION: 'chart_vision',
 });
 
 /** Server → client message types */
 export const MessageType = Object.freeze({
   TERMINAL_CONFIG: 'terminal_config',
   ORDER_RESULT: 'order_result',
+  ORDER_PREVIEW: 'order_preview',
   ACCOUNT_UPDATE: 'account_update',
   TRADE_HISTORY: 'trade_history',
   HISTORY_UPDATE: 'history_update',
@@ -53,6 +57,8 @@ export const MessageType = Object.freeze({
   TICKS_UPDATE: 'ticks_update',
   BOTS_HISTORY: 'bots_history',
   AGENT_INSIGHT: 'agent_insight',
+  SCAN_RESULTS: 'scan_results',
+  VISION_REPORT: 'vision_report',
   ERROR: 'error',
 });
 

@@ -17,6 +17,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import SubReportCards from './SubReportCards';
+import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
+import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 import { WidgetEmpty } from './WidgetShell';
 import { cn } from '@/lib/utils';
 
@@ -66,6 +69,12 @@ export default function AnalystTab() {
   const [symbol, setSymbol] = useState(activeSymbol);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [previewDraft, setPreviewDraft] = useState(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const setOrderPrefill = useStore((s) => s.setOrderPrefill);
+  const tickerData = useStore((s) => s.tickerData);
+  const visionReports = useStore((s) => s.visionReports);
+  const [visionLoading, setVisionLoading] = useState(false);
 
   useEffect(() => {
     setSymbol(activeSymbol);
@@ -114,6 +123,37 @@ export default function AnalystTab() {
     window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
   };
 
+  const requestVision = () => {
+    setVisionLoading(true);
+    const handler = (e) => {
+      window.removeEventListener('chart-capture-ready', handler);
+      const { image, bar_time } = e.detail || {};
+      if (!image) {
+        setVisionLoading(false);
+        toast.error('Chart capture failed');
+        return;
+      }
+      sendAction(Action.CHART_VISION, {
+        symbol,
+        timeframe: '4h',
+        image_base64: image.replace(/^data:image\/png;base64,/, ''),
+        bar_time: bar_time || latest?.bar_time || Math.floor(Date.now() / 1000),
+      }).finally(() => setVisionLoading(false));
+    };
+    window.addEventListener('chart-capture-ready', handler);
+    setActiveSymbol(symbol);
+    window.dispatchEvent(new CustomEvent('chart-capture-request', {
+      detail: { symbol, bar_time: latest?.bar_time },
+    }));
+    setTimeout(() => {
+      window.removeEventListener('chart-capture-ready', handler);
+      setVisionLoading(false);
+    }, 5000);
+  };
+
+  const visionKey = `${symbol}:4h`;
+  const visionReport = visionReports[visionKey];
+
   return (
     <div className="dock-panel-tab">
       <header className="dock-panel-tab__toolbar">
@@ -157,6 +197,16 @@ export default function AnalystTab() {
           <Button variant="secondary" size="sm" className="h-7 text-xs" onClick={runAnalyze}>
             Analyze
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            disabled={visionLoading}
+            onClick={requestVision}
+            title="Requires AGENT_VISION_ENABLED and OpenRouter key"
+          >
+            {visionLoading ? 'Capturing…' : 'Describe 4H'}
+          </Button>
         </div>
       </header>
 
@@ -174,6 +224,19 @@ export default function AnalystTab() {
           </span>
           {latest.narrative && (
             <p className="mt-1.5 leading-relaxed text-foreground/85">{latest.narrative}</p>
+          )}
+          {visionReport && (
+            <div className="mt-2 rounded border border-border/50 bg-background/40 p-2">
+              <p className="text-[0.58rem] font-semibold uppercase text-muted-foreground">
+                Structure notes (not a signal)
+              </p>
+              <p className="mt-1 text-xs">{visionReport.structure}</p>
+              {visionReport.patterns?.length > 0 && (
+                <p className="mt-1 text-[0.62rem] text-muted-foreground">
+                  {visionReport.patterns.join(' · ')}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -244,13 +307,17 @@ export default function AnalystTab() {
                       {isExpanded && (
                         <tr className="bg-muted/15">
                           <td colSpan={6} className="px-3 py-2 text-xs">
-                            {row.reasons?.length > 0 && (
+                            {row.sub_reports ? (
+                              <div className="mb-2">
+                                <SubReportCards subReports={row.sub_reports} />
+                              </div>
+                            ) : row.reasons?.length > 0 ? (
                               <ul className="mb-2 space-y-0.5">
                                 {row.reasons.map((r, i) => (
                                   <li key={i} className="text-muted-foreground">• {r}</li>
                                 ))}
                               </ul>
-                            )}
+                            ) : null}
                             {row.narrative && (
                               <p className="rounded border border-border/50 bg-background/50 p-2 leading-relaxed">
                                 {row.narrative}
@@ -264,6 +331,25 @@ export default function AnalystTab() {
                                 )}
                               </p>
                             )}
+                            {row.signal === 'BUY' || row.signal === 'SELL' ? (
+                              <Button
+                                variant="outline"
+                                size="xs"
+                                className="mt-2 h-6 text-[0.62rem]"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const draft = buildOrderDraftFromInsight(row, {
+                                    tickerPrice: tickerData[row.symbol]?.price,
+                                  });
+                                  if (draft) {
+                                    setPreviewDraft(draft);
+                                    setPreviewOpen(true);
+                                  }
+                                }}
+                              >
+                                Preview order
+                              </Button>
+                            ) : null}
                           </td>
                         </tr>
                       )}
@@ -284,6 +370,19 @@ export default function AnalystTab() {
           </footer>
         </>
       )}
+      <InsightOrderPreviewDialog
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        draft={previewDraft}
+        onConfirm={() => {
+          if (previewDraft) {
+            setOrderPrefill(previewDraft);
+            setActiveSymbol(previewDraft.symbol);
+            toast.message('Order ticket prefilled');
+          }
+          setPreviewOpen(false);
+        }}
+      />
     </div>
   );
 }

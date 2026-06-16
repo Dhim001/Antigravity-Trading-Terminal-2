@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useStore } from './store/useStore';
 import { useSettingsStore } from './store/useSettingsStore';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -13,8 +13,11 @@ import SystemControlPanel    from './components/SystemControlPanel';
 import SettingsPanel         from './components/SettingsPanel';
 import SettingsBootstrap     from './components/SettingsBootstrap';
 import MarketOverviewStrip   from './components/MarketOverviewStrip';
+import PortfolioSummaryBar   from './components/PortfolioSummaryBar';
+import StaleDataBanner       from './components/StaleDataBanner';
 import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
+import ShortcutsSheet        from './components/ShortcutsSheet';
 import ErrorBoundary         from './components/ErrorBoundary';
 
 import { Badge } from '@/components/ui/badge';
@@ -41,19 +44,52 @@ export default function App() {
   const terminalMode     = useStore(state => state.terminalMode);
   const isBotRunning     = useStore(state => state.isBotRunning);
   const distributed      = useStore(state => state.distributed);
+  const workspace = useSettingsStore(state => state.settings.workspace);
+  const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
   useBootstrap();
   useWebSocket();
 
   const [showAdmin, setShowAdmin]   = useState(false);
   const settingsOpen = useSettingsStore(state => state.panelOpen);
   const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);
-  const [dockHeight, setDockHeight] = useState(DOCK_DEFAULT);
-  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [dockHeight, setDockHeight] = useState(() => workspace?.dockHeight || DOCK_DEFAULT);
+  const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 260);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [stopBotsOpen, setStopBotsOpen] = useState(false);
+  const workspaceHydrated = useRef(false);
 
-  const handleDockHeightChange = useCallback(h => setDockHeight(h), []);
-  const handleSidebarLayout = useCallback(({ width }) => setSidebarWidth(width), []);
+  const handleDockHeightChange = useCallback((h) => {
+    setDockHeight(h);
+    updateWorkspace({ dockHeight: h });
+  }, [updateWorkspace]);
+  const handleSidebarLayout = useCallback(({ width }) => {
+    setSidebarWidth(width);
+    updateWorkspace({ sidebarWidth: width });
+  }, [updateWorkspace]);
+
+  useEffect(() => {
+    if (workspaceHydrated.current) return;
+    workspaceHydrated.current = true;
+    if (workspace?.viewMode && workspace.viewMode !== viewMode) {
+      setViewMode(workspace.viewMode);
+    }
+  }, [workspace?.viewMode, viewMode, setViewMode]);
+
+  useEffect(() => {
+    updateWorkspace({ viewMode });
+  }, [viewMode, updateWorkspace]);
+
+  useEffect(() => {
+    const onWorkspaceLoaded = (e) => {
+      const ws = e.detail?.workspace;
+      if (ws?.dockHeight) setDockHeight(ws.dockHeight);
+      if (ws?.sidebarWidth) setSidebarWidth(ws.sidebarWidth);
+      if (ws?.viewMode) setViewMode(ws.viewMode);
+    };
+    window.addEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
+    return () => window.removeEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
+  }, [setViewMode]);
 
   const connected = connectionStatus === 'connected';
   const apiReady = apiStatus === 'ready';
@@ -95,6 +131,13 @@ export default function App() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('sidebar-toggle'));
       }
+      if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const tag = document.activeElement?.tagName;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+          e.preventDefault();
+          setShortcutsOpen(true);
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -123,6 +166,7 @@ export default function App() {
         onOpenAdmin={() => setShowAdmin(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
+      <ShortcutsSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 
       <ErrorBoundary name="Header">
       <header className="terminal-header">
@@ -282,6 +326,11 @@ export default function App() {
       </header>
       </ErrorBoundary>
 
+      <div className="dashboard-aux-band">
+        <StaleDataBanner />
+        <PortfolioSummaryBar />
+      </div>
+
       <ErrorBoundary name="Market overview">
         <MarketOverviewStrip />
       </ErrorBoundary>
@@ -312,7 +361,7 @@ export default function App() {
       </section>
 
       <ErrorBoundary name="Trading dock">
-        <ResizableDock setDockHeight={handleDockHeightChange} />
+        <ResizableDock setDockHeight={handleDockHeightChange} initialDockHeight={dockHeight} />
       </ErrorBoundary>
     </div>
   );

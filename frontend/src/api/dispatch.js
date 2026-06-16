@@ -27,6 +27,8 @@ export function getStoreActions() {
     setBotHistory: s.setBotHistory,
     setAgentInsight: s.setAgentInsight,
     setAgentInsightHistory: s.setAgentInsightHistory,
+    setScanResults: s.setScanResults,
+    setVisionReport: s.setVisionReport,
   };
 }
 
@@ -108,6 +110,14 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.AGENT_INSIGHT:
       if (data?.symbol) {
         storeActions.setAgentInsight(data.symbol, data);
+      }
+      break;
+    case MessageType.SCAN_RESULTS:
+      storeActions.setScanResults(data);
+      break;
+    case MessageType.VISION_REPORT:
+      if (data?.symbol && data?.timeframe) {
+        storeActions.setVisionReport(`${data.symbol}:${data.timeframe}`, data);
       }
       break;
     case MessageType.ERROR:

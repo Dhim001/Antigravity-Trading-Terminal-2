@@ -5,7 +5,7 @@ import { useStore } from '../store/useStore';
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');
-  if (body.terminal_mode != null || body.terminal_role != null) {
+  if (storeActions && (body.terminal_mode != null || body.terminal_role != null)) {
     storeActions.setTerminalConfig({
       terminalMode: body.terminal_mode,
       terminalRole: body.terminal_role,
@@ -13,6 +13,26 @@ export async function fetchHealth(storeActions) {
     });
   }
   return body;
+}
+
+/** Parse Prometheus text for a few terminal counters/histograms. */
+export function parseMetricsSummary(text) {
+  const lines = String(text || '').split('\n');
+  const out = {};
+  for (const line of lines) {
+    if (line.startsWith('#') || !line.trim()) continue;
+    const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([0-9.eE+-]+)/);
+    if (!m) continue;
+    const [, name, , val] = m;
+    const num = parseFloat(val);
+    if (name === 'orders_place_total' || name.endsWith('_total') && !name.includes('_count')) {
+      out[name] = (out[name] || 0) + num;
+    }
+    if (name === 'agent_analyze_duration_seconds' && line.includes('quantile="0.99"')) {
+      out.agent_analyze_p99 = num;
+    }
+  }
+  return out;
 }
 
 export async function fetchStrategies(storeActions) {

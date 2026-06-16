@@ -216,6 +216,15 @@ class ChartAnalystService:
 
         latency_ms = (time.monotonic() - t0) * 1000
         self._audit(insight, llm_called=llm_called, latency_ms=latency_ms)
+        try:
+            from app.observability.metrics import inc, observe
+
+            inc("agent_analyze_total", labels={"signal": insight.signal})
+            observe("agent_analyze_duration_seconds", latency_ms / 1000.0)
+            if llm_called:
+                inc("agent_llm_calls_total")
+        except Exception:
+            pass
 
         if broadcast and self.broadcast_fn:
             from app.api.outbound import agent_insight

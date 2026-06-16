@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
 import { useStore } from '../store/useStore';
@@ -13,6 +13,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -41,6 +42,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { themeChartDefaults, getEffectiveSettings } from '../settings/themePresets';
+import { fetchHealth, parseMetricsSummary } from '../api/endpoints';
+import { HTTP_BASE_URL } from '../api/config';
 
 const PRESET_SWATCHES = {
   bullish: ['#10b981', '#22c55e', '#00d4aa', '#4ade80'],
@@ -106,6 +109,10 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const setThemeMode = useSettingsStore((s) => s.setThemeMode);
   const resetAppearance = useSettingsStore((s) => s.resetAppearance);
   const resetChartLayout = useSettingsStore((s) => s.resetChartLayout);
+  const updateWorkspace = useSettingsStore((s) => s.updateWorkspace);
+  const saveWorkspacePreset = useSettingsStore((s) => s.saveWorkspacePreset);
+  const loadWorkspacePreset = useSettingsStore((s) => s.loadWorkspacePreset);
+  const deleteWorkspacePreset = useSettingsStore((s) => s.deleteWorkspacePreset);
 
   const { resolvedTheme: osTheme } = useTheme();
 
@@ -117,6 +124,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const isBotRunning = useStore((s) => s.isBotRunning);
 
   const [activeTab, setActiveTab] = React.useState(panelTab);
+  const [presetName, setPresetName] = React.useState('');
+  const [obsHealth, setObsHealth] = useState(null);
+  const [obsMetrics, setObsMetrics] = useState(null);
 
   const effectiveChart = useMemo(
     () => getEffectiveSettings(settings, resolvedTheme).chart,
@@ -126,6 +136,29 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   useEffect(() => {
     if (open) setActiveTab(panelTab);
   }, [open, panelTab]);
+
+  useEffect(() => {
+    if (!open || activeTab !== 'system') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const health = await fetchHealth();
+        if (!cancelled) setObsHealth(health);
+      } catch {
+        if (!cancelled) setObsHealth(null);
+      }
+      try {
+        const base = HTTP_BASE_URL.replace(/\/$/, '');
+        const path = base ? `${base}/metrics` : '/metrics';
+        const resp = await fetch(path);
+        const text = await resp.text();
+        if (!cancelled) setObsMetrics(parseMetricsSummary(text));
+      } catch {
+        if (!cancelled) setObsMetrics(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, activeTab]);
 
   const handleTabChange = (tab) => {
     setActiveTab(tab);
@@ -376,8 +409,139 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             <Separator />
 
             <section className="settings-section">
+              <h3 className="settings-section__title">Workspace presets</h3>
+              <p className="settings-section__hint">
+                Save dock layout, sidebar width, view mode, and chart link mode.
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="Preset name"
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0 text-xs"
+                  onClick={() => {
+                    const id = saveWorkspacePreset(presetName.trim() || undefined);
+                    setPresetName('');
+                    toast.success('Workspace preset saved', { description: id });
+                  }}
+                >
+                  Save
+                </Button>
+              </div>
+              {settings.workspacePresets.length > 0 ? (
+                <ul className="mt-2 space-y-1">
+                  {settings.workspacePresets.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-2 rounded-md border border-border/50 px-2 py-1.5 text-xs">
+                      <span className="truncate font-medium">{p.name}</span>
+                      <div className="flex shrink-0 gap-1">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => {
+                            if (loadWorkspacePreset(p.id)) {
+                              toast.success(`Loaded “${p.name}”`);
+                              onOpenChange(false);
+                            }
+                          }}
+                        >
+                          Load
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="text-trading-down"
+                          onClick={() => {
+                            deleteWorkspacePreset(p.id);
+                            toast.message(`Deleted “${p.name}”`);
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="settings-section__hint mt-2">No presets yet.</p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => {
+                    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `terminal-workspace-${new Date().toISOString().slice(0, 10)}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    toast.success('Workspace exported');
+                  }}
+                >
+                  Export JSON
+                </Button>
+                <label className="cursor-pointer">
+                  <Button variant="outline" size="sm" className="text-xs" asChild>
+                    <span>Import JSON</span>
+                  </Button>
+                  <input
+                    type="file"
+                    accept="application/json"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        try {
+                          const parsed = JSON.parse(reader.result);
+                          updateSettings(parsed);
+                          toast.success('Workspace imported');
+                        } catch {
+                          toast.error('Invalid JSON file');
+                        }
+                      };
+                      reader.readAsText(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+            </section>
+
+            <Separator />
+
+            <section className="settings-section">
+              <h3 className="settings-section__title">Multi-chart linking</h3>
+              <p className="settings-section__hint">
+                When linked, watchlist changes update every chart. Focus mode updates only the focused pane.
+              </p>
+              <ToggleGroup
+                type="single"
+                value={settings.workspace?.chartLinkMode ?? 'all'}
+                onValueChange={(v) => v && updateWorkspace({ chartLinkMode: v })}
+                className="w-full"
+              >
+                <ToggleGroupItem value="all" className="flex-1 text-xs">All linked</ToggleGroupItem>
+                <ToggleGroupItem value="focused" className="flex-1 text-xs">Focused only</ToggleGroupItem>
+              </ToggleGroup>
+            </section>
+
+            <Separator />
+
+            <section className="settings-section">
               <h3 className="settings-section__title">Saved layout</h3>
               <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                <div><dt>Link mode</dt><dd>{settings.workspace?.chartLinkMode ?? 'all'}</dd></div>
+                <div><dt>Dock height</dt><dd>{settings.workspace?.dockHeight ?? '—'}px</dd></div>
+                <div><dt>Sidebar</dt><dd>{settings.workspace?.sidebarWidth ?? '—'}px</dd></div>
                 <div><dt>Timeframe</dt><dd>{settings.chartLayout.timeframe}</dd></div>
                 <div><dt>Chart type</dt><dd>{settings.chartLayout.chartType}</dd></div>
                 <div><dt>Multi layout</dt><dd>{settings.chartLayout.multiChartLayoutId}</dd></div>
@@ -400,8 +564,47 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 <div><dt>Mode</dt><dd>{terminalMode}</dd></div>
                 <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
                 <div><dt>Bots</dt><dd>{isBotRunning ? 'Running' : 'Idle'}</dd></div>
+                {obsHealth?.metrics && (
+                  <>
+                    <div><dt>Open positions</dt><dd>{obsHealth.metrics.open_positions ?? '—'}</dd></div>
+                    <div><dt>Pending orders</dt><dd>{obsHealth.metrics.pending_orders ?? '—'}</dd></div>
+                    <div><dt>Ambiguous</dt><dd>{obsHealth.metrics.ambiguous_orders ?? '—'}</dd></div>
+                  </>
+                )}
+                {obsHealth?.worker && (
+                  <div>
+                    <dt>Worker</dt>
+                    <dd className={obsHealth.worker.alive ? 'text-trading-up' : 'text-trading-down'}>
+                      {obsHealth.worker.alive ? 'Alive' : 'Down'}
+                      {obsHealth.worker.heartbeat_age_sec != null && (
+                        <> ({obsHealth.worker.heartbeat_age_sec}s)</>
+                      )}
+                    </dd>
+                  </div>
+                )}
+                {obsHealth?.ws_clients != null && (
+                  <div><dt>WS clients</dt><dd>{obsHealth.ws_clients}</dd></div>
+                )}
               </dl>
             </section>
+
+            {obsMetrics && (
+              <>
+                <Separator />
+                <section className="settings-section">
+                  <h3 className="settings-section__title">Metrics snapshot</h3>
+                  <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                    <div><dt>Orders placed</dt><dd>{obsMetrics.orders_place_total ?? 0}</dd></div>
+                    <div><dt>Preview allowed</dt><dd>{obsMetrics.orders_preview_allowed_total ?? 0}</dd></div>
+                    <div><dt>Preview blocked</dt><dd>{obsMetrics.orders_preview_blocked_total ?? 0}</dd></div>
+                    <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? '—'}</dd></div>
+                  </dl>
+                  <p className="settings-section__hint mt-2">
+                    Full Prometheus scrape at <code className="text-[0.62rem]">/metrics</code>
+                  </p>
+                </section>
+              </>
+            )}
 
             <Separator />
 

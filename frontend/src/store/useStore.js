@@ -97,6 +97,17 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   tickMeta: null,
   agentInsights: {},
   agentInsightHistory: {},
+  scanResults: null,
+  visionReports: {},
+  orderPrefill: null,
+
+  setScanResults: (data) => set({ scanResults: data }),
+  setVisionReport: (key, report) => set((state) => ({
+    visionReports: { ...state.visionReports, [key]: report },
+  })),
+
+  setOrderPrefill: (prefill) => set({ orderPrefill: prefill }),
+  clearOrderPrefill: () => set({ orderPrefill: null }),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setApiStatus: (status) => set({ apiStatus: status }),

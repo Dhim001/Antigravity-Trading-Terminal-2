@@ -252,9 +252,10 @@ body {
 .dashboard-container {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
-  grid-template-rows: var(--header-h) var(--strip-h) 1fr var(--dock-h);
+  grid-template-rows: var(--header-h) auto var(--strip-h) 1fr var(--dock-h);
   grid-template-areas:
     "header  header  header"
+    "aux     aux     aux"
     "strip   strip   strip"
     "sidebar main    panel"
     "sidebar dock    panel";
@@ -262,6 +263,25 @@ body {
   width:  100%;
   background: var(--bg-primary);
   overflow: hidden;
+}
+
+/* Portfolio summary + stale-data banner — must live in grid area aux */
+.dashboard-aux-band {
+  grid-area: aux;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.stale-data-banner {
+  flex-shrink: 0;
+}
+
+.portfolio-summary-bar {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(11, 16, 28, 0.98);
 }
 
 /* ── Header ──────────────────────────────────────────────────────── */

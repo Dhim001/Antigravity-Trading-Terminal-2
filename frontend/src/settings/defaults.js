@@ -28,8 +28,27 @@
  * @property {string} bearishColor
  * @property {ChartAppearanceSettings} chart
  * @property {ChartLayoutSettings} chartLayout
+ * @property {WorkspaceSettings} workspace
+ * @property {WorkspacePreset[]} workspacePresets
  * @property {boolean} [syncChartToTheme] Auto-match chart canvas to light/dark theme
  * @property {string} updatedAt
+ */
+
+/**
+ * @typedef {Object} WorkspaceSettings
+ * @property {number} dockHeight
+ * @property {number} sidebarWidth
+ * @property {string} dockActiveTab
+ * @property {'single' | 'multi'} viewMode
+ * @property {'all' | 'focused'} chartLinkMode
+ */
+
+/**
+ * @typedef {Object} WorkspacePreset
+ * @property {string} id
+ * @property {string} name
+ * @property {WorkspaceSettings} workspace
+ * @property {import('./defaults').ChartLayoutSettings} chartLayout
  */
 
 export const SETTINGS_STORAGE_KEY = 'terminal_settings_v1';
@@ -77,6 +96,14 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     multiChartLayoutId: '2x2',
     multiChartSymbols: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'],
   },
+  workspace: {
+    dockHeight: 320,
+    sidebarWidth: 260,
+    dockActiveTab: 'positions',
+    viewMode: 'single',
+    chartLinkMode: 'all',
+  },
+  workspacePresets: [],
   updatedAt: new Date().toISOString(),
 };
 
@@ -116,6 +143,11 @@ export function migrateSettings(raw) {
         ? input.chartLayout.multiChartSymbols
         : base.chartLayout.multiChartSymbols,
     },
+    workspace: {
+      ...base.workspace,
+      ...(input.workspace || {}),
+    },
+    workspacePresets: Array.isArray(input.workspacePresets) ? input.workspacePresets : [],
     updatedAt: input.updatedAt || new Date().toISOString(),
   };
 }

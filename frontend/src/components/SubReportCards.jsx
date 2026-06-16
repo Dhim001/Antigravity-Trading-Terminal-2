@@ -1,0 +1,61 @@
+import { cn } from '@/lib/utils';
+
+const DOMAIN_META = {
+  trend: { label: 'Trend', color: 'text-primary' },
+  momentum: { label: 'Momentum', color: 'text-trading-accent' },
+  risk: { label: 'Risk', color: 'text-trading-warn' },
+};
+
+function DomainCard({ domain, data }) {
+  if (!data) return null;
+  const meta = DOMAIN_META[domain] || { label: domain, color: 'text-muted-foreground' };
+  const score = data.score;
+  const showScore = domain !== 'risk' && score != null;
+
+  return (
+    <div className="rounded-md border border-border/50 bg-muted/20 p-2 text-xs">
+      <div className="mb-1 flex items-center justify-between">
+        <span className={cn('font-semibold uppercase tracking-wide', meta.color)}>{meta.label}</span>
+        {showScore && (
+          <span className="num-mono text-[0.65rem] text-muted-foreground">
+            {score > 0 ? '+' : ''}{score}
+          </span>
+        )}
+        {domain === 'risk' && data.atr_regime && (
+          <span className="text-[0.62rem] capitalize text-muted-foreground">{data.atr_regime}</span>
+        )}
+      </div>
+      {domain === 'risk' && data.suggested_size_factor != null && (
+        <p className="mb-1 text-[0.62rem] text-muted-foreground">
+          Size factor: {Math.round(data.suggested_size_factor * 100)}%
+        </p>
+      )}
+      {data.reasons?.length > 0 ? (
+        <ul className="space-y-0.5 text-[0.65rem] text-foreground/85">
+          {data.reasons.map((r, i) => (
+            <li key={i} className="flex gap-1.5">
+              <span className="opacity-40">•</span>
+              <span>{r}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[0.62rem] text-muted-foreground">No detail</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Stacked trend / momentum / risk cards for insight v2.
+ */
+export default function SubReportCards({ subReports, compact = false }) {
+  if (!subReports) return null;
+  return (
+    <div className={cn('grid gap-2', compact ? 'grid-cols-1' : 'sm:grid-cols-3')}>
+      <DomainCard domain="trend" data={subReports.trend} />
+      <DomainCard domain="momentum" data={subReports.momentum} />
+      <DomainCard domain="risk" data={subReports.risk} />
+    </div>
+  );
+}

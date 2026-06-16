@@ -126,6 +126,79 @@ export const useSettingsStore = create(subscribeWithSelector((set, get) => ({
     get().updateSettings(patch);
   },
 
+  /** @param {Partial<import('../settings/defaults').WorkspaceSettings>} patch */
+  updateWorkspace: (patch) => {
+    set((state) => {
+      const next = {
+        ...state.settings,
+        workspace: { ...state.settings.workspace, ...patch },
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+  },
+
+  saveWorkspacePreset: (name) => {
+    const { settings } = get();
+    const id = `ws-${Date.now()}`;
+    const preset = {
+      id,
+      name: name || `Workspace ${settings.workspacePresets.length + 1}`,
+      workspace: { ...settings.workspace },
+      chartLayout: { ...settings.chartLayout },
+    };
+    set((state) => {
+      const next = {
+        ...state.settings,
+        workspacePresets: [preset, ...state.settings.workspacePresets].slice(0, 12),
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+    return id;
+  },
+
+  loadWorkspacePreset: (id) => {
+    const { settings } = get();
+    const preset = settings.workspacePresets.find((p) => p.id === id);
+    if (!preset) return false;
+    set((state) => {
+      const next = {
+        ...state.settings,
+        workspace: { ...preset.workspace },
+        chartLayout: {
+          ...state.settings.chartLayout,
+          ...preset.chartLayout,
+          activeIndicators: {
+            ...state.settings.chartLayout.activeIndicators,
+            ...(preset.chartLayout?.activeIndicators || {}),
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('terminal:workspace-loaded', { detail: preset }));
+    }
+    return true;
+  },
+
+  deleteWorkspacePreset: (id) => {
+    set((state) => {
+      const next = {
+        ...state.settings,
+        workspacePresets: state.settings.workspacePresets.filter((p) => p.id !== id),
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+  },
+
   /** @param {Partial<import('../settings/defaults').ChartLayoutSettings>} patch */
   updateChartLayout: (patch) => {
     set((state) => {

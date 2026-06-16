@@ -4,6 +4,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 import MiniChartWidget from './MiniChartWidget';
 import { subscribeChartSymbols } from '../api/bootstrap';
 import { getStoreActions } from '../api/dispatch';
@@ -11,7 +12,7 @@ import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { LayoutGrid } from 'lucide-react';
+import { LayoutGrid, Link2, Unlink } from 'lucide-react';
 
 const LAYOUTS = [
   {
@@ -134,17 +135,24 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
 
   const activeSymbol = useStore(state => state.activeSymbol);
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
+  const chartLinkMode = useSettingsStore(state => state.settings.workspace?.chartLinkMode ?? 'all');
+  const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
   const layout = LAYOUTS.find(l => l.id === layoutId);
 
   useEffect(() => {
-    if (activeSymbol && symbols[focusedIdx] !== activeSymbol) {
-      setSymbols(prev => {
-        const next = [...prev];
-        if (focusedIdx < next.length) next[focusedIdx] = activeSymbol;
+    if (!activeSymbol) return;
+    setSymbols(prev => {
+      if (chartLinkMode === 'all') {
+        const next = prev.map(() => activeSymbol);
+        if (next.every((s, i) => s === prev[i])) return prev;
         return next;
-      });
-    }
-  }, [activeSymbol, focusedIdx]);
+      }
+      if (prev[focusedIdx] === activeSymbol) return prev;
+      const next = [...prev];
+      if (focusedIdx < next.length) next[focusedIdx] = activeSymbol;
+      return next;
+    });
+  }, [activeSymbol, focusedIdx, chartLinkMode]);
 
   useEffect(() => {
     try { localStorage.setItem('terminal_multi_chart_layout_id', layoutId); } catch (_) {}
@@ -254,9 +262,20 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
             Multi-Chart View
           </span>
           <span className="hidden truncate text-[0.72rem] text-muted-foreground sm:inline">
-            {layout.description} — click any chart to focus
+            {layout.description} — {chartLinkMode === 'all' ? 'all charts linked' : 'focused chart only'}
           </span>
         </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 shrink-0 gap-1 text-xs"
+          title={chartLinkMode === 'all' ? 'All charts follow watchlist' : 'Only focused chart follows watchlist'}
+          onClick={() => updateWorkspace({ chartLinkMode: chartLinkMode === 'all' ? 'focused' : 'all' })}
+        >
+          {chartLinkMode === 'all' ? <Link2 size={12} /> : <Unlink size={12} />}
+          {chartLinkMode === 'all' ? 'Linked' : 'Focus'}
+        </Button>
 
         <div className="scroll-fade-x shrink-0">
           <ToggleGroup
