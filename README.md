@@ -217,20 +217,26 @@ Server listens on **`ws://127.0.0.1:8765`** and **`http://127.0.0.1:8766`** (RES
 
 On Windows you can also run `backend/start.bat`.
 
-**Full stack with Docker** (backend + frontend + Redis + Postgres):
+**Full stack with Docker** (Postgres + backend + nginx frontend):
 
 ```bash
+cp .env.example .env   # optional — change ports if 8080/5432 are already in use
 docker compose up --build
 ```
 
-- Frontend: **http://localhost:8080** (nginx proxies `/api` and `/health` to backend)
+- Frontend: **http://localhost:8080** (nginx proxies `/api`, `/health`, and `/ws` to backend)
 - Backend WS: **ws://localhost:8765** · HTTP: **http://localhost:8766**
 
-**Distributed mode** (optional — requires Redis):
+Default mode is a **single backend process** (`TERMINAL_ROLE=all`) — no Redis or worker required.
+
+**Distributed mode** (optional — Redis server/worker split):
 
 ```bash
-# Start Redis + Postgres
-docker compose up -d
+# In .env:
+# COMPOSE_PROFILES=distributed
+# TERMINAL_ROLE=server
+# REDIS_URL=redis://redis:6379/0
+docker compose up --build
 ```
 
 ```powershell
@@ -502,13 +508,14 @@ Strategy aliases (`SUPERTREND` → `SUPERTREND_ADX`, `BB_STOCH` → `BRS_SCALPIN
 
 ### Optional enhancements
 
-**Docker server/worker split** (default in `docker-compose.yml`):
+**Docker distributed split** (opt-in via `COMPOSE_PROFILES=distributed` in `.env`):
 
 | Service | Role | Command |
 |---------|------|---------|
-| `backend` | `server` | WS + feed + bar publisher |
+| `backend` | `server` (set `TERMINAL_ROLE=server`) | WS + feed + bar publisher |
 | `worker` | `worker` | Bot engine via Redis |
-| `backend-monolith` | `all` | `--profile monolith` for single-process |
+
+Default `docker compose up` runs **monolith** (`TERMINAL_ROLE=all`) — one `backend` process, no Redis.
 
 **Live reconciliation** — ambiguous live orders (timeouts/network) are stored in `ambiguous_orders`. Algo tab shows pending items; **Auto-reconcile** checks open positions. Admin API: `GET /api/v1/admin/reconciliation`, `POST .../reconcile`, `POST .../resolve`.
 
