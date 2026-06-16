@@ -7,28 +7,34 @@ import { useBootstrap } from './hooks/useBootstrap';
 import ResizableWatchlistSidebar from './components/ResizableWatchlistSidebar';
 import ChartWidget           from './components/ChartWidget';
 import MultiChartGrid        from './components/MultiChartGrid';
-import OrderBookWidget       from './components/OrderBookWidget';
-import OrderEntryWidget      from './components/OrderEntryWidget';
+import TradingPanel          from './components/TradingPanel';
 import SystemControlPanel    from './components/SystemControlPanel';
 import SettingsPanel         from './components/SettingsPanel';
 import SettingsBootstrap     from './components/SettingsBootstrap';
-import MarketOverviewStrip   from './components/MarketOverviewStrip';
-import PortfolioSummaryBar   from './components/PortfolioSummaryBar';
-import StaleDataBanner       from './components/StaleDataBanner';
+import CommandBar            from './components/CommandBar';
 import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
 import ShortcutsSheet        from './components/ShortcutsSheet';
 import HelpSheet             from './components/HelpSheet';
 import OnboardingTour        from './components/OnboardingTour';
 import ErrorBoundary         from './components/ErrorBoundary';
+import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
+import InsightsHub           from './components/InsightsHub';
+import AutomationStudio      from './components/AutomationStudio';
+import ActivityCenter        from './components/ActivityCenter';
+import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
+import { applyLayoutMode } from './settings/layoutModes';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX, CircleHelp } from 'lucide-react';
+import {
+  TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX,
+  CircleHelp, Bell,
+} from 'lucide-react';
 import { sendAction } from './api/transport';
 import { Action } from './api/protocol';
 import {
@@ -49,19 +55,31 @@ export default function App() {
   const distributed      = useStore(state => state.distributed);
   const workspace = useSettingsStore(state => state.settings.workspace);
   const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
+  const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);
+  const settingsOpen = useSettingsStore(state => state.panelOpen);
   useBootstrap();
   useWebSocket();
 
   const [showAdmin, setShowAdmin]   = useState(false);
-  const settingsOpen = useSettingsStore(state => state.panelOpen);
-  const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);
   const [dockHeight, setDockHeight] = useState(() => workspace?.dockHeight || DOCK_DEFAULT);
   const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 260);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [automationOpen, setAutomationOpen] = useState(false);
   const [stopBotsOpen, setStopBotsOpen] = useState(false);
+  const zenPrevLayoutRef = useRef(null);
   const workspaceHydrated = useRef(false);
+
+  const layoutMode = workspace?.layoutMode || 'trade';
+  const zenMode = workspace?.zenMode ?? false;
+  const modeConfig = applyLayoutMode(layoutMode);
+  const panelEnabled = !zenMode && modeConfig.rightPanel;
+  const panelCollapsed = workspace?.rightPanelCollapsed ?? false;
+  const showDock = !zenMode && modeConfig.dockVisible;
+  const density = workspace?.density || 'compact';
 
   useAlertMonitor();
 
@@ -73,6 +91,46 @@ export default function App() {
     setSidebarWidth(width);
     updateWorkspace({ sidebarWidth: width });
   }, [updateWorkspace]);
+
+  const handleLayoutModeChange = useCallback((mode) => {
+    const cfg = applyLayoutMode(mode);
+    updateWorkspace({
+      layoutMode: mode,
+      dockActiveTab: cfg.dockTab,
+      dockGroup: cfg.dockGroup,
+      dockHeight: cfg.dockHeight,
+      rightPanelCollapsed: !cfg.rightPanel,
+      rightPanelTab: cfg.rightPanelTab,
+      dockCollapsed: false,
+      zenMode: false,
+    });
+    setDockHeight(cfg.dockHeight);
+    window.dispatchEvent(new CustomEvent('dock-tab', { detail: cfg.dockTab }));
+    window.dispatchEvent(new CustomEvent('dock-group', { detail: cfg.dockGroup }));
+  }, [updateWorkspace]);
+
+  const toggleZenMode = useCallback(() => {
+    const ws = useSettingsStore.getState().settings.workspace;
+    const currentZen = ws?.zenMode ?? false;
+
+    if (currentZen) {
+      const restore = zenPrevLayoutRef.current ?? {
+        rightPanelCollapsed: false,
+        dockCollapsed: false,
+        dockHeight: ws?.dockHeight || dockHeight || DOCK_DEFAULT,
+      };
+      updateWorkspace({ zenMode: false, ...restore });
+      setDockHeight(restore.dockHeight ?? DOCK_DEFAULT);
+      zenPrevLayoutRef.current = null;
+    } else {
+      zenPrevLayoutRef.current = {
+        rightPanelCollapsed: ws?.rightPanelCollapsed ?? false,
+        dockCollapsed: ws?.dockCollapsed ?? false,
+        dockHeight: ws?.dockHeight ?? dockHeight,
+      };
+      updateWorkspace({ zenMode: true, rightPanelCollapsed: true, dockCollapsed: true });
+    }
+  }, [updateWorkspace, dockHeight]);
 
   useEffect(() => {
     if (workspaceHydrated.current) return;
@@ -92,10 +150,33 @@ export default function App() {
       if (ws?.dockHeight) setDockHeight(ws.dockHeight);
       if (ws?.sidebarWidth) setSidebarWidth(ws.sidebarWidth);
       if (ws?.viewMode) setViewMode(ws.viewMode);
+      if (ws?.dockActiveTab) {
+        window.dispatchEvent(new CustomEvent('dock-tab', { detail: ws.dockActiveTab }));
+      }
+      if (ws?.dockGroup) {
+        window.dispatchEvent(new CustomEvent('dock-group', { detail: ws.dockGroup }));
+      }
     };
     window.addEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
     return () => window.removeEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
   }, [setViewMode]);
+
+  useEffect(() => {
+    const onInsights = () => setInsightsOpen(true);
+    const onAutomation = () => setAutomationOpen(true);
+    const onSettings = (e) => setSettingsOpen(true, e.detail);
+    window.addEventListener('insights-hub-open', onInsights);
+    window.addEventListener('automation-studio-open', onAutomation);
+    window.addEventListener('open-settings', onSettings);
+    const onChartZen = () => toggleZenMode();
+    window.addEventListener('chart-zen-toggle', onChartZen);
+    return () => {
+      window.removeEventListener('insights-hub-open', onInsights);
+      window.removeEventListener('automation-studio-open', onAutomation);
+      window.removeEventListener('open-settings', onSettings);
+      window.removeEventListener('chart-zen-toggle', onChartZen);
+    };
+  }, [setSettingsOpen, toggleZenMode]);
 
   const connected = connectionStatus === 'connected';
   const apiReady = apiStatus === 'ready';
@@ -131,11 +212,18 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }));
+        setInsightsOpen(true);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === '[') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('sidebar-toggle'));
+      }
+      if (e.key === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const tag = document.activeElement?.tagName;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+          e.preventDefault();
+          toggleZenMode();
+        }
       }
       if (e.key === '?' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const tag = document.activeElement?.tagName;
@@ -147,16 +235,26 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [setViewMode, setSettingsOpen]);
+  }, [setViewMode, setSettingsOpen, toggleZenMode]);
+
+  const effectiveDockH = showDock
+    ? (workspace?.dockCollapsed ? 36 : dockHeight)
+    : 0;
 
   return (
     <div
       className="dashboard-container"
       data-sidebar-user=""
+      data-layout-mode={layoutMode}
+      data-zen={zenMode ? '' : undefined}
+      data-density={density}
+      data-panel-collapsed={panelEnabled && panelCollapsed ? '' : !panelEnabled ? '' : undefined}
+      data-dock-hidden={!showDock && !zenMode ? '' : undefined}
       style={{
-        '--dock-h': `${dockHeight}px`,
-        '--dock-min': '200px',
+        '--dock-h': `${effectiveDockH}px`,
+        '--dock-min': showDock ? '200px' : '36px',
         '--sidebar-w': `${sidebarWidth}px`,
+        '--panel-w': !panelEnabled ? '0px' : panelCollapsed ? '44px' : undefined,
       }}
     >
       <SettingsBootstrap />
@@ -171,10 +269,14 @@ export default function App() {
         onOpenChange={setPaletteOpen}
         onOpenAdmin={() => setShowAdmin(true)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onLayoutModeChange={handleLayoutModeChange}
       />
       <ShortcutsSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <HelpSheet open={helpOpen} onOpenChange={setHelpOpen} />
       <OnboardingTour />
+      <InsightsHub open={insightsOpen} onOpenChange={setInsightsOpen} />
+      <AutomationStudio open={automationOpen} onOpenChange={setAutomationOpen} />
+      <ActivityCenter open={activityOpen} onOpenChange={setActivityOpen} />
 
       <ErrorBoundary name="Header">
       <header className="terminal-header">
@@ -205,6 +307,7 @@ export default function App() {
         <div className="terminal-header__zone terminal-header__zone--nav">
           <div className="header-controls">
             <div className="header-controls-inner">
+            <WorkspaceSwitcher layoutMode={layoutMode} onLayoutModeChange={handleLayoutModeChange} />
             <span className="header-controls-label">View</span>
             <Tabs value={viewMode} onValueChange={setViewMode}>
               <TabsList className="header-view-switch">
@@ -230,6 +333,22 @@ export default function App() {
                 Distributed
               </Badge>
             )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setActivityOpen(true)}
+                  className="header-icon-btn text-muted-foreground hover:text-trading-accent"
+                  title="Activity center"
+                >
+                  <Bell aria-hidden />
+                  <span className="sr-only">Activity</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Activity & alerts</TooltipContent>
+            </Tooltip>
 
             {isBotRunning && (
               <>
@@ -350,20 +469,17 @@ export default function App() {
       </header>
       </ErrorBoundary>
 
-      <div className="dashboard-aux-band">
-        <StaleDataBanner />
-        <PortfolioSummaryBar />
-      </div>
-
-      <ErrorBoundary name="Market overview">
-        <MarketOverviewStrip />
-      </ErrorBoundary>
+      {!zenMode && modeConfig.showCommandBar && (
+        <ErrorBoundary name="Command bar">
+          <CommandBar />
+        </ErrorBoundary>
+      )}
 
       <ErrorBoundary name="Watchlist">
         <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
       </ErrorBoundary>
 
-      <main className="workspace-main">
+      <main className="workspace-main workspace-main--with-context">
         {viewMode === 'single' ? (
           <ErrorBoundary name="Chart">
             <ChartWidget />
@@ -373,20 +489,16 @@ export default function App() {
             <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
           </ErrorBoundary>
         )}
+        {!zenMode && <ChartContextStrip />}
       </main>
 
-      <section className="trading-panel">
-        <ErrorBoundary name="Order entry">
-          <OrderEntryWidget />
-        </ErrorBoundary>
-        <ErrorBoundary name="Order book">
-          <OrderBookWidget />
-        </ErrorBoundary>
-      </section>
+      <TradingPanel hidden={!panelEnabled} />
 
-      <ErrorBoundary name="Trading dock">
-        <ResizableDock setDockHeight={handleDockHeightChange} initialDockHeight={dockHeight} />
-      </ErrorBoundary>
+      {showDock && (
+        <ErrorBoundary name="Trading dock">
+          <ResizableDock setDockHeight={handleDockHeightChange} initialDockHeight={dockHeight} />
+        </ErrorBoundary>
+      )}
     </div>
   );
 }

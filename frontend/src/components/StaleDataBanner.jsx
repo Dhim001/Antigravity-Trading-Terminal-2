@@ -1,6 +1,6 @@
 import { useStore } from '../store/useStore';
 
-export default function StaleDataBanner() {
+export default function StaleDataBanner({ inline = false }) {
   const connectionStatus = useStore((s) => s.connectionStatus);
   const apiStatus = useStore((s) => s.apiStatus);
 
@@ -15,6 +15,18 @@ export default function StaleDataBanner() {
   if (loading) message = 'Loading account snapshot via REST…';
   else if (ready) message = 'Live WebSocket disconnected — showing last REST snapshot. Prices may be stale.';
   else if (error) message = 'Could not reach backend. Check that the server is running.';
+
+  if (inline) {
+    return (
+      <span
+        className="stale-data-banner stale-data-banner--inline rounded border border-trading-warn/40 bg-trading-warn/10 px-2 py-0.5 text-[0.58rem] text-trading-warn"
+        role="status"
+        title={message}
+      >
+        Stale
+      </span>
+    );
+  }
 
   return (
     <div

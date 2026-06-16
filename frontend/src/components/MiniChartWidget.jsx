@@ -339,8 +339,9 @@ export default function MiniChartWidget({
       onClick={handleFocusClick}
     >
       <div
-        className="mini-chart-header select-none"
+        className="mini-chart-header relative z-20 select-none"
         onClick={e => e.stopPropagation()}
+        onPointerDown={e => e.stopPropagation()}
         onDoubleClick={(e) => {
           e.stopPropagation();
           onToggleMaximize?.();
@@ -378,8 +379,13 @@ export default function MiniChartWidget({
         <Button
           variant="ghost"
           size="icon-xs"
-          className="shrink-0 text-muted-foreground hover:text-foreground"
+          className="relative z-20 shrink-0 text-muted-foreground hover:text-foreground"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
           onClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
             onToggleMaximize?.();
           }}

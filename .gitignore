@@ -108,10 +108,15 @@ docker-compose.*.local.yml
 # ─── Frontend dev & E2E artifacts ───────────────────────────────────────────
 frontend/screenshot*.png
 frontend/audit-*.png
+test-results/
+**/test-results/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 playwright/.cache/
+.playwright/
+**/.last-run.json
+*.trace.zip
 
 # ─── Cursor IDE (local debug logs, agent state; keep rules + plans) ───────────
 .cursor/*

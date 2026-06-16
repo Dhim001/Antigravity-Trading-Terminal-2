@@ -19,7 +19,7 @@ const DOT_CLASS = {
   equity: 'bg-primary shadow-[0_0_4px_var(--color-equity)]',
 };
 
-function MarketStripItem({ sym }) {
+function MarketStripItem({ sym, compact = false }) {
   const info = useStore(state => state.tickerData[sym]);
   const activeSymbol = useStore(state => state.activeSymbol);
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
@@ -50,27 +50,31 @@ function MarketStripItem({ sym }) {
     >
       <span className={cn('size-1.5 shrink-0 rounded-full', DOT_CLASS[kind])} />
       <span className={cn('text-xs font-bold tracking-wide', isActive ? 'text-foreground' : 'text-secondary-foreground')}>
-        {sym.replace('USDT', '')}
+        {compact ? sym.replace('USDT', '').slice(0, 4) : sym.replace('USDT', '')}
       </span>
+      {!compact && (
+        <>
       <span className={cn('num-mono text-xs font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {info.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
       </span>
       <span className={cn('num-mono text-[0.62rem] strip-item-change', isUp ? 'text-trading-up' : 'text-trading-down')}>
         {isUp ? '▲' : '▼'}{Math.abs(info.change_24h).toFixed(2)}%
       </span>
+        </>
+      )}
     </div>
   );
 }
 
-export default function MarketOverviewStrip() {
+export default function MarketOverviewStrip({ compact = false }) {
   const symbolsList = useStore(state => state.symbolsList);
   const items = useMemo(() => [...symbolsList, ...symbolsList], [symbolsList]);
 
   return (
-    <div className="market-strip">
+    <div className={cn('market-strip', compact && 'market-strip--compact')}>
       <div className="strip-ticker">
         {items.map((sym, idx) => (
-          <MarketStripItem key={`${sym}-${idx}`} sym={sym} />
+          <MarketStripItem key={`${sym}-${idx}`} sym={sym} compact={compact} />
         ))}
       </div>
     </div>

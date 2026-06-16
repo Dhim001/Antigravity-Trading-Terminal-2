@@ -59,8 +59,15 @@
  * @property {number} dockHeight
  * @property {number} sidebarWidth
  * @property {string} dockActiveTab
+ * @property {'portfolio' | 'intelligence' | 'automation' | 'data'} dockGroup
  * @property {'single' | 'multi'} viewMode
  * @property {'all' | 'focused'} chartLinkMode
+ * @property {'trade' | 'analyze' | 'automate' | 'portfolio'} layoutMode
+ * @property {boolean} zenMode
+ * @property {boolean} rightPanelCollapsed
+ * @property {'trade' | 'book' | 'depth'} rightPanelTab
+ * @property {boolean} dockCollapsed
+ * @property {'compact' | 'comfortable'} density
  */
 
 /**
@@ -126,8 +133,15 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     dockHeight: 320,
     sidebarWidth: 260,
     dockActiveTab: 'positions',
+    dockGroup: 'portfolio',
     viewMode: 'single',
     chartLinkMode: 'all',
+    layoutMode: 'trade',
+    zenMode: false,
+    rightPanelCollapsed: false,
+    rightPanelTab: 'trade',
+    dockCollapsed: false,
+    density: 'compact',
   },
   workspacePresets: [],
   alerts: [],
@@ -135,13 +149,71 @@ export const DEFAULT_TERMINAL_SETTINGS = {
   updatedAt: new Date().toISOString(),
 };
 
+/** Built-in workspace presets (UX-6) */
+export const BUILTIN_WORKSPACE_PRESETS = [
+  {
+    id: 'builtin-trade',
+    name: 'Day Trade',
+    workspace: {
+      ...DEFAULT_TERMINAL_SETTINGS.workspace,
+      layoutMode: 'trade',
+      dockActiveTab: 'positions',
+      dockGroup: 'portfolio',
+      dockHeight: 260,
+      rightPanelCollapsed: false,
+      rightPanelTab: 'trade',
+    },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout },
+  },
+  {
+    id: 'builtin-analyze',
+    name: 'Research',
+    workspace: {
+      ...DEFAULT_TERMINAL_SETTINGS.workspace,
+      layoutMode: 'analyze',
+      dockActiveTab: 'scanner',
+      dockGroup: 'intelligence',
+      dockHeight: 280,
+      rightPanelCollapsed: true,
+    },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout },
+  },
+  {
+    id: 'builtin-automate',
+    name: 'Bot Ops',
+    workspace: {
+      ...DEFAULT_TERMINAL_SETTINGS.workspace,
+      layoutMode: 'automate',
+      dockActiveTab: 'algo',
+      dockGroup: 'automation',
+      dockHeight: 320,
+      rightPanelCollapsed: true,
+    },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout },
+  },
+];
+
+export function ensureBuiltinPresets(presets) {
+  const existing = Array.isArray(presets) ? [...presets] : [];
+  const ids = new Set(existing.map((p) => p.id));
+  const merged = [...existing];
+  for (const builtin of BUILTIN_WORKSPACE_PRESETS) {
+    if (!ids.has(builtin.id)) merged.push(builtin);
+  }
+  return merged;
+}
+
 /**
  * @param {unknown} raw
  * @returns {TerminalSettings}
  */
 export function migrateSettings(raw) {
   if (!raw || typeof raw !== 'object') {
-    return { ...DEFAULT_TERMINAL_SETTINGS, updatedAt: new Date().toISOString() };
+    return {
+      ...DEFAULT_TERMINAL_SETTINGS,
+      workspacePresets: ensureBuiltinPresets([]),
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   const base = { ...DEFAULT_TERMINAL_SETTINGS };
@@ -178,8 +250,21 @@ export function migrateSettings(raw) {
     workspace: {
       ...base.workspace,
       ...(input.workspace || {}),
+      layoutMode: ['trade', 'analyze', 'automate', 'portfolio'].includes(input.workspace?.layoutMode)
+        ? input.workspace.layoutMode
+        : base.workspace.layoutMode,
+      dockGroup: ['portfolio', 'intelligence', 'automation', 'data'].includes(input.workspace?.dockGroup)
+        ? input.workspace.dockGroup
+        : base.workspace.dockGroup,
+      rightPanelTab: ['trade', 'book', 'depth'].includes(input.workspace?.rightPanelTab)
+        ? input.workspace.rightPanelTab
+        : base.workspace.rightPanelTab,
+      density: input.workspace?.density === 'comfortable' ? 'comfortable' : 'compact',
+      zenMode: Boolean(input.workspace?.zenMode),
+      rightPanelCollapsed: Boolean(input.workspace?.rightPanelCollapsed),
+      dockCollapsed: Boolean(input.workspace?.dockCollapsed),
     },
-    workspacePresets: Array.isArray(input.workspacePresets) ? input.workspacePresets : [],
+    workspacePresets: ensureBuiltinPresets(input.workspacePresets),
     alerts: Array.isArray(input.alerts) ? input.alerts : [],
     onboardingCompleted: Boolean(input.onboardingCompleted),
     updatedAt: input.updatedAt || new Date().toISOString(),

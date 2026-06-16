@@ -206,9 +206,20 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
 
   const getCellClassName = (idx) => cn(
     maximizedIdx === idx && 'multi-chart-cell--maximized',
-    maximizedIdx !== null && maximizedIdx !== idx && 'pointer-events-none opacity-15',
+    maximizedIdx !== null && maximizedIdx !== idx && 'multi-chart-cell--hidden',
     'transition-opacity duration-200',
   );
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape' && maximizedIdx !== null) {
+        e.preventDefault();
+        setMaximizedIdx(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [maximizedIdx]);
 
   const renderCell = (i, extraClassName) => (
     <div key={`wrap-${i}`} className={cn('multi-chart-cell', getCellClassName(i), extraClassName)}>

@@ -129,9 +129,16 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
   - `⌘K` / `Ctrl+K` — open command palette
   - `⌘1` / `Ctrl+1` — single chart view
   - `⌘2` / `Ctrl+2` — multi-chart view
-  - `⌘B` / `Ctrl+B` — open bottom dock
-  - `⌘I` / `Ctrl+I` — Chart Analyst tab
-  - `?` — keyboard shortcuts sheet
+  - `F` — Zen chart (hide dock & order panel)
+- **Layout modes (UX overhaul)** — header workspace switcher: **Trade**, **Analyze**, **Automate**, **Portfolio**; each remaps dock, right panel, and default tabs
+- **Grouped dock** — Portfolio · Intelligence · Automation · Data category rails with sub-tabs
+- **Command bar** — merged symbol context, watchlist strip, and portfolio metrics (replaces separate aux + strip rows)
+- **Trading panel tabs** — Trade | Book | Depth with collapse chevron
+- **Insights Hub** (`⌘I`) — Scanner + Analyst in one sheet
+- **Automation Studio** — bot ops sheet from dock Automation group
+- **Activity Center** — header bell icon for alerts, bot logs, connection status
+- **Chart context strip** — clickable breadcrumb under chart (symbol, TF, analyst signal, bots)
+- **Built-in workspace presets** — Day Trade, Research, Bot Ops (Settings + header switcher)
 - **Onboarding & help (Phase 1)** — first-visit welcome tour (`OnboardingTour`), header **Help** button (`HelpSheet` with workflows, glossary, shortcuts), and **Replay welcome tour** in Settings → Layout
 - **Market scanner (Phase 6)** — dock **Scanner** tab: multi-symbol scan, filters, optional 60s auto-refresh
 - **Chart Analyst (Phase 6)** — dock **Analyst** tab: insight history, compare mode, vision structure notes

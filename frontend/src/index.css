@@ -91,11 +91,18 @@
 
   /* Layout dimensions */
   --header-h:  52px;
+  --command-h: 40px;
   --strip-h:   34px;
   --sidebar-w: 260px;
   --panel-w:   316px;
   --dock-h:    320px;
   --dock-min:  200px;
+
+  /* Surface elevation (UX-8) */
+  --surface-0: #060a12;
+  --surface-1: rgba(8, 12, 22, 0.98);
+  --surface-2: rgba(10, 15, 30, 0.97);
+  --surface-3: rgba(14, 20, 36, 0.99);
 
   /* Effects */
   --shadow-sm:   0 2px 8px rgba(15,23,42,0.08);
@@ -252,17 +259,225 @@ body {
 .dashboard-container {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
-  grid-template-rows: var(--header-h) auto var(--strip-h) 1fr var(--dock-h);
+  grid-template-rows: var(--header-h) var(--command-h) 1fr var(--dock-h);
   grid-template-areas:
     "header  header  header"
-    "aux     aux     aux"
-    "strip   strip   strip"
+    "command command command"
     "sidebar main    panel"
     "sidebar dock    panel";
   height: 100vh;
   width:  100%;
-  background: var(--bg-primary);
+  background: var(--surface-0);
   overflow: hidden;
+}
+
+.dashboard-container[data-zen] {
+  grid-template-columns: 1fr;
+  grid-template-rows: var(--header-h) 1fr;
+  grid-template-areas:
+    "header"
+    "main";
+}
+
+.dashboard-container[data-zen] .watchlist-sidebar {
+  display: none;
+}
+
+.dashboard-container[data-zen] .workspace-main {
+  border-right: none;
+  min-height: 0;
+}
+
+.dashboard-container[data-zen] .workspace-main .widget-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+.dashboard-container[data-zen] .widget-toolbar {
+  display: none;
+}
+
+.dashboard-container[data-dock-hidden]:not([data-zen]) {
+  grid-template-rows: var(--header-h) var(--command-h) 1fr 0px;
+}
+
+.dashboard-container[data-panel-collapsed] {
+  --panel-w: 44px;
+}
+
+.dashboard-container[data-density="comfortable"] {
+  --dock-tab-h: 40px;
+  --widget-header-h: 40px;
+  --control-h: 32px;
+  --command-h: 44px;
+}
+
+.dashboard-container[data-layout-mode="analyze"] .workspace-main {
+  border-right-color: rgba(139, 92, 246, 0.25);
+}
+
+.dashboard-container[data-layout-mode="automate"] .workspace-main {
+  border-right-color: rgba(245, 158, 11, 0.2);
+}
+
+.dashboard-container[data-layout-mode="portfolio"] .bottom-dock {
+  border-top-color: rgba(16, 185, 129, 0.25);
+}
+
+/* Command bar (UX-4) — replaces aux + strip rows */
+.command-bar {
+  grid-area: command;
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr minmax(180px, auto);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3);
+  min-height: var(--command-h);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+
+.command-bar__lead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.command-bar__symbol {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.command-bar__symbol-name {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.command-bar__strip {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.command-bar__metrics {
+  justify-self: end;
+  min-width: 0;
+}
+
+.market-strip--compact .strip-item {
+  padding: 2px 6px;
+  gap: 4px;
+}
+
+/* Chart context strip (UX-7) */
+.workspace-main--with-context {
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-context-strip {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+  font-size: var(--fs-xs);
+}
+
+.chart-context-strip__seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.chart-context-strip__seg:hover {
+  background: var(--bg-hover);
+}
+
+.chart-context-strip__seg--static {
+  cursor: default;
+}
+
+.chart-context-strip__dot {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+/* Trading panel tabs (UX-3) */
+.trading-panel--tabbed {
+  display: flex;
+  flex-direction: column;
+}
+
+.trading-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.trading-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.trading-panel--collapsed {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8px;
+  width: 44px;
+  background: var(--surface-2);
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* Dock grouping (UX-2) */
+.dock-group-rail {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.dock-group-btn {
+  font-weight: 600;
+}
+
+.bottom-dock--collapsed {
+  border-top: 1px solid var(--border-color);
+  background: var(--surface-1);
+}
+
+.bottom-dock {
+  background: var(--surface-1);
+}
+
+.trading-panel {
+  background: var(--surface-2);
+}
+
+.workspace-main {
+  background: var(--surface-0);
 }
 
 /* Portfolio summary + stale-data banner — must live in grid area aux */
@@ -1203,18 +1418,25 @@ body {
 }
 
 /* ── Right Trading Panel ─────────────────────────────────────────── */
-.trading-panel {
+.trading-panel:not(.trading-panel--tabbed):not(.trading-panel--collapsed) {
   grid-area: panel;
   display: grid;
   grid-template-rows: minmax(0, 380px) minmax(0, 1fr);
-  background: rgba(10,15,30,0.97);
+  background: var(--surface-2);
   backdrop-filter: var(--glass);
   overflow: hidden;
   min-height: 0;
 }
 
+.trading-panel--tabbed,
+.trading-panel--collapsed {
+  grid-area: panel;
+  min-height: 0;
+  overflow: hidden;
+}
+
 @media (max-height: 800px) {
-  .trading-panel {
+  .trading-panel:not(.trading-panel--tabbed) {
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
@@ -2506,6 +2728,13 @@ body {
   position: absolute;
   inset: var(--sp-1);
   z-index: 50;
+  pointer-events: auto;
+}
+
+.multi-chart-cell--hidden {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
 }
 
 .watchlist-table-panel {
@@ -2662,6 +2891,9 @@ body {
   padding-block: var(--sp-1);
   border-bottom: 1px solid var(--border-color);
   background: rgba(255, 255, 255, 0.02);
+  position: relative;
+  z-index: 20;
+  pointer-events: auto;
 }
 
 .widget-body {

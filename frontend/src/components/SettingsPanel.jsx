@@ -592,6 +592,21 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             <Separator />
 
             <section className="settings-section">
+              <h3 className="settings-section__title">Display density</h3>
+              <ToggleGroup
+                type="single"
+                value={settings.workspace?.density ?? 'compact'}
+                onValueChange={(v) => v && updateWorkspace({ density: v })}
+                className="w-full"
+              >
+                <ToggleGroupItem value="compact" className="flex-1 text-xs">Compact</ToggleGroupItem>
+                <ToggleGroupItem value="comfortable" className="flex-1 text-xs">Comfortable</ToggleGroupItem>
+              </ToggleGroup>
+            </section>
+
+            <Separator />
+
+            <section className="settings-section">
               <h3 className="settings-section__title">Onboarding</h3>
               <Button
                 variant="outline"

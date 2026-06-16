@@ -13,8 +13,9 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, Brain, Bot, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
+  BarChart2, Brain, Bot, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert, LayoutTemplate,
 } from 'lucide-react';
+import { LAYOUT_MODE_CONFIG } from '../settings/layoutModes';
 
 function assetKind(sym) {
   if (sym.includes('USDT')) return 'crypto';
@@ -34,7 +35,7 @@ const KIND_CLASS = {
   equity: 'command-palette__dot--equity',
 };
 
-export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, onOpenSettings }) {
+export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, onOpenSettings, onLayoutModeChange }) {
   const symbolsList = useStore(state => state.symbolsList);
   const activeSymbol = useStore(state => state.activeSymbol);
   const tickerData = useStore(state => state.tickerData);
@@ -174,16 +175,27 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
               <CommandShortcut>⌘2</CommandShortcut>
             </CommandItem>
             <CommandItem
-              value="chart analyst insights history agent signals"
+              value="insights hub scanner analyst"
               className="command-palette__item"
               onSelect={() => run(() => {
-                window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }));
+                window.dispatchEvent(new CustomEvent('insights-hub-open'));
               })}
             >
               <Brain aria-hidden />
-              <span>Chart Analyst History</span>
+              <span>Insights Hub</span>
               <CommandShortcut>⌘I</CommandShortcut>
             </CommandItem>
+            {onLayoutModeChange && Object.entries(LAYOUT_MODE_CONFIG).map(([id, cfg]) => (
+              <CommandItem
+                key={id}
+                value={`layout mode ${cfg.label} ${id}`}
+                className="command-palette__item"
+                onSelect={() => run(() => onLayoutModeChange(id))}
+              >
+                <LayoutTemplate aria-hidden />
+                <span>Layout: {cfg.label}</span>
+              </CommandItem>
+            ))}
             <CommandItem
               value="preferences settings appearance theme"
               className="command-palette__item"

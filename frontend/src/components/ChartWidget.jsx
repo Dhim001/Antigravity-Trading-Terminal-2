@@ -11,7 +11,7 @@ import {
   calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcVWAP, calcATR
 } from '../utils/indicators';
 import ChartAnalystBadge from './ChartAnalystBadge';
-import { AreaChart, TrendingUp, Activity } from 'lucide-react';
+import { AreaChart, TrendingUp, Activity, Maximize2, Minimize2 } from 'lucide-react';
 import { WidgetShell, WidgetToolbar, WidgetToolbarDivider } from './WidgetShell';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
@@ -594,6 +594,7 @@ export default function ChartWidget() {
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
 
   const settings = useSettingsStore(state => state.settings);
+  const zenMode = useSettingsStore(state => state.settings.workspace?.zenMode ?? false);
   const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
   const updateChartLayout = useSettingsStore(state => state.updateChartLayout);
   const chartTheme = useMemo(
@@ -618,6 +619,15 @@ export default function ChartWidget() {
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
   useEffect(() => { try { localStorage.setItem('terminal_chart_type', chartType); } catch {} }, [chartType]);
   useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => chart.resize());
+    });
+    return () => cancelAnimationFrame(id);
+  }, [zenMode]);
 
   useEffect(() => {
     updateChartLayout({ timeframe, chartType, activeIndicators: active });
@@ -1397,9 +1407,27 @@ export default function ChartWidget() {
       icon={AreaChart}
       title={activeSymbol}
       headerRight={
-        <div className="flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
+        <div className="relative z-20 flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
           <ChartHeaderPrice symbol={activeSymbol} />
           <ChartAnalystBadge symbol={activeSymbol} onDeployAgent={handleDeployChartAgent} />
+          <Button
+            variant={zenMode ? 'secondary' : 'ghost'}
+            size="icon-sm"
+            className="shrink-0"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              window.dispatchEvent(new CustomEvent('chart-zen-toggle'));
+            }}
+            title={zenMode ? 'Restore layout (F)' : 'Maximize chart (F)'}
+          >
+            {zenMode ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
+            <span className="sr-only">{zenMode ? 'Restore layout' : 'Maximize chart'}</span>
+          </Button>
         </div>
       }
       toolbar={chartToolbar}

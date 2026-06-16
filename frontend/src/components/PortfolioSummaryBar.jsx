@@ -21,7 +21,7 @@ function sumPositionValue(positions, tickers) {
   return total;
 }
 
-export default function PortfolioSummaryBar() {
+export default function PortfolioSummaryBar({ compact = false }) {
   const balances = useStore((s) => s.balances);
   const positions = useStore((s) => s.positions);
   const tickerData = useStore((s) => s.tickerData);
@@ -45,25 +45,30 @@ export default function PortfolioSummaryBar() {
   const restOnly = !connected && apiStatus === 'ready';
 
   return (
-    <div className="portfolio-summary-bar flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1 text-[0.68rem]">
+    <div className={cn(
+      'portfolio-summary-bar flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[0.68rem]',
+      compact ? 'px-0 py-0' : 'px-3 py-1',
+    )}>
       <span className="text-muted-foreground">
-        Equity <strong className="num-mono text-foreground">${summary.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        Eq <strong className="num-mono text-foreground">${summary.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
       </span>
+      {!compact && (
+        <span className="text-muted-foreground">
+          Cash <strong className="num-mono text-foreground">${summary.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        </span>
+      )}
       <span className="text-muted-foreground">
-        Cash <strong className="num-mono text-foreground">${summary.cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
-      </span>
-      <span className="text-muted-foreground">
-        Invested <strong className="num-mono text-foreground">${summary.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        Inv <strong className="num-mono text-foreground">${summary.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
       </span>
       <span className={cn(
         summary.dayPnl >= 0 ? 'text-trading-up' : 'text-trading-down',
       )}>
-        Open P&L <strong className="num-mono">${summary.dayPnl.toFixed(2)}</strong>
+        P&L <strong className="num-mono">${summary.dayPnl.toFixed(2)}</strong>
       </span>
       <span className="text-muted-foreground">
-        Bots <strong className="text-foreground">{summary.runningBots}</strong> running
+        <strong className="text-foreground">{summary.runningBots}</strong> bots
       </span>
-      {restOnly && (
+      {restOnly && !compact && (
         <span className="rounded border border-trading-warn/40 bg-trading-warn/10 px-1.5 py-0.5 text-trading-warn">
           REST fallback — WS reconnecting
         </span>
