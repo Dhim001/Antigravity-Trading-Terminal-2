@@ -63,11 +63,16 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 backend/trading.db
+backend/trading.db-*
 
 # Generated / cached market data (yfinance seeds, eToro id cache)
 backend/data/*.parquet
 backend/data/*.json
+backend/data/archive_wal/
 
 # Optional Parquet archive export (ARCHIVE_PARQUET_DIR)
 backend/archive_parquet/
@@ -102,10 +107,18 @@ docker-compose.*.local.yml
 
 # ─── Frontend dev & E2E artifacts ───────────────────────────────────────────
 frontend/screenshot*.png
+frontend/audit-*.png
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
 playwright/.cache/
+
+# ─── Cursor IDE (local debug logs, agent state; keep rules + plans) ───────────
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+!.cursor/plans/
+!.cursor/plans/**
 
 # ─── IDEs, editors, and OS metadata ─────────────────────────────────────────
 .vscode/
