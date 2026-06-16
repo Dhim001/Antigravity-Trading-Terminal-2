@@ -67,6 +67,20 @@ export async function fetchCandles(symbol, storeActions) {
   return body;
 }
 
+export async function fetchAgentInsights(symbol, storeActions, limit = 30) {
+  try {
+    const encoded = encodeURIComponent(symbol);
+    const body = await apiRequest(`/api/v1/agent/insights/${encoded}?limit=${limit}`);
+    if (body.insights && storeActions?.setAgentInsightHistory) {
+      storeActions.setAgentInsightHistory(symbol, body.insights);
+    }
+    return body;
+  } catch (e) {
+    console.warn('[analyst] Insight history unavailable:', e.message);
+    throw e;
+  }
+}
+
 /** Fetch archived OHLCV range and prepend to chart buffer (scroll-left load). */
 export async function fetchOlderCandles(symbol, from, to, interval = 'auto') {
   const encoded = encodeURIComponent(symbol);

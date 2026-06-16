@@ -3,9 +3,10 @@
 import asyncio
 import logging
 
-from app.config import TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL
+from app.config import AGENT_ENABLED, TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL
 from app.database import init_db
 from app.db.connection import DB_DRIVER
+from app.services.agent.chart_analyst import init_chart_analyst
 from app.services.bots.runtime import (
     bot_snapshot_loop,
     bot_reconcile_loop,
@@ -44,13 +45,17 @@ async def main():
     async def broadcast_cb(payload: dict):
         await event_bus.publish(channels.WS_BROADCAST, payload)
 
-    _, _, bot_manager = create_bot_stack(broadcast_cb, oms)
+    _, screener, bot_manager = create_bot_stack(broadcast_cb, oms)
     bot_manager.load_bots_from_db()
+
+    chart_analyst = None
+    if AGENT_ENABLED:
+        chart_analyst = init_chart_analyst(screener=screener, feed=feed, broadcast_fn=broadcast_cb)
 
     await feed.start()
     await oms.initialize()
 
-    register_worker_handlers(bot_manager, event_bus, feed, oms)
+    register_worker_handlers(bot_manager, event_bus, feed, oms, chart_analyst=chart_analyst)
     await event_bus.start()
     logger.info("Bot worker listening on %s", channels.BAR_CLOSE)
 

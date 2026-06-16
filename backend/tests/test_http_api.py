@@ -36,7 +36,7 @@ def _make_state():
     manager = MagicMock()
     manager.connected_clients = set()
 
-    return AppState(oms=oms, manager=manager, bot_manager=bot_manager, backtester=None)
+    return AppState(oms=oms, manager=manager, bot_manager=bot_manager, backtester=None, chart_analyst=None)
 
 
 class TestHttpBindings(unittest.TestCase):
@@ -94,6 +94,7 @@ class TestRateLimitMiddleware(unittest.IsolatedAsyncioTestCase):
             oms=oms,
             bot_manager=bot_manager,
             backtester=None,
+            chart_analyst=None,
             message={"_rate_key": "test-client"},
             action=Action.PLACE_ORDER,
         )

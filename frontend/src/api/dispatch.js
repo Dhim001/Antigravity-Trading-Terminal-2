@@ -25,6 +25,8 @@ export function getStoreActions() {
     setAmbiguousOrders: s.setAmbiguousOrders,
     setTickData: s.setTickData,
     setBotHistory: s.setBotHistory,
+    setAgentInsight: s.setAgentInsight,
+    setAgentInsightHistory: s.setAgentInsightHistory,
   };
 }
 
@@ -102,6 +104,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
       break;
     case MessageType.BOTS_HISTORY:
       storeActions.setBotHistory(data);
+      break;
+    case MessageType.AGENT_INSIGHT:
+      if (data?.symbol) {
+        storeActions.setAgentInsight(data.symbol, data);
+      }
       break;
     case MessageType.ERROR:
       console.error('Server execution error:', data?.message ?? data);

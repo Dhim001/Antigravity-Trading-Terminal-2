@@ -159,8 +159,14 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
         "BRS_SCALPING": BrsScalpingStrategy,
         "SUPERTREND_ADX": SupertrendAdxStrategy,
         "VWAP_PULLBACK": VwapPullbackStrategy,
+        "CHART_AGENT": None,
     }
     key = normalize_strategy_name(strategy_name)
+
+    if key == "CHART_AGENT":
+        from app.services.bots.strategies_chart_agent import ChartAgentStrategy
+
+        return ChartAgentStrategy(config or {})
 
     if key == "CUSTOM":
         from app.services.bots.custom_loader import get_custom_strategy

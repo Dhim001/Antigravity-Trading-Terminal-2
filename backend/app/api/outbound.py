@@ -84,6 +84,10 @@ def bots_history(data: list) -> dict:
     return frame(MessageType.BOTS_HISTORY, data)
 
 
+def agent_insight(data: dict) -> dict:
+    return frame(MessageType.AGENT_INSIGHT, data)
+
+
 def error(message: str) -> dict:
     return frame(MessageType.ERROR, message=message)
 
@@ -124,6 +128,12 @@ async def publish_bot_log(
 
 async def publish_bots_update(broadcast_fn: BroadcastFn | None, data: list) -> None:
     await publish(broadcast_fn, bots_update(data))
+
+
+async def publish_agent_insight(broadcast_fn: BroadcastFn | None, data: dict) -> None:
+    from app.api.outbound import agent_insight
+
+    await publish(broadcast_fn, agent_insight(data))
 
 
 async def publish_bot_detail(broadcast_fn: BroadcastFn | None, data: dict) -> None:

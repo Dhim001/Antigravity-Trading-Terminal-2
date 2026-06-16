@@ -1,7 +1,7 @@
 /**
  * ResizableDock.jsx
  * Bottom docked panel with tabs:
- *   Positions | Orders | Balances | Algo Bot | Bot History | Ticks | History | Equity Curve
+ *   Positions | Orders | Balances | Algo Bot | Analyst | Bot History | Ticks | History | Equity Curve
  *
  * Features:
  *  - Drag-to-resize via top handle (persists to localStorage)
@@ -16,7 +16,7 @@ import { Action } from '../api/protocol';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Zap, History,
+  RefreshCw, AlertTriangle, Zap, History, Brain,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
@@ -24,6 +24,7 @@ import BacktestResultsPanel from './BacktestResultsPanel';
 import BotDetailDrawer from './BotDetailDrawer';
 import TickViewerTab from './TickViewerTab';
 import BotHistoryTab from './BotHistoryTab';
+import AnalystTab from './AnalystTab';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
@@ -552,6 +553,7 @@ function AlgoTab() {
     ambiguousOrders, setAmbiguousOrders,
   } = useStore();
   const positions = useStore(state => state.positions);
+  const agentInsights = useStore(state => state.agentInsights);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
@@ -927,6 +929,37 @@ function AlgoTab() {
               </span>
             </div>
 
+            {botStrategy === 'CHART_AGENT' && (
+              <div className="algo-deploy-field space-y-2">
+                <Label className="algo-field-label">Chart Agent Settings</Label>
+                <div>
+                  <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
+                    <span>Min confidence</span>
+                    <span>{Math.round((botConfig?.min_confidence ?? 0.55) * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.4"
+                    max="1"
+                    step="0.05"
+                    value={botConfig?.min_confidence ?? 0.55}
+                    onChange={e => updateBotConfig({ min_confidence: parseFloat(e.target.value) })}
+                    className="w-full accent-primary"
+                    aria-label="Minimum signal confidence"
+                  />
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(botConfig?.use_llm)}
+                    onChange={e => updateBotConfig({ use_llm: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Use LLM explanations on strong signals (server must enable AGENT_LLM_ENABLED)
+                </label>
+              </div>
+            )}
+
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Backtest Range</Label>
               <Select value={backtestDays} onValueChange={setBacktestDays}>
@@ -1115,7 +1148,12 @@ function AlgoTab() {
                       {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
                     </td>
                     <td className="algo-last-signal" title={bot.last_signal_at || undefined}>
-                      {formatLastSignal(bot.last_signal_at)}
+                      <span>{formatLastSignal(bot.last_signal_at)}</span>
+                      {bot.strategy === 'CHART_AGENT' && agentInsights[bot.symbol]?.confidence != null && (
+                        <span className="ml-1 text-[0.58rem] text-muted-foreground">
+                          ({Math.round(agentInsights[bot.symbol].confidence * 100)}% conf)
+                        </span>
+                      )}
                     </td>
                     <td className="text-center">
                       <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
@@ -1194,6 +1232,8 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   const tradeHistory = useStore(state => state.tradeHistory);
   const isBotRunning = useStore(state => state.isBotRunning);
   const botHistory = useStore(state => state.botHistory);
+  const agentInsightHistory = useStore(state => state.agentInsightHistory);
+  const activeSymbol = useStore(state => state.activeSymbol);
   const ambiguousOrders = useStore(state => state.ambiguousOrders);
   const isLive = useStore(state => state.isLive);
   const selectedBotId = useStore(state => state.selectedBotId);
@@ -1253,11 +1293,14 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, [dockH]);
 
+  const analystBadge = (agentInsightHistory[activeSymbol] ?? []).length || null;
+
   const TABS = [
     { id: 'positions', label: 'Positions', icon: Briefcase, badge: posCount || null },
     { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null },
     { id: 'balances',  label: 'Balances',  icon: Landmark  },
     { id: 'algo',      label: 'Algo Bot',  icon: Cpu       },
+    { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge },
     { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: isLive && ambiguousOrders.length ? ambiguousOrders.length : null },
     { id: 'bots',      label: 'Bot History', icon: History, badge: botHistory.length || null },
     { id: 'ticks',     label: 'Ticks',     icon: Zap       },
@@ -1330,6 +1373,11 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Algo Bot">
               <AlgoTab />
+            </ErrorBoundary>
+          </TabsContent>
+          <TabsContent value="analyst" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+            <ErrorBoundary name="Chart Analyst">
+              <AnalystTab />
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="reconcile" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">

@@ -39,6 +39,13 @@ _BAR_BUILTIN = [
         "category": "intraday",
         "execution_mode": "BAR_CLOSE",
     },
+    {
+        "id": "CHART_AGENT",
+        "name": "Chart Analyst Agent",
+        "description": "Hybrid rule+LLM chart analysis; trades on high-confidence signals.",
+        "category": "agent",
+        "execution_mode": "BAR_CLOSE",
+    },
 ]
 
 _TICK_BUILTIN = [

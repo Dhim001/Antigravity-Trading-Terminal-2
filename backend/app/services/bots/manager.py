@@ -63,6 +63,9 @@ class BotManagerService:
             self.active_bots[bot_id]["execution_mode"] = mode
             config = self.active_bots[bot_id]["config"]
             strategy = row["strategy"]
+            if normalize_strategy_name(strategy) == "CHART_AGENT":
+                config = {**config, "symbol": row["symbol"]}
+                self.active_bots[bot_id]["config"] = config
             if mode == "TICK" or is_tick_strategy(strategy):
                 self.active_bots[bot_id]["execution_mode"] = "TICK"
                 self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, config)
@@ -339,6 +342,23 @@ class BotManagerService:
                 eval_row = bot_df.iloc[-2].to_dict()
                 bar_time = eval_row.get("time")
                 eval_price = eval_row.get("close")
+
+                strat_key = normalize_strategy_name(bot_strategy)
+                if strat_key == "CHART_AGENT":
+                    try:
+                        from app.services.agent.chart_analyst import get_chart_analyst
+
+                        force_llm = any(
+                            b.get("config", {}).get("use_llm")
+                            for b in self.active_bots.values()
+                            if b["symbol"] == symbol
+                            and normalize_strategy_name(b.get("strategy", "")) == "CHART_AGENT"
+                        )
+                        await get_chart_analyst().ensure_for_bar(
+                            symbol, ohlcv_data, bar_time, force_llm=force_llm
+                        )
+                    except RuntimeError:
+                        pass
 
                 signal_data = strat.evaluate(eval_row)
                 signal = signal_data.get("signal")
@@ -657,6 +677,8 @@ class BotManagerService:
         mode = (execution_mode or "BAR_CLOSE").upper()
         if is_tick_strategy(strategy):
             mode = "TICK"
+        if strategy == "CHART_AGENT":
+            config = {**(config or {}), "symbol": symbol}
 
         bot_id = str(uuid.uuid4())
         conn = get_connection()

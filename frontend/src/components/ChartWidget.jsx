@@ -8,16 +8,14 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme, hexToRgba } from '../settings/applySettings';
 import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import {
-  calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcVWAP, calcATR, generateSignal
+  calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcVWAP, calcATR
 } from '../utils/indicators';
+import ChartAnalystBadge from './ChartAnalystBadge';
 import { AreaChart, TrendingUp, Activity } from 'lucide-react';
 import { WidgetShell, WidgetToolbar, WidgetToolbarDivider } from './WidgetShell';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger,
-} from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
 import { fetchOlderCandles } from '../api/endpoints';
@@ -303,13 +301,35 @@ function buildIndicatorSeriesPatches(bars, active, chartTheme) {
   return patches;
 }
 
-const SIGNAL_STYLES = {
-  'STRONG BUY':  { bg: 'rgba(16,185,129,0.2)',  border: '#10b981', color: '#10b981', dot: '#10b981' },
-  'BUY':         { bg: 'rgba(16,185,129,0.1)',  border: '#6ee7b7', color: '#6ee7b7', dot: '#6ee7b7' },
-  'NEUTRAL':     { bg: 'rgba(148,163,184,0.1)', border: '#94a3b8', color: '#94a3b8', dot: '#94a3b8' },
-  'SELL':        { bg: 'rgba(239,68,68,0.1)',   border: '#fca5a5', color: '#fca5a5', dot: '#fca5a5' },
-  'STRONG SELL': { bg: 'rgba(239,68,68,0.2)',   border: '#ef4444', color: '#ef4444', dot: '#ef4444' },
-};
+function buildAgentMarkLines(insight, lastClose, dec) {
+  if (!insight?.levels || !lastClose) return [];
+  const lines = [];
+  const slDist = insight.levels.stop_loss_distance;
+  const tp = insight.levels.take_profit_price;
+  const signal = insight.signal;
+
+  if (slDist > 0 && signal === 'BUY') {
+    lines.push({
+      yAxis: lastClose - slDist,
+      lineStyle: { color: '#f59e0b', width: 1, type: 'dashed' },
+      label: { show: true, position: 'end', formatter: `Agent SL: ${(lastClose - slDist).toFixed(dec)}` },
+    });
+  } else if (slDist > 0 && signal === 'SELL') {
+    lines.push({
+      yAxis: lastClose + slDist,
+      lineStyle: { color: '#f59e0b', width: 1, type: 'dashed' },
+      label: { show: true, position: 'end', formatter: `Agent SL: ${(lastClose + slDist).toFixed(dec)}` },
+    });
+  }
+  if (tp > 0) {
+    lines.push({
+      yAxis: tp,
+      lineStyle: { color: '#fbbf24', width: 1, type: 'dotted' },
+      label: { show: true, position: 'end', formatter: `Agent TP: ${tp.toFixed(dec)}` },
+    });
+  }
+  return lines;
+}
 
 function formatVol(v) {
   if (!v) return '—';
@@ -500,75 +520,6 @@ function ChartHeaderPrice({ symbol }) {
   );
 }
 
-// ─── Child Component: Signal Badge ───────────────────────────────────
-function ChartSignalBadge({ symbol }) {
-  const [signal, setSignal] = useState({ signal: 'NEUTRAL', score: 0, reasons: [] });
-  const lastCandleTime = useStore(state => {
-    const rev = state.candleRevision[symbol];
-    if (!rev) return 0;
-    const candles = getCandles(symbol);
-    return candles.length > 0 ? candles[candles.length - 1].time : 0;
-  });
-
-  useEffect(() => {
-    const candles = getCandles(symbol);
-    if (candles.length > 0) {
-      setSignal(generateSignal(candles));
-    }
-  }, [lastCandleTime, symbol]);
-
-  const sigStyle = SIGNAL_STYLES[signal.signal] || SIGNAL_STYLES.NEUTRAL;
-  const isStrong = signal.signal.startsWith('STRONG');
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 shrink-0 gap-1.5 rounded-full px-3 text-xs font-bold tracking-wide"
-          style={{
-            borderColor: sigStyle.border,
-            color: sigStyle.color,
-            backgroundColor: sigStyle.bg,
-          }}
-        >
-          <span
-            className={cn('size-1.5 rounded-full', isStrong && 'animate-pulse')}
-            style={{
-              background: sigStyle.dot,
-              boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : undefined,
-            }}
-          />
-          {signal.signal}
-          <span className="text-[0.62rem] opacity-70">
-            ({signal.score > 0 ? '+' : ''}{signal.score})
-          </span>
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-60 p-3" style={{ borderColor: sigStyle.border }}>
-        <PopoverHeader className="gap-1">
-          <PopoverTitle className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">
-            Signal Analysis
-          </PopoverTitle>
-        </PopoverHeader>
-        {signal.reasons.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No detailed reasons available.</p>
-        ) : (
-          <ul className="space-y-1 text-xs">
-            {signal.reasons.map((r, i) => (
-              <li key={i} className="flex gap-2" style={{ color: sigStyle.color }}>
-                <span className="opacity-40">•</span>
-                <span>{r}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 // ─── Main Component ──────────────────────────────────────────────────
 export default function ChartWidget() {
   const containerRef = useRef(null);
@@ -610,6 +561,27 @@ export default function ChartWidget() {
   const tradeHistory = useStore(state => state.tradeHistory);
   const selectedBotId = useStore(state => state.selectedBotId);
   const botDetail = useStore(state => state.botDetail);
+  const agentInsight = useStore(state => state.agentInsights[activeSymbol]);
+  const setBotStrategy = useStore(state => state.setBotStrategy);
+  const setBotExecutionMode = useStore(state => state.setBotExecutionMode);
+  const updateBotConfig = useStore(state => state.updateBotConfig);
+  const agentOverlayKey = useMemo(() => {
+    if (!agentInsight) return '';
+    const lv = agentInsight.levels || {};
+    return `${agentInsight.bar_time}|${agentInsight.signal}|${lv.stop_loss_distance}|${lv.take_profit_price}`;
+  }, [agentInsight]);
+  const handleDeployChartAgent = useCallback(() => {
+    setBotStrategy('CHART_AGENT');
+    setBotExecutionMode('BAR_CLOSE');
+    updateBotConfig({
+      min_confidence: agentInsight?.confidence ?? 0.55,
+      use_llm: false,
+      allocation: 2000,
+      trailing_stop_percent: 2,
+      take_profit_percent: 3,
+      tp_mode: 'percent',
+    });
+  }, [agentInsight, setBotStrategy, setBotExecutionMode, updateBotConfig]);
   const botOverlayKey = useStore(state => {
     if (!state.selectedBotId || !state.botDetail?.trades) return '';
     return state.botDetail.trades.map(
@@ -1045,7 +1017,10 @@ export default function ChartWidget() {
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
     const bucketSecs = cfg.secs;
     const dec = getPriceDecimals(bars[bars.length - 1]?.close);
-    const markLineData = buildMarkLineData(symbolPosition, dec);
+    const markLineData = [
+      ...buildMarkLineData(symbolPosition, dec),
+      ...buildAgentMarkLines(agentInsight, bars[bars.length - 1]?.close, dec),
+    ];
     const showBotMarkers = selectedBotId
       && botDetail?.bot?.symbol === activeSymbol
       && botDetail?.trades?.length;
@@ -1078,7 +1053,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey]);
+  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, agentInsight, agentOverlayKey]);
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -1405,7 +1380,7 @@ export default function ChartWidget() {
       headerRight={
         <div className="flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
           <ChartHeaderPrice symbol={activeSymbol} />
-          <ChartSignalBadge symbol={activeSymbol} />
+          <ChartAnalystBadge symbol={activeSymbol} onDeployAgent={handleDeployChartAgent} />
         </div>
       }
       toolbar={chartToolbar}

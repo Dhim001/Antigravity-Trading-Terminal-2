@@ -17,6 +17,7 @@ class AppState:
     feed: Any | None = None
     event_bus: Any | None = None
     screener: Any | None = None
+    chart_analyst: Any | None = None
     bot_engine_uses_bar_hooks: bool = False
 
     def context_kwargs(self, backtester=None) -> dict:
@@ -26,4 +27,5 @@ class AppState:
             "manager": self.manager,
             "bot_manager": self.bot_manager,
             "backtester": backtester if backtester is not None else self.backtester,
+            "chart_analyst": self.chart_analyst,
         }

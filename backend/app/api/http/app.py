@@ -70,6 +70,22 @@ async def list_strategies(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "strategies": list_strategy_catalog()})
 
 
+async def list_agent_insights(request: Request) -> JSONResponse:
+    symbol = (request.path_params.get("symbol") or "").upper()
+    if not symbol:
+        return JSONResponse({"ok": False, "error": "symbol is required"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    state: AppState = request.app.state.terminal
+    analyst = state.chart_analyst
+    if analyst is None:
+        return JSONResponse({"ok": False, "error": "Chart analyst unavailable"}, status_code=503)
+    insights = analyst.list_insights(symbol, limit=limit)
+    return JSONResponse({"ok": True, "symbol": symbol, "insights": insights, "count": len(insights)})
+
+
 async def list_backtest_runs_handler(request: Request) -> JSONResponse:
     symbol = request.query_params.get("symbol")
     try:
@@ -166,6 +182,7 @@ def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health", health, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
+        Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),

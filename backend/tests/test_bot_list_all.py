@@ -57,6 +57,7 @@ class TestBotListAll(unittest.TestCase):
             oms=oms,
             bot_manager=bot_manager,
             backtester=None,
+            chart_analyst=None,
         )
         await dispatch(ctx)
         return manager.send_to.call_args[0][1]

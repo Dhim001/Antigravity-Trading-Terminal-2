@@ -103,7 +103,7 @@ async def bar_publish_loop(feed, event_bus):
         await asyncio.sleep(interval)
 
 
-def register_worker_handlers(bot_manager: BotManagerService, event_bus, feed=None, oms=None):
+def register_worker_handlers(bot_manager: BotManagerService, event_bus, feed=None, oms=None, chart_analyst=None):
     async def on_bar_close(payload: dict):
         symbol = payload.get("symbol")
         if not symbol:
@@ -113,6 +113,12 @@ def register_worker_handlers(bot_manager: BotManagerService, event_bus, feed=Non
         candles = get_bot_candles(symbol, feed) if feed else payload.get("candles")
         if candles:
             await bot_manager.process_market_tick(symbol, candles)
+
+        if chart_analyst is not None and candles:
+            try:
+                await chart_analyst.analyze(symbol, candles=candles, broadcast=True)
+            except Exception as exc:
+                logger.debug("Worker bar-close chart analyze failed for %s: %s", symbol, exc)
 
     async def on_bot_reload(_payload: dict):
         bot_manager.load_bots_from_db()

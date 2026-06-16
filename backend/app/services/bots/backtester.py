@@ -1,5 +1,5 @@
 from app.services.bots.indicators import first_eval_index, prepare_strategy_df
-from app.services.bots.strategies import get_strategy
+from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 
 
@@ -22,6 +22,26 @@ class BacktesterService:
         df = prepare_strategy_df(df, strategy_name, config)
         strategy = get_strategy(strategy_name, config)
         merged_config = merge_tp_config(strategy_name, config)
+        strat_key = normalize_strategy_name(strategy_name)
+        min_confidence = float(merged_config.get("min_confidence", 0.55))
+
+        if strat_key == "CHART_AGENT":
+            from app.services.agent.rule_engine import score_at_index
+
+            def _chart_agent_signal(i: int) -> dict:
+                insight = score_at_index(df, i, symbol)
+                if not insight or insight.confidence < min_confidence:
+                    return {"signal": "NONE"}
+                if insight.signal not in ("BUY", "SELL"):
+                    return {"signal": "NONE"}
+                out = {"signal": insight.signal}
+                if insight.levels.get("stop_loss_distance") is not None:
+                    out["stop_loss_distance"] = insight.levels["stop_loss_distance"]
+                if insight.levels.get("take_profit_price") is not None:
+                    out["take_profit_price"] = insight.levels["take_profit_price"]
+                return out
+        else:
+            _chart_agent_signal = None
 
         position = None
         trade_log = []
@@ -86,7 +106,10 @@ class BacktesterService:
                         position["stop_loss"] = min(position["stop_loss"], new_sl)
 
             if not position:
-                signal_data = strategy.evaluate(row)
+                if _chart_agent_signal is not None:
+                    signal_data = _chart_agent_signal(i)
+                else:
+                    signal_data = strategy.evaluate(row)
                 signal = signal_data.get("signal")
 
                 if signal in ("BUY", "SELL"):

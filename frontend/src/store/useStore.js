@@ -87,6 +87,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', execution_mode: 'BAR_CLOSE', allocation: 1500, config: { trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent' } },
     { id: 't5', name: 'Tick Momentum', strategy: 'TICK_MOMENTUM', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 20, tick_cooldown_sec: 10, take_profit_percent: 0.2, tp_mode: 'percent' } },
     { id: 't6', name: 'Tick Mean Revert', strategy: 'TICK_MEAN_REVERT', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 30, tick_cooldown_sec: 15, take_profit_percent: 0.15, tp_mode: 'percent' } },
+    { id: 't7', name: 'Chart Analyst Agent', strategy: 'CHART_AGENT', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { min_confidence: 0.55, use_llm: false, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent' } },
   ],
   selectedBotId: null,
   botDetail: null,
@@ -94,6 +95,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   botHistory: [],
   tickData: {},
   tickMeta: null,
+  agentInsights: {},
+  agentInsightHistory: {},
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setApiStatus: (status) => set({ apiStatus: status }),
@@ -307,6 +310,28 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBotDetail: (detail) => set({ botDetail: detail }),
   setBotDrawerOpen: (open) => set({ botDrawerOpen: !!open }),
   setBotHistory: (bots) => set({ botHistory: Array.isArray(bots) ? bots : [] }),
+
+  setAgentInsight: (symbol, insight) => set((state) => {
+    const sym = symbol;
+    const history = state.agentInsightHistory[sym] ?? [];
+    const id = insight?.insight_id;
+    const nextHistory = id && history.some((h) => h.insight_id === id)
+      ? history
+      : insight
+        ? [insight, ...history].slice(0, 50)
+        : history;
+    return {
+      agentInsights: { ...state.agentInsights, [sym]: insight },
+      agentInsightHistory: { ...state.agentInsightHistory, [sym]: nextHistory },
+    };
+  }),
+
+  setAgentInsightHistory: (symbol, insights) => set((state) => ({
+    agentInsightHistory: {
+      ...state.agentInsightHistory,
+      [symbol]: Array.isArray(insights) ? insights : [],
+    },
+  })),
   setTickData: (data, meta) => set({
     tickData: data && typeof data === 'object' ? { ...data } : {},
     tickMeta: meta ?? null,

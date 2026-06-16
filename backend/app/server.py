@@ -217,13 +217,15 @@ async def main():
     await state.feed.start()
     await state.oms.initialize()
 
-    logging.info("WebSocket Server listening on ws://%s:%s (role=%s)", WS_HOST, WS_PORT, TERMINAL_ROLE)
-    if HTTP_ENABLED:
-        logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
+    logging.info("Starting server (role=%s, ws=%s:%s, http=%s:%s)...", TERMINAL_ROLE, WS_HOST, WS_PORT, HTTP_HOST, HTTP_PORT)
 
     async with websockets.serve(
         websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
     ):
+        logging.info("WebSocket Server listening on ws://%s:%s", WS_HOST, WS_PORT)
+        if HTTP_ENABLED:
+            logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
+
         tasks = [asyncio.create_task(heartbeat_loop())]
 
         if HTTP_ENABLED:

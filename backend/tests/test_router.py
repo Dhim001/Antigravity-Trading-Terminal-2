@@ -48,6 +48,7 @@ class TestDispatch(unittest.IsolatedAsyncioTestCase):
             oms=oms,
             bot_manager=bot_manager,
             backtester=None,
+            chart_analyst=None,
             message=message or {"action": action},
             action=action,
         )
@@ -89,6 +90,36 @@ class TestDispatch(unittest.IsolatedAsyncioTestCase):
         payload = ctx.manager.send_to.await_args.args[1]
         self.assertEqual(payload["type"], "bots_update")
         self.assertEqual(payload["data"], [{"id": "b1"}])
+
+    async def test_chart_analyze_ws_round_trip(self):
+        from app.services.agent.models import ChartAgentInsight
+
+        insight = ChartAgentInsight(
+            symbol="BTCUSDT",
+            bar_time=1_700_000_000,
+            signal="BUY",
+            confidence=0.75,
+            score=3,
+            reasons=["MACD above signal"],
+            levels={},
+        )
+        analyst = MagicMock()
+        analyst.analyze = AsyncMock(return_value=insight)
+        ctx = self._make_ctx(
+            Action.CHART_ANALYZE.value,
+            message={
+                "action": Action.CHART_ANALYZE.value,
+                "symbol": "BTCUSDT",
+                "_rate_key": "ws-test",
+            },
+        )
+        ctx.chart_analyst = analyst
+        await dispatch(ctx)
+        ctx.manager.send_to.assert_awaited_once()
+        payload = ctx.manager.send_to.await_args.args[1]
+        self.assertEqual(payload["type"], "agent_insight")
+        self.assertEqual(payload["data"]["symbol"], "BTCUSDT")
+        self.assertEqual(payload["data"]["signal"], "BUY")
 
     @patch("app.api.router.TERMINAL_MODE", "LIVE_BINANCE")
     async def test_sim_only_blocks_seed_balance(self):

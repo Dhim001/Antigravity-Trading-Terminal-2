@@ -21,6 +21,7 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("POST", "/api/v1/bots/{bot_id}/resume", Action.BOT_RESUME, {"bot_id": "bot_id"}),
     ("POST", "/api/v1/bots/stop-all", Action.BOT_STOP_ALL, None),
     ("POST", "/api/v1/backtest", Action.RUN_BACKTEST, None),
+    ("POST", "/api/v1/agent/analyze", Action.CHART_ANALYZE, None),
     ("GET", "/api/v1/admin/stats", Action.ADMIN_GET_STATS, None),
     ("POST", "/api/v1/admin/archive/backfill", Action.ADMIN_ARCHIVE_BACKFILL, None),
     ("POST", "/api/v1/admin/archive/export", Action.ADMIN_ARCHIVE_EXPORT, None),

@@ -109,6 +109,14 @@ if ARCHIVE_BACKEND not in ("db", "parquet", "both", ""):
 if ARCHIVE_BACKEND in ("parquet", "both"):
     ARCHIVE_PARQUET_ENABLED = True
 
+# Chart Analyst Agent
+AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "true").lower() in ("1", "true", "yes")
+AGENT_LLM_ENABLED = os.environ.get("AGENT_LLM_ENABLED", "false").lower() in ("1", "true", "yes")
+AGENT_LLM_MIN_CONFIDENCE = float(os.environ.get("AGENT_LLM_MIN_CONFIDENCE", "0.55"))
+AGENT_LLM_COOLDOWN_SEC = int(os.environ.get("AGENT_LLM_COOLDOWN_SEC", "300"))
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL", "openai/gpt-4o-mini")
+
 # Simulation Settings Defaults
 DEFAULT_TICK_INTERVAL = 0.25
 DEFAULT_VOLATILITY_MULTIPLIER = 1.0

@@ -87,6 +87,10 @@ export default function App() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }));
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === '[') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('sidebar-toggle'));

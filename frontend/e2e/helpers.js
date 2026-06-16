@@ -13,12 +13,19 @@ export async function openAlgoTab(page) {
   await expect(page.getByText('Deploy Bot', { exact: true })).toBeVisible({ timeout: 10_000 });
 }
 
+/** Open Chart Analyst history dock tab via keyboard shortcut. */
+export async function openAnalystTab(page) {
+  await page.keyboard.press('Control+i');
+  await expect(page.getByText('Chart Analyst', { exact: true })).toBeVisible({ timeout: 10_000 });
+}
+
 /** Strategy template display names from useStore defaults. */
 export const STRATEGY_TEMPLATE_NAMES = [
   'Bull Market Scalper',
   'Trend Follower',
   'Mean Reversion Scalp',
   'VWAP Pullback',
+  'Chart Analyst Agent',
 ];
 
 /** Wait until REST bootstrap completes (connection badge leaves loading state). */

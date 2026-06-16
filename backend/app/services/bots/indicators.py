@@ -34,6 +34,15 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
     "VWAP_PULLBACK": {
         "atr_length": 14,
     },
+    "CHART_AGENT": {
+        "rsi_length": 14,
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_signal": 9,
+        "atr_length": 14,
+        "min_confidence": 0.55,
+        "use_llm": False,
+    },
 }
 
 MIN_WARMUP_BARS = 50

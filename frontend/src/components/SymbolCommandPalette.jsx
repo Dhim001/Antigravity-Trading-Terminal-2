@@ -13,7 +13,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
+  BarChart2, Brain, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert,
 } from 'lucide-react';
 
 function assetKind(sym) {
@@ -150,6 +150,17 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
               <LayoutGrid aria-hidden />
               <span>Multi-Chart Grid</span>
               <CommandShortcut>⌘2</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="chart analyst insights history agent signals"
+              className="command-palette__item"
+              onSelect={() => run(() => {
+                window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'analyst' }));
+              })}
+            >
+              <Brain aria-hidden />
+              <span>Chart Analyst History</span>
+              <CommandShortcut>⌘I</CommandShortcut>
             </CommandItem>
             <CommandItem
               value="preferences settings appearance theme"

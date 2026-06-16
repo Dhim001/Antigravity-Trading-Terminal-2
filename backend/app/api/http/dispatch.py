@@ -21,6 +21,7 @@ async def invoke_action(state: AppState, action: str, message: dict | None = Non
         oms=state.oms,
         bot_manager=state.bot_manager,
         backtester=state.backtester,
+        chart_analyst=state.chart_analyst,
         message=payload,
         action=action,
     )
@@ -34,6 +35,7 @@ def _pick_primary_message(messages: list[dict]) -> dict:
         MessageType.ORDER_RESULT,
         MessageType.BOT_DETAIL,
         MessageType.BACKTEST_RESULT,
+        MessageType.AGENT_INSIGHT,
         MessageType.BOTS_UPDATE,
         MessageType.ACCOUNT_UPDATE,
         MessageType.TRADE_HISTORY,

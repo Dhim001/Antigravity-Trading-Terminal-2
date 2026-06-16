@@ -1,5 +1,6 @@
 import {
   ArrowDownToLine,
+  Bot,
   ChartCandlestick,
   Cpu,
   Target,
@@ -39,6 +40,14 @@ export const STRATEGY_CATALOG = Object.freeze({
     color: '#ec4899',
     tagline: 'Pullback entries to VWAP',
     style: 'mean-reversion',
+  },
+  CHART_AGENT: {
+    label: 'Chart Analyst Agent',
+    shortLabel: 'Agent',
+    icon: Bot,
+    color: '#a78bfa',
+    tagline: 'Hybrid rule+LLM chart analysis',
+    style: 'agent',
   },
 });
 

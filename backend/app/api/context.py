@@ -13,6 +13,7 @@ class RequestContext:
     oms: BaseOMSService
     bot_manager: BotManagerService
     backtester: Any | None
+    chart_analyst: Any | None
     message: dict
     action: str | None
     aborted: bool = False

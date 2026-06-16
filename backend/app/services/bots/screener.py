@@ -136,8 +136,26 @@ class MarketScreenerService:
         if strat == "VWAP_PULLBACK":
             self._compute_vwap(df)
 
+        if strat == "CHART_AGENT":
+            macd = ta.macd(
+                df["close"],
+                fast=cfg.get("macd_fast", 12),
+                slow=cfg.get("macd_slow", 26),
+                signal=cfg.get("macd_signal", 9),
+            )
+            if macd is not None:
+                for col in macd.columns:
+                    df[col] = macd[col]
+            df[rsi_col(cfg.get("rsi_length", 14))] = ta.rsi(
+                df["close"], length=cfg.get("rsi_length", 14)
+            )
+            for length in (9, 21, 50):
+                df[f"EMA_{length}"] = ta.ema(df["close"], length=length)
+            atr_len = cfg.get("atr_length", 14)
+            df[atr_col(atr_len)] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+
         # Full suite for unknown / backtest-all path
-        if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK"):
+        if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK", "CHART_AGENT"):
             self._compute_all(df, cfg)
 
     def _compute_all(self, df: pd.DataFrame, cfg: dict) -> None:

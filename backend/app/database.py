@@ -257,6 +257,20 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_backtest_runs_symbol ON backtest_runs (symbol, created_at DESC)"
     )
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agent_insights (
+            insight_id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            bar_time INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_insights_symbol_time "
+        "ON agent_insights (symbol, bar_time DESC)"
+    )
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     _ensure_performance_indexes(cursor)
