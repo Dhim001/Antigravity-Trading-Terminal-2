@@ -18,14 +18,17 @@ import StaleDataBanner       from './components/StaleDataBanner';
 import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
 import ShortcutsSheet        from './components/ShortcutsSheet';
+import HelpSheet             from './components/HelpSheet';
+import OnboardingTour        from './components/OnboardingTour';
 import ErrorBoundary         from './components/ErrorBoundary';
+import { useAlertMonitor } from './hooks/useAlertMonitor';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX } from 'lucide-react';
+import { TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX, CircleHelp } from 'lucide-react';
 import { sendAction } from './api/transport';
 import { Action } from './api/protocol';
 import {
@@ -56,8 +59,11 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 260);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [stopBotsOpen, setStopBotsOpen] = useState(false);
   const workspaceHydrated = useRef(false);
+
+  useAlertMonitor();
 
   const handleDockHeightChange = useCallback((h) => {
     setDockHeight(h);
@@ -167,6 +173,8 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <ShortcutsSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <HelpSheet open={helpOpen} onOpenChange={setHelpOpen} />
+      <OnboardingTour />
 
       <ErrorBoundary name="Header">
       <header className="terminal-header">
@@ -257,6 +265,22 @@ export default function App() {
                 </AlertDialog>
               </>
             )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setHelpOpen(true)}
+                  className="header-icon-btn text-muted-foreground hover:text-trading-accent"
+                  title="Help & glossary"
+                >
+                  <CircleHelp aria-hidden />
+                  <span className="sr-only">Help</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Help, workflows, glossary</TooltipContent>
+            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>

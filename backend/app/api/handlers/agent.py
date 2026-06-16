@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import time
-
-from app.api.context import RequestContext
+from app.api.rate_limit import rate_limit_allow
 from app.api.outbound import agent_insight, error
 from app.api.protocol import Action
 from app.api.responses import send_to
 from app.api.router import route
 from app.config import AGENT_ENABLED
 
-_analyze_last_at: dict[str, float] = {}
 ANALYZE_MIN_INTERVAL_SEC = 10.0
 
 
@@ -32,12 +29,9 @@ async def chart_analyze(ctx: RequestContext) -> None:
         return
 
     key = _rate_key(ctx, symbol)
-    now = time.monotonic()
-    last = _analyze_last_at.get(key, 0.0)
-    if now - last < ANALYZE_MIN_INTERVAL_SEC:
+    if not rate_limit_allow(f"analyze:{key}", ANALYZE_MIN_INTERVAL_SEC):
         await send_to(ctx, error("Rate limited — wait before analyzing this symbol again"))
         return
-    _analyze_last_at[key] = now
 
     force_llm = bool(ctx.message.get("force_llm", False))
     analyst = ctx.chart_analyst

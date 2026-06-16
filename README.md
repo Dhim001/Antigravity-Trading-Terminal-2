@@ -129,6 +129,16 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
   - `⌘K` / `Ctrl+K` — open command palette
   - `⌘1` / `Ctrl+1` — single chart view
   - `⌘2` / `Ctrl+2` — multi-chart view
+  - `⌘B` / `Ctrl+B` — open bottom dock
+  - `⌘I` / `Ctrl+I` — Chart Analyst tab
+  - `?` — keyboard shortcuts sheet
+- **Onboarding & help (Phase 1)** — first-visit welcome tour (`OnboardingTour`), header **Help** button (`HelpSheet` with workflows, glossary, shortcuts), and **Replay welcome tour** in Settings → Layout
+- **Market scanner (Phase 6)** — dock **Scanner** tab: multi-symbol scan, filters, optional 60s auto-refresh
+- **Chart Analyst (Phase 6)** — dock **Analyst** tab: insight history, compare mode, vision structure notes
+- **Alerts (Phase 4)** — price/signal toast rules in Settings → Layout; evaluated by `useAlertMonitor`
+- **Chart overlay toggles (Phase 4)** — Settings → Chart: trade markers, position SL/TP, analyst levels, bot markers (persisted in `chartLayout.overlays`)
+- **Performance (Phase 2)** — lazy-loaded dock tabs, windowed analyst history table, throttled live candle updates
+- **Vision LLM (optional)** — set `OPENAI_API_KEY` (and optionally `OPENAI_VISION_MODEL=gpt-4o-mini`) in backend `.env` to enable chart structure analysis from the Analyst tab **Vision** button; without a key, vision requests return a clear configuration error
 - Trading-specific button variants: `buy`, `sell`, `live` badges
 - **HTTP bootstrap (Phase 4a)** — on mount, parallel REST calls hydrate account, history, bots, and chart candles before WebSocket connects; live ticks still stream over WS. See `frontend/src/api/` and `hooks/useBootstrap.js`. Dev uses Vite proxy (`vite.config.js`); set `VITE_HTTP_BASE_URL` for production builds (`frontend/.env.example`).
 - **Unified transport (Phase 4c)** — `sendAction()` in `frontend/src/api/transport.js` tries WebSocket first, then falls back to the matching REST endpoint when WS is offline (orders, bots, admin, SL/TP, etc.).

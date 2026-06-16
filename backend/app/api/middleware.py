@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Awaitable, Callable
 
 from app.api.context import RequestContext
 from app.api.protocol import Action
+from app.api.rate_limit import rate_limit_allow
 from app.api.responses import send_order_result
 from app.api.types import RouteMeta
 
@@ -21,7 +21,6 @@ TRADE_RATE_LIMIT_ACTIONS = frozenset({
 })
 
 TRADE_MIN_INTERVAL_SEC = 0.5
-_last_trade_at: dict[str, float] = {}
 
 
 def _rate_key(ctx: RequestContext) -> str:
@@ -36,16 +35,13 @@ async def middleware_rate_limit(ctx: RequestContext, meta: RouteMeta) -> bool:
     """Return True if request should abort (rate limited)."""
     if ctx.action not in TRADE_RATE_LIMIT_ACTIONS:
         return False
-    key = _rate_key(ctx)
-    now = time.monotonic()
-    last = _last_trade_at.get(key, 0.0)
-    if now - last < TRADE_MIN_INTERVAL_SEC:
+    key = f"trade:{_rate_key(ctx)}"
+    if not rate_limit_allow(key, TRADE_MIN_INTERVAL_SEC):
         await send_order_result(ctx, {
             "status": "error",
             "message": "Rate limited — wait before submitting another trade action",
         })
         return True
-    _last_trade_at[key] = now
     return False
 
 

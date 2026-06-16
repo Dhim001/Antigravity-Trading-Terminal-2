@@ -1,13 +1,14 @@
 /**
  * Chart Analyst insight history — Phase 5b dock tab.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, Brain, RefreshCw } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Bot, Brain, RefreshCw, GitCompare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { fetchAgentInsights } from '../api/endpoints';
+import { useWindowedRows } from '../hooks/useWindowedRows';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -75,6 +76,8 @@ export default function AnalystTab() {
   const tickerData = useStore((s) => s.tickerData);
   const visionReports = useStore((s) => s.visionReports);
   const [visionLoading, setVisionLoading] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareSymbol, setCompareSymbol] = useState('ETHUSDT');
 
   useEffect(() => {
     setSymbol(activeSymbol);
@@ -98,6 +101,8 @@ export default function AnalystTab() {
     }
     return { buy, sell, withNarrative };
   }, [rows]);
+
+  const { onScroll, window: rowWindow } = useWindowedRows(rows, { rowHeight: 36 });
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -194,6 +199,15 @@ export default function AnalystTab() {
             <RefreshCw className={cn('size-3', loading && 'animate-spin')} data-icon="inline-start" />
             Refresh
           </Button>
+          <Button
+            variant={compareMode ? 'secondary' : 'outline'}
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setCompareMode((v) => !v)}
+          >
+            <GitCompare className="size-3" data-icon="inline-start" />
+            Compare
+          </Button>
           <Button variant="secondary" size="sm" className="h-7 text-xs" onClick={runAnalyze}>
             Analyze
           </Button>
@@ -210,7 +224,46 @@ export default function AnalystTab() {
         </div>
       </header>
 
-      {latest && (
+      {compareMode && (
+        <div className="grid gap-2 border-b border-border/50 bg-muted/10 px-3 py-2 sm:grid-cols-2">
+          {[symbol, compareSymbol].map((sym) => {
+            const insight = agentInsights[sym] || (agentInsightHistory[sym] ?? [])[0];
+            return (
+              <div key={sym} className="rounded border border-border/50 p-2 text-xs">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="font-bold">{sym}</span>
+                  {insight ? (
+                    <Badge variant={signalVariant(insight)} className="h-5 text-[0.58rem]">
+                      {displayLabel(insight)}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground">No insight</span>
+                  )}
+                </div>
+                {insight?.sub_reports ? (
+                  <SubReportCards subReports={insight.sub_reports} compact />
+                ) : insight?.reasons?.[0] ? (
+                  <p className="text-muted-foreground">{insight.reasons[0]}</p>
+                ) : null}
+              </div>
+            );
+          })}
+          <div className="sm:col-span-2 flex justify-end">
+            <Select value={compareSymbol} onValueChange={setCompareSymbol}>
+              <SelectTrigger className="h-7 w-[8rem] text-xs">
+                <SelectValue placeholder="Compare with" />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                {symbolsList.filter((s) => s !== symbol).map((sym) => (
+                  <SelectItem key={sym} value={sym} className="text-xs">{sym}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+
+      {latest && !compareMode && (
         <div className="border-b border-border/50 bg-muted/20 px-3 py-2 text-xs">
           <span className="text-muted-foreground">Latest · </span>
           <Badge variant={signalVariant(latest)} className="mr-2 h-5 px-1.5 text-[0.58rem]">
@@ -255,7 +308,7 @@ export default function AnalystTab() {
         </div>
       ) : (
         <>
-          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0" onScroll={onScroll}>
             <table className="terminal-table dock-panel-tab__table min-w-[720px] text-[0.62rem]">
               <thead>
                 <tr>
@@ -268,12 +321,15 @@ export default function AnalystTab() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {rowWindow.topPad > 0 && (
+                  <tr aria-hidden><td colSpan={6} style={{ height: rowWindow.topPad, padding: 0, border: 0 }} /></tr>
+                )}
+                {rowWindow.slice.map((row) => {
                   const id = row.insight_id || `${row.symbol}:${row.bar_time}`;
                   const isExpanded = expandedId === id;
                   const isLatest = latest?.insight_id === row.insight_id;
                   return (
-                    <React.Fragment key={id}>
+                    <Fragment key={id}>
                       <tr
                         className={cn(
                           'cursor-pointer hover:bg-muted/30',
@@ -353,9 +409,12 @@ export default function AnalystTab() {
                           </td>
                         </tr>
                       )}
-                    </React.Fragment>
+                    </Fragment>
                   );
                 })}
+                {rowWindow.bottomPad > 0 && (
+                  <tr aria-hidden><td colSpan={6} style={{ height: rowWindow.bottomPad, padding: 0, border: 0 }} /></tr>
+                )}
               </tbody>
             </table>
           </div>

@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
+import { fetchAgentInsights } from '../api/endpoints';
+import SubReportCards from './SubReportCards';
 import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -54,17 +56,21 @@ function findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory) 
 function TradeExplain({ trade, symbol, botStrategy, agentInsights, agentInsightHistory }) {
   if (botStrategy !== 'CHART_AGENT' || trade.is_exit) return null;
   const insight = findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory);
-  if (!insight?.reasons?.length && !insight?.narrative) return null;
+  if (!insight?.reasons?.length && !insight?.narrative && !insight?.sub_reports) return null;
   return (
     <details className="mt-1 text-[0.65rem] text-muted-foreground">
       <summary className="cursor-pointer text-trading-accent">Why we entered</summary>
-      {insight.reasons?.length > 0 && (
+      {insight.sub_reports ? (
+        <div className="mt-2">
+          <SubReportCards subReports={insight.sub_reports} />
+        </div>
+      ) : insight.reasons?.length > 0 ? (
         <ul className="mt-1 list-inside list-disc space-y-0.5">
           {insight.reasons.map((r, i) => (
             <li key={i}>{r}</li>
           ))}
         </ul>
-      )}
+      ) : null}
       {insight.narrative && (
         <p className="mt-1 leading-relaxed">{insight.narrative}</p>
       )}
@@ -79,6 +85,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const setBotDetail = useStore(s => s.setBotDetail);
   const agentInsights = useStore(s => s.agentInsights);
   const agentInsightHistory = useStore(s => s.agentInsightHistory);
+  const setAgentInsightHistory = useStore(s => s.setAgentInsightHistory);
 
   const bot = botDetail?.bot;
   const position = botDetail?.position;
@@ -87,6 +94,13 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const snapshots = botDetail?.snapshots ?? [];
   const strategyMeta = bot ? getStrategyMeta(bot.strategy) : null;
   const loading = open && selectedBotId && !bot;
+
+  useEffect(() => {
+    if (!open || !bot?.symbol || bot.strategy !== 'CHART_AGENT') return;
+    const sym = bot.symbol;
+    if ((agentInsightHistory[sym] ?? []).length > 0) return;
+    fetchAgentInsights(sym, { setAgentInsightHistory }, 30).catch(() => {});
+  }, [open, bot?.symbol, bot?.strategy, agentInsightHistory, setAgentInsightHistory]);
 
   const [drawerWidth, setDrawerWidth] = useState(readDrawerWidth);
   const [resizing, setResizing] = useState(false);

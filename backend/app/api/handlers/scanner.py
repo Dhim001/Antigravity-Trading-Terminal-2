@@ -11,9 +11,9 @@ from app.api.responses import send_to
 from app.api.router import route
 from app.config import SCANNER_ENABLED
 from app.observability.metrics import inc, observe
+from app.api.rate_limit import rate_limit_allow
 from app.services.scanner.market_scanner import MarketScannerService
 
-_scan_last_at: dict[str, float] = {}
 SCAN_MIN_INTERVAL_SEC = 30.0
 
 _scanner: MarketScannerService | None = None
@@ -37,12 +37,9 @@ async def market_scan(ctx: RequestContext) -> None:
         return
 
     key = _rate_key(ctx)
-    now = time.monotonic()
-    last = _scan_last_at.get(key, 0.0)
-    if now - last < SCAN_MIN_INTERVAL_SEC:
+    if not rate_limit_allow(f"scan:{key}", SCAN_MIN_INTERVAL_SEC):
         await send_to(ctx, error("Rate limited — wait before scanning again"))
         return
-    _scan_last_at[key] = now
 
     msg = ctx.message
     symbols = msg.get("symbols")

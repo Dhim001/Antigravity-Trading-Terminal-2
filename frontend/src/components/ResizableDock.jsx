@@ -8,7 +8,7 @@
  *  - History tab can be expanded to full-screen overlay
  *  - Badge counts on Positions and Orders tabs
  */
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense, lazy } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
@@ -23,15 +23,20 @@ import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestResultsPanel from './BacktestResultsPanel';
 import BotDetailDrawer from './BotDetailDrawer';
-import TickViewerTab from './TickViewerTab';
-import BotHistoryTab from './BotHistoryTab';
-import AnalystTab from './AnalystTab';
-import ScannerTab from './ScannerTab';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
 import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
+
+const TickViewerTab = lazy(() => import('./TickViewerTab'));
+const BotHistoryTab = lazy(() => import('./BotHistoryTab'));
+const AnalystTab = lazy(() => import('./AnalystTab'));
+const ScannerTab = lazy(() => import('./ScannerTab'));
+
+function DockTabFallback() {
+  return <WidgetEmpty message="Loading tab…" />;
+}
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -1434,13 +1439,21 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           </TabsContent>
           <TabsContent value="scanner" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Scanner">
-              <ScannerTab />
+              {activeTab === 'scanner' && (
+                <Suspense fallback={<DockTabFallback />}>
+                  <ScannerTab />
+                </Suspense>
+              )}
             </ErrorBoundary>
           </TabsContent>
 
           <TabsContent value="analyst" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Chart Analyst">
-              <AnalystTab />
+              {activeTab === 'analyst' && (
+                <Suspense fallback={<DockTabFallback />}>
+                  <AnalystTab />
+                </Suspense>
+              )}
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="reconcile" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
@@ -1450,12 +1463,20 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           </TabsContent>
           <TabsContent value="bots" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Bot History">
-              <BotHistoryTab />
+              {activeTab === 'bots' && (
+                <Suspense fallback={<DockTabFallback />}>
+                  <BotHistoryTab />
+                </Suspense>
+              )}
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="ticks" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Ticks">
-              <TickViewerTab />
+              {activeTab === 'ticks' && (
+                <Suspense fallback={<DockTabFallback />}>
+                  <TickViewerTab />
+                </Suspense>
+              )}
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="equity" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">

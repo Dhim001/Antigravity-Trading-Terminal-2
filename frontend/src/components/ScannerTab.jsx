@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Radar, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
@@ -52,6 +52,7 @@ export default function ScannerTab() {
   const [signalFilter, setSignalFilter] = useState('any');
   const [previewDraft, setPreviewDraft] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   const allRows = scanResults?.rows ?? [];
 
@@ -102,6 +103,14 @@ export default function ScannerTab() {
       setLoading(false);
     }
   }, [symbolsList]);
+
+  useEffect(() => {
+    if (!autoRefresh) return undefined;
+    const id = setInterval(() => {
+      runScan();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [autoRefresh, runScan]);
 
   const onRowClick = (row) => {
     setActiveSymbol(row.symbol);
@@ -158,6 +167,15 @@ export default function ScannerTab() {
           >
             {loading ? <RefreshCw className="size-3 animate-spin" /> : <Radar className="size-3" />}
             Scan watchlist
+          </Button>
+          <Button
+            variant={autoRefresh ? 'secondary' : 'outline'}
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setAutoRefresh((v) => !v)}
+            title="Re-scan every 60s (respects 30s server limit)"
+          >
+            Auto {autoRefresh ? 'on' : 'off'}
           </Button>
           <Select value={signalFilter} onValueChange={setSignalFilter}>
             <SelectTrigger className="h-7 w-[120px] text-xs" aria-label="Signal filter">

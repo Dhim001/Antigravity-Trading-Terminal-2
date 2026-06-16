@@ -17,7 +17,25 @@
  * @property {Record<string, boolean>} activeIndicators
  * @property {string} multiChartLayoutId
  * @property {string[]} multiChartSymbols
+ * @property {ChartOverlaySettings} overlays
  */
+
+/**
+ * @typedef {Object} ChartOverlaySettings
+ * @property {boolean} trades
+ * @property {boolean} positions
+ * @property {boolean} agentLevels
+ * @property {boolean} botMarkers
+ */
+
+/**
+ * @typedef {Object} AlertRule
+ * @property {string} id
+ * @property {string} symbol
+ * @property {'price_above' | 'price_below' | 'signal_change'} type
+ * @property {number} [threshold]
+ * @property {'BUY' | 'SELL' | 'NONE'} [signal]
+ * @property {boolean} [enabled]
 
 /**
  * @typedef {Object} TerminalSettings
@@ -30,6 +48,8 @@
  * @property {ChartLayoutSettings} chartLayout
  * @property {WorkspaceSettings} workspace
  * @property {WorkspacePreset[]} workspacePresets
+ * @property {AlertRule[]} alerts
+ * @property {boolean} onboardingCompleted
  * @property {boolean} [syncChartToTheme] Auto-match chart canvas to light/dark theme
  * @property {string} updatedAt
  */
@@ -95,6 +115,12 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     },
     multiChartLayoutId: '2x2',
     multiChartSymbols: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'],
+    overlays: {
+      trades: true,
+      positions: true,
+      agentLevels: true,
+      botMarkers: true,
+    },
   },
   workspace: {
     dockHeight: 320,
@@ -104,6 +130,8 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     chartLinkMode: 'all',
   },
   workspacePresets: [],
+  alerts: [],
+  onboardingCompleted: false,
   updatedAt: new Date().toISOString(),
 };
 
@@ -142,12 +170,18 @@ export function migrateSettings(raw) {
       multiChartSymbols: Array.isArray(input.chartLayout?.multiChartSymbols)
         ? input.chartLayout.multiChartSymbols
         : base.chartLayout.multiChartSymbols,
+      overlays: {
+        ...base.chartLayout.overlays,
+        ...(input.chartLayout?.overlays || {}),
+      },
     },
     workspace: {
       ...base.workspace,
       ...(input.workspace || {}),
     },
     workspacePresets: Array.isArray(input.workspacePresets) ? input.workspacePresets : [],
+    alerts: Array.isArray(input.alerts) ? input.alerts : [],
+    onboardingCompleted: Boolean(input.onboardingCompleted),
     updatedAt: input.updatedAt || new Date().toISOString(),
   };
 }

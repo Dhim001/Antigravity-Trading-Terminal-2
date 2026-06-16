@@ -210,7 +210,35 @@ export const useSettingsStore = create(subscribeWithSelector((set, get) => ({
           activeIndicators: patch.activeIndicators
             ? { ...state.settings.chartLayout.activeIndicators, ...patch.activeIndicators }
             : state.settings.chartLayout.activeIndicators,
+          overlays: patch.overlays
+            ? { ...state.settings.chartLayout.overlays, ...patch.overlays }
+            : state.settings.chartLayout.overlays,
         },
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+  },
+
+  setOnboardingCompleted: (done = true) => {
+    set((state) => {
+      const next = {
+        ...state.settings,
+        onboardingCompleted: done,
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+  },
+
+  /** @param {import('../settings/defaults').AlertRule[]} alerts */
+  setAlerts: (alerts) => {
+    set((state) => {
+      const next = {
+        ...state.settings,
+        alerts,
         updatedAt: new Date().toISOString(),
       };
       persistSettings(next);

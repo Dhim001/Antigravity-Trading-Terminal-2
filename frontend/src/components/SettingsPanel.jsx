@@ -113,8 +113,10 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const saveWorkspacePreset = useSettingsStore((s) => s.saveWorkspacePreset);
   const loadWorkspacePreset = useSettingsStore((s) => s.loadWorkspacePreset);
   const deleteWorkspacePreset = useSettingsStore((s) => s.deleteWorkspacePreset);
-
-  const { resolvedTheme: osTheme } = useTheme();
+  const setAlerts = useSettingsStore((s) => s.setAlerts);
+  const updateChartLayout = useSettingsStore((s) => s.updateChartLayout);
+  const setOnboardingCompleted = useSettingsStore((s) => s.setOnboardingCompleted);
+  const activeSymbol = useStore((s) => s.activeSymbol);
 
   const connectionStatus = useStore((s) => s.connectionStatus);
   const apiStatus = useStore((s) => s.apiStatus);
@@ -369,6 +371,30 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 presets={PRESET_SWATCHES.bearish}
               />
             </section>
+
+            <Separator />
+
+            <section className="settings-section">
+              <h3 className="settings-section__title">Chart overlays</h3>
+              <p className="settings-section__hint">Toggle trade markers, position lines, and analyst levels on the chart.</p>
+              {[
+                ['trades', 'Trade markers'],
+                ['positions', 'Position SL/TP'],
+                ['agentLevels', 'Analyst levels'],
+                ['botMarkers', 'Bot markers'],
+              ].map(([key, label]) => (
+                <label key={key} className="mb-2 flex items-center justify-between text-xs">
+                  <span>{label}</span>
+                  <input
+                    type="checkbox"
+                    checked={settings.chartLayout?.overlays?.[key] !== false}
+                    onChange={(e) => updateChartLayout({
+                      overlays: { ...settings.chartLayout?.overlays, [key]: e.target.checked },
+                    })}
+                  />
+                </label>
+              ))}
+            </section>
           </TabsContent>
 
           <TabsContent value="layout" className="settings-panel__body">
@@ -514,6 +540,70 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   />
                 </label>
               </div>
+            </section>
+
+            <Separator />
+
+            <section className="settings-section">
+              <h3 className="settings-section__title">Price & signal alerts</h3>
+              <p className="settings-section__hint">
+                Toast notifications when price crosses a level or analyst signal matches.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                onClick={() => {
+                  const id = `alert-${Date.now()}`;
+                  setAlerts([
+                    ...(settings.alerts || []),
+                    {
+                      id,
+                      symbol: activeSymbol,
+                      type: 'signal_change',
+                      signal: 'BUY',
+                      enabled: true,
+                    },
+                  ]);
+                  toast.success(`Alert added for ${activeSymbol} BUY signal`);
+                }}
+              >
+                Add BUY signal alert ({activeSymbol})
+              </Button>
+              {(settings.alerts || []).length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {settings.alerts.map((a) => (
+                    <li key={a.id} className="flex items-center justify-between rounded border border-border/50 px-2 py-1 text-xs">
+                      <span>{a.symbol} · {a.type}{a.threshold != null ? ` ${a.threshold}` : ''}{a.signal ? ` → ${a.signal}` : ''}</span>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="text-trading-down"
+                        onClick={() => setAlerts(settings.alerts.filter((x) => x.id !== a.id))}
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <Separator />
+
+            <section className="settings-section">
+              <h3 className="settings-section__title">Onboarding</h3>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                onClick={() => {
+                  setOnboardingCompleted(false);
+                  toast.message('Tour will show on next page load — refresh if needed');
+                }}
+              >
+                Replay welcome tour
+              </Button>
             </section>
 
             <Separator />

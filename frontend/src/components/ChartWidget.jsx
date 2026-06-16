@@ -528,6 +528,8 @@ export default function ChartWidget() {
   const displayBarsRef = useRef([]);
   const chartLayoutRef = useRef({ xAxisCount: 1, showVolume: true });
   const liveRafRef = useRef(null);
+  const liveLastPaintMs = useRef(0);
+  const LIVE_MIN_INTERVAL_MS = 66;
   const configureChartRef = useRef(() => {});
   const applyOverlayPatchRef = useRef(() => {});
   const chartReadyRef = useRef(false);
@@ -599,27 +601,18 @@ export default function ChartWidget() {
     [settings, resolvedTheme],
   );
 
-  const [timeframe, setTimeframe] = useState(() => { try { return localStorage.getItem('terminal_tf') || '1m'; } catch { return '1m'; } });
+  const [timeframe, setTimeframe] = useState(() => settings.chartLayout?.timeframe || '1m');
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
 
   useEffect(() => {
     setDisplayBarLimit(CHART_DISPLAY_BARS);
     olderExhaustedRef.current[activeSymbol] = false;
   }, [activeSymbol, timeframe]);
-  const [chartType, setChartType] = useState(() => {
-    try {
-      const saved = localStorage.getItem('terminal_chart_type');
-      if (saved === 'line' || saved === 'candle') return saved;
-    } catch (_) {}
-    return 'candle';
-  });
-  const [active, setActive] = useState(() => {
-    try {
-      const s = localStorage.getItem('terminal_chart_indicators_active');
-      if (s) return JSON.parse(s);
-    } catch (_) {}
-    return { ...DEFAULT_TERMINAL_SETTINGS.chartLayout.activeIndicators };
-  });
+  const [chartType, setChartType] = useState(() => settings.chartLayout?.chartType || 'candle');
+  const [active, setActive] = useState(() => ({
+    ...DEFAULT_TERMINAL_SETTINGS.chartLayout.activeIndicators,
+    ...(settings.chartLayout?.activeIndicators || {}),
+  }));
 
 
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
@@ -1034,20 +1027,26 @@ export default function ChartWidget() {
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
     const bucketSecs = cfg.secs;
     const dec = getPriceDecimals(bars[bars.length - 1]?.close);
+    const overlays = settings.chartLayout?.overlays ?? DEFAULT_TERMINAL_SETTINGS.chartLayout.overlays;
     const markLineData = [
-      ...buildMarkLineData(symbolPosition, dec),
-      ...buildAgentMarkLines(agentInsight, bars[bars.length - 1]?.close, dec),
+      ...(overlays.positions !== false ? buildMarkLineData(symbolPosition, dec) : []),
+      ...(overlays.agentLevels !== false
+        ? buildAgentMarkLines(agentInsight, bars[bars.length - 1]?.close, dec)
+        : []),
     ];
-    const showBotMarkers = selectedBotId
+    const showBotMarkers = overlays.botMarkers !== false
+      && selectedBotId
       && botDetail?.bot?.symbol === activeSymbol
       && botDetail?.trades?.length;
-    const tradeMarkers = buildTradeMarkers(
-      tradeHistory,
-      activeSymbol,
-      bars,
-      bucketSecs,
-      { excludeBotId: showBotMarkers ? selectedBotId : null },
-    );
+    const tradeMarkers = overlays.trades !== false
+      ? buildTradeMarkers(
+        tradeHistory,
+        activeSymbol,
+        bars,
+        bucketSecs,
+        { excludeBotId: showBotMarkers ? selectedBotId : null },
+      )
+      : [];
     const botMarkers = showBotMarkers
       ? buildBotTradeMarkers(botDetail.trades, bars, bucketSecs)
       : [];
@@ -1070,7 +1069,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, agentInsight, agentOverlayKey]);
+  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -1274,9 +1273,12 @@ export default function ChartWidget() {
     const unsubscribe = useStore.subscribe(
       (state) => state.candleRevision[symbol] || 0,
       () => {
+        const now = performance.now();
+        if (now - liveLastPaintMs.current < LIVE_MIN_INTERVAL_MS) return;
         if (liveRafRef.current != null) return;
         liveRafRef.current = requestAnimationFrame(() => {
           liveRafRef.current = null;
+          liveLastPaintMs.current = performance.now();
           applyLiveCandleUpdate();
         });
       },
