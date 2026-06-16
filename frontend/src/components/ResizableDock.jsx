@@ -1309,7 +1309,6 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
   ];
 
   return (
-    <ErrorBoundary name="Trading dock">
     <>
       <div
         className="bottom-dock flex flex-col"
@@ -1362,13 +1361,19 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           </div>
 
           <TabsContent value="positions" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <PositionsTab />
+            <ErrorBoundary name="Positions">
+              <PositionsTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="orders" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <OrdersTab />
+            <ErrorBoundary name="Orders">
+              <OrdersTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="balances" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <BalancesTab />
+            <ErrorBoundary name="Balances">
+              <BalancesTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
             <ErrorBoundary name="Algo Bot">
@@ -1381,19 +1386,29 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
             </ErrorBoundary>
           </TabsContent>
           <TabsContent value="reconcile" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <ReconciliationTab />
+            <ErrorBoundary name="Reconciliation">
+              <ReconciliationTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="bots" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <BotHistoryTab />
+            <ErrorBoundary name="Bot History">
+              <BotHistoryTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="ticks" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <TickViewerTab />
+            <ErrorBoundary name="Ticks">
+              <TickViewerTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="equity" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            <EquityCurveTab />
+            <ErrorBoundary name="Equity curve">
+              <EquityCurveTab />
+            </ErrorBoundary>
           </TabsContent>
           <TabsContent value="history" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
-            {!historyFullscreen && <TradeHistoryContent embedded />}
+            <ErrorBoundary name="Trade history">
+              {!historyFullscreen && <TradeHistoryContent embedded />}
+            </ErrorBoundary>
           </TabsContent>
         </Tabs>
       </div>
@@ -1405,10 +1420,13 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
           showCloseButton={false}
           className="flex h-[85vh] max-h-[85vh] min-h-0 flex-col gap-0 overflow-hidden rounded-t-xl border-t p-0 sm:max-w-full"
         >
-          <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
+          <ErrorBoundary name="Trade history (expanded)">
+            <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
+          </ErrorBoundary>
         </SheetContent>
       </Sheet>
 
+      <ErrorBoundary name="Bot detail">
       <BotDetailDrawer
         open={botDrawerOpen && !!selectedBotId}
         onOpenChange={setBotDrawerOpen}
@@ -1416,7 +1434,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight }) {
         onPause={(bot_id) => sendAction(Action.BOT_PAUSE, { bot_id })}
         onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
       />
+      </ErrorBoundary>
     </>
-    </ErrorBoundary>
   );
 }

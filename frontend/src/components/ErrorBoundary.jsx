@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, remountKey: 0 };
   }
 
   static getDerivedStateFromError(error) {
@@ -20,14 +20,21 @@ export default class ErrorBoundary extends React.Component {
   }
 
   handleRetry = () => {
-    this.setState({ error: null });
+    this.setState((prev) => ({
+      error: null,
+      remountKey: prev.remountKey + 1,
+    }));
     this.props.onRetry?.();
   };
 
   render() {
-    const { error } = this.state;
+    const { error, remountKey } = this.state;
     if (!error) {
-      return this.props.children;
+      return (
+        <React.Fragment key={remountKey}>
+          {this.props.children}
+        </React.Fragment>
+      );
     }
 
     const label = this.props.name || 'This panel';

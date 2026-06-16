@@ -124,6 +124,7 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
+      <ErrorBoundary name="Header">
       <header className="terminal-header">
         <div className="terminal-header__zone terminal-header__zone--brand">
           <div className="brand-section">
@@ -279,10 +280,15 @@ export default function App() {
           </div>
         </div>
       </header>
+      </ErrorBoundary>
 
-      <MarketOverviewStrip />
+      <ErrorBoundary name="Market overview">
+        <MarketOverviewStrip />
+      </ErrorBoundary>
 
-      <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
+      <ErrorBoundary name="Watchlist">
+        <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
+      </ErrorBoundary>
 
       <main className="workspace-main">
         {viewMode === 'single' ? (
@@ -297,11 +303,17 @@ export default function App() {
       </main>
 
       <section className="trading-panel">
-        <OrderEntryWidget />
-        <OrderBookWidget />
+        <ErrorBoundary name="Order entry">
+          <OrderEntryWidget />
+        </ErrorBoundary>
+        <ErrorBoundary name="Order book">
+          <OrderBookWidget />
+        </ErrorBoundary>
       </section>
 
-      <ResizableDock setDockHeight={handleDockHeightChange} />
+      <ErrorBoundary name="Trading dock">
+        <ResizableDock setDockHeight={handleDockHeightChange} />
+      </ErrorBoundary>
     </div>
   );
 }

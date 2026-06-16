@@ -8,6 +8,7 @@ import { forceMarketSnapshotSave } from './services/marketSnapshot'
 import { useStore } from './store/useStore'
 import './index.css'
 import App from './App.jsx'
+import ErrorBoundary from './components/ErrorBoundary'
 
 setupHmrAccept()
 
@@ -21,7 +22,9 @@ createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <TooltipProvider delayDuration={300}>
-        <App />
+        <ErrorBoundary name="Terminal">
+          <App />
+        </ErrorBoundary>
         <Toaster position="top-right" richColors closeButton />
       </TooltipProvider>
     </ThemeProvider>
