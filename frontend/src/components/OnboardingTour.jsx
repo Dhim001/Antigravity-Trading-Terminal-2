@@ -32,7 +32,7 @@ const STEPS = [
   },
   {
     title: 'Bottom dock',
-    body: 'Positions, Scanner (rank watchlist), Analyst history, and Algo bots live in the resizable bottom dock. Try ⌘B for bots and ⌘I for analyst.',
+    body: 'Positions, orders, and algo bots live in the grouped bottom dock. Try ⌘B for the Algo tab and ⌘I for Insights Hub (scanner + analyst).',
     action: 'dock',
   },
   {
@@ -56,7 +56,9 @@ export default function OnboardingTour() {
 
   useEffect(() => {
     if (!completed) {
-      const t = setTimeout(() => setOpen(true), 800);
+      const t = setTimeout(() => {
+        setOpen(true);
+      }, 800);
       return () => clearTimeout(t);
     }
   }, [completed]);
@@ -70,8 +72,12 @@ export default function OnboardingTour() {
   const isLast = step >= STEPS.length - 1;
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) finish(); else setOpen(v); }}>
-      <DialogContent className="sm:max-w-md" data-tour="onboarding">
+    <Dialog modal={false} open={open} onOpenChange={(v) => { if (!v) finish(); else setOpen(v); }}>
+      <DialogContent
+        className="pointer-events-auto bottom-4 left-auto right-4 top-auto max-w-sm translate-x-0 translate-y-0 sm:max-w-md"
+        overlayClassName="pointer-events-none bg-transparent supports-backdrop-filter:backdrop-blur-none"
+        data-tour="onboarding"
+      >
         <DialogHeader>
           <DialogTitle>{current.title}</DialogTitle>
           <DialogDescription className="text-sm leading-relaxed">

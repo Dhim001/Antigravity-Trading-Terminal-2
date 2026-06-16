@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   gotoDashboard,
   openAlgoTab,
+  openDockTab,
   waitForBootstrap,
   STRATEGY_TEMPLATE_NAMES,
 } from './helpers.js';
@@ -43,9 +44,10 @@ test.describe('Trading terminal smoke', () => {
     await gotoDashboard(page);
     await openAlgoTab(page);
 
-    await expect(page.locator('.algo-template-grid')).toBeVisible();
+    const grid = page.locator('.algo-template-grid');
+    await expect(grid).toBeVisible();
     for (const name of STRATEGY_TEMPLATE_NAMES) {
-      await expect(page.getByRole('button', { name })).toBeVisible();
+      await expect(grid.getByRole('button', { name })).toBeVisible();
     }
 
     await expect(page.getByRole('button', { name: /BACKTEST/i })).toBeVisible();
@@ -55,8 +57,10 @@ test.describe('Trading terminal smoke', () => {
   test('dock tab navigation switches content', async ({ page }) => {
     await gotoDashboard(page);
 
-    await page.getByRole('tab', { name: /Positions/i }).click();
-    await expect(page.getByText(/No open positions/i)).toBeVisible({ timeout: 10_000 });
+    await openDockTab(page, /Positions/i, 'Portfolio');
+    await expect(
+      page.getByText(/No open positions/i).or(page.getByText(/Open Positions/i)),
+    ).toBeVisible({ timeout: 10_000 });
 
     await openAlgoTab(page);
     await expect(page.getByText('Capital Allocation')).toBeVisible();

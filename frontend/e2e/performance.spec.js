@@ -3,7 +3,7 @@
  * Requires backend (8765/8766) and preview/dev server (4173 or 5173).
  */
 import { test, expect } from '@playwright/test';
-import { gotoDashboard, waitForBootstrap } from './helpers.js';
+import { gotoDashboard, waitForBootstrap, openDockTab, openAlgoTab } from './helpers.js';
 
 const BUDGETS = {
   /** First meaningful paint proxy: dashboard shell visible */
@@ -57,16 +57,23 @@ test.describe('Frontend performance & stress', () => {
     await waitForBootstrap(page);
 
     const dock = page.locator('.bottom-dock');
-    const tabs = ['Positions', 'Orders', 'Balances', 'Algo', 'History', 'Equity Curve'];
+    const tabRoutes = [
+      { group: 'Portfolio', tab: /Positions/i },
+      { group: 'Portfolio', tab: /Orders/i },
+      { group: 'Portfolio', tab: /Balances/i },
+      { algo: true },
+      { group: 'Data', tab: /History/i },
+      { group: 'Data', tab: 'Equity Curve' },
+    ];
     const timings = [];
 
     for (let round = 0; round < 3; round++) {
-      for (const label of tabs) {
+      for (const route of tabRoutes) {
         const ms = await measureMs(async () => {
-          if (label === 'Algo') {
-            await page.keyboard.press('Control+b');
+          if (route.algo) {
+            await openAlgoTab(page);
           } else {
-            await dock.getByRole('tab', { name: new RegExp(label, 'i') }).click();
+            await openDockTab(page, route.tab, route.group);
           }
           await expect(dock.locator('.dock-tab-body[data-state="active"]')).toBeVisible();
         });
@@ -148,9 +155,9 @@ test.describe('Frontend performance & stress', () => {
     await waitForBootstrap(page);
 
     for (let i = 0; i < 5; i++) {
-      await page.getByRole('tab', { name: /Orders/i }).click();
-      await page.getByRole('tab', { name: /Positions/i }).click();
-      await page.keyboard.press('Control+b');
+      await openDockTab(page, /Orders/i, 'Portfolio');
+      await openDockTab(page, /Positions/i, 'Portfolio');
+      await openAlgoTab(page);
     }
 
     const heap = await page.evaluate(() => {

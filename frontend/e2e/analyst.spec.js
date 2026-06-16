@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { gotoDashboard, openAnalystTab, waitForBootstrap } from './helpers.js';
+import { gotoDashboard, insightsHubLocator, openAnalystInHub, waitForBootstrap } from './helpers.js';
 
 test.describe('Chart Analyst (Phase 6)', () => {
   test('agent insights API responds', async ({ request }) => {
@@ -12,20 +12,23 @@ test.describe('Chart Analyst (Phase 6)', () => {
     expect(Array.isArray(body.insights)).toBe(true);
   });
 
-  test('analyst dock tab opens via keyboard shortcut', async ({ page }) => {
+  test('Insights Hub opens via keyboard shortcut with analyst tab', async ({ page }) => {
     await gotoDashboard(page);
     await waitForBootstrap(page);
-    await openAnalystTab(page);
+    await openAnalystInHub(page);
     await expect(page.getByRole('button', { name: /^Analyze$/i })).toBeVisible();
   });
 
-  test('command palette navigates to analyst tab', async ({ page }) => {
+  test('command palette navigates to Insights Hub', async ({ page }) => {
     await gotoDashboard(page);
     await waitForBootstrap(page);
     await page.keyboard.press('Control+k');
     await expect(page.getByPlaceholder('Search symbol or command…')).toBeVisible();
-    await page.getByPlaceholder('Search symbol or command…').fill('analyst');
-    await page.getByText('Chart Analyst History').click();
-    await expect(page.getByText('Chart Analyst', { exact: true })).toBeVisible();
+    await page.getByPlaceholder('Search symbol or command…').fill('insights');
+    await page.getByLabel('Navigation').getByText('Insights Hub').click();
+    const hub = insightsHubLocator(page);
+    await expect(hub).toBeVisible();
+    await hub.getByRole('tab', { name: 'Analyst' }).click();
+    await expect(hub.getByRole('button', { name: /^Analyze$/i })).toBeVisible();
   });
 });

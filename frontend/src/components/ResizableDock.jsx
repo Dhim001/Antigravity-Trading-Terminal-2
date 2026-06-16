@@ -4,7 +4,7 @@
  *   Positions | Orders | Balances | Algo Bot | Analyst | Bot History | Ticks | History | Equity Curve
  *
  * Features:
- *  - Drag-to-resize via top handle (persists to localStorage)
+ *  - Drag-to-resize via top handle (persists to workspace settings)
  *  - History tab can be expanded to full-screen overlay
  *  - Badge counts on Positions and Orders tabs
  */
@@ -60,7 +60,6 @@ import { DOCK_GROUP_CONFIG, dockGroupForTab } from '../settings/layoutModes';
 const DOCK_MIN = 200;
 const DOCK_MAX = 560;
 const DOCK_DEFAULT = 320;
-const STORAGE_KEY = 'terminal_dock_height';
 
 const DOCK_TAB_IDS = new Set([
   'positions', 'orders', 'balances', 'algo', 'scanner', 'analyst',
@@ -559,7 +558,7 @@ function BalancesTab() {
 }
 
 // ── Algo Bot Tab ──────────────────────────────────────────────────
-function AlgoTab() {
+export function AlgoTab() {
   const {
     activeBots, botStrategy, botExecutionMode, botConfig, activeSymbol, symbolsList,
     setBotStrategy, setBotExecutionMode, updateBotConfig, clearBotLogs, botLogs,

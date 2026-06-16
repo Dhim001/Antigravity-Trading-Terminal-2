@@ -60,13 +60,13 @@ test.describe('Chart interaction audit', () => {
     const afterDrag = await markerSnap('after');
 
     // Marker drift: x must stay fixed in category-key space after pan/zoom
-    const beforeX = beforeDrag.sample.map((s) => s.value?.[0]);
-    const afterX = afterDrag.sample.map((s) => s.value?.[0]);
+    const beforeX = (beforeDrag.sample ?? []).map((s) => s.value?.[0]);
+    const afterX = (afterDrag.sample ?? []).map((s) => s.value?.[0]);
     if (beforeX.length && beforeX.join(',') !== afterX.join(',')) {
       console.log('\n=== MARKER X DRIFT DETECTED ===\n', { beforeX, afterX });
     }
 
-    for (const s of [...beforeDrag.sample, ...afterDrag.sample]) {
+    for (const s of [...(beforeDrag.sample ?? []), ...(afterDrag.sample ?? [])]) {
       const x = s.value?.[0];
       if (typeof x === 'number' && x < 100_000) {
         console.log('\n=== MARKER USES INDEX NOT TIMESTAMP ===\n', s);

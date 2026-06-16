@@ -21,6 +21,8 @@ export function getStoreActions() {
     setBots: s.setBots,
     setBotLogs: s.setBotLogs,
     setBacktestResults: s.setBacktestResults,
+    setBacktestRuns: s.setBacktestRuns,
+    setStrategyCatalog: s.setStrategyCatalog,
     setBotDetail: s.setBotDetail,
     setAmbiguousOrders: s.setAmbiguousOrders,
     setTickData: s.setTickData,

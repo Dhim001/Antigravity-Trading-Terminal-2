@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   gotoDashboard,
   openAlgoTab,
+  openDockTab,
   STRATEGY_TEMPLATE_NAMES,
 } from './helpers.js';
 
@@ -21,28 +22,29 @@ test.describe('Layout QA — Algo tab & dock', () => {
   });
 
   test('strategy template cards render in deploy panel', async ({ page }) => {
-    const cards = page.locator('.algo-template-btn');
-    await expect(cards).toHaveCount(4);
+    const grid = page.locator('.algo-template-grid');
+    const cards = grid.locator('.algo-template-btn');
+    await expect(cards).toHaveCount(5);
 
     for (const name of STRATEGY_TEMPLATE_NAMES) {
-      await expect(page.getByRole('button', { name })).toBeVisible();
+      await expect(grid.getByRole('button', { name })).toBeVisible();
     }
   });
 
   test('selecting a strategy template marks it active', async ({ page }) => {
-    const trendCard = page.getByRole('button', { name: 'Trend Follower' });
+    const trendCard = page.locator('.algo-template-grid').getByRole('button', { name: 'Supertrend + ADX' });
     await trendCard.click();
     await expect(trendCard).toHaveClass(/algo-template-btn--active/);
   });
 
   test('history tab opens and shows filter toolbar', async ({ page }) => {
-    await page.getByRole('tab', { name: /History/i }).click();
-    await expect(page.getByPlaceholder('Search…')).toBeVisible({ timeout: 10_000 });
+    await openDockTab(page, /History/i, 'Data');
+    await expect(page.getByPlaceholder('Search symbol, ID, type…')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole('button', { name: /Refresh/i })).toBeVisible();
   });
 
   test('history fullscreen sheet opens from dock', async ({ page }) => {
-    await page.getByRole('tab', { name: /History/i }).click();
+    await openDockTab(page, /History/i, 'Data');
     await page.getByTitle('Expand to fullscreen').click();
 
     await expect(page.getByText('Transaction History')).toBeVisible();
@@ -53,7 +55,21 @@ test.describe('Layout QA — Algo tab & dock', () => {
 test.describe('Layout QA — compact dock', () => {
   test('compact dock applies data-compact when height is low', async ({ page }) => {
     await page.addInitScript(() => {
-      localStorage.setItem('terminal_dock_height', '240');
+      localStorage.setItem('terminal_settings_v1', JSON.stringify({
+        version: 1,
+        theme: 'dark',
+        workspace: {
+          layoutMode: 'trade',
+          dockHeight: 240,
+          dockActiveTab: 'algo',
+          dockGroup: 'automation',
+          viewMode: 'single',
+        },
+        chartLayout: { timeframe: '1m', chartType: 'candle', activeIndicators: {} },
+        workspacePresets: [],
+        alerts: [],
+        onboardingCompleted: true,
+      }));
     });
     await gotoDashboard(page);
     await openAlgoTab(page);
