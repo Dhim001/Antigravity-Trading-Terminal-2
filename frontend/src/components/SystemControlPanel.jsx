@@ -77,7 +77,11 @@ const TICK_SPEEDS = [
 ];
 
 export default function SystemControlPanel({ isOpen, onClose }) {
-  const { systemStats, activeSymbol, isLive, terminalMode, symbolsList } = useStore();
+  const systemStats = useStore((state) => state.systemStats);
+  const activeSymbol = useStore((state) => state.activeSymbol);
+  const isLive = useStore((state) => state.isLive);
+  const terminalMode = useStore((state) => state.terminalMode);
+  const symbolsList = useStore((state) => state.symbolsList);
   const [activeTab, setActiveTab] = useState('simulation');
 
   const getAvailableAssets = () => {

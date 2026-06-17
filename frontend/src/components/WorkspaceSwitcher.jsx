@@ -21,7 +21,7 @@ export default function WorkspaceSwitcher({ layoutMode, onLayoutModeChange }) {
         <Button
           variant="outline"
           size="sm"
-          className="workspace-switcher h-[var(--control-h)] gap-1.5 px-2.5 text-xs"
+          className="workspace-switcher"
           title="Workspace presets"
         >
           <LayoutTemplate data-icon="inline-start" />

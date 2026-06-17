@@ -24,7 +24,7 @@ const PERIODS = [
 ];
 
 export default function EquityCurveTab() {
-  const { tradeHistory } = useStore();
+  const tradeHistory = useStore((state) => state.tradeHistory);
   const chartRef = useRef(null);
   const chartInst = useRef(null);
   const [period, setPeriod] = useState('ALL');

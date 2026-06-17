@@ -90,7 +90,7 @@ export function WidgetEmpty({ icon: Icon, message, className }) {
         className,
       )}
     >
-      {Icon && <Icon size={22} className="opacity-30" aria-hidden />}
+      {Icon && <Icon size={22} className="opacity-50" aria-hidden />}
       <span className="text-xs">{message}</span>
     </div>
   );

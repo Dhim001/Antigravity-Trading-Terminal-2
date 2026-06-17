@@ -67,7 +67,9 @@ function SortTh({ children, field, sort, onSort, className }) {
 }
 
 export function TradeHistoryContent({ embedded = true, onClose }) {
-  const { tradeHistory, tradeStats, activeBots } = useStore();
+  const tradeHistory = useStore((state) => state.tradeHistory);
+  const tradeStats = useStore((state) => state.tradeStats);
+  const activeBots = useStore((state) => state.activeBots);
   const botLookup = useMemo(() => buildBotLookup(activeBots), [activeBots]);
 
   const [loading, setLoading] = useState(false);

@@ -189,18 +189,18 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="settings-panel w-full sm:max-w-lg">
-        <SheetHeader className="border-b border-border pb-4">
-          <SheetTitle className="flex items-center gap-2 text-base">
-            <Palette size={16} className="text-primary" aria-hidden />
+        <SheetHeader className="settings-panel__header">
+          <SheetTitle className="settings-panel__title">
+            <Palette aria-hidden />
             Preferences
           </SheetTitle>
-          <SheetDescription>
+          <SheetDescription className="settings-panel__description">
             Appearance, charts, layout, and system controls.
           </SheetDescription>
         </SheetHeader>
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="settings-panel__tabs">
-          <TabsList variant="line" className="settings-panel__tablist w-full justify-start px-4">
+          <TabsList variant="line" className="settings-panel__tablist w-full justify-start">
             <TabsTrigger value="appearance" className="gap-1.5 text-xs">
               <Palette size={13} aria-hidden />
               Theme
@@ -223,7 +223,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             <section className="settings-section">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="settings-section__title">Color mode</h3>
-                <Badge variant="outline" className="text-[0.62rem] capitalize">
+                <Badge variant="outline" className="text-xs capitalize">
                   {resolvedLabel}
                 </Badge>
               </div>
@@ -311,7 +311,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 <Button
                   variant={settings.syncChartToTheme !== false ? 'secondary' : 'outline'}
                   size="sm"
-                  className="h-6 text-[0.62rem]"
+                  className="h-7 text-xs"
                   onClick={() => {
                     const enabling = settings.syncChartToTheme === false;
                     updateSettings({
@@ -460,7 +460,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 </Button>
               </div>
               {settings.workspacePresets.length > 0 ? (
-                <ul className="mt-2 space-y-1">
+                <ul className="mt-2 flex flex-col gap-1">
                   {settings.workspacePresets.map((p) => (
                     <li key={p.id} className="flex items-center justify-between gap-2 rounded-md border border-border/50 px-2 py-1.5 text-xs">
                       <span className="truncate font-medium">{p.name}</span>
@@ -571,7 +571,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 Add BUY signal alert ({activeSymbol})
               </Button>
               {(settings.alerts || []).length > 0 && (
-                <ul className="mt-2 space-y-1">
+                <ul className="mt-2 flex flex-col gap-1">
                   {settings.alerts.map((a) => (
                     <li key={a.id} className="flex items-center justify-between rounded border border-border/50 px-2 py-1 text-xs">
                       <span>{a.symbol} · {a.type}{a.threshold != null ? ` ${a.threshold}` : ''}{a.signal ? ` → ${a.signal}` : ''}</span>

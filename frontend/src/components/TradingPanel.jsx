@@ -20,14 +20,29 @@ export default function TradingPanel({ hidden = false }) {
 
   if (collapsed) {
     return (
-      <aside className="trading-panel trading-panel--collapsed" aria-label="Trading panel collapsed">
+      <aside
+        className="trading-panel trading-panel--collapsed trading-panel-collapsed-rail"
+        aria-label="Trading panel collapsed — click to expand"
+        role="button"
+        tabIndex={0}
+        onClick={() => updateWorkspace({ rightPanelCollapsed: false })}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            updateWorkspace({ rightPanelCollapsed: false });
+          }
+        }}
+      >
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon-sm"
               className="trading-panel__expand-btn"
-              onClick={() => updateWorkspace({ rightPanelCollapsed: false })}
+              onClick={(e) => {
+                e.stopPropagation();
+                updateWorkspace({ rightPanelCollapsed: false });
+              }}
               title="Expand trading panel"
             >
               <PanelRightOpen aria-hidden />
@@ -47,16 +62,16 @@ export default function TradingPanel({ hidden = false }) {
           onValueChange={(v) => v && updateWorkspace({ rightPanelTab: v })}
           className="trading-panel__tabs"
         >
-          <TabsList className="trading-panel__tab-list h-7">
-            <TabsTrigger value="trade" className="text-[0.62rem] px-2 h-6">
+          <TabsList className="trading-panel__tab-list">
+            <TabsTrigger value="trade" className="text-xs">
               <ArrowLeftRight data-icon="inline-start" />
               Trade
             </TabsTrigger>
-            <TabsTrigger value="book" className="text-[0.62rem] px-2 h-6">
+            <TabsTrigger value="book" className="text-xs">
               <BookOpen data-icon="inline-start" />
               Book
             </TabsTrigger>
-            <TabsTrigger value="depth" className="text-[0.62rem] px-2 h-6">
+            <TabsTrigger value="depth" className="text-xs">
               <LineChart data-icon="inline-start" />
               Depth
             </TabsTrigger>

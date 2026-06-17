@@ -52,7 +52,7 @@ export default function ChartContextStrip() {
           <Button
             variant="ghost"
             size="xs"
-            className="chart-context-strip__action h-6 px-1.5"
+            className="chart-context-strip__action"
             onClick={() => jumpDock('analyst')}
           >
             Analyst
@@ -68,7 +68,7 @@ export default function ChartContextStrip() {
           <Button
             variant="ghost"
             size="xs"
-            className={cn('chart-context-strip__action h-6 px-1.5', runningBot && 'text-trading-up')}
+            className={cn('chart-context-strip__action', runningBot && 'text-trading-up')}
             onClick={() => {
               window.dispatchEvent(new CustomEvent('automation-studio-open'));
               jumpDock('algo');

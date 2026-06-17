@@ -243,7 +243,7 @@ export default function OrderEntryWidget() {
       contentClassName="order-entry-shell p-0"
       headerRight={
         <div className="icon-label">
-          <span className={cn('text-[0.62rem] font-bold tracking-wide', isBuy ? 'text-trading-up' : 'text-trading-down')}>
+          <span className={cn('text-xs font-bold tracking-wide', isBuy ? 'text-trading-up' : 'text-trading-down')}>
             {activeSymbol}
           </span>
           {ticker && (
@@ -259,7 +259,7 @@ export default function OrderEntryWidget() {
           type="single"
           value={side}
           onValueChange={(v) => v && setSide(v)}
-          className="mb-2 grid w-full grid-cols-2 gap-1"
+          className="order-entry-side-toggle mb-3 grid w-full grid-cols-2 gap-1"
           spacing={0}
         >
           <ToggleGroupItem
@@ -269,7 +269,7 @@ export default function OrderEntryWidget() {
             className="w-full font-extrabold tracking-wide"
           >
             <TrendingUp data-icon="inline-start" />
-            BUY <span className="text-[0.62rem] font-medium opacity-60">[B]</span>
+            BUY <span className="order-entry-hotkey">[B]</span>
           </ToggleGroupItem>
           <ToggleGroupItem
             ref={sellBtnRef}
@@ -278,7 +278,7 @@ export default function OrderEntryWidget() {
             className="w-full font-extrabold tracking-wide"
           >
             <TrendingDown data-icon="inline-start" />
-            SELL <span className="text-[0.62rem] font-medium opacity-60">[S]</span>
+            SELL <span className="order-entry-hotkey">[S]</span>
           </ToggleGroupItem>
         </ToggleGroup>
 
@@ -287,7 +287,7 @@ export default function OrderEntryWidget() {
           value={orderType}
           onValueChange={(v) => v && setOrderType(v)}
           variant="outline"
-          className="mb-2 grid w-full grid-cols-2 rounded-md bg-muted/30 p-0.5"
+          className="order-entry-type-toggle mb-3 grid w-full grid-cols-2 rounded-md p-0.5"
           spacing={0}
         >
           {['LIMIT', 'MARKET'].map(t => (
@@ -312,7 +312,7 @@ export default function OrderEntryWidget() {
                     className="num-mono pr-12"
                     required
                   />
-                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-muted-foreground">
+                  <span className="order-entry-input-suffix">
                     {quote}
                   </span>
                 </div>
@@ -333,14 +333,14 @@ export default function OrderEntryWidget() {
                   aria-invalid={!!errorMsg}
                   required
                 />
-                <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-muted-foreground">
+                <span className="order-entry-input-suffix">
                   {base}
                 </span>
               </div>
             </Field>
           </FieldGroup>
 
-          <div className="mb-2 grid grid-cols-4 gap-1">
+          <div className="order-entry-qty-presets mb-3 grid grid-cols-4 gap-1">
             {[25, 50, 75, 100].map(pct => (
               <Button key={pct} type="button" variant="outline" size="sm" onClick={() => fillQty(pct)}>
                 {pct}%
@@ -348,18 +348,19 @@ export default function OrderEntryWidget() {
             ))}
           </div>
 
-          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-            <span>Available {isBuy ? quote : base}:</span>
-            <span className="num-mono font-bold text-foreground">
-              {isBuy ? `${quoteAvailable.toFixed(2)} ${quote}` : `${Math.abs(basePosition).toFixed(4)} ${base}`}
-            </span>
-          </div>
-
-          <div className="mb-2 flex justify-between text-xs text-muted-foreground">
-            <span>Est. Order Value:</span>
-            <span className={cn('num-mono font-bold', estCost > quoteAvailable && isBuy ? 'text-trading-down' : 'text-foreground')}>
-              {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {quote}
-            </span>
+          <div className="order-entry-metrics mb-3 flex flex-col gap-1.5">
+            <div className="order-entry-metric-row">
+              <span>Available {isBuy ? quote : base}</span>
+              <span className="num-mono font-bold text-foreground">
+                {isBuy ? `${quoteAvailable.toFixed(2)} ${quote}` : `${Math.abs(basePosition).toFixed(4)} ${base}`}
+              </span>
+            </div>
+            <div className="order-entry-metric-row">
+              <span>Est. Order Value</span>
+              <span className={cn('num-mono font-bold', estCost > quoteAvailable && isBuy ? 'text-trading-down' : 'text-foreground')}>
+                {estCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {quote}
+              </span>
+            </div>
           </div>
 
           <Collapsible open={showSLTP} onOpenChange={setShowSLTP}>
@@ -383,7 +384,7 @@ export default function OrderEntryWidget() {
                   <FieldLabel className="text-trading-down">Stop Loss</FieldLabel>
                   <ToggleGroup type="single" value={slMode} onValueChange={(v) => { if (v) { setSlMode(v); setSlPrice(''); } }} spacing={0} className="h-6">
                     {['%', '$'].map(m => (
-                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-[0.62rem] font-bold">{m}</ToggleGroupItem>
+                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-xs font-bold">{m}</ToggleGroupItem>
                     ))}
                   </ToggleGroup>
                 </div>
@@ -396,7 +397,7 @@ export default function OrderEntryWidget() {
                     placeholder={slMode === '%' ? '1.5' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
                     className="num-mono border-[color-mix(in_srgb,var(--color-down)_30%,transparent)] pr-10"
                   />
-                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-trading-down">
+                  <span className="order-entry-input-suffix order-entry-input-suffix--down">
                     {slMode === '%' ? '%' : quote}
                   </span>
                 </div>
@@ -410,7 +411,7 @@ export default function OrderEntryWidget() {
                   <FieldLabel className="text-trading-up">Take Profit</FieldLabel>
                   <ToggleGroup type="single" value={tpMode} onValueChange={(v) => { if (v) { setTpMode(v); setTpPrice(''); } }} spacing={0} className="h-6">
                     {['%', '$'].map(m => (
-                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-[0.62rem] font-bold">{m}</ToggleGroupItem>
+                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-xs font-bold">{m}</ToggleGroupItem>
                     ))}
                   </ToggleGroup>
                 </div>
@@ -423,7 +424,7 @@ export default function OrderEntryWidget() {
                     placeholder={tpMode === '%' ? '3.0' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
                     className="num-mono border-[color-mix(in_srgb,var(--color-up)_30%,transparent)] pr-10"
                   />
-                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[0.62rem] text-trading-up">
+                  <span className="order-entry-input-suffix order-entry-input-suffix--up">
                     {tpMode === '%' ? '%' : quote}
                   </span>
                 </div>

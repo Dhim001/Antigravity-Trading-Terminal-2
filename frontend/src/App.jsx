@@ -162,8 +162,12 @@ export default function App() {
   }, [setViewMode]);
 
   useEffect(() => {
-    const onInsights = () => setInsightsOpen(true);
-    const onAutomation = () => setAutomationOpen(true);
+    const onInsights = () => {
+      requestAnimationFrame(() => setInsightsOpen(true));
+    };
+    const onAutomation = () => {
+      requestAnimationFrame(() => setAutomationOpen(true));
+    };
     const onSettings = (e) => setSettingsOpen(true, e.detail);
     window.addEventListener('insights-hub-open', onInsights);
     window.addEventListener('automation-studio-open', onAutomation);
@@ -238,7 +242,7 @@ export default function App() {
   }, [setViewMode, setSettingsOpen, toggleZenMode]);
 
   const effectiveDockH = showDock
-    ? (workspace?.dockCollapsed ? 36 : dockHeight)
+    ? (workspace?.dockCollapsed ? 44 : dockHeight)
     : 0;
 
   return (
@@ -355,7 +359,7 @@ export default function App() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  className="header-stop-bots-btn h-[var(--control-h)] px-2.5 text-xs"
+                  className="header-stop-bots-btn"
                   onClick={() => setStopBotsOpen(true)}
                   title="Stop all running bots"
                 >
@@ -422,7 +426,7 @@ export default function App() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="header-search-btn h-[var(--control-h)] px-2.5 text-xs text-muted-foreground"
+                  className="header-search-btn text-muted-foreground"
                   onClick={() => setPaletteOpen(true)}
                   title="Symbol search (⌘K)"
                 >
