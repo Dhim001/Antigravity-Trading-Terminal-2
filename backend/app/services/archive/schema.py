@@ -3,6 +3,11 @@
 from app.db.connection import is_postgres
 
 
+def _int64_type() -> str:
+    """Postgres INTEGER is 32-bit; epoch milliseconds need BIGINT."""
+    return "BIGINT" if is_postgres() else "INTEGER"
+
+
 def init_archive_schema(cursor) -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_bars_1m (
@@ -43,10 +48,11 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_bars_1h_symbol_time ON market_bars_1h (symbol, time)"
     )
-    cursor.execute("""
+    tick_time = _int64_type()
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS market_ticks (
             symbol   TEXT NOT NULL,
-            time_ms  INTEGER NOT NULL,
+            time_ms  {tick_time} NOT NULL,
             price    REAL NOT NULL,
             volume   REAL NOT NULL DEFAULT 0,
             source   TEXT NOT NULL,

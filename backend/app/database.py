@@ -287,6 +287,8 @@ def init_db():
 
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
+    if is_postgres():
+        _safe_alter(cursor, "ALTER TABLE market_ticks ALTER COLUMN time_ms TYPE BIGINT")
     _ensure_performance_indexes(cursor)
     _ensure_sim_market_state_table(cursor)
 

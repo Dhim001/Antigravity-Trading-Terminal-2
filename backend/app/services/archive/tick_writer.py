@@ -49,6 +49,7 @@ def flush_ticks() -> int:
 
     conn = get_connection()
     cursor = conn.cursor()
+    written = 0
     try:
         from app.db.connection import is_postgres
 
@@ -77,6 +78,7 @@ def flush_ticks() -> int:
         conn.commit()
     except Exception as exc:
         logger.error("Tick flush failed: %s", exc)
+        conn.rollback()
     finally:
         conn.close()
 
