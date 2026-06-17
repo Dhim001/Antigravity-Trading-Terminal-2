@@ -15,10 +15,23 @@ def _serial_type() -> str:
 
 
 def _safe_alter(cursor, sql: str):
-    try:
-        cursor.execute(sql)
-    except Exception:
-        pass
+    """Idempotent schema migration — Postgres requires savepoints on expected failures."""
+    stmt = sql
+    if is_postgres():
+        upper = sql.upper()
+        if "ADD COLUMN" in upper and "IF NOT EXISTS" not in upper:
+            stmt = sql.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS", 1)
+        cursor.execute("SAVEPOINT safe_alter_sp")
+        try:
+            cursor.execute(stmt)
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT safe_alter_sp")
+        cursor.execute("RELEASE SAVEPOINT safe_alter_sp")
+    else:
+        try:
+            cursor.execute(stmt)
+        except Exception:
+            pass
 
 
 def _ensure_sim_market_state_table(cursor) -> None:
@@ -79,7 +92,7 @@ def init_db():
             status TEXT NOT NULL,     -- PENDING, FILLED, CANCELED, REJECTED
             filled_quantity REAL DEFAULT 0.0,
             average_fill_price REAL DEFAULT 0.0,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
@@ -102,7 +115,8 @@ def init_db():
             status TEXT NOT NULL,
             allocation REAL NOT NULL,
             config TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            execution_mode TEXT NOT NULL DEFAULT 'BAR_CLOSE',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     _safe_alter(cursor, "ALTER TABLE bots ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'BAR_CLOSE'")
