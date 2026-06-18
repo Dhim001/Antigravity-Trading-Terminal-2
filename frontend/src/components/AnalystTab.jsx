@@ -5,6 +5,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Brain, RefreshCw, GitCompare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
+import { selectAgentInsight, normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { fetchAgentInsights } from '../api/endpoints';
@@ -77,7 +79,8 @@ export default function AnalystTab() {
   const visionReports = useStore((s) => s.visionReports);
   const [visionLoading, setVisionLoading] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
-  const [compareSymbol, setCompareSymbol] = useState('ETHUSDT');
+  const chartTf = useSettingsStore((s) => s.settings.chartLayout?.timeframe || '1m');
+  const analysisTf = normalizeAnalystTimeframe(chartTf);
 
   useEffect(() => {
     setSymbol(activeSymbol);
@@ -88,7 +91,7 @@ export default function AnalystTab() {
     [agentInsightHistory, symbol],
   );
 
-  const latest = agentInsights[symbol];
+  const latest = selectAgentInsight(agentInsights, symbol, analysisTf);
 
   const stats = useMemo(() => {
     let buy = 0;
@@ -120,8 +123,8 @@ export default function AnalystTab() {
   }, [loadHistory]);
 
   const runAnalyze = () => {
-    sendAction(Action.CHART_ANALYZE, { symbol, force_llm: false });
-    toast.message(`Analysis requested for ${symbol}`);
+    sendAction(Action.CHART_ANALYZE, { symbol, timeframe: analysisTf, force_llm: false });
+    toast.message(`Analysis requested for ${symbol} (${chartTf})`);
   };
 
   const openAlgo = () => {
@@ -227,7 +230,11 @@ export default function AnalystTab() {
       {compareMode && (
         <div className="grid gap-2 border-b border-border/50 bg-muted/10 px-3 py-2 sm:grid-cols-2">
           {[symbol, compareSymbol].map((sym) => {
-            const insight = agentInsights[sym] || (agentInsightHistory[sym] ?? [])[0];
+            const insight = selectAgentInsight(agentInsights, sym, analysisTf)
+              || (agentInsightHistory[sym] ?? []).find(
+                (row) => normalizeAnalystTimeframe(row.timeframe) === analysisTf,
+              )
+              || (agentInsightHistory[sym] ?? [])[0];
             return (
               <div key={sym} className="rounded border border-border/50 p-2 text-xs">
                 <div className="mb-1 flex items-center justify-between">

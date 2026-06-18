@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
+import { selectAgentInsight } from '../lib/agentInsights';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
 import { parseTradeTimestamp, parseSignalBarTime } from '@/lib/botAttribution';
@@ -538,6 +539,10 @@ export default function ChartWidget() {
   const loadOlderRef = useRef(null);
 
   const [displayBarLimit, setDisplayBarLimit] = useState(CHART_DISPLAY_BARS);
+  const settings = useSettingsStore(state => state.settings);
+  const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
+  const [timeframe, setTimeframe] = useState(() => settings.chartLayout?.timeframe || '1m');
+
   const activeSymbol = useStore(state => state.activeSymbol);
   const historyRev = useStore(state => state.candleHistoryRevision[activeSymbol] || 0);
   const candleRev = useStore(state => state.candleRevision[activeSymbol] || 0);
@@ -563,9 +568,14 @@ export default function ChartWidget() {
   const tradeHistory = useStore(state => state.tradeHistory);
   const selectedBotId = useStore(state => state.selectedBotId);
   const botDetail = useStore(state => state.botDetail);
-  const agentInsight = useStore(state => state.agentInsights[activeSymbol]);
+  const agentInsights = useStore(state => state.agentInsights);
+  const agentInsight = useMemo(
+    () => selectAgentInsight(agentInsights, activeSymbol, timeframe),
+    [agentInsights, activeSymbol, timeframe],
+  );
   const setBotStrategy = useStore(state => state.setBotStrategy);
   const setBotExecutionMode = useStore(state => state.setBotExecutionMode);
+  const setBotTimeframe = useStore(state => state.setBotTimeframe);
   const updateBotConfig = useStore(state => state.updateBotConfig);
   const agentOverlayKey = useMemo(() => {
     if (!agentInsight) return '';
@@ -575,6 +585,7 @@ export default function ChartWidget() {
   const handleDeployChartAgent = useCallback(() => {
     setBotStrategy('CHART_AGENT');
     setBotExecutionMode('BAR_CLOSE');
+    setBotTimeframe(timeframe);
     updateBotConfig({
       min_confidence: agentInsight?.confidence ?? 0.55,
       use_llm: false,
@@ -583,7 +594,7 @@ export default function ChartWidget() {
       take_profit_percent: 3,
       tp_mode: 'percent',
     });
-  }, [agentInsight, setBotStrategy, setBotExecutionMode, updateBotConfig]);
+  }, [agentInsight, setBotStrategy, setBotExecutionMode, setBotTimeframe, timeframe, updateBotConfig]);
   const botOverlayKey = useStore(state => {
     if (!state.selectedBotId || !state.botDetail?.trades) return '';
     return state.botDetail.trades.map(
@@ -593,16 +604,13 @@ export default function ChartWidget() {
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
 
-  const settings = useSettingsStore(state => state.settings);
   const zenMode = useSettingsStore(state => state.settings.workspace?.zenMode ?? false);
-  const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
   const updateChartLayout = useSettingsStore(state => state.updateChartLayout);
   const chartTheme = useMemo(
     () => getChartEchartsTheme(settings, resolvedTheme),
     [settings, resolvedTheme],
   );
 
-  const [timeframe, setTimeframe] = useState(() => settings.chartLayout?.timeframe || '1m');
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
 
   useEffect(() => {
@@ -1409,7 +1417,7 @@ export default function ChartWidget() {
       headerRight={
         <div className="relative z-20 flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
           <ChartHeaderPrice symbol={activeSymbol} />
-          <ChartAnalystBadge symbol={activeSymbol} onDeployAgent={handleDeployChartAgent} />
+          <ChartAnalystBadge symbol={activeSymbol} timeframe={timeframe} onDeployAgent={handleDeployChartAgent} />
           <Button
             variant={zenMode ? 'secondary' : 'ghost'}
             size="icon-sm"

@@ -4382,7 +4382,10 @@ body {
 }
 
 .terminal-table.algo-bots-table th:nth-child(3),
-.terminal-table.algo-bots-table td:nth-child(3),
+.terminal-table.algo-bots-table td:nth-child(3) {
+  min-width: 3rem;
+}
+
 .terminal-table.algo-bots-table th:nth-child(4),
 .terminal-table.algo-bots-table td:nth-child(4) {
   min-width: 4.75rem;
@@ -4400,15 +4403,25 @@ body {
 
 .terminal-table.algo-bots-table th:nth-child(7),
 .terminal-table.algo-bots-table td:nth-child(7) {
+  min-width: 6.5rem;
+}
+
+.terminal-table.algo-bots-table th:nth-child(8),
+.terminal-table.algo-bots-table td:nth-child(8) {
+  min-width: 4.75rem;
+}
+
+.terminal-table.algo-bots-table th:nth-child(9),
+.terminal-table.algo-bots-table td:nth-child(9) {
   position: sticky;
   right: 0;
   z-index: 2;
-  min-width: 8.5rem;
+  min-width: 9rem;
   background: var(--surface-1);
   box-shadow: -1px 0 0 var(--border-subtle);
 }
 
-.terminal-table.algo-bots-table thead th:nth-child(7) {
+.terminal-table.algo-bots-table thead th:nth-child(9) {
   z-index: 5;
 }
 
@@ -4417,7 +4430,7 @@ body {
 }
 
 .terminal-table tr.algo-bot-row:nth-child(even) > td:nth-child(1),
-.terminal-table tr.algo-bot-row:nth-child(even) > td:nth-child(7) {
+.terminal-table tr.algo-bot-row:nth-child(even) > td:nth-child(9) {
   background: color-mix(in oklab, var(--muted) 18%, var(--surface-1));
 }
 
@@ -4426,7 +4439,7 @@ body {
 }
 
 .terminal-table tr.algo-bot-row:hover > td:nth-child(1),
-.terminal-table tr.algo-bot-row:hover > td:nth-child(7) {
+.terminal-table tr.algo-bot-row:hover > td:nth-child(9) {
   background: color-mix(in oklab, var(--bg-hover) 85%, var(--surface-1));
 }
 
@@ -4446,7 +4459,7 @@ body {
     1px 0 0 var(--border-subtle);
 }
 
-.terminal-table tr.algo-bot-row.row-active > td:nth-child(7) {
+.terminal-table tr.algo-bot-row.row-active > td:nth-child(9) {
   background: color-mix(in oklab, var(--primary) 14%, var(--surface-1));
 }
 
@@ -4878,8 +4891,8 @@ body {
   font-size: var(--fs-xs);
 }
 
-.bottom-dock[data-compact] .terminal-table.algo-bots-table th:nth-child(7),
-.bottom-dock[data-compact] .terminal-table.algo-bots-table td:nth-child(7) {
+.bottom-dock[data-compact] .terminal-table.algo-bots-table th:nth-child(9),
+.bottom-dock[data-compact] .terminal-table.algo-bots-table td:nth-child(9) {
   padding-inline: var(--sp-1);
 }
 

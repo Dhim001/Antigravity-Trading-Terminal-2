@@ -6,8 +6,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from app.services.market.timeframes import normalize_timeframe
+
 
 SignalType = Literal["BUY", "SELL", "NONE"]
+
+
+def insight_cache_key(symbol: str, timeframe: str = "1m") -> str:
+    """Memory/Redis cache key for analyst insights."""
+    tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
+    return f"{symbol.upper()}:{tf}"
 
 
 @dataclass
@@ -31,7 +39,8 @@ class ChartAgentInsight:
         if not self.created_at:
             self.created_at = datetime.now(timezone.utc).isoformat()
         if not self.insight_id and self.symbol and self.bar_time:
-            self.insight_id = f"{self.symbol}:{self.bar_time}"
+            tf = normalize_timeframe(self.timeframe) if self.timeframe else "1m"
+            self.insight_id = f"{self.symbol.upper()}:{tf}:{self.bar_time}"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

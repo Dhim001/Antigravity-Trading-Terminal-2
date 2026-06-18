@@ -41,7 +41,7 @@ class TestChartAnalyst(unittest.TestCase):
         self.analyst.persist(insight)
         rows = self.analyst.list_insights(symbol, limit=5)
         self.assertTrue(rows)
-        self.assertEqual(rows[0]["insight_id"], insight.insight_id)
+        self.assertIn(insight.insight_id, [r["insight_id"] for r in rows])
 
     def test_cache_hit_after_analyze(self):
         async def _run():

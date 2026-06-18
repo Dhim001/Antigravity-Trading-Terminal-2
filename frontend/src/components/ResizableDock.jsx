@@ -54,6 +54,8 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
+import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { selectAgentInsight } from '@/lib/agentInsights';
 import { buildBotLookup, getPositionBots, shortBotId } from '@/lib/botAttribution';
 import { DOCK_GROUP_CONFIG, dockGroupForTab } from '../settings/layoutModes';
 import { selectPositionStats } from '../store/selectors';
@@ -547,8 +549,8 @@ function BalancesTab() {
 // ── Algo Bot Tab ──────────────────────────────────────────────────
 export function AlgoTab({ hideToolbar = false }) {
   const {
-    activeBots, botStrategy, botExecutionMode, botConfig, activeSymbol, symbolsList,
-    setBotStrategy, setBotExecutionMode, updateBotConfig, clearBotLogs, botLogs,
+    activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
+    setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, backtestRuns, setChartInteractionMode,
     isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
@@ -558,11 +560,13 @@ export function AlgoTab({ hideToolbar = false }) {
     activeBots: s.activeBots,
     botStrategy: s.botStrategy,
     botExecutionMode: s.botExecutionMode,
+    botTimeframe: s.botTimeframe,
     botConfig: s.botConfig,
     activeSymbol: s.activeSymbol,
     symbolsList: s.symbolsList,
     setBotStrategy: s.setBotStrategy,
     setBotExecutionMode: s.setBotExecutionMode,
+    setBotTimeframe: s.setBotTimeframe,
     updateBotConfig: s.updateBotConfig,
     clearBotLogs: s.clearBotLogs,
     botLogs: s.botLogs,
@@ -620,10 +624,13 @@ export function AlgoTab({ hideToolbar = false }) {
     sendAction(Action.BOT_CREATE, {
       strategy: botStrategy,
       symbol: activeSymbol,
-      timeframe: botExecutionMode === 'TICK' ? 'tick' : '1m',
+      timeframe: botExecutionMode === 'TICK' ? 'tick' : botTimeframe,
       allocation: botConfig.allocation,
       execution_mode: botExecutionMode,
-      config: botConfig,
+      config: {
+        ...botConfig,
+        trailing_stop_percent: botConfig.trailing_stop_percent ?? 2,
+      },
     });
   };
 
@@ -637,6 +644,7 @@ export function AlgoTab({ hideToolbar = false }) {
       symbol: activeSymbol,
       config: botConfig,
       days: parseInt(backtestDays, 10) || 7,
+      timeframe: botTimeframe,
     });
   };
 
@@ -659,6 +667,13 @@ export function AlgoTab({ hideToolbar = false }) {
   const handleResumeBot = (bot_id) => {
     sendAction(Action.BOT_RESUME, { bot_id });
   };
+
+  const handleSetBotStopLoss = useCallback((bot) => {
+    if (bot.symbol && bot.symbol !== activeSymbol) {
+      setActiveSymbol(bot.symbol);
+    }
+    setChartInteractionMode('edit_sl');
+  }, [activeSymbol, setActiveSymbol, setChartInteractionMode]);
 
   const handleStopAll = () => {
     if (activeBots.length === 0) return;
@@ -775,7 +790,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <strong>Live bots enabled</strong> on {terminalMode}
             {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
             Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
-            Signals fire on closed 1m bars — do not resend ambiguous orders.
+            Signals fire on closed {formatBarTimeframeLabel(botTimeframe)} bars — do not resend ambiguous orders.
           </AlertDescription>
         </Alert>
       )}
@@ -868,14 +883,33 @@ export function AlgoTab({ hideToolbar = false }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper">
-                  <SelectItem value="BAR_CLOSE" className="text-xs">Bar Close — 1m indicator signals</SelectItem>
+                  <SelectItem value="BAR_CLOSE" className="text-xs">Bar Close — indicator signals on bar close</SelectItem>
                   <SelectItem value="TICK" className="text-xs">Tick — sub-minute microstructure</SelectItem>
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                Tick bots evaluate every price update with cooldown; bar bots fire on closed 1m candles only.
+                Tick bots evaluate every price update with cooldown; bar bots fire when a {formatBarTimeframeLabel(botTimeframe)} candle closes.
               </span>
             </div>
+
+            {botExecutionMode === 'BAR_CLOSE' && (
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Bar Timeframe</Label>
+              <Select value={botTimeframe} onValueChange={setBotTimeframe}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Bot bar timeframe">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {BAR_TIMEFRAMES.map((tf) => (
+                    <SelectItem key={tf} value={tf} className="text-xs">{tf} bars</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Strategy evaluates on closed {formatBarTimeframeLabel(botTimeframe)} candles — same resolution as backtest below.
+              </span>
+            </div>
+            )}
 
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Strategy Templates</Label>
@@ -889,6 +923,29 @@ export function AlgoTab({ hideToolbar = false }) {
                   />
                 ))}
               </div>
+            </div>
+
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Trailing Stop Loss</Label>
+              <InputGroup className="h-8">
+                <InputGroupInput
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={botConfig?.trailing_stop_percent ?? 2}
+                  onChange={e => updateBotConfig({
+                    trailing_stop_percent: parseFloat(e.target.value) || 0,
+                  })}
+                  className="text-xs"
+                  aria-label="Trailing stop loss percent"
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText className="text-xs">%</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+              <span className="algo-field-hint">
+                Exits when price retraces this % from the best price since entry. Applied on every new position.
+              </span>
             </div>
 
             <div className="algo-deploy-field">
@@ -959,7 +1016,7 @@ export function AlgoTab({ hideToolbar = false }) {
                 </InputGroupAddon>
               </InputGroup>
               <span className="algo-field-hint">
-                Risk sized at 1% of account balance using ATR-based stops. Signals evaluate on closed 1m bars.
+                Risk sized at 1% of account balance using ATR-based stops. Signals evaluate on closed {formatBarTimeframeLabel(botTimeframe)} bars.
               </span>
             </div>
 
@@ -995,6 +1052,23 @@ export function AlgoTab({ hideToolbar = false }) {
             )}
 
             <div className="algo-deploy-field">
+              <Label className="algo-field-label">Backtest Timeframe</Label>
+              <Select value={botTimeframe} onValueChange={setBotTimeframe} disabled={botExecutionMode === 'TICK'}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest bar timeframe">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {BAR_TIMEFRAMES.map((tf) => (
+                    <SelectItem key={tf} value={tf} className="text-xs">{tf} bars</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Shared with deploy timeframe — resampled from archived 1m data.
+              </span>
+            </div>
+
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Backtest Range</Label>
               <Select value={backtestDays} onValueChange={setBacktestDays}>
                 <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest history range">
@@ -1007,7 +1081,9 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                Uses archived 1m bars when range exceeds live buffer. Scroll the chart left to load older history.
+                {botTimeframe === '1m'
+                  ? 'Uses archived 1m bars when range exceeds live buffer.'
+                  : 'Ranges above 90d are capped to 1m archive retention for accurate resampling.'}
               </span>
             </div>
 
@@ -1015,6 +1091,7 @@ export function AlgoTab({ hideToolbar = false }) {
               <BacktestResultsPanel
                 results={backtestResults}
                 backtestDays={backtestDays}
+                backtestTimeframe={botTimeframe}
                 symbol={activeSymbol}
                 strategy={botStrategy}
                 recentRuns={backtestRuns}
@@ -1075,7 +1152,7 @@ export function AlgoTab({ hideToolbar = false }) {
                     : `${botConfig?.take_profit_percent ?? '—'}% TP`}
               </strong>
             </div>
-            <div><span className="text-muted-foreground">Timeframe:</span> <strong>{botExecutionMode === 'TICK' ? 'tick (sub-minute)' : '1m (closed-bar signals)'}</strong></div>
+            <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
           </div>
           <DialogFooter showCloseButton={false}>
             <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
@@ -1133,6 +1210,7 @@ export function AlgoTab({ hideToolbar = false }) {
               <tr>
                 <th>Symbol</th>
                 <th>Strategy</th>
+                <th className="text-center">TF</th>
                 <th className="text-center">Position</th>
                 <th className="text-right">Alloc</th>
                 <th className="text-right">Today PnL</th>
@@ -1144,7 +1222,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <tbody>
               {activeBots.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="algo-table-empty">
+                  <td colSpan="9" className="algo-table-empty">
                     No active bots. Pick a template and deploy.
                   </td>
                 </tr>
@@ -1165,6 +1243,9 @@ export function AlgoTab({ hideToolbar = false }) {
                         <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.65rem]">TICK</Badge>
                       )}
                     </td>
+                    <td className="text-center text-xs num-mono text-muted-foreground">
+                      {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
+                    </td>
                     <td className="text-center">
                       {inPosition ? (
                         <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
@@ -1183,11 +1264,18 @@ export function AlgoTab({ hideToolbar = false }) {
                     </td>
                     <td className="algo-last-signal" title={bot.last_signal_at || undefined}>
                       <span>{formatLastSignal(bot.last_signal_at)}</span>
-                      {bot.strategy === 'CHART_AGENT' && agentInsights[bot.symbol]?.confidence != null && (
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          ({Math.round(agentInsights[bot.symbol].confidence * 100)}% conf)
-                        </span>
-                      )}
+                      {bot.strategy === 'CHART_AGENT' && (() => {
+                        const insight = selectAgentInsight(
+                          agentInsights,
+                          bot.symbol,
+                          bot.execution_mode === 'TICK' ? '1m' : bot.timeframe,
+                        );
+                        return insight?.confidence != null ? (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            ({Math.round(insight.confidence * 100)}% conf)
+                          </span>
+                        ) : null;
+                      })()}
                     </td>
                     <td className="text-center">
                       <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
@@ -1195,23 +1283,23 @@ export function AlgoTab({ hideToolbar = false }) {
                     <td className="text-center" onClick={e => e.stopPropagation()}>
                       <div className="algo-bot-actions">
                         {bot.status === 'RUNNING' && (
-                          <>
-                            <Button variant="outline" size="xs" onClick={() => handlePauseBot(bot.id)} title="Pause bot">
-                              <Pause />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="xs"
-                              onClick={() => setChartInteractionMode('edit_sl')}
-                              title="Set stop loss on chart"
-                            >
-                              SL
-                            </Button>
-                          </>
+                          <Button variant="outline" size="xs" onClick={() => handlePauseBot(bot.id)} title="Pause bot">
+                            <Pause />
+                          </Button>
                         )}
                         {bot.status === 'PAUSED' && (
                           <Button variant="outline" size="xs" onClick={() => handleResumeBot(bot.id)} title="Resume bot">
                             <PlayCircle />
+                          </Button>
+                        )}
+                        {bot.status !== 'STOPPED' && (
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            onClick={() => handleSetBotStopLoss(bot)}
+                            title="Set stop loss on chart"
+                          >
+                            SL
                           </Button>
                         )}
                         {bot.status !== 'STOPPED' && (
@@ -1250,7 +1338,10 @@ export function AlgoTab({ hideToolbar = false }) {
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
             ) : botLogs.map((log, i) => {
               const isSignal = /Entry (BUY|SELL)|signal @/i.test(log);
-              const showInsight = isSignal && botStrategy === 'CHART_AGENT' && agentInsights[activeSymbol];
+              const chartAgentInsight = botStrategy === 'CHART_AGENT'
+                ? selectAgentInsight(agentInsights, activeSymbol, botTimeframe)
+                : null;
+              const showInsight = isSignal && chartAgentInsight;
               return (
                 <div key={`${i}-${log.slice(0, 24)}`} className={cn(logLineClass(log), showInsight && 'group relative')}>
                   <span>{log}</span>

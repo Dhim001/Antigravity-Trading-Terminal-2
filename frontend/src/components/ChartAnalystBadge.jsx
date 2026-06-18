@@ -18,6 +18,7 @@ import { generateSignal } from '../utils/indicators';
 import SubReportCards from './SubReportCards';
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
+import { normalizeAnalystTimeframe, selectAgentInsight } from '../lib/agentInsights';
 
 const SIGNAL_STYLES = {
   'STRONG BUY': { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e' },
@@ -49,8 +50,10 @@ function fallbackFromCandles(candles) {
   };
 }
 
-export default function ChartAnalystBadge({ symbol, onDeployAgent }) {
-  const agentInsight = useStore((state) => state.agentInsights[symbol]);
+export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAgent }) {
+  const agentInsights = useStore((state) => state.agentInsights);
+  const agentInsight = selectAgentInsight(agentInsights, symbol, timeframe);
+  const chartTf = normalizeAnalystTimeframe(timeframe);
   const setOrderPrefill = useStore((state) => state.setOrderPrefill);
   const ticker = useStore((state) => state.tickerData[symbol]);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,20 +100,20 @@ export default function ChartAnalystBadge({ symbol, onDeployAgent }) {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      sendAction(Action.CHART_ANALYZE, { symbol, force_llm: false });
-      toast.message('Chart analysis requested…');
+      sendAction(Action.CHART_ANALYZE, { symbol, timeframe: chartTf, force_llm: false });
+      toast.message(`Chart analysis requested (${timeframe})…`);
     } catch (err) {
       toast.error(err?.message || 'Failed to request analysis');
     } finally {
       setTimeout(() => setRefreshing(false), 800);
     }
-  }, [symbol]);
+  }, [symbol, chartTf, timeframe]);
 
   useEffect(() => {
     if (!agentInsight && symbol && lastCandleTime) {
-      sendAction(Action.CHART_ANALYZE, { symbol });
+      sendAction(Action.CHART_ANALYZE, { symbol, timeframe: chartTf });
     }
-  }, [symbol, lastCandleTime, agentInsight]);
+  }, [symbol, chartTf, lastCandleTime, agentInsight]);
 
   if (!display) return null;
 

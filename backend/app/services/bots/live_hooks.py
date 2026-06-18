@@ -23,8 +23,7 @@ def register_live_bot_hooks(
 
     async def on_bar_close(symbol: str) -> None:
         candles = get_bot_candles(symbol, feed)
-        if candles:
-            await bot_manager.process_market_tick(symbol, candles)
+        await bot_manager.process_market_tick(symbol, ohlcv_1m=candles, feed=feed)
 
         if AGENT_ENABLED and chart_analyst is not None:
             symbols = chart_analyst.symbols_to_analyze(bot_manager, manager)

@@ -66,9 +66,7 @@ async def bot_market_loop(bot_manager: BotManagerService, feed):
             if bot_manager.active_bots:
                 watched = {b["symbol"] for b in bot_manager.active_bots.values()}
                 for symbol in watched:
-                    candles = get_bot_candles(symbol, feed)
-                    if candles:
-                        await bot_manager.process_market_tick(symbol, candles)
+                    await bot_manager.process_market_tick(symbol, feed=feed)
         except Exception as exc:
             logger.error("Error in bot market loop: %s", exc)
         await asyncio.sleep(interval)
@@ -111,8 +109,7 @@ def register_worker_handlers(bot_manager: BotManagerService, event_bus, feed=Non
         if feed and hasattr(feed, "sync_bar") and payload.get("bar"):
             feed.sync_bar(symbol, [payload["bar"]])
         candles = get_bot_candles(symbol, feed) if feed else payload.get("candles")
-        if candles:
-            await bot_manager.process_market_tick(symbol, candles)
+        await bot_manager.process_market_tick(symbol, ohlcv_1m=candles, feed=feed)
 
         if chart_analyst is not None and candles:
             try:

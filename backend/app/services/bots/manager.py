@@ -13,6 +13,8 @@ from app.services.bots.take_profit import format_tp_summary, merge_tp_config, re
 from app.services.bots.tick_strategies import get_tick_strategy, is_tick_strategy, merge_tick_config
 from app.services.bots.tick_screener import TickScreener
 from app.services.bots.bar_events import BarCloseTracker
+from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
+from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
@@ -28,6 +30,16 @@ def _coerce_bar_time(bar_time) -> int | None:
         return int(bar_time)
     except (TypeError, ValueError):
         return None
+
+
+def _bot_bar_timeframe(bot: dict) -> str:
+    raw = (bot.get("timeframe") or "1m").strip()
+    if raw.lower() == "tick":
+        return "1m"
+    try:
+        return normalize_timeframe(raw)
+    except ValueError:
+        return "1m"
 
 
 class BotManagerService:
@@ -61,10 +73,12 @@ class BotManagerService:
             self.active_bots[bot_id]["last_tick_signal_at"] = 0
             mode = (row["execution_mode"] or "BAR_CLOSE").upper()
             self.active_bots[bot_id]["execution_mode"] = mode
+            self.active_bots[bot_id]["timeframe"] = _bot_bar_timeframe(self.active_bots[bot_id])
             config = self.active_bots[bot_id]["config"]
             strategy = row["strategy"]
             if normalize_strategy_name(strategy) == "CHART_AGENT":
-                config = {**config, "symbol": row["symbol"]}
+                tf = _bot_bar_timeframe(self.active_bots[bot_id])
+                config = {**config, "symbol": row["symbol"], "timeframe": tf}
                 self.active_bots[bot_id]["config"] = config
             if mode == "TICK" or is_tick_strategy(strategy):
                 self.active_bots[bot_id]["execution_mode"] = "TICK"
@@ -288,7 +302,7 @@ class BotManagerService:
         await self._set_bot_status(bot_id, "ERROR")
         await self.log_bot_event(bot_id, "ERROR", reason)
 
-    async def process_market_tick(self, symbol: str, ohlcv_data: list):
+    async def process_market_tick(self, symbol: str, ohlcv_1m: list | None = None, *, feed=None):
         if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
             return
         if not self.active_bots or not any(
@@ -296,9 +310,32 @@ class BotManagerService:
             for b in self.active_bots.values()
         ):
             return
-        if not self._bar_tracker.check(symbol, ohlcv_data):
+
+        timeframes = {
+            _bot_bar_timeframe(bot)
+            for bot in self.active_bots.values()
+            if bot["symbol"] == symbol
+            and bot.get("status") == "RUNNING"
+            and bot.get("execution_mode", "BAR_CLOSE") != "TICK"
+            and bot.get("strategy_instance")
+        }
+        if not timeframes:
             return
 
+        for timeframe in sorted(timeframes):
+            if feed is not None:
+                ohlcv = get_bot_candles(symbol, feed, timeframe=timeframe)
+            elif ohlcv_1m:
+                ohlcv = candles_for_timeframe(ohlcv_1m, timeframe)
+            else:
+                continue
+
+            if not ohlcv or not self._bar_tracker.check(symbol, ohlcv, timeframe=timeframe):
+                continue
+
+            await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
+
+    async def _evaluate_bar_close_bots(self, symbol: str, timeframe: str, ohlcv_data: list):
         running = [
             (bot_id, bot)
             for bot_id, bot in list(self.active_bots.items())
@@ -306,6 +343,7 @@ class BotManagerService:
             and bot.get("status") == "RUNNING"
             and bot.get("execution_mode", "BAR_CLOSE") != "TICK"
             and bot.get("strategy_instance")
+            and _bot_bar_timeframe(bot) == timeframe
         ]
         if not running:
             return
@@ -353,9 +391,14 @@ class BotManagerService:
                             for b in self.active_bots.values()
                             if b["symbol"] == symbol
                             and normalize_strategy_name(b.get("strategy", "")) == "CHART_AGENT"
+                            and _bot_bar_timeframe(b) == timeframe
                         )
                         await get_chart_analyst().ensure_for_bar(
-                            symbol, ohlcv_data, bar_time, force_llm=force_llm
+                            symbol,
+                            ohlcv_data,
+                            bar_time,
+                            timeframe=timeframe,
+                            force_llm=force_llm,
                         )
                     except RuntimeError:
                         pass
@@ -677,8 +720,14 @@ class BotManagerService:
         mode = (execution_mode or "BAR_CLOSE").upper()
         if is_tick_strategy(strategy):
             mode = "TICK"
+        if mode == "TICK":
+            tf = "tick"
+        else:
+            if not is_valid_timeframe(timeframe or "1m"):
+                raise ValueError(f"Unsupported bot timeframe: {timeframe}")
+            tf = normalize_timeframe(timeframe or "1m")
         if strategy == "CHART_AGENT":
-            config = {**(config or {}), "symbol": symbol}
+            config = {**(config or {}), "symbol": symbol, "timeframe": tf}
 
         bot_id = str(uuid.uuid4())
         conn = get_connection()
@@ -688,7 +737,7 @@ class BotManagerService:
             INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config, execution_mode)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (bot_id, strategy, symbol, timeframe, "RUNNING", allocation, json.dumps(config), mode),
+            (bot_id, strategy, symbol, tf, "RUNNING", allocation, json.dumps(config), mode),
         )
         conn.commit()
         conn.close()
@@ -697,7 +746,7 @@ class BotManagerService:
             "id": bot_id,
             "strategy": strategy,
             "symbol": symbol,
-            "timeframe": timeframe,
+            "timeframe": tf,
             "status": "RUNNING",
             "allocation": allocation,
             "config": config,

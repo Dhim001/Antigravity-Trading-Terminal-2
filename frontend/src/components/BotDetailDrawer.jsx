@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
+import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import BotSnapshotChart from './BotSnapshotChart';
 import { Pause, PlayCircle, OctagonX, Loader2, GripVertical } from 'lucide-react';
 
@@ -235,7 +236,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                   <StrategyBadge strategy={bot.strategy} />
                   <p className="bot-detail-drawer__tagline">{strategyMeta.tagline}</p>
                   <p className="bot-detail-drawer__subline">
-                    {bot.timeframe}
+                    {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)} bars
                     <span className="text-muted-foreground/60" aria-hidden> · </span>
                     ${Number(bot.allocation).toLocaleString()} allocated
                   </p>

@@ -34,12 +34,21 @@ async def chart_analyze(ctx: RequestContext) -> None:
         return
 
     force_llm = bool(ctx.message.get("force_llm", False))
+    raw_tf = ctx.message.get("timeframe") or "1m"
+    try:
+        from app.services.market.timeframes import normalize_timeframe
+
+        timeframe = normalize_timeframe(raw_tf)
+    except ValueError:
+        await send_to(ctx, error(f"Unsupported timeframe: {raw_tf}"))
+        return
+
     analyst = ctx.chart_analyst
     if analyst is None:
         await send_to(ctx, error("Chart analyst service unavailable"))
         return
 
-    insight = await analyst.analyze(symbol, force_llm=force_llm, broadcast=True)
+    insight = await analyst.analyze(symbol, force_llm=force_llm, timeframe=timeframe, broadcast=True)
     if insight is None:
         await send_to(ctx, error("Not enough candle data for analysis"))
         return

@@ -141,16 +141,22 @@ async def run_backtest(ctx: RequestContext) -> None:
         days = 7
     days = max(1, min(days, 365))
     interval = msg.get("interval")
+    timeframe = msg.get("timeframe", "1m")
 
     if ctx.backtester and hasattr(ctx.oms, "feed"):
         from app.services.archive.resolve import resolve_backtest_candles
 
-        candles, meta = resolve_backtest_candles(
-            symbol,
-            ctx.oms.feed,
-            days=days,
-            interval=interval,
-        )
+        try:
+            candles, meta = resolve_backtest_candles(
+                symbol,
+                ctx.oms.feed,
+                days=days,
+                interval=interval,
+                timeframe=timeframe,
+            )
+        except ValueError as exc:
+            await send_backtest_result(ctx, {"status": "error", "message": str(exc)})
+            return
         results = ctx.backtester.run_backtest(symbol, strategy, config, candles)
         if isinstance(results, dict) and "error" not in results:
             results["meta"] = meta

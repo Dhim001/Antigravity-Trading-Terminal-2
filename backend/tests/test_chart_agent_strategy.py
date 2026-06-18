@@ -5,7 +5,8 @@ from __future__ import annotations
 import unittest
 
 from app.database import init_db
-from app.services.agent.chart_analyst import ChartAnalystService, init_chart_analyst
+from app.services.agent.chart_analyst import init_chart_analyst
+from app.services.agent.models import insight_cache_key
 from app.services.bots.screener import MarketScreenerService
 from app.services.bots.strategies_chart_agent import ChartAgentStrategy
 from tests.test_chart_agent_rules import make_trending_candles
@@ -16,7 +17,7 @@ class TestChartAgentStrategy(unittest.TestCase):
         init_db()
         self.analyst = init_chart_analyst(screener=MarketScreenerService(), feed=None, broadcast_fn=None)
         self.candles = make_trending_candles(220)
-        self.strategy = ChartAgentStrategy({"symbol": "BTCUSDT", "min_confidence": 0.55})
+        self.strategy = ChartAgentStrategy({"symbol": "BTCUSDT", "timeframe": "1m", "min_confidence": 0.55})
 
     def test_evaluate_none_without_cache(self):
         row = {"time": 1, "close": 100}
@@ -41,7 +42,7 @@ class TestChartAgentStrategy(unittest.TestCase):
             self.assertEqual(result["signal"], "NONE")
 
     def test_low_confidence_blocks_signal(self):
-        self.analyst._cache["BTCUSDT"] = (0, {
+        self.analyst._cache[insight_cache_key("BTCUSDT", "1m")] = (0, {
             "symbol": "BTCUSDT",
             "bar_time": 99,
             "signal": "BUY",
@@ -49,7 +50,7 @@ class TestChartAgentStrategy(unittest.TestCase):
             "score": 1,
             "reasons": [],
             "levels": {},
-            "insight_id": "BTCUSDT:99",
+            "insight_id": "BTCUSDT:1m:99",
         })
         result = self.strategy.evaluate({"time": 99, "close": 100})
         self.assertEqual(result["signal"], "NONE")

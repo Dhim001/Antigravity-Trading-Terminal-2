@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.services.agent.chart_analyst import get_chart_analyst
 from app.services.bots.indicators import merge_strategy_config
+from app.services.market.timeframes import normalize_timeframe
 
 
 class ChartAgentStrategy:
@@ -13,16 +14,28 @@ class ChartAgentStrategy:
     def evaluate(self, df_row: dict) -> dict:
         cfg = merge_strategy_config("CHART_AGENT", self.config)
         symbol = cfg.get("symbol") or self.config.get("symbol", "")
+        timeframe = cfg.get("timeframe") or self.config.get("timeframe", "1m")
+        try:
+            tf = normalize_timeframe(timeframe)
+        except ValueError:
+            tf = "1m"
         min_confidence = float(cfg.get("min_confidence", 0.55))
         bar_time = df_row.get("time")
 
         try:
             analyst = get_chart_analyst()
-            insight = analyst.get_cached(symbol)
+            insight = analyst.get_cached(symbol, timeframe=tf)
         except RuntimeError:
             return {"signal": "NONE"}
 
         if not insight or insight.get("bar_time") != bar_time:
+            return {"signal": "NONE"}
+
+        insight_tf = insight.get("timeframe", "1m")
+        try:
+            if normalize_timeframe(insight_tf) != tf:
+                return {"signal": "NONE"}
+        except ValueError:
             return {"signal": "NONE"}
 
         if float(insight.get("confidence", 0)) < min_confidence:

@@ -9,6 +9,7 @@ import {
   hydrateFromSnapshot, scheduleMarketSnapshotSave, forceMarketSnapshotSave,
 } from '../services/marketSnapshot';
 import { getHmrData } from '../services/hmrState';
+import { agentInsightKey, normalizeAnalystTimeframe } from '../lib/agentInsights';
 
 const initialSnapshot = hydrateFromSnapshot();
 const hmrStore = getHmrData()?.zustandSnapshot;
@@ -72,8 +73,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   isBotRunning: false,
   botStrategy: getLocal('terminal_bot_strategy', 'MACD_RSI'),
   botExecutionMode: getLocal('terminal_bot_execution_mode', 'BAR_CLOSE'),
+  botTimeframe: getLocal('terminal_bot_timeframe', '1m'),
   botConfig: getLocal('terminal_bot_config', {
     allocation: 1000,
+    trailing_stop_percent: 2,
+    take_profit_percent: 3,
+    tp_mode: 'percent',
   }),
   botLogs: [],
 
@@ -263,6 +268,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     setLocal('terminal_bot_execution_mode', normalized);
     set({ botExecutionMode: normalized });
   },
+  setBotTimeframe: (timeframe) => {
+    setLocal('terminal_bot_timeframe', timeframe);
+    set({ botTimeframe: timeframe });
+  },
   updateBotConfig: (config) => set((state) => {
     const next = { ...state.botConfig, ...config };
     setLocal('terminal_bot_config', next);
@@ -323,7 +332,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBotHistory: (bots) => set({ botHistory: Array.isArray(bots) ? bots : [] }),
 
   setAgentInsight: (symbol, insight) => set((state) => {
-    const sym = symbol;
+    const sym = String(symbol || insight?.symbol || '').toUpperCase();
+    const key = agentInsightKey(sym, insight?.timeframe || '1m');
     const history = state.agentInsightHistory[sym] ?? [];
     const id = insight?.insight_id;
     const nextHistory = id && history.some((h) => h.insight_id === id)
@@ -331,8 +341,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       : insight
         ? [insight, ...history].slice(0, 50)
         : history;
+    const nextInsights = { ...state.agentInsights, [key]: insight };
+    // Legacy symbol-only key for 1m consumers not yet migrated
+    if (normalizeAnalystTimeframe(insight?.timeframe) === '1m') {
+      nextInsights[sym] = insight;
+    }
     return {
-      agentInsights: { ...state.agentInsights, [sym]: insight },
+      agentInsights: nextInsights,
       agentInsightHistory: { ...state.agentInsightHistory, [sym]: nextHistory },
     };
   }),

@@ -34,7 +34,7 @@ function exportTradesCsv(trades, symbol, strategy) {
   URL.revokeObjectURL(url);
 }
 
-export default function BacktestResultsPanel({ results, backtestDays, symbol, strategy, recentRuns = [] }) {
+export default function BacktestResultsPanel({ results, backtestDays, backtestTimeframe = '1m', symbol, strategy, recentRuns = [] }) {
   const startingEquity = results?.starting_equity ?? 10000;
   const returnPct = useMemo(() => {
     if (!results?.total_pnl || !startingEquity) return 0;
@@ -68,7 +68,7 @@ export default function BacktestResultsPanel({ results, backtestDays, symbol, st
     )}>
       <div className="algo-backtest-lab__header">
         <div className="algo-backtest-lab__title">
-          {results.meta?.days ?? backtestDays}-Day Backtest Lab
+          {results.meta?.days ?? backtestDays}-Day · {results.meta?.timeframe ?? backtestTimeframe} Backtest
           {results.meta?.count != null && (
             <span className="text-muted-foreground font-normal ml-1">
               ({results.meta.count.toLocaleString()} bars)

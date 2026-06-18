@@ -20,9 +20,10 @@ from app.db.connection import get_connection
 from app.services.agent.candle_source import get_agent_candles
 from app.services.agent.feature_builder import FeatureBuilder
 from app.services.agent.llm_client import summarize_insight
-from app.services.agent.models import ChartAgentInsight
+from app.services.agent.models import ChartAgentInsight, insight_cache_key
 from app.services.agent.rule_engine import score_dataframe
 from app.services.bots.screener import MarketScreenerService
+from app.services.market.timeframes import normalize_timeframe
 
 logger = logging.getLogger(__name__)
 
@@ -70,28 +71,33 @@ class ChartAnalystService:
             except Exception as exc:
                 logger.debug("Redis cache unavailable for agent: %s", exc)
 
-    def get_cached(self, symbol: str) -> dict | None:
-        sym = symbol.upper()
-        entry = self._cache.get(sym)
+    def get_cached(self, symbol: str, timeframe: str = "1m") -> dict | None:
+        key = insight_cache_key(symbol, timeframe)
+        entry = self._cache.get(key)
         if entry and time.monotonic() - entry[0] < self.CACHE_TTL_SEC:
             return entry[1]
         if self._redis:
             try:
-                raw = self._redis.get(f"agent:insight:{sym}")
+                raw = self._redis.get(f"agent:insight:{key}")
                 if raw:
                     return json.loads(raw)
             except Exception:
                 pass
+        # Legacy in-memory key (pre Phase 5)
+        if normalize_timeframe(timeframe) == "1m":
+            legacy = self._cache.get(symbol.upper())
+            if legacy and time.monotonic() - legacy[0] < self.CACHE_TTL_SEC:
+                return legacy[1]
         return None
 
     def _set_cache(self, insight: ChartAgentInsight) -> None:
         payload = insight.to_dict()
-        sym = insight.symbol.upper()
-        self._cache[sym] = (time.monotonic(), payload)
+        key = insight_cache_key(insight.symbol, insight.timeframe)
+        self._cache[key] = (time.monotonic(), payload)
         if self._redis:
             try:
                 self._redis.setex(
-                    f"agent:insight:{sym}",
+                    f"agent:insight:{key}",
                     self.CACHE_TTL_SEC,
                     json.dumps(payload),
                 )
@@ -105,7 +111,8 @@ class ChartAnalystService:
             return False
         if insight.confidence < AGENT_LLM_MIN_CONFIDENCE:
             return False
-        last = self._llm_last_at.get(insight.symbol.upper(), 0.0)
+        llm_key = insight_cache_key(insight.symbol, insight.timeframe)
+        last = self._llm_last_at.get(llm_key, 0.0)
         if not force and (time.monotonic() - last) < AGENT_LLM_COOLDOWN_SEC:
             return False
         return True
@@ -139,7 +146,7 @@ class ChartAnalystService:
         conn.commit()
         conn.close()
 
-    def list_insights(self, symbol: str, limit: int = 20) -> list[dict]:
+    def list_insights(self, symbol: str, limit: int = 20, timeframe: str | None = None) -> list[dict]:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -149,15 +156,22 @@ class ChartAnalystService:
             ORDER BY bar_time DESC
             LIMIT ?
             """,
-            (symbol.upper(), limit),
+            (symbol.upper(), limit * 3 if timeframe else limit),
         )
         rows = cursor.fetchall()
         conn.close()
+        tf_filter = normalize_timeframe(timeframe) if timeframe else None
         out = []
         for row in rows:
             raw = row[0] if not isinstance(row, dict) else row.get("payload")
-            if raw:
-                out.append(json.loads(raw) if isinstance(raw, str) else raw)
+            if not raw:
+                continue
+            item = json.loads(raw) if isinstance(raw, str) else raw
+            if tf_filter and normalize_timeframe(item.get("timeframe", "1m")) != tf_filter:
+                continue
+            out.append(item)
+            if len(out) >= limit:
+                break
         return out
 
     def _audit(
@@ -168,10 +182,11 @@ class ChartAnalystService:
         latency_ms: float,
     ) -> None:
         logger.info(
-            "agent_audit insight_id=%s symbol=%s signal=%s confidence=%.3f "
+            "agent_audit insight_id=%s symbol=%s timeframe=%s signal=%s confidence=%.3f "
             "score=%d llm_called=%s latency_ms=%.1f",
             insight.insight_id,
             insight.symbol,
+            insight.timeframe,
             insight.signal,
             insight.confidence,
             insight.score,
@@ -193,12 +208,13 @@ class ChartAnalystService:
 
         t0 = time.monotonic()
         sym = symbol.upper()
+        tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
 
         if candles is None:
-            candles = await get_agent_candles(sym, self.feed)
+            candles = await get_agent_candles(sym, self.feed, timeframe=tf)
 
         df = await asyncio.to_thread(self.feature_builder.build, sym, candles)
-        insight = score_dataframe(df, sym, timeframe=timeframe)
+        insight = score_dataframe(df, sym, timeframe=tf)
         if insight is None:
             return None
 
@@ -209,7 +225,7 @@ class ChartAnalystService:
                 insight.narrative = narrative
                 insight.model = model
                 llm_called = True
-                self._llm_last_at[sym] = time.monotonic()
+                self._llm_last_at[insight_cache_key(sym, tf)] = time.monotonic()
 
         self._set_cache(insight)
         await asyncio.to_thread(self.persist, insight)
@@ -239,20 +255,60 @@ class ChartAnalystService:
         candles: list[dict],
         bar_time: int | None,
         *,
+        timeframe: str = "1m",
         force_llm: bool = False,
     ) -> ChartAgentInsight | None:
         """Populate cache for the closed bar if missing or stale."""
-        cached = self.get_cached(symbol)
+        tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
+        cached = self.get_cached(symbol, timeframe=tf)
         if cached and bar_time is not None and cached.get("bar_time") == bar_time:
-            return ChartAgentInsight.from_dict(cached)
-        return await self.analyze(symbol, candles=candles, force_llm=force_llm, broadcast=False)
+            if normalize_timeframe(cached.get("timeframe", "1m")) == tf:
+                return ChartAgentInsight.from_dict(cached)
+        return await self.analyze(
+            symbol,
+            candles=candles,
+            force_llm=force_llm,
+            timeframe=tf,
+            broadcast=False,
+        )
 
     def symbols_to_analyze(self, bot_manager, connection_manager) -> set[str]:
+        """Symbols needing 1m watchlist analysis on bar close (legacy hook)."""
         symbols: set[str] = set()
         if bot_manager and bot_manager.active_bots:
             for bot in bot_manager.active_bots.values():
                 if bot.get("strategy", "").upper() == "CHART_AGENT":
-                    symbols.add(bot["symbol"])
+                    if _bot_bar_timeframe(bot) == "1m":
+                        symbols.add(bot["symbol"])
         if connection_manager and connection_manager.client_symbols:
             symbols.update(connection_manager.client_symbols.values())
         return symbols
+
+    def chart_agent_targets(self, bot_manager) -> list[tuple[str, str]]:
+        """(symbol, timeframe) pairs for active CHART_AGENT bar-close bots."""
+        targets: list[tuple[str, str]] = []
+        if not bot_manager or not bot_manager.active_bots:
+            return targets
+        seen: set[tuple[str, str]] = set()
+        for bot in bot_manager.active_bots.values():
+            if bot.get("status") != "RUNNING":
+                continue
+            if bot.get("strategy", "").upper() != "CHART_AGENT":
+                continue
+            if bot.get("execution_mode", "BAR_CLOSE") == "TICK":
+                continue
+            sym = bot["symbol"]
+            tf = _bot_bar_timeframe(bot)
+            key = (sym, tf)
+            if key not in seen:
+                seen.add(key)
+                targets.append(key)
+        return targets
+
+
+def _bot_bar_timeframe(bot: dict) -> str:
+    raw = (bot.get("timeframe") or bot.get("config", {}).get("timeframe") or "1m").strip()
+    try:
+        return normalize_timeframe(raw)
+    except ValueError:
+        return "1m"
