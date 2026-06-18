@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/select';
 import { WidgetEmpty } from './WidgetShell';
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
+import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import { cn } from '@/lib/utils';
 
 function signalClass(signal) {
@@ -64,6 +65,11 @@ export default function ScannerTab() {
       return true;
     });
   }, [allRows, search, signalFilter]);
+
+  const { onScroll: onScanScroll, window: scanWindow } = useVirtualRows(rows, {
+    rowHeight: 32,
+    overscan: 10,
+  });
 
   const stats = useMemo(() => {
     let buy = 0;
@@ -220,7 +226,10 @@ export default function ScannerTab() {
         </div>
       ) : (
         <>
-          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
+          <div
+            className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0"
+            onScroll={onScanScroll}
+          >
             <table className="terminal-table dock-panel-tab__table min-w-[640px] w-full text-xs">
               <thead>
                 <tr>
@@ -235,7 +244,8 @@ export default function ScannerTab() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                <VirtualTablePadding height={scanWindow.topPad} colSpan={8} />
+                {scanWindow.slice.map((row) => (
                   <tr
                     key={row.insight_id || row.symbol}
                     className="cursor-pointer hover:bg-muted/40"
@@ -273,6 +283,7 @@ export default function ScannerTab() {
                     </td>
                   </tr>
                 ))}
+                <VirtualTablePadding height={scanWindow.bottomPad} colSpan={8} />
               </tbody>
             </table>
           </div>

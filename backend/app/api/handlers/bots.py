@@ -115,6 +115,8 @@ async def bot_update_config(ctx: RequestContext) -> None:
 
 @route(Action.BOT_GET_ALL, tags=["bots"])
 async def bot_get_all(ctx: RequestContext) -> None:
+    # Re-hydrate from DB so HTTP/WS clients stay aligned with worker mutations.
+    ctx.bot_manager.load_bots_from_db()
     await send_bots_update(ctx)
 
 

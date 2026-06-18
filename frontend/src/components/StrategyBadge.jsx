@@ -11,7 +11,7 @@ export default function StrategyBadge({ strategy, compact = false, className }) 
   return (
     <span
       className={cn('strategy-badge', compact && 'strategy-badge--compact', className)}
-      title={meta.tagline}
+      title={compact ? undefined : meta.tagline}
     >
       <span
         className="strategy-badge__icon"

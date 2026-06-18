@@ -85,11 +85,11 @@ export default function InsightsHub({ open = false, onOpenChange }) {
       <SheetContent
         side="right"
         showCloseButton
-        overlayClassName="z-40"
         className={cn(
-          'insights-hub pointer-events-auto z-50 w-full sm:max-w-none p-0 flex flex-col gap-0',
+          'terminal-sheet insights-hub w-full sm:max-w-none',
           resizing && 'insights-hub--resizing',
         )}
+        data-tour="insights-hub"
         style={{
           width: panelWidth,
           minWidth: HUB_WIDTH_MIN,
@@ -109,7 +109,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           </span>
         </div>
 
-        <SheetHeader className="insights-hub__header">
+        <SheetHeader className="terminal-sheet__header insights-hub__header">
           <SheetTitle className="insights-hub__title">
             <Radar aria-hidden />
             Insights Hub
@@ -119,8 +119,8 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           </SheetDescription>
         </SheetHeader>
 
-        <Tabs defaultValue="scanner" className="insights-hub__tabs flex min-h-0 flex-1 flex-col">
-          <TabsList className="insights-hub__tablist">
+        <Tabs defaultValue="scanner" className="terminal-tabs insights-hub__tabs flex min-h-0 flex-1 flex-col">
+          <TabsList className="terminal-tabs__list insights-hub__tablist">
             <TabsTrigger value="scanner" className="insights-hub__tab">
               <Radar data-icon="inline-start" />
               Scanner
@@ -133,7 +133,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
 
           <TabsContent
             value="scanner"
-            className="insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
+            className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
           >
             <Suspense fallback={<TabFallback />}>
               <ScannerTab />
@@ -141,7 +141,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           </TabsContent>
           <TabsContent
             value="analyst"
-            className="insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
+            className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
           >
             <Suspense fallback={<TabFallback />}>
               <AnalystTab />

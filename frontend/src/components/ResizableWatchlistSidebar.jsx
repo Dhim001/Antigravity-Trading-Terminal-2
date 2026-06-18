@@ -62,8 +62,13 @@ export default function ResizableWatchlistSidebar({ onLayoutChange }) {
 
   useEffect(() => {
     const onToggle = () => setCollapsed(c => !c);
+    const onExpand = () => setCollapsed(false);
     window.addEventListener('sidebar-toggle', onToggle);
-    return () => window.removeEventListener('sidebar-toggle', onToggle);
+    window.addEventListener('sidebar-expand', onExpand);
+    return () => {
+      window.removeEventListener('sidebar-toggle', onToggle);
+      window.removeEventListener('sidebar-expand', onExpand);
+    };
   }, []);
 
   const onResizeMouseDown = useCallback((e) => {
@@ -108,6 +113,7 @@ export default function ResizableWatchlistSidebar({ onLayoutChange }) {
     <aside
       className={cn('watchlist-sidebar', collapsed && 'watchlist-sidebar--collapsed')}
       data-collapsed={collapsed ? '' : undefined}
+      data-tour="watchlist"
     >
       {!collapsed ? (
         <WatchlistWidget />

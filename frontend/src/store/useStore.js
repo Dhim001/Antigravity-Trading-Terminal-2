@@ -102,6 +102,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   tickMeta: null,
   agentInsights: {},
   agentInsightHistory: {},
+  tradeExplains: {},
   scanResults: null,
   visionReports: {},
   orderPrefill: null,
@@ -357,6 +358,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       ...state.agentInsightHistory,
       [symbol]: Array.isArray(insights) ? insights : [],
     },
+  })),
+
+  setTradeExplain: (tradeId, data) => set((state) => ({
+    tradeExplains: { ...state.tradeExplains, [String(tradeId)]: data },
   })),
   setTickData: (data, meta) => set({
     tickData: data && typeof data === 'object' ? { ...data } : {},

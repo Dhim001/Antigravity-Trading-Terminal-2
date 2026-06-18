@@ -2,6 +2,7 @@
  * TradingPanel — tabbed right rail with collapse (UX-3).
  */
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useEffect } from 'react';
 import OrderBookWidget from './OrderBookWidget';
 import OrderEntryWidget from './OrderEntryWidget';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -15,6 +16,12 @@ export default function TradingPanel({ hidden = false }) {
   const updateWorkspace = useSettingsStore((s) => s.updateWorkspace);
   const collapsed = workspace?.rightPanelCollapsed ?? false;
   const tab = workspace?.rightPanelTab || 'trade';
+
+  useEffect(() => {
+    const onExpand = () => updateWorkspace({ rightPanelCollapsed: false, rightPanelTab: 'trade' });
+    window.addEventListener('trading-panel-expand', onExpand);
+    return () => window.removeEventListener('trading-panel-expand', onExpand);
+  }, [updateWorkspace]);
 
   if (hidden) return null;
 
@@ -55,7 +62,7 @@ export default function TradingPanel({ hidden = false }) {
   }
 
   return (
-    <section className={cn('trading-panel', 'trading-panel--tabbed')}>
+    <section className={cn('trading-panel', 'trading-panel--tabbed')} data-tour="order-panel">
       <div className="trading-panel__header">
         <Tabs
           value={tab}

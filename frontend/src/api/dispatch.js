@@ -29,6 +29,7 @@ export function getStoreActions() {
     setBotHistory: s.setBotHistory,
     setAgentInsight: s.setAgentInsight,
     setAgentInsightHistory: s.setAgentInsightHistory,
+    setTradeExplain: s.setTradeExplain,
     setScanResults: s.setScanResults,
     setVisionReport: s.setVisionReport,
   };
@@ -112,6 +113,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.AGENT_INSIGHT:
       if (data?.symbol) {
         storeActions.setAgentInsight(data.symbol, data);
+      }
+      break;
+    case MessageType.TRADE_EXPLAIN:
+      if (data?.trade_id != null) {
+        storeActions.setTradeExplain(String(data.trade_id), data);
       }
       break;
     case MessageType.SCAN_RESULTS:

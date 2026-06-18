@@ -8,13 +8,14 @@ import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { normalizeAnalystTimeframe, selectAgentInsight } from '@/lib/agentInsights';
+import { invokeHttpAction } from '../api/transport';
 import BotSnapshotChart from './BotSnapshotChart';
+import BotConfigPanel from './BotConfigPanel';
 import { Pause, PlayCircle, OctagonX, Loader2, GripVertical } from 'lucide-react';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
@@ -41,45 +42,137 @@ function formatTradeTime(timestamp) {
   });
 }
 
-function findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory) {
-  if (!trade || trade.is_exit) return null;
+function isEntryTrade(trade) {
+  if (!trade) return false;
+  const v = trade.is_exit;
+  return v === false || v === 0 || v === '0' || v == null;
+}
+
+function tradeIdKey(trade) {
+  if (trade?.id == null || trade.id === '') return null;
+  return String(trade.id);
+}
+
+function findInsightForTrade(trade, symbol, timeframe, agentInsights, agentInsightHistory) {
+  if (!trade || !isEntryTrade(trade)) return null;
+  const tf = normalizeAnalystTimeframe(timeframe);
   const barTime = trade.signal_bar_time;
   if (barTime != null) {
     const history = agentInsightHistory[symbol] ?? [];
-    const match = history.find((i) => i.bar_time === barTime);
+    const match = history.find(
+      (i) => i.bar_time === barTime && normalizeAnalystTimeframe(i.timeframe) === tf,
+    );
     if (match) return match;
   }
-  const current = agentInsights[symbol];
-  if (current && barTime != null && current.bar_time === barTime) return current;
-  return current?.reasons?.length ? current : null;
+  const current = selectAgentInsight(agentInsights, symbol, tf);
+  if (current && barTime != null && current.bar_time === barTime) {
+    return current;
+  }
+  return null;
 }
 
-function TradeExplain({ trade, symbol, botStrategy, agentInsights, agentInsightHistory }) {
-  if (botStrategy !== 'CHART_AGENT' || trade.is_exit) return null;
-  const insight = findInsightForTrade(trade, symbol, agentInsights, agentInsightHistory);
-  if (!insight?.reasons?.length && !insight?.narrative && !insight?.sub_reports) return null;
+function TradeExplain({
+  trade,
+  symbol,
+  botId,
+  botStrategy,
+  botTimeframe,
+  agentInsights,
+  agentInsightHistory,
+}) {
+  const tradeKey = tradeIdKey(trade);
+  const explain = useStore((s) => (tradeKey ? s.tradeExplains[tradeKey] : null));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  if (botStrategy !== 'CHART_AGENT' || !isEntryTrade(trade)) return null;
+
+  const insight = explain?.insight
+    ?? findInsightForTrade(trade, symbol, botTimeframe, agentInsights, agentInsightHistory);
+
+  const fetchExplain = async () => {
+    if (!tradeKey || !botId || loading || explain) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await invokeHttpAction(Action.EXPLAIN_TRADE, { bot_id: botId, trade_id: tradeKey });
+    } catch (err) {
+      setError(err?.message || 'Could not load explanation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggle = (e) => {
+    e.stopPropagation();
+    if (e.currentTarget.open) {
+      void fetchExplain();
+    }
+  };
+
+  const handleSummaryClick = (e) => {
+    e.stopPropagation();
+  };
+
+  const hasContent = Boolean(
+    explain?.summary
+    || explain?.narrative
+    || insight?.reasons?.length
+    || insight?.narrative
+    || insight?.sub_reports,
+  );
+
   return (
-    <details className="mt-1 text-[0.65rem] text-muted-foreground">
-      <summary className="cursor-pointer text-trading-accent">Why we entered</summary>
-      {insight.sub_reports ? (
-        <div className="mt-2">
-          <SubReportCards subReports={insight.sub_reports} />
-        </div>
-      ) : insight.reasons?.length > 0 ? (
-        <ul className="mt-1 list-inside list-disc space-y-0.5">
-          {insight.reasons.map((r, i) => (
-            <li key={i}>{r}</li>
-          ))}
-        </ul>
-      ) : null}
-      {insight.narrative && (
-        <p className="mt-1 leading-relaxed">{insight.narrative}</p>
-      )}
+    <details
+      className="bot-trade-explain"
+      onToggle={handleToggle}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <summary className="bot-trade-explain__summary" onClick={handleSummaryClick}>
+        <span>Why we entered</span>
+        {loading && <Loader2 className="size-3 animate-spin shrink-0" aria-hidden />}
+      </summary>
+      <div className="bot-trade-explain__body">
+        {loading && !hasContent && (
+          <p className="bot-trade-explain__status">Loading explanation…</p>
+        )}
+        {error && (
+          <p className="bot-trade-explain__error">{error}</p>
+        )}
+        {!tradeKey && (
+          <p className="bot-trade-explain__status">Explanation unavailable for this fill.</p>
+        )}
+        {explain?.summary && (
+          <p className="bot-trade-explain__summary-text">{explain.summary}</p>
+        )}
+        {explain?.narrative && (
+          <p className="bot-trade-explain__narrative">{explain.narrative}</p>
+        )}
+        {insight?.sub_reports ? (
+          <div className="bot-trade-explain__reports">
+            <SubReportCards subReports={insight.sub_reports} />
+          </div>
+        ) : insight?.reasons?.length > 0 ? (
+          <ul className="bot-trade-explain__reasons">
+            {insight.reasons.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        ) : null}
+        {!explain?.summary && insight?.narrative && (
+          <p className="bot-trade-explain__narrative">{insight.narrative}</p>
+        )}
+        {!loading && !error && tradeKey && !hasContent && (
+          <p className="bot-trade-explain__status">
+            No analyst insight recorded for this entry bar.
+          </p>
+        )}
+      </div>
     </details>
   );
 }
 
-export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, onResume }) {
+export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, onResume, nested = false }) {
   const botDetail = useStore(s => s.botDetail);
   const selectedBotId = useStore(s => s.selectedBotId);
   const setSelectedBotId = useStore(s => s.setSelectedBotId);
@@ -98,10 +191,8 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
 
   useEffect(() => {
     if (!open || !bot?.symbol || bot.strategy !== 'CHART_AGENT') return;
-    const sym = bot.symbol;
-    if ((agentInsightHistory[sym] ?? []).length > 0) return;
-    fetchAgentInsights(sym, { setAgentInsightHistory }, 30).catch(() => {});
-  }, [open, bot?.symbol, bot?.strategy, agentInsightHistory, setAgentInsightHistory]);
+    fetchAgentInsights(bot.symbol, { setAgentInsightHistory }, 80).catch(() => {});
+  }, [open, bot?.id, bot?.symbol, bot?.strategy, setAgentInsightHistory]);
 
   const [drawerWidth, setDrawerWidth] = useState(readDrawerWidth);
   const [resizing, setResizing] = useState(false);
@@ -152,42 +243,6 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
     setBotDetail(null);
   };
 
-  const [savingRisk, setSavingRisk] = useState(false);
-  const [tpPercent, setTpPercent] = useState('');
-  const [slPercent, setSlPercent] = useState('');
-
-  useEffect(() => {
-    if (!bot) return;
-    const cfg = bot.config || {};
-    setTpPercent(
-      cfg.take_profit_percent != null ? String(cfg.take_profit_percent) : '',
-    );
-    setSlPercent(
-      cfg.trailing_stop_percent != null
-        ? String(cfg.trailing_stop_percent)
-        : cfg.stop_loss_percent != null
-          ? String(cfg.stop_loss_percent)
-          : '',
-    );
-  }, [bot?.id, bot?.config]);
-
-  const saveRiskConfig = async () => {
-    if (!selectedBotId) return;
-    setSavingRisk(true);
-    const config = {};
-    const tp = parseFloat(tpPercent);
-    const sl = parseFloat(slPercent);
-    if (!Number.isNaN(tp) && tp > 0) config.take_profit_percent = tp;
-    else config.take_profit_percent = null;
-    if (!Number.isNaN(sl) && sl > 0) config.trailing_stop_percent = sl;
-    else config.trailing_stop_percent = null;
-    try {
-      await sendAction(Action.BOT_UPDATE_CONFIG, { bot_id: selectedBotId, config });
-    } finally {
-      setSavingRisk(false);
-    }
-  };
-
   const refresh = () => {
     if (selectedBotId) {
       sendAction(Action.BOT_GET_DETAIL, { bot_id: selectedBotId });
@@ -198,7 +253,12 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
     <Sheet open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }}>
       <SheetContent
         side="right"
-        className={cn('bot-detail-drawer sm:max-w-none', resizing && 'bot-detail-drawer--resizing')}
+        overlayClassName={nested ? 'terminal-sheet-overlay--nested' : undefined}
+        className={cn(
+          'terminal-sheet bot-detail-drawer sm:max-w-none',
+          nested && 'terminal-sheet--nested',
+          resizing && 'bot-detail-drawer--resizing',
+        )}
         style={{
           width: `${drawerWidth}px`,
           maxWidth: 'min(92vw, 100%)',
@@ -216,7 +276,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             <GripVertical size={12} />
           </span>
         </div>
-        <SheetHeader className="bot-detail-drawer__header">
+        <SheetHeader className="terminal-sheet__header bot-detail-drawer__header">
           <SheetTitle className="bot-detail-drawer__title">
             {bot ? (
               <>
@@ -256,7 +316,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
         )}
 
         {bot && stats && (
-          <div className="bot-detail-drawer__body">
+          <div className="terminal-sheet__body bot-detail-drawer__body">
             <div className="bot-detail-stats">
               <div className="bot-detail-stat">
                 <span>Executions</span>
@@ -284,64 +344,13 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
               </div>
             </div>
 
-            {(position || bot.status === 'RUNNING' || bot.status === 'PAUSED') && (
-              <section className="bot-detail-drawer__risk" aria-label="Position risk">
-                <header className="bot-detail-drawer__trades-header">
-                  <span>Take profit / stop loss</span>
-                  {position && (
-                    <Badge variant="secondary">
-                      {Number(position.size).toFixed(4)} @ {Number(position.avg_price).toFixed(2)}
-                    </Badge>
-                  )}
-                </header>
-                {position?.take_profit_price != null && (
-                  <p className="bot-detail-drawer__risk-active text-xs text-muted-foreground mb-2">
-                    Active TP: {Number(position.take_profit_price).toFixed(4)}
-                    {position.take_profit_percent != null && (
-                      <> ({Number(position.take_profit_percent).toFixed(2)}%)</>
-                    )}
-                  </p>
-                )}
-                <div className="bot-detail-drawer__risk-form grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="bot-tp-pct" className="text-xs">Take profit %</Label>
-                    <Input
-                      id="bot-tp-pct"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder="e.g. 3"
-                      value={tpPercent}
-                      onChange={(e) => setTpPercent(e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="bot-sl-pct" className="text-xs">Trailing stop %</Label>
-                    <Input
-                      id="bot-sl-pct"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      placeholder="e.g. 1.5"
-                      value={slPercent}
-                      onChange={(e) => setSlPercent(e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="mt-2"
-                  disabled={savingRisk}
-                  onClick={saveRiskConfig}
-                >
-                  {savingRisk ? <Loader2 className="size-3 animate-spin" /> : null}
-                  Save risk settings
-                </Button>
-              </section>
-            )}
+            <BotConfigPanel
+              botId={bot.id}
+              strategy={bot.strategy}
+              config={bot.config}
+              botStatus={bot.status}
+              position={position}
+            />
 
             <section className="bot-detail-drawer__equity" aria-label="Bot equity snapshots">
               <header className="bot-detail-drawer__trades-header">
@@ -372,13 +381,6 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
               )}
             </div>
 
-            {bot?.config && Object.keys(bot.config).length > 0 && (
-              <details className="bot-detail-drawer__config">
-                <summary>Strategy config</summary>
-                <pre className="algo-config-preview">{JSON.stringify(bot.config, null, 2)}</pre>
-              </details>
-            )}
-
             <section className="bot-detail-drawer__trades" aria-label="Bot trade history">
               <header className="bot-detail-drawer__trades-header">
                 <span>Recent fills</span>
@@ -402,38 +404,61 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                         <td colSpan="6" className="algo-table-empty">No trades yet</td>
                       </tr>
                     ) : (
-                      trades.map(t => (
-                        <tr key={t.id ?? `${t.timestamp}-${t.side}-${t.price}`}>
-                          <td className="bot-detail-trades-table__time" colSpan={6}>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                              <span title={formatTradeTime(t.timestamp)}>{formatTradeTime(t.timestamp)}</span>
-                              <span className={cn(
-                                'bot-detail-trades-table__side',
-                                t.side === 'BUY' ? 'text-trading-up' : 'text-trading-down',
-                              )}>
+                      trades.map((t) => {
+                        const showExplain = bot?.strategy === 'CHART_AGENT' && isEntryTrade(t);
+                        return (
+                          <React.Fragment key={t.id ?? `${t.timestamp}-${t.side}-${t.price}`}>
+                            <tr>
+                              <td className="bot-detail-trades-table__time" title={formatTradeTime(t.timestamp)}>
+                                {formatTradeTime(t.timestamp)}
+                              </td>
+                              <td
+                                className={cn(
+                                  'bot-detail-trades-table__side',
+                                  t.side === 'BUY' ? 'text-trading-up' : 'text-trading-down',
+                                )}
+                              >
                                 {t.side}{t.is_exit ? ' exit' : ''}
-                              </span>
-                              <span className="num-mono">{Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(4)}</span>
-                              <span className={cn(
-                                'num-mono',
-                                t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
-                              )}>
+                              </td>
+                              <td className="num-mono text-right">
+                                {Number(t.quantity).toFixed(4)}
+                              </td>
+                              <td className="num-mono text-right">
+                                {Number(t.price).toFixed(4)}
+                              </td>
+                              <td
+                                className={cn(
+                                  'num-mono text-right',
+                                  t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
+                                )}
+                              >
                                 {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
-                              </span>
-                              <span className="num-mono text-muted-foreground" title={t.order_id}>
+                              </td>
+                              <td
+                                className="bot-detail-trades-table__order num-mono"
+                                title={t.order_id}
+                              >
                                 {t.order_id ? shortBotId(t.order_id) : '—'}
-                              </span>
-                            </div>
-                            <TradeExplain
-                              trade={t}
-                              symbol={bot?.symbol}
-                              botStrategy={bot?.strategy}
-                              agentInsights={agentInsights}
-                              agentInsightHistory={agentInsightHistory}
-                            />
-                          </td>
-                        </tr>
-                      ))
+                              </td>
+                            </tr>
+                            {showExplain && (
+                              <tr className="bot-detail-trades-table__explain-row">
+                                <td colSpan={6}>
+                                  <TradeExplain
+                                    trade={t}
+                                    symbol={bot?.symbol}
+                                    botId={bot?.id}
+                                    botStrategy={bot?.strategy}
+                                    botTimeframe={bot?.timeframe}
+                                    agentInsights={agentInsights}
+                                    agentInsightHistory={agentInsightHistory}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

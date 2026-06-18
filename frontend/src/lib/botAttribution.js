@@ -39,14 +39,29 @@ export function parseSignalBarTime(trade) {
   return Number.isFinite(sec) && sec > 1e9 ? Math.floor(sec) : null;
 }
 
+function resolveOwnerBot(botId, symbol, size, activeBots) {
+  const { byId } = buildBotLookup(activeBots);
+  const live = byId[botId];
+  if (live) {
+    return { ...live, _size: size, _active: live.status === 'RUNNING' || live.status === 'PAUSED' };
+  }
+  return {
+    id: botId,
+    symbol,
+    strategy: 'BOT',
+    status: 'STOPPED',
+    _size: size,
+    _active: false,
+  };
+}
+
 /** Best-effort bot owner(s) for an open position. */
 export function getPositionBots(symbol, position, { activeBots = [], tradeHistory = [] } = {}) {
   if (!position || !position.size) return [];
 
   const owners = Array.isArray(position.bot_owners) ? position.bot_owners : [];
   if (owners.length) {
-    const { byId } = buildBotLookup(activeBots);
-    return owners.map((o) => byId[o.bot_id] || { id: o.bot_id, symbol, strategy: 'BOT', _size: o.size });
+    return owners.map((o) => resolveOwnerBot(o.bot_id, symbol, o.size, activeBots));
   }
 
   const single = getPositionBot(symbol, position, { activeBots, tradeHistory });
@@ -59,21 +74,21 @@ export function getPositionBot(symbol, position, { activeBots = [], tradeHistory
 
   const owners = Array.isArray(position.bot_owners) ? position.bot_owners : [];
   if (owners.length === 1) {
-    const { byId } = buildBotLookup(activeBots);
-    return byId[owners[0].bot_id] || { id: owners[0].bot_id, symbol, strategy: 'BOT' };
+    return resolveOwnerBot(owners[0].bot_id, symbol, owners[0].size, activeBots);
   }
   if (owners.length > 1) {
     return null;
   }
-  const { bySymbol, byId } = buildBotLookup(activeBots);
-  if (bySymbol[symbol]) return bySymbol[symbol];
+  const { bySymbol } = buildBotLookup(activeBots);
+  if (bySymbol[symbol]) {
+    return { ...bySymbol[symbol], _active: bySymbol[symbol].status === 'RUNNING' || bySymbol[symbol].status === 'PAUSED' };
+  }
 
   const recent = [...tradeHistory]
     .filter((t) => t.symbol === symbol && t.bot_id && t.status === 'FILLED')
     .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
   if (!recent.length) return null;
-  const id = recent[0].bot_id;
-  return byId[id] || { id, symbol, strategy: 'BOT' };
+  return resolveOwnerBot(recent[0].bot_id, symbol, null, activeBots);
 }
 
 export function tradeSourceLabel(trade, botLookup) {

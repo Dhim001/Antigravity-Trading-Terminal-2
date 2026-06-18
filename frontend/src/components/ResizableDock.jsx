@@ -14,6 +14,8 @@ import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
+import { fetchBots } from '../api/endpoints';
+import { getStoreActions } from '../api/dispatch';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
@@ -22,12 +24,12 @@ import {
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestResultsPanel from './BacktestResultsPanel';
-import BotDetailDrawer from './BotDetailDrawer';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
 import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
+import { useVirtualRows } from './VirtualTableBody';
 
 const TickViewerTab = lazy(() => import('./TickViewerTab'));
 const BotHistoryTab = lazy(() => import('./BotHistoryTab'));
@@ -165,8 +167,17 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
             {ownerBots.map((bot) => (
               <span key={bot.id} className="inline-flex items-center">
                 <StrategyBadge strategy={bot.strategy} compact />
-                <span className="ml-1 text-[0.58rem] text-muted-foreground num-mono" title={bot.id}>
+                <span
+                  className={cn(
+                    'ml-1 text-[0.58rem] num-mono',
+                    bot._active === false ? 'text-muted-foreground/60' : 'text-muted-foreground',
+                  )}
+                  title={bot.id}
+                >
                   {shortBotId(bot.id)}
+                  {bot._active === false && (
+                    <span className="ml-0.5 uppercase tracking-wide opacity-80">stopped</span>
+                  )}
                   {bot._size != null && (
                     <span className="ml-0.5 opacity-70">({Math.abs(bot._size).toFixed(3)})</span>
                   )}
@@ -598,6 +609,10 @@ export function AlgoTab({ hideToolbar = false }) {
   const [backtestDays, setBacktestDays] = useState('7');
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
+  const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(botLogs, {
+    rowHeight: 22,
+    overscan: 14,
+  });
 
   useEffect(() => {
     if (botLogs.length > logCountRef.current && logScrollRef.current) {
@@ -605,6 +620,10 @@ export function AlgoTab({ hideToolbar = false }) {
     }
     logCountRef.current = botLogs.length;
   }, [botLogs]);
+
+  useEffect(() => {
+    fetchBots(getStoreActions()).catch(() => {});
+  }, []);
 
   const confirmDeploy = () => {
     setDeployOpen(false);
@@ -853,7 +872,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <span className="algo-tab__panel-subtitle">Strategy · allocation · backtest</span>
           </div>
         </header>
-        <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body">
+        <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body" data-tour="algo-deploy">
           <div className="algo-deploy-fields">
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Symbol</Label>
@@ -1262,8 +1281,8 @@ export function AlgoTab({ hideToolbar = false }) {
                     )}>
                       {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
                     </td>
-                    <td className="algo-last-signal" title={bot.last_signal_at || undefined}>
-                      <span>{formatLastSignal(bot.last_signal_at)}</span>
+                    <td className="algo-last-signal">
+                      <span title={bot.last_signal_at || undefined}>{formatLastSignal(bot.last_signal_at)}</span>
                       {bot.strategy === 'CHART_AGENT' && (() => {
                         const insight = selectAgentInsight(
                           agentInsights,
@@ -1332,18 +1351,26 @@ export function AlgoTab({ hideToolbar = false }) {
           </Button>
         </header>
 
-        <div ref={logScrollRef} className="algo-tab__scroll algo-bot-log-scroll scroll-panel-y scroll-panel-y-0">
+        <div
+          ref={logScrollRef}
+          className="algo-tab__scroll algo-bot-log-scroll scroll-panel-y scroll-panel-y-0"
+          onScroll={onLogScroll}
+        >
           <div className="algo-tab__log-list">
             {botLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
-            ) : botLogs.map((log, i) => {
+            ) : (
+              <>
+                <div style={{ height: logWindow.topPad }} aria-hidden />
+                {logWindow.slice.map((log, i) => {
+                  const idx = logWindow.start + i;
               const isSignal = /Entry (BUY|SELL)|signal @/i.test(log);
               const chartAgentInsight = botStrategy === 'CHART_AGENT'
                 ? selectAgentInsight(agentInsights, activeSymbol, botTimeframe)
                 : null;
               const showInsight = isSignal && chartAgentInsight;
               return (
-                <div key={`${i}-${log.slice(0, 24)}`} className={cn(logLineClass(log), showInsight && 'group relative')}>
+                <div key={`${idx}-${log.slice(0, 24)}`} className={cn(logLineClass(log), showInsight && 'group relative')}>
                   <span>{log}</span>
                   {showInsight && (
                     <button
@@ -1357,6 +1384,9 @@ export function AlgoTab({ hideToolbar = false }) {
                 </div>
               );
             })}
+                <div style={{ height: logWindow.bottomPad }} aria-hidden />
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -1374,9 +1404,6 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
   const ambiguousCount = useStore((s) => (s.isLive ? s.ambiguousOrders.length : 0));
   const isBotRunning = useStore((s) => s.isBotRunning);
   const isLive = useStore((s) => s.isLive);
-  const selectedBotId = useStore((s) => s.selectedBotId);
-  const botDrawerOpen = useStore((s) => s.botDrawerOpen);
-  const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
   const analystBadge = useStore((s) => (s.agentInsightHistory[s.activeSymbol] ?? []).length || null);
   const workspaceTab = normalizeDockTab(
     useSettingsStore(state => state.settings.workspace?.dockActiveTab || 'positions'),
@@ -1578,6 +1605,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     <>
       <div
         className="bottom-dock flex flex-col"
+        data-tour="bottom-dock"
         data-layout-mode={layoutMode}
         data-dock-group={activeGroup}
         data-compact={dockH < 280 ? '' : undefined}
@@ -1748,23 +1776,13 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         <SheetContent
           side="bottom"
           showCloseButton={false}
-          className="flex h-[85vh] max-h-[85vh] min-h-0 flex-col gap-0 overflow-hidden rounded-t-xl border-t p-0 sm:max-w-full"
+          className="terminal-sheet terminal-sheet--bottom flex min-h-0 flex-col gap-0 overflow-hidden rounded-t-xl border-t p-0 sm:max-w-full"
         >
           <ErrorBoundary name="Trade history (expanded)">
             <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
           </ErrorBoundary>
         </SheetContent>
       </Sheet>
-
-      <ErrorBoundary name="Bot detail">
-      <BotDetailDrawer
-        open={botDrawerOpen && !!selectedBotId}
-        onOpenChange={setBotDrawerOpen}
-        onStop={(bot_id) => sendAction(Action.BOT_STOP, { bot_id })}
-        onPause={(bot_id) => sendAction(Action.BOT_PAUSE, { bot_id })}
-        onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
-      />
-      </ErrorBoundary>
     </>
   );
 }

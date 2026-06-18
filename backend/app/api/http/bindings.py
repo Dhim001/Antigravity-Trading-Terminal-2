@@ -23,6 +23,7 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("POST", "/api/v1/bots/stop-all", Action.BOT_STOP_ALL, None),
     ("POST", "/api/v1/backtest", Action.RUN_BACKTEST, None),
     ("POST", "/api/v1/agent/analyze", Action.CHART_ANALYZE, None),
+    ("POST", "/api/v1/agent/explain-trade", Action.EXPLAIN_TRADE, None),
     ("POST", "/api/v1/scanner/scan", Action.MARKET_SCAN, None),
     ("POST", "/api/v1/agent/vision", Action.CHART_VISION, None),
     ("GET", "/api/v1/admin/stats", Action.ADMIN_GET_STATS, None),

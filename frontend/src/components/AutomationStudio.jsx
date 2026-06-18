@@ -5,10 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Cpu, GripVertical } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { sendAction } from '../api/transport';
-import { Action } from '../api/protocol';
+import { fetchBots } from '../api/endpoints';
+import { getStoreActions } from '../api/dispatch';
 import { AlgoTab } from './ResizableDock';
-import BotDetailDrawer from './BotDetailDrawer';
 import ErrorBoundary from './ErrorBoundary';
 import { cn } from '@/lib/utils';
 
@@ -32,8 +31,6 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
   const startX = useRef(0);
   const startW = useRef(0);
 
-  const selectedBotId = useStore((s) => s.selectedBotId);
-  const botDrawerOpen = useStore((s) => s.botDrawerOpen);
   const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
 
   useEffect(() => {
@@ -52,6 +49,11 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
   useEffect(() => {
     if (open) setBotDrawerOpen(false);
   }, [open, setBotDrawerOpen]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetchBots(getStoreActions()).catch(() => {});
+  }, [open]);
 
   const onResizeMouseDown = useCallback((e) => {
     e.preventDefault();
@@ -92,11 +94,11 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
         <SheetContent
           side="right"
           showCloseButton
-          overlayClassName="z-40"
           className={cn(
-            'automation-studio pointer-events-auto z-50 w-full sm:max-w-none p-0 flex flex-col gap-0',
+            'terminal-sheet automation-studio w-full sm:max-w-none',
             resizing && 'automation-studio--resizing',
           )}
+          data-tour="automation-studio"
           style={{
             width: panelWidth,
             minWidth: STUDIO_WIDTH_MIN,
@@ -116,7 +118,7 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
             </span>
           </div>
 
-          <SheetHeader className="automation-studio__header">
+          <SheetHeader className="terminal-sheet__header automation-studio__header">
             <SheetTitle className="automation-studio__title">
               <Cpu aria-hidden />
               Automation Studio
@@ -126,23 +128,13 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
             </SheetDescription>
           </SheetHeader>
 
-          <div className="automation-studio__body flex min-h-0 flex-1 flex-col">
+          <div className="terminal-sheet__body automation-studio__body flex min-h-0 flex-1 flex-col">
             <ErrorBoundary name="Automation studio algo">
               <AlgoTab hideToolbar />
             </ErrorBoundary>
           </div>
         </SheetContent>
       </Sheet>
-
-      <ErrorBoundary name="Bot detail (studio)">
-        <BotDetailDrawer
-          open={open && botDrawerOpen && !!selectedBotId}
-          onOpenChange={setBotDrawerOpen}
-          onStop={(bot_id) => sendAction(Action.BOT_STOP, { bot_id })}
-          onPause={(bot_id) => sendAction(Action.BOT_PAUSE, { bot_id })}
-          onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
-        />
-      </ErrorBoundary>
     </>
   );
 }

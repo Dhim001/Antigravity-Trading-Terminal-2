@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from app.api.context import RequestContext
 from app.api.rate_limit import rate_limit_allow
 from app.api.outbound import agent_insight, error
 from app.api.protocol import Action
 from app.api.responses import send_to
 from app.api.router import route
-from app.config import AGENT_ENABLED
+from app.config import AGENT_ENABLED, AGENT_LLM_ENABLED
 
 ANALYZE_MIN_INTERVAL_SEC = 10.0
 
@@ -54,6 +55,30 @@ async def chart_analyze(ctx: RequestContext) -> None:
         return
 
     await send_to(ctx, agent_insight(insight.to_dict()))
+
+
+@route(Action.EXPLAIN_TRADE, tags=["agent"])
+async def explain_trade_handler(ctx: RequestContext) -> None:
+    bot_id = (ctx.message.get("bot_id") or "").strip()
+    trade_id = (ctx.message.get("trade_id") or "").strip()
+    if not bot_id or not trade_id:
+        await send_to(ctx, error("bot_id and trade_id are required"))
+        return
+
+    from app.services.agent.trade_explain import explain_trade
+
+    try:
+        result = await explain_trade(
+            bot_id,
+            trade_id,
+            chart_analyst=ctx.chart_analyst,
+            use_llm=bool(ctx.message.get("use_llm", False)) and AGENT_LLM_ENABLED,
+        )
+    except ValueError as exc:
+        await send_to(ctx, error(str(exc)))
+        return
+
+    await send_to(ctx, {"type": "trade_explain", "data": result})
 
 
 async def get_agent_insights(symbol: str, ctx: RequestContext, limit: int = 20) -> None:

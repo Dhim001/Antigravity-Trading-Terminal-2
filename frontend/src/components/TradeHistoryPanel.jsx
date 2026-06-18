@@ -22,6 +22,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
 import { buildBotLookup, parseTradeTimestamp, tradeSourceLabel } from '@/lib/botAttribution';
+import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 
 const fmt = (n, dec = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -131,6 +132,11 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
       return sort.dir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
     });
   }, [tradeHistory, cutoff, symFilter, sideFilter, statFilter, sourceFilter, search, sort]);
+
+  const { onScroll: onHistoryScroll, window: rowWindow } = useVirtualRows(filtered, {
+    rowHeight: 34,
+    overscan: 12,
+  });
 
   const exportCSV = () => {
     const headers = ['Time', 'ID', 'Symbol', 'Source', 'Type', 'Side', 'Status', 'Qty', 'Fill Price', 'Value', 'Cost Basis', 'Realized P&L'];
@@ -382,7 +388,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         </div>
       </div>
 
-      <div className="history-table-scroll scroll-panel-y scroll-panel-y-0">
+      <div className="history-table-scroll scroll-panel-y scroll-panel-y-0" onScroll={onHistoryScroll}>
         {loading ? (
           <div className="flex h-full min-h-[120px] items-center justify-center gap-[var(--icon-gap-loose)] text-muted-foreground">
             <RefreshCw size={14} className="animate-spin" aria-hidden />
@@ -407,7 +413,8 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(trade => {
+              <VirtualTablePadding height={rowWindow.topPad} colSpan={10} />
+              {rowWindow.slice.map(trade => {
                 const meta = STATUS_META[trade.status] || STATUS_META.PENDING;
                 const StatusIcon = meta.icon;
                 const src = tradeSourceLabel(trade, botLookup);
@@ -464,6 +471,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
                   </tr>
                 );
               })}
+              <VirtualTablePadding height={rowWindow.bottomPad} colSpan={10} />
             </tbody>
           </table>
         )}

@@ -23,6 +23,7 @@ from app.database import init_db
 from app.api.http_server import run_http_server
 from app.api.outbound import (
     account_update,
+    bots_update,
     bot_logs_history,
     orderbook_update,
     publish_bot_log,
@@ -176,6 +177,8 @@ async def websocket_handler(websocket):
     }))
 
     await manager.send_to(websocket, account_update(state.oms.get_account_data()))
+    state.bot_manager.load_bots_from_db()
+    await manager.send_to(websocket, bots_update(state.bot_manager.list_bots_public()))
     await manager.send_to(websocket, trade_history(state.oms.get_trade_history()))
     await manager.send_to(websocket, bot_logs_history(state.bot_manager.get_recent_logs(100)))
 

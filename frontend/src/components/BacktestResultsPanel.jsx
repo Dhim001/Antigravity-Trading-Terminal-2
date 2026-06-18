@@ -7,6 +7,17 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import BacktestMiniChart from './BacktestMiniChart';
 
+function BacktestTable({ caption, children, className }) {
+  return (
+    <div className={cn('algo-backtest-table-scroll', className)}>
+      {caption && (
+        <p className="algo-backtest-table-scroll__caption">{caption}</p>
+      )}
+      {children}
+    </div>
+  );
+}
+
 function fmtTime(sec) {
   if (!sec) return '—';
   return new Date(sec * 1000).toLocaleString(undefined, {
@@ -100,9 +111,8 @@ export default function BacktestResultsPanel({ results, backtestDays, backtestTi
       <BacktestMiniChart equityCurve={results.equity_curve} totalPnl={results.total_pnl} />
 
       {recentRuns.length > 1 && (
-        <div className="algo-backtest-compare mt-2 rounded border border-border/60 p-2">
-          <p className="mb-1 text-[0.62rem] font-semibold text-muted-foreground">Recent runs (same symbol)</p>
-          <table className="terminal-table m-0 w-full text-[0.58rem]">
+        <BacktestTable caption="Recent runs (same symbol)" className="algo-backtest-table-scroll--history">
+          <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
             <thead>
               <tr>
                 <th>When</th>
@@ -115,28 +125,31 @@ export default function BacktestResultsPanel({ results, backtestDays, backtestTi
             <tbody>
               {recentRuns.slice(0, 5).map(run => (
                 <tr key={run.id} className={run.id === results.run_id ? 'bg-primary/5' : ''}>
-                  <td className="text-muted-foreground">{run.created_at?.slice(0, 16) ?? '—'}</td>
-                  <td>{run.strategy}</td>
-                  <td>{run.days}</td>
+                  <td className="text-muted-foreground whitespace-nowrap">{run.created_at?.slice(0, 16) ?? '—'}</td>
+                  <td className="whitespace-nowrap">{run.strategy}</td>
+                  <td className="num-mono">{run.days}</td>
                   <td className={cn(
-                    'num-mono text-right',
+                    'num-mono text-right whitespace-nowrap',
                     (run.summary?.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
                   )}>
                     {run.summary?.total_pnl != null ? `$${Number(run.summary.total_pnl).toFixed(2)}` : '—'}
                   </td>
-                  <td className="num-mono text-right">
+                  <td className="num-mono text-right whitespace-nowrap">
                     {run.summary?.win_rate != null ? `${Number(run.summary.win_rate).toFixed(1)}%` : '—'}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </BacktestTable>
       )}
 
       {allTrades.length > 0 && (
-        <div className="algo-backtest-trades scroll-panel-y scroll-panel-y-0 max-h-48">
-          <table className="terminal-table m-0 text-[0.58rem]">
+        <BacktestTable
+          caption={`Trade log (${allTrades.length} fills)`}
+          className="algo-backtest-table-scroll--trades"
+        >
+          <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
             <thead>
               <tr>
                 <th>Time</th>
@@ -150,27 +163,29 @@ export default function BacktestResultsPanel({ results, backtestDays, backtestTi
             <tbody>
               {allTrades.map((t, i) => (
                 <tr key={`${t.time}-${t.side}-${i}`}>
-                  <td className="text-muted-foreground">{fmtTime(t.time)}</td>
-                  <td>{t.side}{t.is_exit ? ' ↗' : ''}</td>
-                  <td className="num-mono text-right">{Number(t.quantity).toFixed(4)}</td>
-                  <td className="num-mono text-right">{Number(t.price).toFixed(2)}</td>
+                  <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
+                  <td className="whitespace-nowrap">{t.side}{t.is_exit ? ' ↗' : ''}</td>
+                  <td className="num-mono text-right whitespace-nowrap">{Number(t.quantity).toFixed(4)}</td>
+                  <td className="num-mono text-right whitespace-nowrap">{Number(t.price).toFixed(2)}</td>
                   <td className={cn(
-                    'num-mono text-right',
+                    'num-mono text-right whitespace-nowrap',
                     t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
                   )}>
                     {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
                   </td>
-                  <td className="text-muted-foreground">{t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}</td>
+                  <td className="text-muted-foreground max-w-[10rem] truncate" title={t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}>
+                    {t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
           {closedTrades.length > 0 && (
-            <p className="mt-1 px-1 text-[0.58rem] text-muted-foreground">
-              {closedTrades.length} closed trade{closedTrades.length !== 1 ? 's' : ''} shown (entries + exits)
+            <p className="algo-backtest-table-scroll__footer">
+              {closedTrades.length} closed trade{closedTrades.length !== 1 ? 's' : ''} (entries + exits)
             </p>
           )}
-        </div>
+        </BacktestTable>
       )}
     </div>
   );

@@ -34,6 +34,7 @@ class Action(StrEnum):
     BOT_LIST_ALL = "bot_list_all"
     RUN_BACKTEST = "run_backtest"
     CHART_ANALYZE = "chart_analyze"
+    EXPLAIN_TRADE = "explain_trade"
     MARKET_SCAN = "market_scan"
     CHART_VISION = "chart_vision"
 
@@ -56,6 +57,7 @@ class MessageType(StrEnum):
     TICKS_UPDATE = "ticks_update"
     BOTS_HISTORY = "bots_history"
     AGENT_INSIGHT = "agent_insight"
+    TRADE_EXPLAIN = "trade_explain"
     SCAN_RESULTS = "scan_results"
     VISION_REPORT = "vision_report"
     ERROR = "error"

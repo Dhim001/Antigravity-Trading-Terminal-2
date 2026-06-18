@@ -1,30 +1,40 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, Suspense, lazy } from 'react';
 import { useStore } from './store/useStore';
 import { useSettingsStore } from './store/useSettingsStore';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useBootstrap } from './hooks/useBootstrap';
 
 import ResizableWatchlistSidebar from './components/ResizableWatchlistSidebar';
-import ChartWidget           from './components/ChartWidget';
-import MultiChartGrid        from './components/MultiChartGrid';
-import TradingPanel          from './components/TradingPanel';
-import SystemControlPanel    from './components/SystemControlPanel';
-import SettingsPanel         from './components/SettingsPanel';
 import SettingsBootstrap     from './components/SettingsBootstrap';
 import CommandBar            from './components/CommandBar';
-import ResizableDock         from './components/ResizableDock';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
 import ShortcutsSheet        from './components/ShortcutsSheet';
 import HelpSheet             from './components/HelpSheet';
 import OnboardingTour        from './components/OnboardingTour';
 import ErrorBoundary         from './components/ErrorBoundary';
 import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
-import InsightsHub           from './components/InsightsHub';
-import AutomationStudio      from './components/AutomationStudio';
 import ActivityCenter        from './components/ActivityCenter';
 import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
+
+const ChartWidget = lazy(() => import('./components/ChartWidget'));
+const MultiChartGrid = lazy(() => import('./components/MultiChartGrid'));
+const SystemControlPanel = lazy(() => import('./components/SystemControlPanel'));
+const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
+const InsightsHub = lazy(() => import('./components/InsightsHub'));
+const AutomationStudio = lazy(() => import('./components/AutomationStudio'));
+const BotDetailDrawer = lazy(() => import('./components/BotDetailDrawer'));
+const TradingPanel = lazy(() => import('./components/TradingPanel'));
+const ResizableDock = lazy(() => import('./components/ResizableDock'));
+
+function PanelFallback({ label = 'Loading…' }) {
+  return (
+    <div className="flex min-h-[120px] flex-1 items-center justify-center text-xs text-muted-foreground">
+      {label}
+    </div>
+  );
+}
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,6 +62,9 @@ export default function App() {
   const isLive           = useStore(state => state.isLive);
   const terminalMode     = useStore(state => state.terminalMode);
   const isBotRunning     = useStore(state => state.isBotRunning);
+  const selectedBotId    = useStore(state => state.selectedBotId);
+  const botDrawerOpen    = useStore(state => state.botDrawerOpen);
+  const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
   const distributed      = useStore(state => state.distributed);
   const workspace = useSettingsStore(state => state.settings.workspace);
   const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
@@ -262,12 +275,16 @@ export default function App() {
       }}
     >
       <SettingsBootstrap />
-      <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
-      <SettingsPanel
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onOpenAdmin={() => setShowAdmin(true)}
-      />
+      <Suspense fallback={null}>
+        <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <SettingsPanel
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          onOpenAdmin={() => setShowAdmin(true)}
+        />
+      </Suspense>
       <SymbolCommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -278,8 +295,24 @@ export default function App() {
       <ShortcutsSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <HelpSheet open={helpOpen} onOpenChange={setHelpOpen} />
       <OnboardingTour />
-      <InsightsHub open={insightsOpen} onOpenChange={setInsightsOpen} />
-      <AutomationStudio open={automationOpen} onOpenChange={setAutomationOpen} />
+      <Suspense fallback={null}>
+        <InsightsHub open={insightsOpen} onOpenChange={setInsightsOpen} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <AutomationStudio open={automationOpen} onOpenChange={setAutomationOpen} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <ErrorBoundary name="Bot detail">
+          <BotDetailDrawer
+            open={botDrawerOpen && !!selectedBotId}
+            nested={automationOpen}
+            onOpenChange={setBotDrawerOpen}
+            onStop={(bot_id) => sendAction(Action.BOT_STOP, { bot_id })}
+            onPause={(bot_id) => sendAction(Action.BOT_PAUSE, { bot_id })}
+            onResume={(bot_id) => sendAction(Action.BOT_RESUME, { bot_id })}
+          />
+        </ErrorBoundary>
+      </Suspense>
       <ActivityCenter open={activityOpen} onOpenChange={setActivityOpen} />
 
       <ErrorBoundary name="Header">
@@ -486,21 +519,29 @@ export default function App() {
       <main className="workspace-main workspace-main--with-context">
         {viewMode === 'single' ? (
           <ErrorBoundary name="Chart">
-            <ChartWidget />
+            <Suspense fallback={<PanelFallback label="Loading chart…" />}>
+              <ChartWidget />
+            </Suspense>
           </ErrorBoundary>
         ) : (
           <ErrorBoundary name="Multi-chart grid">
-            <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
+            <Suspense fallback={<PanelFallback label="Loading charts…" />}>
+              <MultiChartGrid onSwitchToSingle={() => setViewMode('single')} />
+            </Suspense>
           </ErrorBoundary>
         )}
         {!zenMode && <ChartContextStrip />}
       </main>
 
-      <TradingPanel hidden={!panelEnabled} />
+      <Suspense fallback={null}>
+        <TradingPanel hidden={!panelEnabled} />
+      </Suspense>
 
       {showDock && (
         <ErrorBoundary name="Trading dock">
-          <ResizableDock setDockHeight={handleDockHeightChange} initialDockHeight={dockHeight} />
+          <Suspense fallback={<PanelFallback label="Loading dock…" />}>
+            <ResizableDock setDockHeight={handleDockHeightChange} initialDockHeight={dockHeight} />
+          </Suspense>
         </ErrorBoundary>
       )}
     </div>

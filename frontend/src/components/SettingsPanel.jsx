@@ -188,8 +188,8 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="settings-panel w-full sm:max-w-lg">
-        <SheetHeader className="settings-panel__header">
+      <SheetContent side="right" className="terminal-sheet settings-panel w-full sm:max-w-lg">
+        <SheetHeader className="settings-panel__header terminal-sheet__header">
           <SheetTitle className="settings-panel__title">
             <Palette aria-hidden />
             Preferences
@@ -199,8 +199,8 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
           </SheetDescription>
         </SheetHeader>
 
-        <Tabs value={activeTab} onValueChange={handleTabChange} className="settings-panel__tabs">
-          <TabsList variant="line" className="settings-panel__tablist w-full justify-start">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="terminal-tabs settings-panel__tabs">
+          <TabsList variant="line" className="terminal-tabs__list settings-panel__tablist w-full justify-start">
             <TabsTrigger value="appearance" className="gap-1.5 text-xs">
               <Palette size={13} aria-hidden />
               Theme
@@ -219,7 +219,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="appearance" className="settings-panel__body">
+          <TabsContent value="appearance" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
             <section className="settings-section">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="settings-section__title">Color mode</h3>
@@ -304,7 +304,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             </div>
           </TabsContent>
 
-          <TabsContent value="chart" className="settings-panel__body">
+          <TabsContent value="chart" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
             <section className="settings-section">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="settings-section__title">Chart canvas</h3>
@@ -397,7 +397,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             </section>
           </TabsContent>
 
-          <TabsContent value="layout" className="settings-panel__body">
+          <TabsContent value="layout" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
             <section className="settings-section">
               <h3 className="settings-section__title">Chart layout</h3>
               <p className="settings-section__hint">
@@ -654,7 +654,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             </section>
           </TabsContent>
 
-          <TabsContent value="system" className="settings-panel__body">
+          <TabsContent value="system" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
             <section className="settings-section">
               <h3 className="settings-section__title">Terminal status</h3>
               <dl className="settings-defaults-list num-mono text-[0.68rem]">

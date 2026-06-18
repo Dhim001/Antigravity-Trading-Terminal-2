@@ -79,14 +79,14 @@ export default function ActivityCenter({ open, onOpenChange }) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="activity-center w-full sm:max-w-md">
-        <SheetHeader>
+      <SheetContent side="right" className="terminal-sheet terminal-sheet--narrow activity-center w-full sm:max-w-md">
+        <SheetHeader className="terminal-sheet__header px-5 pt-5 pb-3">
           <SheetTitle className="text-sm">Activity Center</SheetTitle>
           <SheetDescription className="text-xs">
             Alerts, bot events, and connection status
           </SheetDescription>
         </SheetHeader>
-        <ul className="activity-center__list mt-4 space-y-2">
+        <ul className="activity-center__list space-y-2">
           {items.length === 0 ? (
             <li className="text-xs text-muted-foreground py-8 text-center">No recent activity</li>
           ) : items.map((item) => {

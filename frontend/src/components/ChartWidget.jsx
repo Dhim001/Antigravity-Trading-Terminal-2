@@ -1412,6 +1412,7 @@ export default function ChartWidget() {
   return (
     <WidgetShell
       className={cn(chartInteractionMode !== 'normal' && 'chart-interactive-mode relative')}
+      data-tour="chart"
       icon={AreaChart}
       title={activeSymbol}
       headerRight={

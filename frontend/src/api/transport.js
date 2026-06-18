@@ -123,6 +123,7 @@ export const HTTP_ROUTES = Object.freeze({
   [Action.ADMIN_RESET_SYSTEM]: { method: 'POST', path: () => '/api/v1/admin/reset' },
   [Action.ADMIN_EMERGENCY_STOP]: { method: 'POST', path: () => '/api/v1/admin/emergency-stop' },
   [Action.CHART_ANALYZE]: { method: 'POST', path: () => '/api/v1/agent/analyze', body: (p) => p },
+  [Action.EXPLAIN_TRADE]: { method: 'POST', path: () => '/api/v1/agent/explain-trade', body: (p) => p },
   [Action.MARKET_SCAN]: { method: 'POST', path: () => '/api/v1/scanner/scan', body: (p) => p },
   [Action.CHART_VISION]: { method: 'POST', path: () => '/api/v1/agent/vision', body: (p) => p },
 });

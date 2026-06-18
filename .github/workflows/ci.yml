@@ -127,6 +127,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Worker bar-close handler smoke
+        run: python -m pytest tests/test_worker_bar_close.py -q
+
       - name: Worker heartbeat smoke
         env:
           TERMINAL_MODE: SIMULATED

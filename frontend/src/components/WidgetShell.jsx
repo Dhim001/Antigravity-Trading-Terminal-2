@@ -18,9 +18,10 @@ export function WidgetShell({
   bodyClassName,
   scrollable = false,
   scrollPad = true,
+  ...rest
 }) {
   return (
-    <div className={cn('widget-card flex h-full min-h-0 flex-col overflow-hidden', className)}>
+    <div className={cn('widget-card flex h-full min-h-0 flex-col overflow-hidden', className)} {...rest}>
       <div className="widget-header">
         <div className="icon-label-loose min-w-0">
           {Icon && <Icon size={13} className="logo-icon shrink-0" aria-hidden />}
