@@ -75,6 +75,8 @@ export const HTTP_ROUTES = Object.freeze({
   },
   [Action.BOT_STOP_ALL]: { method: 'POST', path: () => '/api/v1/bots/stop-all' },
   [Action.RUN_BACKTEST]: { method: 'POST', path: () => '/api/v1/backtest', body: (p) => p },
+  [Action.RUN_BACKTEST_SWEEP]: { method: 'POST', path: () => '/api/v1/backtest/sweep', body: (p) => p },
+  [Action.CANCEL_BACKTEST]: { method: 'POST', path: () => '/api/v1/backtest/cancel', body: (p) => p },
   [Action.ADMIN_GET_STATS]: { method: 'GET', path: () => '/api/v1/admin/stats' },
   [Action.ADMIN_ARCHIVE_BACKFILL]: {
     method: 'POST',

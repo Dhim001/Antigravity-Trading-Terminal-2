@@ -22,6 +22,11 @@ export function getStoreActions() {
     setBotLogs: s.setBotLogs,
     setBacktestResults: s.setBacktestResults,
     setBacktestRuns: s.setBacktestRuns,
+    setBacktestRunning: s.setBacktestRunning,
+    setBacktestProgress: s.setBacktestProgress,
+    setBacktestLabOpen: s.setBacktestLabOpen,
+    setBacktestOverlay: s.setBacktestOverlay,
+    clearBacktestOverlay: s.clearBacktestOverlay,
     setStrategyCatalog: s.setStrategyCatalog,
     setBotDetail: s.setBotDetail,
     setAmbiguousOrders: s.setAmbiguousOrders,
@@ -93,15 +98,46 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.SYSTEM_STATS:
       storeActions.setSystemStats(data);
       break;
+    case MessageType.BACKTEST_PROGRESS:
+      storeActions.setBacktestProgress(data);
+      break;
     case MessageType.BACKTEST_RESULT:
-      if (data?.status === 'success') {
+      storeActions.setBacktestRunning(false);
+      storeActions.setBacktestProgress(null);
+      if (data?.status === 'cancelled') {
+        toast.info(data?.message || 'Backtest cancelled');
+        break;
+      }
+      if (data?.status === 'success' && data?.results && !data.results.error) {
         storeActions.setBacktestResults(data.results);
+        const sym = data.results?.meta?.symbol;
+        const pnl = data.results?.total_pnl;
+        const trades = data.results?.trade_count ?? 0;
+        const pnlLabel = pnl != null
+          ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
+          : '—';
+        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}`);
+        if (data.results?.meta?.symbol && data.results?.run_id) {
+          storeActions.setBacktestOverlay({
+            runId: data.results.run_id,
+            symbol: data.results.meta.symbol,
+            meta: data.results.meta,
+            trades: data.results.trades ?? [],
+            tradesTotal: data.results.trades_total ?? data.results.trades?.length ?? 0,
+            equityCurve: data.results.equity_curve ?? [],
+            visible: false,
+          });
+        }
+        if (data.results?.sweep) {
+          toast.success(`Sweep complete · best $${Number(data.results.total_pnl ?? 0).toFixed(2)}`);
+        }
         import('./endpoints').then(({ fetchBacktestRuns }) => {
-          const sym = data.results?.meta?.symbol;
           fetchBacktestRuns(storeActions, sym);
         });
       } else {
-        console.error('Backtest failed:', data?.message);
+        const msg = data?.results?.error || data?.message || 'Backtest failed';
+        console.error('Backtest failed:', msg);
+        toast.error(msg);
       }
       break;
     case MessageType.TICKS_UPDATE:

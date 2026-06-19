@@ -19,11 +19,12 @@ import { getStoreActions } from '../api/dispatch';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Zap, History, Brain, Radar, ChevronUp,
+  RefreshCw, AlertTriangle, Zap, History, Brain, Radar, ChevronUp, Loader2,
 } from 'lucide-react';
 import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestResultsPanel from './BacktestResultsPanel';
+import BacktestProgressBar from './BacktestProgressBar';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
@@ -57,6 +58,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { buildBotLookup, getPositionBots, shortBotId } from '@/lib/botAttribution';
 import { DOCK_GROUP_CONFIG, dockGroupForTab } from '../settings/layoutModes';
@@ -562,7 +564,9 @@ export function AlgoTab({ hideToolbar = false }) {
   const {
     activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
     setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
-    strategyTemplates, backtestResults, backtestRuns, setChartInteractionMode,
+    strategyTemplates, backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
+    setBacktestRunning, setBacktestProgress, setBacktestSnapshot, setBacktestLabOpen,
+    setChartInteractionMode,
     isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
@@ -584,6 +588,12 @@ export function AlgoTab({ hideToolbar = false }) {
     strategyTemplates: s.strategyTemplates,
     backtestResults: s.backtestResults,
     backtestRuns: s.backtestRuns,
+    backtestRunning: s.backtestRunning,
+    backtestSnapshot: s.backtestSnapshot,
+    setBacktestRunning: s.setBacktestRunning,
+    setBacktestProgress: s.setBacktestProgress,
+    setBacktestSnapshot: s.setBacktestSnapshot,
+    setBacktestLabOpen: s.setBacktestLabOpen,
     setChartInteractionMode: s.setChartInteractionMode,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
@@ -607,6 +617,8 @@ export function AlgoTab({ hideToolbar = false }) {
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [backtestDays, setBacktestDays] = useState('7');
+  const [backtestOos, setBacktestOos] = useState(false);
+  const backtestTimeoutRef = useRef(null);
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
   const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(botLogs, {
@@ -624,6 +636,63 @@ export function AlgoTab({ hideToolbar = false }) {
   useEffect(() => {
     fetchBots(getStoreActions()).catch(() => {});
   }, []);
+
+  useEffect(() => () => {
+    if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
+  }, []);
+
+  const handleRunBacktest = async () => {
+    if (botExecutionMode === 'TICK') {
+      toast.error('Backtest applies to bar-close strategies only');
+      return;
+    }
+    if (!botConfig?.allocation || botConfig.allocation <= 0) {
+      toast.error('Set a valid capital allocation before backtesting');
+      return;
+    }
+
+    const days = parseInt(backtestDays, 10) || 7;
+    const snapshot = backtestFingerprint({
+      symbol: activeSymbol,
+      strategy: botStrategy,
+      days: String(days),
+      timeframe: botTimeframe,
+      config: botConfig,
+    });
+
+    setBacktestRunning(true);
+    setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Starting backtest…' });
+    setBacktestSnapshot(snapshot);
+
+    if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
+    backtestTimeoutRef.current = setTimeout(() => {
+      if (useStore.getState().backtestRunning) {
+        setBacktestRunning(false);
+        setBacktestProgress(null);
+        toast.error('Backtest timed out — try a shorter range or check the server');
+      }
+    }, 120_000);
+
+    const { ok, error } = await sendAction(Action.RUN_BACKTEST, {
+      strategy: botStrategy,
+      symbol: activeSymbol,
+      config: botConfig,
+      days,
+      timeframe: botTimeframe,
+      oos_pct: backtestOos ? 30 : undefined,
+    });
+
+    if (!ok) {
+      if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
+      setBacktestRunning(false);
+      setBacktestProgress(null);
+      if (error) toast.error(error);
+    }
+  };
+
+  const handleCancelBacktest = () => {
+    sendAction(Action.CANCEL_BACKTEST, {});
+  };
 
   const confirmDeploy = () => {
     setDeployOpen(false);
@@ -656,16 +725,6 @@ export function AlgoTab({ hideToolbar = false }) {
   const filteredTemplates = strategyTemplates.filter(
     t => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode,
   );
-
-  const handleRunBacktest = () => {
-    sendAction(Action.RUN_BACKTEST, {
-      strategy: botStrategy,
-      symbol: activeSymbol,
-      config: botConfig,
-      days: parseInt(backtestDays, 10) || 7,
-      timeframe: botTimeframe,
-    });
-  };
 
   const selectTemplate = (template) => {
     setBotStrategy(template.strategy);
@@ -1088,6 +1147,49 @@ export function AlgoTab({ hideToolbar = false }) {
             </div>
 
             <div className="algo-deploy-field">
+              <Label className="algo-field-label">Execution costs</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <InputGroup className="h-8">
+                  <InputGroupInput
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="text-xs"
+                    placeholder="Slip bps"
+                    value={botConfig?.slippage_bps ?? ''}
+                    onChange={(e) => updateBotConfig({
+                      slippage_bps: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0,
+                    })}
+                  />
+                </InputGroup>
+                <InputGroup className="h-8">
+                  <InputGroupInput
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="text-xs"
+                    placeholder="Fee bps"
+                    value={botConfig?.fee_bps ?? ''}
+                    onChange={(e) => updateBotConfig({
+                      fee_bps: e.target.value === '' ? undefined : parseFloat(e.target.value) || 0,
+                    })}
+                  />
+                </InputGroup>
+              </div>
+              <span className="algo-field-hint">Applied per fill in backtest (basis points).</span>
+            </div>
+
+            <label className="algo-backtest-oos flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                checked={backtestOos}
+                onChange={(e) => setBacktestOos(e.target.checked)}
+              />
+              Walk-forward OOS — test on last 30% of range only
+            </label>
+
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Backtest Range</Label>
               <Select value={backtestDays} onValueChange={setBacktestDays}>
                 <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest history range">
@@ -1106,6 +1208,8 @@ export function AlgoTab({ hideToolbar = false }) {
               </span>
             </div>
 
+            {backtestRunning && <BacktestProgressBar compact />}
+
             {backtestResults && (
               <BacktestResultsPanel
                 results={backtestResults}
@@ -1114,6 +1218,8 @@ export function AlgoTab({ hideToolbar = false }) {
                 symbol={activeSymbol}
                 strategy={botStrategy}
                 recentRuns={backtestRuns}
+                snapshot={backtestSnapshot}
+                oosPct={backtestOos ? 30 : null}
               />
             )}
           </div>
@@ -1124,12 +1230,38 @@ export function AlgoTab({ hideToolbar = false }) {
             size="sm"
             className="flex-1 text-xs"
             onClick={handleRunBacktest}
-            disabled={botExecutionMode === 'TICK'}
+            disabled={botExecutionMode === 'TICK' || backtestRunning}
             title={botExecutionMode === 'TICK' ? 'Backtest applies to bar-close strategies only' : undefined}
           >
-            <Activity data-icon="inline-start" />
-            BACKTEST
+            {backtestRunning ? (
+              <Loader2 className="size-3.5 animate-spin" data-icon="inline-start" />
+            ) : (
+              <Activity data-icon="inline-start" />
+            )}
+            {backtestRunning ? 'RUNNING…' : 'BACKTEST'}
           </Button>
+          {backtestRunning && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0 text-xs text-destructive"
+              onClick={handleCancelBacktest}
+              title="Cancel running backtest"
+            >
+              <XSquare size={14} />
+            </Button>
+          )}
+          {backtestResults && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0 text-xs"
+              onClick={() => setBacktestLabOpen(true)}
+              title="Open full backtest report"
+            >
+              <Maximize2 size={14} />
+            </Button>
+          )}
           <Button
             variant="buy"
             size="sm"

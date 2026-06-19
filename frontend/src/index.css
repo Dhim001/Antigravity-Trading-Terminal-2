@@ -4267,9 +4267,258 @@ body {
 
 .algo-backtest-lab__header {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.algo-backtest-lab__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.algo-backtest-lab__meta {
+  margin-top: 0.25rem;
+  font-size: 0.58rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.algo-backtest-lab__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.35rem;
+}
+
+.algo-backtest-lab__meta-range {
+  margin: 0.15rem 0 0;
+}
+
+.algo-backtest-lab__meta-note {
+  margin: 0.1rem 0 0;
+  font-style: italic;
+  opacity: 0.9;
+}
+
+.algo-backtest-stale-banner {
+  margin-bottom: 0.35rem;
+  border-color: color-mix(in oklab, var(--color-warn, #f59e0b) 35%, var(--border));
+  background: color-mix(in oklab, var(--color-warn, #f59e0b) 8%, transparent);
+}
+
+.algo-backtest-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: var(--r-sm);
+  border: 1px dashed color-mix(in oklab, var(--color-accent) 35%, var(--border));
+  background: color-mix(in oklab, var(--color-accent) 6%, transparent);
+  padding: 0.5rem 0.625rem;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}
+
+.algo-backtest-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.algo-backtest-progress--compact {
+  margin-bottom: 0.4rem;
+}
+
+.algo-backtest-progress__track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 80%, transparent);
+  overflow: hidden;
+}
+
+.algo-backtest-progress__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent, hsl(var(--primary)));
+  transition: width 0.2s ease;
+}
+
+.algo-backtest-progress__meta {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  font-size: 0.58rem;
+  color: var(--text-muted);
+}
+
+.algo-backtest-progress__pct {
+  font-size: 0.58rem;
+  color: var(--text-foreground);
+}
+
+.algo-backtest-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.algo-backtest-compare__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.algo-backtest-sweep {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.algo-backtest-sweep__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.algo-backtest-sweep__hint {
+  margin: 0;
+}
+
+.algo-backtest-oos {
+  margin: 0.15rem 0 0.35rem;
+}
+
+.algo-backtest-lab--full {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.algo-backtest-metrics--lab {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem 1rem;
+  font-size: 0.65rem;
+}
+
+.backtest-mini-chart--lab {
+  height: 180px;
+  min-height: 160px;
+}
+
+.algo-backtest-table-scroll--history-full {
+  max-height: min(16rem, 42vh);
+}
+
+.algo-backtest-table-scroll--trades-full {
+  max-height: min(24rem, 58vh);
+}
+
+.backtest-lab__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.backtest-lab__scroll {
+  padding: var(--sp-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  container-type: inline-size;
+  container-name: backtest-lab;
+}
+
+.backtest-lab__loading {
+  padding: var(--sp-4) 0;
+}
+
+.backtest-lab__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 12rem;
+  padding: var(--sp-6);
+  border-radius: var(--r-md);
+  border: 1px dashed color-mix(in oklab, var(--border) 80%, transparent);
+  background: color-mix(in oklab, var(--muted) 18%, transparent);
+  text-align: center;
+}
+
+.algo-backtest-lab__tools-grid {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: 1fr;
+}
+
+@container backtest-lab (min-width: 640px) {
+  .algo-backtest-lab__tools-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.algo-backtest-lab__section {
+  min-width: 0;
+}
+
+.algo-backtest-lab__section--chart {
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in oklab, var(--border) 75%, transparent);
+  background: color-mix(in oklab, var(--surface-1) 50%, transparent);
+  padding: 0.5rem;
+}
+
+.algo-backtest-lab__tables {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.algo-backtest-lab__tables--full {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: 1fr;
+}
+
+@container backtest-lab (min-width: 720px) {
+  .algo-backtest-lab__tables--full {
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.15fr);
+    align-items: start;
+  }
+}
+
+.algo-backtest-lab__section--history,
+.algo-backtest-lab__section--trades {
+  min-width: 0;
+}
+
+.algo-backtest-stat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.algo-backtest-stat-grid > * {
+  flex: 1 1 calc(33.333% - 0.35rem);
+  min-width: 5.5rem;
+}
+
+.algo-backtest-lab--full .algo-backtest-stat-grid > * {
+  flex: 1 1 calc(20% - 0.35rem);
+  min-width: 6.5rem;
 }
 
 .algo-backtest-metrics--expanded {
@@ -5778,6 +6027,24 @@ body {
   border-color: var(--border-color);
 }
 
+.backtest-lab.terminal-sheet {
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}
+
+[data-slot="sheet-content"][data-side="floating"].backtest-lab,
+[data-slot="sheet-content"][data-side="floating"].terminal-sheet {
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+  transform: none !important;
+  translate: none !important;
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.42),
+    0 0 0 1px color-mix(in oklab, var(--primary) 12%, transparent);
+}
+
 .terminal-sheet--narrow {
   width: 100%;
   max-width: min(28rem, 96vw);
@@ -6072,6 +6339,197 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   BACKTEST LAB (floating draggable report panel)
+═══════════════════════════════════════════════════════════════════ */
+.backtest-lab-overlay {
+  background: color-mix(in oklab, var(--background) 35%, transparent) !important;
+  backdrop-filter: blur(2px);
+}
+
+[data-slot="sheet-content"][data-side="floating"].backtest-lab {
+  border-color: var(--border-color);
+  background: var(--bg-primary);
+}
+
+.backtest-lab--interacting {
+  transition: none !important;
+  user-select: none;
+}
+
+.backtest-lab--expanded {
+  box-shadow:
+    0 32px 80px rgba(0, 0, 0, 0.48),
+    0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent);
+}
+
+.backtest-lab__resize {
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.backtest-lab__resize--left {
+  top: 0;
+  left: -6px;
+  bottom: 12px;
+  display: flex;
+  width: 10px;
+  align-items: center;
+  justify-content: center;
+  cursor: ew-resize;
+}
+
+.backtest-lab__resize--bottom {
+  left: 12px;
+  right: 0;
+  bottom: -4px;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.backtest-lab__resize--corner {
+  left: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+  border-bottom-left-radius: var(--r-xl);
+}
+
+.backtest-lab__resize--left:hover,
+.backtest-lab__resize--left.dragging {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in oklab, var(--primary) 38%, transparent),
+    transparent
+  );
+}
+
+.backtest-lab__resize--bottom:hover,
+.backtest-lab__resize--bottom.dragging {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in oklab, var(--primary) 38%, transparent),
+    transparent
+  );
+}
+
+.backtest-lab__resize--corner:hover,
+.backtest-lab__resize--corner.dragging {
+  background: color-mix(in oklab, var(--primary) 22%, transparent);
+}
+
+.backtest-lab__resize-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklab, var(--border-color) 90%, transparent);
+  background: color-mix(in oklab, var(--background) 88%, var(--muted));
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.backtest-lab__resize--left:hover .backtest-lab__resize-grip,
+.backtest-lab__resize--left.dragging .backtest-lab__resize-grip {
+  opacity: 1;
+  color: var(--color-accent-light);
+  border-color: color-mix(in oklab, var(--primary) 42%, var(--border-color));
+}
+
+.backtest-lab [data-slot="sheet-close"] {
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 8;
+  color: var(--text-muted);
+}
+
+.backtest-lab__header {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 0.5rem !important;
+  padding: 0.85rem 3.25rem 0.75rem 0.85rem !important;
+  cursor: grab;
+  user-select: none;
+}
+
+.backtest-lab__header--dragging {
+  cursor: grabbing;
+}
+
+.backtest-lab__header-main {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.backtest-lab__drag-hint {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.1rem;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+
+.backtest-lab__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-base) !important;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.backtest-lab__title svg {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-up);
+}
+
+.backtest-lab__description {
+  margin-top: 0.15rem;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.backtest-lab__header-tools {
+  position: absolute;
+  top: 0.7rem;
+  right: 2.65rem;
+  z-index: 7;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.backtest-lab__expand-btn {
+  color: var(--text-muted);
+}
+
+.backtest-lab__expand-btn:hover {
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    AUTOMATION STUDIO (resizable right sheet)
 ═══════════════════════════════════════════════════════════════════ */
 .automation-studio {
@@ -6347,7 +6805,8 @@ body {
 [data-slot="sheet-content"].insights-hub,
 [data-slot="sheet-content"].settings-panel,
 [data-slot="sheet-content"].activity-center,
-[data-slot="sheet-content"].bot-detail-drawer {
+[data-slot="sheet-content"].bot-detail-drawer,
+[data-slot="sheet-content"].backtest-lab {
   z-index: var(--z-sheet) !important;
 }
 

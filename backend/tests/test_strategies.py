@@ -122,6 +122,7 @@ class TestScreenerAndBacktest(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertIn("win_rate", result)
         self.assertIn("equity_curve", result)
+        self.assertIn("summary", result)
 
 
 if __name__ == "__main__":

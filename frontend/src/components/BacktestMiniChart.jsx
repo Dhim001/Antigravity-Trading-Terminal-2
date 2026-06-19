@@ -1,12 +1,49 @@
 /**
  * Compact equity curve for backtest preview in Algo tab.
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import * as echarts from 'echarts';
+import { cn } from '@/lib/utils';
 
-export default function BacktestMiniChart({ equityCurve, totalPnl }) {
+function nearestEquityIndex(equityCurve, tradeTime) {
+  if (!equityCurve?.length || tradeTime == null) return -1;
+  let best = 0;
+  let bestDiff = Math.abs(equityCurve[0].time - tradeTime);
+  for (let i = 1; i < equityCurve.length; i++) {
+    const diff = Math.abs(equityCurve[i].time - tradeTime);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  }
+  return best;
+}
+
+export default function BacktestMiniChart({ equityCurve, totalPnl, trades, className }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
+
+  const tradeMarkers = useMemo(() => {
+    if (!trades?.length || !equityCurve?.length) return [];
+    return trades.map((t) => {
+      const idx = nearestEquityIndex(equityCurve, t.time);
+      if (idx < 0) return null;
+      const isExit = Boolean(t.is_exit);
+      const y = equityCurve[idx]?.equity;
+      if (y == null) return null;
+      return {
+        name: `${t.side} ${t.reason ?? ''}`.trim(),
+        coord: [idx, y],
+        symbol: isExit ? 'pin' : 'triangle',
+        symbolSize: isExit ? 10 : 8,
+        itemStyle: {
+          color: isExit
+            ? ((t.pnl ?? 0) >= 0 ? '#f59e0b' : '#ef4444')
+            : '#60a5fa',
+        },
+      };
+    }).filter(Boolean);
+  }, [trades, equityCurve]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -62,7 +99,7 @@ export default function BacktestMiniChart({ equityCurve, totalPnl }) {
 
     chart.setOption({
       backgroundColor: 'transparent',
-      grid: { left: 4, right: 4, top: 8, bottom: 4, containLabel: true },
+      grid: { left: 4, right: 4, top: 12, bottom: 4, containLabel: true },
       xAxis: {
         type: 'category',
         data: labels,
@@ -87,6 +124,13 @@ export default function BacktestMiniChart({ equityCurve, totalPnl }) {
             { offset: 1, color: 'rgba(0,0,0,0)' },
           ]),
         },
+        markPoint: tradeMarkers.length
+          ? {
+              symbolKeepAspect: true,
+              data: tradeMarkers,
+              label: { show: false },
+            }
+          : undefined,
       }],
       tooltip: {
         trigger: 'axis',
@@ -97,14 +141,14 @@ export default function BacktestMiniChart({ equityCurve, totalPnl }) {
         },
       },
     }, { notMerge: true });
-  }, [equityCurve, totalPnl]);
+  }, [equityCurve, totalPnl, tradeMarkers]);
 
   if (!equityCurve?.length) return null;
 
   return (
     <div
       ref={containerRef}
-      className="backtest-mini-chart"
+      className={cn('backtest-mini-chart', className)}
       aria-label="Backtest equity curve"
     />
   );

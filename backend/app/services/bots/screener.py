@@ -29,10 +29,13 @@ class MarketScreenerService:
         ohlcv_data: list,
         config: dict | None = None,
         strategy: str | None = None,
+        *,
+        full_history: bool = False,
     ) -> pd.DataFrame:
         """
         Converts candle dicts to a DataFrame and computes indicators for the strategy.
-        Uses a rolling tail window — full 7-day history is unnecessary for live signals.
+        Live signals use a rolling tail window; backtests pass full_history=True for the
+        entire resolved candle series.
         """
         if not ohlcv_data or len(ohlcv_data) < 50:
             return pd.DataFrame()
@@ -44,12 +47,14 @@ class MarketScreenerService:
         cfg = merge_strategy_config(strat_key, config)
         cache_key = (symbol, bar_time, config_cache_key(strat_key, config))
 
-        if bar_time is not None:
+        if bar_time is not None and not full_history:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 return cached.copy()
 
-        window = ohlcv_data[-300:] if len(ohlcv_data) > 300 else ohlcv_data
+        window = ohlcv_data if full_history else (
+            ohlcv_data[-300:] if len(ohlcv_data) > 300 else ohlcv_data
+        )
         df = pd.DataFrame(window)
 
         for col in ["open", "high", "low", "close", "volume"]:
@@ -66,7 +71,7 @@ class MarketScreenerService:
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {e}")
 
-        if bar_time is not None and not df.empty:
+        if bar_time is not None and not df.empty and not full_history:
             self._cache[cache_key] = df.copy()
             stale = [k for k in self._cache if k[0] == symbol and k[1] != bar_time]
             for key in stale:

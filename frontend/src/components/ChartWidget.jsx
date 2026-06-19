@@ -17,6 +17,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { BACKTEST_OVERLAY_EVENT, symbolsMatch } from '@/lib/backtestDisplay';
 import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { fetchOlderCandles } from '../api/endpoints';
@@ -475,6 +476,46 @@ function buildBotTradeMarkers(botTrades, candles, bucketSecs) {
   }).filter(Boolean);
 }
 
+function buildBacktestTradeMarkers(backtestTrades, candles, bucketSecs) {
+  if (!backtestTrades?.length || !candles.length) return [];
+  return backtestTrades.map((t) => {
+    const isExit = t.is_exit === 1 || t.is_exit === true;
+    const tsSec = t.time != null ? Number(t.time) : null;
+    if (tsSec == null) return null;
+    const idx = findBarIndexForBarTime(candles, tsSec, bucketSecs);
+    if (idx < 0) return null;
+    const candle = candles[idx];
+    return toSignalScatterPoint(candles, idx, markerYForTrade(candle, t.side, { isExit, fillPrice: t.price }), {
+      value: `BT ${t.side}${isExit ? ` ${t.reason ?? ''}` : ' entry'}`,
+      symbol: isExit ? 'pin' : 'path://M0,10 L5,0 L10,10 Z',
+      symbolSize: isExit ? 11 : 9,
+      itemStyle: {
+        color: isExit
+          ? ((t.pnl ?? 0) >= 0 ? '#f59e0b' : '#ef4444')
+          : '#60a5fa',
+        borderColor: '#1e3a5f',
+        borderWidth: 1,
+      },
+    });
+  }).filter(Boolean);
+}
+
+function mapBacktestEquityLine(equityCurve, candles) {
+  if (!equityCurve?.length || !candles.length) return [];
+  const data = new Array(candles.length).fill(null);
+  let ei = 0;
+  const startTs = toUnixSeconds(equityCurve[0]?.time);
+  for (let i = 0; i < candles.length; i++) {
+    const t = toUnixSeconds(candles[i].time);
+    if (t == null || startTs == null || t < startTs) continue;
+    while (ei < equityCurve.length - 1 && toUnixSeconds(equityCurve[ei + 1].time) <= t) {
+      ei += 1;
+    }
+    data[i] = equityCurve[ei]?.equity ?? null;
+  }
+  return data;
+}
+
 function buildTradeMarkers(tradeHistory, activeSymbol, candles, bucketSecs, { excludeBotId } = {}) {
   return tradeHistory
     .filter((t) => t.symbol === activeSymbol && t.status === 'FILLED')
@@ -600,6 +641,12 @@ export default function ChartWidget() {
     return state.botDetail.trades.map(
       (t) => `${t.id}:${t.signal_bar_time ?? ''}:${t.signal_id ?? ''}:${t.side}`,
     ).join(';');
+  });
+  const backtestOverlay = useStore(state => state.backtestOverlay);
+  const backtestOverlayKey = useStore(state => {
+    const o = state.backtestOverlay;
+    if (!o) return '';
+    return `${o.visible ? 1 : 0}:${o.runId ?? ''}:${o.trades?.length ?? 0}:${o.symbol ?? ''}:${o.equityCurve?.length ?? 0}`;
   });
   const chartInteractionMode = useStore(state => state.chartInteractionMode);
   const setChartInteractionMode = useStore(state => state.setChartInteractionMode);
@@ -827,6 +874,7 @@ export default function ChartWidget() {
     });
 
     yAxes.push({
+      id: 'price',
       scale: true,
       gridIndex: 0,
       position: 'right',
@@ -864,6 +912,25 @@ export default function ChartWidget() {
         yAxisOpt.interval = 30;
       }
       yAxes.push(yAxisOpt);
+    });
+
+    const showBacktestEquity = backtestOverlay?.visible
+      && symbolsMatch(backtestOverlay.symbol, activeSymbol)
+      && backtestOverlay.equityCurve?.length;
+    yAxes.push({
+      id: 'backtest-equity-axis',
+      scale: true,
+      gridIndex: 0,
+      position: 'left',
+      show: Boolean(showBacktestEquity),
+      splitLine: { show: false },
+      axisLine: { show: false },
+      axisLabel: {
+        show: Boolean(showBacktestEquity),
+        color: '#60a5fa',
+        fontSize: 9,
+        formatter: (val) => (val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${Number(val).toFixed(0)}`),
+      },
     });
 
     // Series
@@ -912,6 +979,23 @@ export default function ChartWidget() {
       z: 6,
       animation: false,
       tooltip: { show: false },
+    });
+
+    const equityOverlayData = showBacktestEquity
+      ? mapBacktestEquityLine(backtestOverlay.equityCurve, candles)
+      : [];
+
+    series.push({
+      id: 'backtest-equity',
+      name: 'BT Equity',
+      type: 'line',
+      data: equityOverlayData,
+      xAxisIndex: 0,
+      yAxisId: 'backtest-equity-axis',
+      showSymbol: false,
+      silent: true,
+      z: 2,
+      lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed', opacity: 0.85 },
     });
 
     // Overlay indicators
@@ -1034,7 +1118,7 @@ export default function ChartWidget() {
     updateLegendDOM(lastBar);
 
     requestAnimationFrame(() => applyOverlayPatchRef.current?.());
-  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme]);
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, backtestOverlay, backtestOverlayKey]);
 
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
@@ -1068,7 +1152,13 @@ export default function ChartWidget() {
     const botMarkers = showBotMarkers
       ? buildBotTradeMarkers(botDetail.trades, bars, bucketSecs)
       : [];
-    const scatterData = [...tradeMarkers, ...botMarkers];
+    const showBacktestMarkers = backtestOverlay?.visible
+      && symbolsMatch(backtestOverlay.symbol, activeSymbol)
+      && backtestOverlay.trades?.length;
+    const backtestMarkers = showBacktestMarkers
+      ? buildBacktestTradeMarkers(backtestOverlay.trades, bars, bucketSecs)
+      : [];
+    const scatterData = [...tradeMarkers, ...botMarkers, ...backtestMarkers];
 
     try {
       chart.setOption({
@@ -1087,7 +1177,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
+  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, backtestOverlay, backtestOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -1233,7 +1323,13 @@ export default function ChartWidget() {
   // Lightweight overlay patch — trades, positions, and after full rebuild
   useEffect(() => {
     applyOverlayPatch();
-  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey, botOverlayKey]);
+  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey, botOverlayKey, backtestOverlayKey]);
+
+  useEffect(() => {
+    const onOverlayChanged = () => applyOverlayPatchRef.current?.();
+    window.addEventListener(BACKTEST_OVERLAY_EVENT, onOverlayChanged);
+    return () => window.removeEventListener(BACKTEST_OVERLAY_EVENT, onOverlayChanged);
+  }, []);
 
   // Live tick updates — patch by series/xAxis id (no getOption mutation)
   const applyLiveCandleUpdate = useCallback(() => {

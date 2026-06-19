@@ -14,6 +14,7 @@ import OnboardingTour        from './components/OnboardingTour';
 import ErrorBoundary         from './components/ErrorBoundary';
 import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
 import ActivityCenter        from './components/ActivityCenter';
+import BacktestLabSheet      from './components/BacktestLabSheet';
 import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
@@ -314,6 +315,7 @@ export default function App() {
         </ErrorBoundary>
       </Suspense>
       <ActivityCenter open={activityOpen} onOpenChange={setActivityOpen} />
+      <BacktestLabSheet />
 
       <ErrorBoundary name="Header">
       <header className="terminal-header">

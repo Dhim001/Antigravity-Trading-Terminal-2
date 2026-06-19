@@ -62,6 +62,11 @@ export async function fetchBacktestRuns(storeActions, symbol) {
   }
 }
 
+export async function fetchBacktestTrades(runId) {
+  const body = await apiRequest(`/api/v1/backtest/runs/${encodeURIComponent(runId)}/trades`);
+  return body?.trades ?? [];
+}
+
 export async function fetchAccount(storeActions) {
   const body = await apiAction('/api/v1/account');
   applyHttpEnvelope(body, storeActions);

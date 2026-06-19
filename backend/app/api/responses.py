@@ -1,6 +1,7 @@
 from app.api.context import RequestContext
 from app.api.outbound import (
     account_update,
+    backtest_progress,
     backtest_result,
     bot_detail,
     bots_history,
@@ -64,6 +65,10 @@ async def send_bot_detail(ctx: RequestContext, data: dict) -> None:
 
 async def send_backtest_result(ctx: RequestContext, data: dict) -> None:
     await send_to(ctx, backtest_result(data))
+
+
+async def send_backtest_progress(ctx: RequestContext, data: dict) -> None:
+    await send_to(ctx, backtest_progress(data))
 
 
 async def broadcast_order_result(ctx: RequestContext, data: dict) -> None:

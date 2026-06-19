@@ -73,6 +73,10 @@ def backtest_result(data: dict) -> dict:
     return frame(MessageType.BACKTEST_RESULT, data)
 
 
+def backtest_progress(data: dict) -> dict:
+    return frame(MessageType.BACKTEST_PROGRESS, data)
+
+
 def ticks_update(data: dict, *, meta: dict | None = None) -> dict:
     payload = frame(MessageType.TICKS_UPDATE, data)
     if meta is not None:

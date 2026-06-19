@@ -19,7 +19,7 @@ from app.config import HTTP_API_KEY, HTTP_CORS_ORIGINS, HTTP_HOST, HTTP_PORT, RE
 from app.api.http.auth import ApiKeyMiddleware
 from app.database import get_db_stats
 from app.services.bots.strategy_catalog import list_strategy_catalog
-from app.services.bots.backtest_store import list_backtest_runs
+from app.services.bots.backtest_store import get_backtest_run, get_backtest_trades, list_backtest_runs
 from app.services.events import channels
 
 ensure_routes_loaded()
@@ -100,6 +100,41 @@ async def list_backtest_runs_handler(request: Request) -> JSONResponse:
         limit = 50
     runs = list_backtest_runs(limit=limit, symbol=symbol or None)
     return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
+
+
+async def get_backtest_run_handler(request: Request) -> JSONResponse:
+    run_id = request.path_params.get("run_id")
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
+    run = get_backtest_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "Backtest run not found"}, status_code=404)
+    results = dict(run.get("results") or {})
+    all_trades = results.get("trades") or []
+    results["trades"] = all_trades[-100:]
+    results["trades_total"] = len(all_trades)
+    return JSONResponse({
+        "ok": True,
+        "run": {
+            **run,
+            "results": results,
+        },
+    })
+
+
+async def get_backtest_trades_handler(request: Request) -> JSONResponse:
+    run_id = request.path_params.get("run_id")
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
+    trades = get_backtest_trades(run_id)
+    if not trades and get_backtest_run(run_id) is None:
+        return JSONResponse({"ok": False, "error": "Backtest run not found"}, status_code=404)
+    return JSONResponse({
+        "ok": True,
+        "run_id": run_id,
+        "trades": trades,
+        "count": len(trades),
+    })
 
 
 async def list_api_routes(request: Request) -> JSONResponse:
@@ -191,6 +226,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
+        Route("/api/v1/backtest/runs/{run_id}", get_backtest_run_handler, methods=["GET"]),
+        Route("/api/v1/backtest/runs/{run_id}/trades", get_backtest_trades_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),
     ]

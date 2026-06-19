@@ -84,6 +84,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   backtestResults: null,
   backtestRuns: [],
+  backtestRunning: false,
+  backtestProgress: null,
+  backtestLabOpen: false,
+  /** Fingerprint of params used for the last completed backtest run */
+  backtestSnapshot: null,
+  backtestOverlay: null,
   chartInteractionMode: 'normal',
   strategyTemplates: [
     { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
@@ -309,6 +315,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setBacktestResults: (results) => set({ backtestResults: results }),
   setBacktestRuns: (runs) => set({ backtestRuns: Array.isArray(runs) ? runs : [] }),
+  setBacktestRunning: (running) => set({ backtestRunning: Boolean(running) }),
+  setBacktestProgress: (progress) => set({ backtestProgress: progress ?? null }),
+  setBacktestLabOpen: (open) => set({ backtestLabOpen: Boolean(open) }),
+  setBacktestSnapshot: (snapshot) => set({ backtestSnapshot: snapshot }),
+  setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),
+  clearBacktestOverlay: () => set({ backtestOverlay: null }),
 
   setStrategyCatalog: (strategies) => {
     if (!Array.isArray(strategies) || strategies.length === 0) return;
