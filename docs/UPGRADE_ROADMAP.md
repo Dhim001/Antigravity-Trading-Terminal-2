@@ -30,14 +30,12 @@ This document prioritizes three implementation tracks plus a broader backlog. Ea
 
 | Area | Gap |
 |------|-----|
-| **Onboarding** | No first-run tour or empty-state guidance |
 | **Explainability** | Analyst reasons exist but aren't wired through order/bot flows |
 | **Workspace** | Theme/chart settings persist; dock layout and multi-chart state do not |
-| **Pre-trade clarity** | Order ticket lacks margin/risk preview before submit |
-| **Alerts** | No user-defined price or signal alerts |
+| **Broker mode** | Live vs sim toggled via server env only — no in-app mode switch |
 | **Performance** | ~1.8MB JS bundle; monolithic `ChartWidget` / `useStore`; no list virtualization |
 | **Observability** | Logging + `/health` only; no metrics/tracing dashboard |
-| **Docker** | nginx proxies `/api` but not WebSocket — remote deploy breaks WS |
+| **Depth chart** | Basic book visualization; needs polish (aggregation, flash updates) |
 | **E2E** | Smoke/layout/analyst API; no full place-order or bot-deploy flows |
 | **Docs** | README omits Chart Analyst, ⌘B/⌘I, Analyst tab |
 
