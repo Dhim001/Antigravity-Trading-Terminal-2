@@ -41,7 +41,16 @@ import {
   Wifi,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { themeChartDefaults, getEffectiveSettings } from '../settings/themePresets';
+import { getIndicatorTheme, getIndicatorToolbarMeta } from '../settings/indicatorThemes';
+import { DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import { fetchHealth, parseMetricsSummary } from '../api/endpoints';
 import { HTTP_BASE_URL } from '../api/config';
 
@@ -50,6 +59,8 @@ const PRESET_SWATCHES = {
   bearish: ['#ef4444', '#f87171', '#ff4757', '#dc2626'],
   accent: ['#2563eb', '#3b82f6', '#6366f1', '#0ea5e9'],
 };
+
+const CHART_TIMEFRAMES = ['1m', '5m', '15m', '1H', '4H', '1D'];
 
 function ColorField({ id, label, value, onChange, presets = [], onCustomize }) {
   return (
@@ -129,10 +140,40 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const [presetName, setPresetName] = React.useState('');
   const [obsHealth, setObsHealth] = useState(null);
   const [obsMetrics, setObsMetrics] = useState(null);
+  const [alertDraft, setAlertDraft] = useState({
+    symbol: activeSymbol,
+    type: 'price_above',
+    threshold: '',
+    signal: 'BUY',
+  });
+  const [editingAlertId, setEditingAlertId] = useState(null);
+
+  useEffect(() => {
+    if (!editingAlertId) {
+      setAlertDraft((d) => ({ ...d, symbol: activeSymbol }));
+    }
+  }, [activeSymbol, editingAlertId]);
 
   const effectiveChart = useMemo(
     () => getEffectiveSettings(settings, resolvedTheme).chart,
     [settings, resolvedTheme],
+  );
+
+  const indicatorTheme = useMemo(
+    () => getIndicatorTheme(resolvedTheme),
+    [resolvedTheme],
+  );
+  const indicatorToolbar = useMemo(
+    () => getIndicatorToolbarMeta(indicatorTheme),
+    [indicatorTheme],
+  );
+
+  const chartLayout = settings.chartLayout ?? DEFAULT_TERMINAL_SETTINGS.chartLayout;
+  const activeIndicatorKeys = useMemo(
+    () => Object.entries(chartLayout.activeIndicators || {})
+      .filter(([, on]) => on)
+      .map(([k]) => k),
+    [chartLayout.activeIndicators],
   );
 
   useEffect(() => {
@@ -305,6 +346,77 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
           </TabsContent>
 
           <TabsContent value="chart" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
+            <section className="settings-section">
+              <h3 className="settings-section__title">Chart controls</h3>
+              <p className="settings-section__hint">
+                Timeframe, chart type, and indicators — synced with the chart toolbar.
+              </p>
+
+              <div className="mb-3">
+                <Label className="mb-1.5 block text-xs text-muted-foreground">Timeframe</Label>
+                <Select
+                  value={chartLayout.timeframe}
+                  onValueChange={(v) => v && updateChartLayout({ timeframe: v })}
+                >
+                  <SelectTrigger size="sm" className="w-full text-xs">
+                    <SelectValue placeholder="Timeframe" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CHART_TIMEFRAMES.map((tf) => (
+                      <SelectItem key={tf} value={tf} className="text-xs">
+                        {tf}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="mb-3">
+                <Label className="mb-1.5 block text-xs text-muted-foreground">Chart type</Label>
+                <ToggleGroup
+                  type="single"
+                  value={chartLayout.chartType}
+                  onValueChange={(v) => v && updateChartLayout({ chartType: v })}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="candle" className="flex-1 text-xs">Candle</ToggleGroupItem>
+                  <ToggleGroupItem value="line" className="flex-1 text-xs">Line</ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+
+              <div>
+                <Label className="mb-1.5 block text-xs text-muted-foreground">Indicators</Label>
+                <ToggleGroup
+                  type="multiple"
+                  value={activeIndicatorKeys}
+                  onValueChange={(vals) => {
+                    const next = { ...chartLayout.activeIndicators };
+                    for (const key of Object.keys(indicatorToolbar)) {
+                      next[key] = vals.includes(key);
+                    }
+                    updateChartLayout({ activeIndicators: next });
+                  }}
+                  className="flex flex-wrap gap-1"
+                  spacing={1}
+                >
+                  {Object.entries(indicatorToolbar).map(([key, ind]) => (
+                    <ToggleGroupItem
+                      key={key}
+                      value={key}
+                      size="sm"
+                      className="gap-1 text-[0.68rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+                      style={{ '--ind-c': ind.color }}
+                    >
+                      <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
+                      {ind.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+            </section>
+
+            <Separator />
+
             <section className="settings-section">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="settings-section__title">Chart canvas</h3>
@@ -549,36 +661,155 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               <p className="settings-section__hint">
                 Toast notifications when price crosses a level or analyst signal matches.
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs"
-                onClick={() => {
-                  const id = `alert-${Date.now()}`;
-                  setAlerts([
-                    ...(settings.alerts || []),
-                    {
-                      id,
-                      symbol: activeSymbol,
-                      type: 'signal_change',
-                      signal: 'BUY',
-                      enabled: true,
-                    },
-                  ]);
-                  toast.success(`Alert added for ${activeSymbol} BUY signal`);
-                }}
-              >
-                Add BUY signal alert ({activeSymbol})
-              </Button>
+              <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="col-span-2 sm:col-span-1">
+                    <Label className="text-[0.65rem] text-muted-foreground">Symbol</Label>
+                    <Input
+                      className="mt-1 h-8 text-xs"
+                      value={alertDraft.symbol}
+                      onChange={(e) => setAlertDraft((d) => ({ ...d, symbol: e.target.value.toUpperCase() }))}
+                      placeholder="BTCUSDT"
+                    />
+                  </div>
+                  <div className="col-span-2 sm:col-span-1">
+                    <Label className="text-[0.65rem] text-muted-foreground">Type</Label>
+                    <Select
+                      value={alertDraft.type}
+                      onValueChange={(type) => setAlertDraft((d) => ({ ...d, type }))}
+                    >
+                      <SelectTrigger className="mt-1 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="price_above" className="text-xs">Price above</SelectItem>
+                        <SelectItem value="price_below" className="text-xs">Price below</SelectItem>
+                        <SelectItem value="signal_change" className="text-xs">Signal change</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {(alertDraft.type === 'price_above' || alertDraft.type === 'price_below') && (
+                    <div className="col-span-2 sm:col-span-1">
+                      <Label className="text-[0.65rem] text-muted-foreground">Threshold</Label>
+                      <Input
+                        className="mt-1 h-8 text-xs num-mono"
+                        type="number"
+                        step="any"
+                        value={alertDraft.threshold}
+                        onChange={(e) => setAlertDraft((d) => ({ ...d, threshold: e.target.value }))}
+                        placeholder="0.00"
+                      />
+                    </div>
+                  )}
+                  {alertDraft.type === 'signal_change' && (
+                    <div className="col-span-2 sm:col-span-1">
+                      <Label className="text-[0.65rem] text-muted-foreground">Signal</Label>
+                      <Select
+                        value={alertDraft.signal}
+                        onValueChange={(signal) => setAlertDraft((d) => ({ ...d, signal }))}
+                      >
+                        <SelectTrigger className="mt-1 h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="BUY" className="text-xs">BUY</SelectItem>
+                          <SelectItem value="SELL" className="text-xs">SELL</SelectItem>
+                          <SelectItem value="NONE" className="text-xs">NONE</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => {
+                      const sym = (alertDraft.symbol || activeSymbol || '').trim().toUpperCase();
+                      if (!sym) {
+                        toast.error('Enter a symbol');
+                        return;
+                      }
+                      const needsThreshold = alertDraft.type === 'price_above' || alertDraft.type === 'price_below';
+                      const threshold = alertDraft.threshold === '' ? undefined : Number(alertDraft.threshold);
+                      if (needsThreshold && (threshold == null || Number.isNaN(threshold))) {
+                        toast.error('Enter a valid threshold');
+                        return;
+                      }
+                      const rule = {
+                        id: editingAlertId || `alert-${Date.now()}`,
+                        symbol: sym,
+                        type: alertDraft.type,
+                        enabled: true,
+                        ...(needsThreshold ? { threshold } : {}),
+                        ...(alertDraft.type === 'signal_change' ? { signal: alertDraft.signal || 'BUY' } : {}),
+                      };
+                      const existing = settings.alerts || [];
+                      if (editingAlertId) {
+                        setAlerts(existing.map((a) => (a.id === editingAlertId ? rule : a)));
+                        toast.success('Alert updated');
+                      } else {
+                        setAlerts([...existing, rule]);
+                        toast.success(`Alert added for ${sym}`);
+                      }
+                      setEditingAlertId(null);
+                      setAlertDraft({
+                        symbol: activeSymbol,
+                        type: 'price_above',
+                        threshold: '',
+                        signal: 'BUY',
+                      });
+                    }}
+                  >
+                    {editingAlertId ? 'Update alert' : 'Add alert'}
+                  </Button>
+                  {editingAlertId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => {
+                        setEditingAlertId(null);
+                        setAlertDraft({
+                          symbol: activeSymbol,
+                          type: 'price_above',
+                          threshold: '',
+                          signal: 'BUY',
+                        });
+                      }}
+                    >
+                      Cancel edit
+                    </Button>
+                  )}
+                </div>
+              </div>
               {(settings.alerts || []).length > 0 && (
                 <ul className="mt-2 flex flex-col gap-1">
                   {settings.alerts.map((a) => (
                     <li key={a.id} className="flex items-center justify-between rounded border border-border/50 px-2 py-1 text-xs">
-                      <span>{a.symbol} · {a.type}{a.threshold != null ? ` ${a.threshold}` : ''}{a.signal ? ` → ${a.signal}` : ''}</span>
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 truncate text-left hover:text-foreground"
+                        onClick={() => {
+                          setEditingAlertId(a.id);
+                          setAlertDraft({
+                            symbol: a.symbol,
+                            type: a.type,
+                            threshold: a.threshold != null ? String(a.threshold) : '',
+                            signal: a.signal || 'BUY',
+                          });
+                        }}
+                      >
+                        {a.symbol} · {a.type.replace('_', ' ')}
+                        {a.threshold != null ? ` ${a.threshold}` : ''}
+                        {a.signal ? ` → ${a.signal}` : ''}
+                        {a.enabled === false ? ' (off)' : ''}
+                      </button>
                       <Button
                         variant="ghost"
                         size="xs"
-                        className="text-trading-down"
+                        className="text-trading-down shrink-0"
                         onClick={() => setAlerts(settings.alerts.filter((x) => x.id !== a.id))}
                       >
                         Remove
