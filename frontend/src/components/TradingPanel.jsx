@@ -4,6 +4,7 @@
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useEffect } from 'react';
 import OrderBookWidget from './OrderBookWidget';
+import DepthChartWidget from './DepthChartWidget';
 import OrderEntryWidget from './OrderEntryWidget';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -97,7 +98,7 @@ export default function TradingPanel({ hidden = false }) {
       <div className="trading-panel__body">
         {tab === 'trade' && <OrderEntryWidget />}
         {tab === 'book' && <OrderBookWidget />}
-        {tab === 'depth' && <OrderBookWidget />}
+        {tab === 'depth' && <DepthChartWidget />}
       </div>
     </section>
   );
