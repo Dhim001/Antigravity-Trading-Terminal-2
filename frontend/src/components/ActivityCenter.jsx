@@ -40,8 +40,14 @@ export default function ActivityCenter({ open, onOpenChange }) {
         kind: 'warn',
         icon: AlertTriangle,
         title: `Ambiguous order ${o.symbol}`,
-        detail: o.message || 'Needs reconciliation',
+        detail: o.message || 'Needs reconciliation — click to open Reconcile tab',
         ts: Date.now(),
+        clickable: true,
+        onClick: () => {
+          onOpenChange?.(false);
+          window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'reconcile' }));
+          window.dispatchEvent(new CustomEvent('dock-group', { detail: 'automation' }));
+        },
       });
     }
     for (const b of activeBots.filter((x) => x.status === 'RUNNING').slice(0, 5)) {
@@ -76,7 +82,7 @@ export default function ActivityCenter({ open, onOpenChange }) {
       });
     }
     return list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  }, [connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts]);
+  }, [connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts, onOpenChange]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -98,7 +104,17 @@ export default function ActivityCenter({ open, onOpenChange }) {
                 className={cn(
                   'activity-center__item flex gap-2 rounded-lg border border-border/50 p-2.5 text-xs',
                   item.kind === 'warn' && 'border-trading-warn/30 bg-trading-warn/5',
+                  item.clickable && 'cursor-pointer hover:bg-muted/30 transition-colors',
                 )}
+                onClick={item.onClick}
+                onKeyDown={item.clickable ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    item.onClick?.();
+                  }
+                } : undefined}
+                role={item.clickable ? 'button' : undefined}
+                tabIndex={item.clickable ? 0 : undefined}
               >
                 <Icon size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
                 <div className="min-w-0 flex-1">
