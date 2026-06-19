@@ -7,9 +7,10 @@ import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme } from '../settings/applySettings';
 import { getIndicatorTheme, emaLineStyle } from '../settings/indicatorThemes';
-import { calcEMA } from '../utils/indicators';
+import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
+import { calcEMA, calcBollingerBands, buildVwapSeriesValues } from '../utils/indicators';
 import { cn } from '@/lib/utils';
-import { getCandles } from '../services/candleBuffer';
+import { getCandles, toUnixSeconds } from '../services/candleBuffer';
 import { Maximize2, Minimize2, Link2 } from 'lucide-react';
 import { cycleLinkGroup, LINK_GROUP_COLORS } from '../lib/chartLinkGroups';
 import { Button } from '@/components/ui/button';
@@ -29,6 +30,16 @@ const pad = (n) => String(n).padStart(2, '0');
 const MINI_FUTURE_PADDING = 8;
 const MINI_VISIBLE_BARS = 24;
 const LIVE_MIN_INTERVAL_MS = 250;
+const MINI_BB_WARMUP = 19;
+
+const TF_CONFIGS = [
+  { label: '1m', secs: 60 },
+  { label: '5m', secs: 300 },
+  { label: '15m', secs: 900 },
+  { label: '1H', secs: 3600 },
+  { label: '4H', secs: 14400 },
+  { label: '1D', secs: 86400 },
+];
 
 function formatMiniTimeLabel(timeSec) {
   const d = new Date(timeSec * 1000);
@@ -92,20 +103,144 @@ function readDataZoomWindow(chart) {
   return null;
 }
 
-function buildMiniChartSeriesData(candles) {
-  const candlestickData = candles.map((c) => [c.open, c.close, c.low, c.high]);
-  const ema9 = calcEMA(candles, 9);
-  const ema9Data = candles.map((_, i) => (i >= 8 ? ema9[i - 8]?.value : null));
-  const ema21 = calcEMA(candles, 21);
-  const ema21Data = candles.map((_, i) => (i >= 20 ? ema21[i - 20]?.value : null));
+function sliceRawForTimeframe(raw, intervalSecs, displayLimit) {
+  if (!raw.length) return raw;
+  const barsPerBucket = Math.max(1, Math.ceil(intervalSecs / 60));
+  const tail = Math.min(raw.length, (displayLimit + 4) * barsPerBucket + 32);
+  return tail < raw.length ? raw.slice(-tail) : raw;
+}
 
-  for (let i = 0; i < MINI_FUTURE_PADDING; i++) {
-    candlestickData.push('-');
-    ema9Data.push(null);
-    ema21Data.push(null);
+function bucketCandles(raw, intervalSecs) {
+  const buckets = new Map();
+  for (const c of raw) {
+    const sec = toUnixSeconds(c.time);
+    if (sec == null) continue;
+    const t = Math.floor(sec / intervalSecs) * intervalSecs;
+    if (!buckets.has(t)) {
+      buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
+    } else {
+      const b = buckets.get(t);
+      b.high = Math.max(b.high, c.high);
+      b.low = Math.min(b.low, c.low);
+      b.close = c.close;
+      b.volume += (c.volume || 0);
+    }
   }
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
 
-  return { candlestickData, ema9Data, ema21Data };
+function padMiniIndicatorValues(data) {
+  const out = [...data];
+  for (let i = 0; i < MINI_FUTURE_PADDING; i++) out.push(null);
+  return out;
+}
+
+function mapMiniEmaSeries(candles, period) {
+  const ema = calcEMA(candles, period);
+  const offset = period - 1;
+  return padMiniIndicatorValues(candles.map((_, i) => (i >= offset ? ema[i - offset]?.value : null)));
+}
+
+function mapMiniBbSeries(candles) {
+  const bb = calcBollingerBands(candles, 20, 2);
+  const mapper = (bbList) => padMiniIndicatorValues(
+    candles.map((_, i) => (i >= MINI_BB_WARMUP ? bbList[i - MINI_BB_WARMUP]?.value : null)),
+  );
+  return { upper: mapper(bb.upper), middle: mapper(bb.middle), lower: mapper(bb.lower) };
+}
+
+function mapMiniVwapSeries(candles) {
+  return padMiniIndicatorValues(buildVwapSeriesValues(candles));
+}
+
+function buildMiniMainData(candles, chartType) {
+  const data = chartType === 'line'
+    ? candles.map((c) => c.close)
+    : candles.map((c) => [c.open, c.close, c.low, c.high]);
+  for (let i = 0; i < MINI_FUTURE_PADDING; i++) data.push('-');
+  return data;
+}
+
+function buildMiniOverlaySeries(candles, active, indicatorTheme) {
+  const series = [];
+  if (active.ema9) {
+    series.push({
+      id: 'ema9',
+      name: 'EMA 9',
+      type: 'line',
+      data: mapMiniEmaSeries(candles, 9),
+      showSymbol: false,
+      animation: false,
+      lineStyle: emaLineStyle(9, indicatorTheme),
+    });
+  }
+  if (active.ema21) {
+    series.push({
+      id: 'ema21',
+      name: 'EMA 21',
+      type: 'line',
+      data: mapMiniEmaSeries(candles, 21),
+      showSymbol: false,
+      animation: false,
+      lineStyle: emaLineStyle(21, indicatorTheme),
+    });
+  }
+  if (active.ema50) {
+    series.push({
+      id: 'ema50',
+      name: 'EMA 50',
+      type: 'line',
+      data: mapMiniEmaSeries(candles, 50),
+      showSymbol: false,
+      animation: false,
+      lineStyle: emaLineStyle(50, indicatorTheme),
+    });
+  }
+  if (active.bb) {
+    const bb = mapMiniBbSeries(candles);
+    const { bb: bbTheme } = indicatorTheme;
+    series.push(
+      {
+        id: 'bb-upper',
+        name: 'BB Upper',
+        type: 'line',
+        data: bb.upper,
+        showSymbol: false,
+        animation: false,
+        lineStyle: { color: bbTheme.outer, width: 1, type: 'dashed', opacity: bbTheme.outerOpacity },
+      },
+      {
+        id: 'bb-mid',
+        name: 'BB Mid',
+        type: 'line',
+        data: bb.middle,
+        showSymbol: false,
+        animation: false,
+        lineStyle: { color: bbTheme.basis, width: 1, opacity: bbTheme.basisOpacity },
+      },
+      {
+        id: 'bb-lower',
+        name: 'BB Lower',
+        type: 'line',
+        data: bb.lower,
+        showSymbol: false,
+        animation: false,
+        lineStyle: { color: bbTheme.outer, width: 1, type: 'dashed', opacity: bbTheme.outerOpacity },
+      },
+    );
+  }
+  if (active.vwap) {
+    series.push({
+      id: 'vwap',
+      name: 'VWAP',
+      type: 'line',
+      data: mapMiniVwapSeries(candles),
+      showSymbol: false,
+      animation: false,
+      lineStyle: { color: indicatorTheme.vwap.line, width: 2, opacity: indicatorTheme.vwap.opacity },
+    });
+  }
+  return series;
 }
 
 function MiniChartHeaderPrice({ symbol }) {
@@ -162,6 +297,7 @@ export default function MiniChartWidget({
   const categoryDataRef = useRef([]);
   const candlesRef = useRef([]);
   const suppressDataZoomEventsRef = useRef(0);
+  const prevLayoutRef = useRef({ timeframe: '1m', chartType: 'candle', activeKey: '' });
 
   const [symbol, setSymbol] = useState(defaultSymbol);
 
@@ -169,6 +305,21 @@ export default function MiniChartWidget({
   const symbolsList = useStore(state => state.symbolsList);
   const settings = useSettingsStore(state => state.settings);
   const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
+  const chartLayout = settings.chartLayout ?? DEFAULT_TERMINAL_SETTINGS.chartLayout;
+  const timeframe = chartLayout.timeframe || '1m';
+  const chartType = chartLayout.chartType || 'candle';
+  const active = useMemo(() => ({
+    ...DEFAULT_TERMINAL_SETTINGS.chartLayout.activeIndicators,
+    ...(chartLayout.activeIndicators || {}),
+  }), [chartLayout.activeIndicators]);
+  const activeKey = useMemo(
+    () => Object.entries(active).filter(([, on]) => on).map(([k]) => k).sort().join(','),
+    [active],
+  );
+  const tfCfg = useMemo(
+    () => TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0],
+    [timeframe],
+  );
   const chartTheme = useMemo(
     () => getChartEchartsTheme(settings, resolvedTheme),
     [settings, resolvedTheme],
@@ -187,14 +338,40 @@ export default function MiniChartWidget({
 
   const getDisplayCandles = useCallback(() => {
     const raw = getCandles(symbol);
-    return raw.length > MINI_DISPLAY_BARS ? raw.slice(-MINI_DISPLAY_BARS) : raw;
-  }, [symbol]);
+    if (!raw.length) return [];
+    const rawSlice = sliceRawForTimeframe(raw, tfCfg.secs, MINI_DISPLAY_BARS);
+    const aggregated = bucketCandles(rawSlice, tfCfg.secs);
+    return aggregated.length > MINI_DISPLAY_BARS ? aggregated.slice(-MINI_DISPLAY_BARS) : aggregated;
+  }, [symbol, tfCfg]);
 
   const buildFullOption = useCallback((candles, zoomWindow) => {
     const dec = priceDecimals(candles);
     const categoryData = buildMiniCategoryData(candles);
-    const { candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles);
     const zoom = zoomWindow ?? liveEdgeDataZoomForMini(candles.length, categoryData);
+    const mainId = chartType === 'line' ? 'main' : 'candles';
+    const mainSeries = chartType === 'line'
+      ? {
+          id: mainId,
+          name: symbol,
+          type: 'line',
+          data: buildMiniMainData(candles, 'line'),
+          showSymbol: false,
+          animation: false,
+          lineStyle: { color: chartTheme.crosshairLabelBg, width: 2 },
+        }
+      : {
+          id: mainId,
+          name: symbol,
+          type: 'candlestick',
+          data: buildMiniMainData(candles, 'candle'),
+          animation: false,
+          itemStyle: {
+            color: chartTheme.bullishColor,
+            color0: chartTheme.bearishColor,
+            borderColor: chartTheme.bullishColor,
+            borderColor0: chartTheme.bearishColor,
+          },
+        };
 
     return {
       animation: false,
@@ -222,41 +399,9 @@ export default function MiniChartWidget({
         axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9, formatter: (val) => val.toFixed(dec) },
       },
       dataZoom: [{ type: 'inside', start: zoom.start, end: zoom.end }],
-      series: [
-        {
-          id: 'candles',
-          name: symbol,
-          type: 'candlestick',
-          data: candlestickData,
-          animation: false,
-          itemStyle: {
-            color: chartTheme.bullishColor,
-            color0: chartTheme.bearishColor,
-            borderColor: chartTheme.bullishColor,
-            borderColor0: chartTheme.bearishColor,
-          },
-        },
-        {
-          id: 'ema9',
-          name: 'EMA 9',
-          type: 'line',
-          data: ema9Data,
-          showSymbol: false,
-          animation: false,
-          lineStyle: emaLineStyle(9, indicatorTheme),
-        },
-        {
-          id: 'ema21',
-          name: 'EMA 21',
-          type: 'line',
-          data: ema21Data,
-          showSymbol: false,
-          animation: false,
-          lineStyle: emaLineStyle(21, indicatorTheme),
-        },
-      ],
+      series: [mainSeries, ...buildMiniOverlaySeries(candles, active, indicatorTheme)],
     };
-  }, [priceDecimals, symbol, chartTheme, indicatorTheme]);
+  }, [priceDecimals, symbol, chartTheme, indicatorTheme, chartType, active]);
 
   const resolveZoomWindow = useCallback((chart, candles, resetZoom) => {
     const categoryData = buildMiniCategoryData(candles);
@@ -326,39 +471,21 @@ export default function MiniChartWidget({
     }
 
     candlesRef.current = candles;
-    const { candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles);
 
+    if (isNewBar) {
+      configureChart({ resetZoom: false });
+      return;
+    }
+
+    const mainId = chartType === 'line' ? 'main' : 'candles';
     try {
-      const patch = {
-        series: [
-          { id: 'candles', data: candlestickData },
-          { id: 'ema9', data: ema9Data },
-          { id: 'ema21', data: ema21Data },
-        ],
-      };
-
-      if (isNewBar) {
-        const categoryData = buildMiniCategoryData(candles);
-        patch.xAxis = { data: categoryData };
-        categoryDataRef.current = categoryData;
-        if (pinnedToLiveRef.current) {
-          const zoom = liveEdgeDataZoomForMini(candles.length, categoryData);
-          patch.dataZoom = [{ type: 'inside', start: zoom.start, end: zoom.end }];
-          suppressDataZoomEventsRef.current += 1;
-        }
-      }
-
-      chart.setOption(patch, { lazyUpdate: true });
-
-      if (isNewBar && suppressDataZoomEventsRef.current > 0) {
-        requestAnimationFrame(() => {
-          suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
-        });
-      }
+      chart.setOption({
+        series: [{ id: mainId, data: buildMiniMainData(candles, chartType) }],
+      }, { lazyUpdate: true });
     } catch (err) {
       console.warn('[MiniChartWidget] live update failed:', err);
     }
-  }, [getDisplayCandles, configureChart]);
+  }, [getDisplayCandles, configureChart, chartType]);
 
   configureChartRef.current = configureChart;
 
@@ -437,8 +564,21 @@ export default function MiniChartWidget({
 
   useEffect(() => {
     if (!chartRef.current || !chartReadyRef.current) return;
-    configureChart();
-  }, [chartTheme, indicatorTheme, configureChart]);
+    const prev = prevLayoutRef.current;
+    const resetZoom = prev.timeframe !== timeframe;
+    prevLayoutRef.current = { timeframe, chartType, activeKey };
+    configureChart({ resetZoom });
+  }, [chartTheme, indicatorTheme, timeframe, chartType, activeKey, configureChart]);
+
+  useEffect(() => {
+    const onReset = () => {
+      pinnedToLiveRef.current = true;
+      prevLayoutRef.current = { timeframe: '1m', chartType: 'candle', activeKey: '' };
+      configureChart({ resetZoom: true });
+    };
+    window.addEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+    return () => window.removeEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
+  }, [configureChart]);
 
   useEffect(() => {
     const sym = symbol;

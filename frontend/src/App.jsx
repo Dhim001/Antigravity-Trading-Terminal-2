@@ -189,13 +189,19 @@ export default function App() {
     window.addEventListener('open-settings', onSettings);
     const onChartZen = () => toggleZenMode();
     window.addEventListener('chart-zen-toggle', onChartZen);
+    const onChartFocus = () => {
+      setViewMode('single');
+      updateWorkspace({ rightPanelCollapsed: true, dockCollapsed: true });
+    };
+    window.addEventListener('chart-focus', onChartFocus);
     return () => {
       window.removeEventListener('insights-hub-open', onInsights);
       window.removeEventListener('automation-studio-open', onAutomation);
       window.removeEventListener('open-settings', onSettings);
       window.removeEventListener('chart-zen-toggle', onChartZen);
+      window.removeEventListener('chart-focus', onChartFocus);
     };
-  }, [setSettingsOpen, toggleZenMode]);
+  }, [setSettingsOpen, toggleZenMode, setViewMode, updateWorkspace]);
 
   const connected = connectionStatus === 'connected';
   const apiReady = apiStatus === 'ready';

@@ -807,6 +807,9 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   );
 
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
+  const layoutPushSkipRef = useRef(false);
+
+  const chartLayoutFromSettings = settings.chartLayout;
 
   useEffect(() => {
     setHistoryGateForced(false);
@@ -843,6 +846,46 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
 
   useEffect(() => {
+    const cl = chartLayoutFromSettings;
+    if (!cl) return;
+
+    let pulled = false;
+    if (cl.timeframe && cl.timeframe !== timeframe) {
+      setTimeframe(cl.timeframe);
+      pulled = true;
+    }
+    if (cl.chartType && cl.chartType !== chartType) {
+      setChartType(cl.chartType);
+      pulled = true;
+    }
+    if (cl.activeIndicators) {
+      const keys = Object.keys(indicatorToolbar);
+      const differs = keys.some((k) => Boolean(cl.activeIndicators[k]) !== Boolean(active[k]));
+      if (differs) {
+        setActive((prev) => ({ ...prev, ...cl.activeIndicators }));
+        pulled = true;
+      }
+    }
+    if (pulled) layoutPushSkipRef.current = true;
+  }, [
+    chartLayoutFromSettings?.timeframe,
+    chartLayoutFromSettings?.chartType,
+    chartLayoutFromSettings?.activeIndicators,
+    indicatorToolbar,
+    timeframe,
+    chartType,
+    active,
+  ]);
+
+  useEffect(() => {
+    if (layoutPushSkipRef.current) {
+      layoutPushSkipRef.current = false;
+      return;
+    }
+    updateChartLayout({ timeframe, chartType, activeIndicators: active });
+  }, [timeframe, chartType, active, updateChartLayout]);
+
+  useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     const id = requestAnimationFrame(() => {
@@ -852,12 +895,9 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   }, [zenMode]);
 
   useEffect(() => {
-    updateChartLayout({ timeframe, chartType, activeIndicators: active });
-  }, [timeframe, chartType, active, updateChartLayout]);
-
-  useEffect(() => {
     const onReset = (e) => {
       const cl = e.detail?.chartLayout ?? DEFAULT_TERMINAL_SETTINGS.chartLayout;
+      layoutPushSkipRef.current = true;
       setTimeframe(cl.timeframe);
       setChartType(cl.chartType);
       setActive({ ...cl.activeIndicators });
