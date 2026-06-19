@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
 import BacktestResultsPanel from './BacktestResultsPanel';
 import BacktestProgressBar from './BacktestProgressBar';
+import BacktestJobHistory from './BacktestJobHistory';
 import ErrorBoundary from './ErrorBoundary';
 
 const LAB_WIDTH_KEY = 'terminal_backtest_lab_width';
@@ -120,6 +121,7 @@ export default function BacktestLabSheet() {
         <div className="terminal-sheet__body backtest-lab__body">
           <div className="terminal-sheet__scroll backtest-lab__scroll">
             <BacktestProgressBar />
+            <BacktestJobHistory />
             {backtestRunning && !backtestResults && (
               <p className="backtest-lab__loading text-sm text-muted-foreground">
                 Running backtest…

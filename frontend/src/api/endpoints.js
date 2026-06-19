@@ -100,52 +100,63 @@ export async function fetchBacktestJob(jobId) {
   return body.job;
 }
 
+export async function fetchBacktestJobs({ status, limit = 20 } = {}) {
+  const qs = new URLSearchParams();
+  if (status) qs.set('status', status);
+  qs.set('limit', String(limit));
+  const body = await apiRequest(`/api/v1/backtest/jobs?${qs}`);
+  return body?.jobs ?? [];
+}
+
 let _backtestPollTimer = null;
 
-export function resumeActiveBacktestJob(storeActions) {
+function startBacktestJobPolling(jobId, storeActions) {
   if (_backtestPollTimer) {
     clearTimeout(_backtestPollTimer);
     _backtestPollTimer = null;
   }
+  storeActions.setBacktestJobId(jobId);
+  storeActions.setBacktestRunning(true);
+  const poll = () => {
+    fetchBacktestJob(jobId)
+      .then((fresh) => {
+        if (!fresh) return;
+        if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
+        if (fresh.status === 'completed' && fresh.results) {
+          const wire = {
+            ...fresh.results,
+            run_id: fresh.run_id ?? fresh.results.run_id,
+          };
+          storeActions.setBacktestResults(wire);
+          storeActions.setBacktestRunning(false);
+          storeActions.setBacktestProgress(null);
+          return;
+        }
+        if (fresh.status === 'failed' || fresh.status === 'cancelled') {
+          storeActions.setBacktestRunning(false);
+          storeActions.setBacktestProgress(null);
+          return;
+        }
+        if (['pending', 'running'].includes(fresh.status)) {
+          _backtestPollTimer = setTimeout(poll, 2000);
+        }
+      })
+      .catch(() => {
+        _backtestPollTimer = setTimeout(poll, 3000);
+      });
+  };
+  _backtestPollTimer = setTimeout(poll, 1500);
+}
+
+export function watchBacktestJob(jobId, storeActions, { progress } = {}) {
+  storeActions.setBacktestProgress(progress ?? { pct: 0, message: 'Resuming…' });
+  startBacktestJobPolling(jobId, storeActions);
+}
+
+export function resumeActiveBacktestJob(storeActions) {
   return fetchActiveBacktestJob().then((job) => {
     if (!job || !['pending', 'running'].includes(job.status)) return null;
-    storeActions.setBacktestJobId(job.id);
-    storeActions.setBacktestRunning(true);
-    storeActions.setBacktestProgress(job.progress ?? { pct: 0, message: 'Resuming…' });
-    const poll = () => {
-      fetchBacktestJob(job.id)
-        .then((fresh) => {
-          if (!fresh) return;
-          if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
-          if (fresh.status === 'completed' && fresh.results) {
-            const wire = {
-              ...fresh.results,
-              run_id: fresh.run_id ?? fresh.results.run_id,
-            };
-            storeActions.setBacktestResults(wire);
-            storeActions.setBacktestRunning(false);
-            storeActions.setBacktestProgress(null);
-            return;
-          }
-          if (fresh.status === 'failed') {
-            storeActions.setBacktestRunning(false);
-            storeActions.setBacktestProgress(null);
-            return;
-          }
-          if (fresh.status === 'cancelled') {
-            storeActions.setBacktestRunning(false);
-            storeActions.setBacktestProgress(null);
-            return;
-          }
-          if (['pending', 'running'].includes(fresh.status)) {
-            _backtestPollTimer = setTimeout(poll, 2000);
-          }
-        })
-        .catch(() => {
-          _backtestPollTimer = setTimeout(poll, 3000);
-        });
-    };
-    _backtestPollTimer = setTimeout(poll, 1500);
+    watchBacktestJob(job.id, storeActions, { progress: job.progress });
     return job;
   }).catch(() => null);
 }
