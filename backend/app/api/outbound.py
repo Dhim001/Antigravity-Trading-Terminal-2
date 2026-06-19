@@ -61,8 +61,11 @@ def bot_detail(data: dict) -> dict:
     return frame(MessageType.BOT_DETAIL, data)
 
 
-def bot_log(bot_id: str, level: str, message: str) -> dict:
-    return frame(MessageType.BOT_LOG, {"bot_id": bot_id, "level": level, "message": message})
+def bot_log(bot_id: str, level: str, message: str, *, meta: dict | None = None) -> dict:
+    payload = {"bot_id": bot_id, "level": level, "message": message}
+    if meta:
+        payload["meta"] = meta
+    return frame(MessageType.BOT_LOG, payload)
 
 
 def bot_logs_history(data: list) -> dict:
@@ -126,8 +129,10 @@ async def publish_bot_log(
     bot_id: str,
     level: str,
     message: str,
+    *,
+    meta: dict | None = None,
 ) -> None:
-    await publish(broadcast_fn, bot_log(bot_id, level, message))
+    await publish(broadcast_fn, bot_log(bot_id, level, message, meta=meta))
 
 
 async def publish_bots_update(broadcast_fn: BroadcastFn | None, data: list) -> None:

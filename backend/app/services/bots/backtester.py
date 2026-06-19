@@ -39,6 +39,27 @@ def _check_long_sl_tp(position: dict, bar_low: float, bar_high: float) -> tuple[
     return None, None
 
 
+def _check_short_sl_tp(position: dict, bar_low: float, bar_high: float) -> tuple[str | None, float | None]:
+    """Intra-bar SL/TP for a short position (conservative: SL before TP)."""
+    sl = position.get("stop_loss")
+    tp = position.get("take_profit")
+
+    if sl is not None and bar_high >= sl:
+        return "SL", sl
+    if tp is not None and bar_low <= tp:
+        return "TP", tp
+    return None, None
+
+
+def _update_trailing_stop_short(position: dict, bar_low: float, bar_high: float, trailing_pct: float) -> None:
+    if trailing_pct <= 0:
+        return
+    position["low_watermark"] = min(position.get("low_watermark", bar_high), bar_low)
+    new_sl = position["low_watermark"] * (1 + trailing_pct / 100)
+    current_sl = position.get("stop_loss")
+    position["stop_loss"] = min(current_sl, new_sl) if current_sl is not None else new_sl
+
+
 def _update_trailing_stop(position: dict, bar_low: float, bar_high: float, trailing_pct: float) -> None:
     if trailing_pct <= 0:
         return
@@ -245,7 +266,10 @@ class BacktesterService:
             exit_side = "SELL" if side == "BUY" else "BUY"
             exit_fill = exit_fill_price(exit_price, exit_side, slippage_bps)
             exit_fee = trade_fee(exit_fill * qty, fee_bps)
-            profit = (exit_fill - entry_fill) * qty - exit_fee
+            if side == "BUY":
+                profit = (exit_fill - entry_fill) * qty - exit_fee
+            else:
+                profit = (entry_fill - exit_fill) * qty - exit_fee
             equity += profit
             total_fees += exit_fee
             daily_pnl += profit
@@ -343,6 +367,60 @@ class BacktesterService:
             })
             last_signal_bar_time = bar_time
 
+        def _try_short_entry(signal: str, signal_data: dict, row: dict, bar_time) -> None:
+            nonlocal position, last_signal_bar_time, blocked_entries, equity, total_fees
+            if not research or signal != "SELL":
+                return
+            if bar_time is not None and last_signal_bar_time == bar_time:
+                return
+
+            current_price = float(row["close"])
+            stop_loss_price = signal_data.get("stop_loss_price")
+            if stop_loss_price is not None:
+                stop_loss = float(stop_loss_price)
+            else:
+                sl_dist = signal_data.get("stop_loss_distance", current_price * 0.02)
+                stop_loss = current_price + float(sl_dist)
+
+            price_diff = abs(stop_loss - current_price)
+            if price_diff <= 0:
+                return
+
+            qty = risk_per_entry / price_diff
+            qty = min(qty, allocation / max(current_price, 1e-9))
+            if qty < _MIN_QTY:
+                blocked_entries += 1
+                return
+
+            _, tp_price = resolve_take_profit(
+                merged_config, signal_data, "SELL", current_price,
+            )
+            entry_fill = entry_fill_price(current_price, "SELL", slippage_bps)
+            entry_fee = trade_fee(entry_fill * qty, fee_bps)
+            equity -= entry_fee
+            total_fees += entry_fee
+            position = {
+                "side": "SELL",
+                "entry_price": current_price,
+                "entry_fill": entry_fill,
+                "entry_time": bar_time,
+                "qty": qty,
+                "stop_loss": stop_loss,
+                "take_profit": tp_price,
+                "low_watermark": current_price,
+            }
+            trade_log.append({
+                "time": int(bar_time) if bar_time is not None else 0,
+                "side": "SELL",
+                "price": round(entry_fill, 4),
+                "quantity": round(qty, 6),
+                "pnl": None,
+                "is_exit": False,
+                "reason": "ENTRY_SHORT",
+                "fee": round(entry_fee, 4),
+            })
+            last_signal_bar_time = bar_time
+
         eval_bars = max(len(df) - start_i, 1)
         progress_stride = max(1, eval_bars // 40)
 
@@ -359,8 +437,12 @@ class BacktesterService:
 
             if position:
                 bars_in_market += 1
-                _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
-                trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high)
+                if position["side"] == "BUY":
+                    _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
+                    trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high)
+                else:
+                    _update_trailing_stop_short(position, bar_low, bar_high, trailing_pct)
+                    trigger, exit_px = _check_short_sl_tp(position, bar_low, bar_high)
                 if trigger:
                     _close_position(bar_time, exit_px, trigger)
 
@@ -371,15 +453,23 @@ class BacktesterService:
                 signal_data = strategy.evaluate(row)
             signal = (signal_data or {}).get("signal")
 
-            if signal in ("SELL", "CLOSE") and position:
-                if bar_time is not None and last_signal_bar_time == bar_time:
-                    signal = None
-                else:
-                    _close_position(bar_time, bar_close, "SIGNAL")
-                    last_signal_bar_time = bar_time
+            if position:
+                close_signal = (
+                    (position["side"] == "BUY" and signal in ("SELL", "CLOSE"))
+                    or (position["side"] == "SELL" and signal in ("BUY", "CLOSE"))
+                )
+                if close_signal:
+                    if bar_time is not None and last_signal_bar_time == bar_time:
+                        signal = None
+                    else:
+                        _close_position(bar_time, bar_close, "SIGNAL")
+                        last_signal_bar_time = bar_time
+                        signal = None
 
             if not position and signal == "BUY":
                 _try_entry(signal, signal_data, row, bar_time)
+            elif not position and signal == "SELL" and research:
+                _try_short_entry(signal, signal_data, row, bar_time)
 
             peak_equity = max(peak_equity, equity)
             drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity else 0

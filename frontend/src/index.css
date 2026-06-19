@@ -4557,9 +4557,15 @@ body {
   border-color: color-mix(in oklab, var(--primary) 42%, var(--border));
 }
 
-.automation-studio__backtest-strip {
-  flex-shrink: 0;
+.algo-backtest-sweep__grid {
+  margin-top: 0.35rem;
 }
+
+.algo-backtest-sweep__row input[type="text"],
+.algo-backtest-sweep__row input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
 
 @container backtest-lab (min-width: 640px) {
   .algo-backtest-lab__tools-grid {
@@ -5492,6 +5498,68 @@ body {
 
 .bot-trade-explain__reports {
   margin-top: 0.35rem;
+}
+
+.bot-trade-explain__sources {
+  font-size: 0.58rem;
+  margin: 0.25rem 0 0;
+}
+
+.bot-trade-explain__logs {
+  margin-top: 0.45rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+}
+
+.bot-trade-explain__logs-title {
+  font-size: 0.58rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin: 0 0 0.25rem;
+}
+
+.bot-trade-explain__logs-list {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.58rem;
+  color: var(--text-muted);
+}
+
+.bot-trade-explain--compact .bot-trade-explain__summary {
+  font-size: 0.58rem;
+  padding: 0.15rem 0;
+}
+
+.multi-chart-link-legend__dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  margin-right: 0.15rem;
+}
+
+.mini-chart-link-group {
+  border-radius: var(--radius-sm);
+}
+
+.mini-chart-header {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.bot-history-expand {
+  background: color-mix(in oklab, var(--muted) 22%, transparent);
+  border-top: 1px solid color-mix(in oklab, var(--border) 65%, transparent);
+}
+
+.bot-history-fill {
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  padding: 0.35rem 0.5rem;
+  background: color-mix(in oklab, var(--surface-1) 40%, transparent);
 }
 
 .algo-log-line {

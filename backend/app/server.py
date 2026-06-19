@@ -258,6 +258,9 @@ async def main():
             from app.services.archive.tick_writer import tick_flush_loop
             tasks.append(asyncio.create_task(tick_flush_loop()))
 
+        from app.services.bots.backtest_worker import backtest_job_worker_loop
+        tasks.append(asyncio.create_task(backtest_job_worker_loop(state)))
+
         await asyncio.gather(*tasks)
 
 

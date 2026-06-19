@@ -12,7 +12,14 @@ import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { LayoutGrid, Link2, Unlink } from 'lucide-react';
+import { LayoutGrid, Link2 } from 'lucide-react';
+import {
+  cycleLinkGroup,
+  defaultLinkGroups,
+  LINK_GROUP_COLORS,
+  LINK_GROUPS,
+  resizeLinkGroups,
+} from '../lib/chartLinkGroups';
 
 const LAYOUTS = [
   {
@@ -104,6 +111,29 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
     return '2x2';
   });
 
+  const [linkGroups, setLinkGroups] = useState(() => {
+    let savedLayoutId = '2x2';
+    let chartLinkMode = 'all';
+    try {
+      const savedL = localStorage.getItem('terminal_multi_chart_layout_id');
+      if (savedL && LAYOUTS.some(l => l.id === savedL)) savedLayoutId = savedL;
+      const savedMode = localStorage.getItem('terminal_chart_link_mode');
+      if (savedMode === 'focused' || savedMode === 'all') chartLinkMode = savedMode;
+    } catch (_) {}
+    const layout = LAYOUTS.find(l => l.id === savedLayoutId) || LAYOUTS.find(l => l.id === '2x2');
+    const count = layout?.defaults?.length ?? 4;
+    try {
+      const saved = localStorage.getItem('terminal_multi_chart_link_groups');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return resizeLinkGroups(parsed, count, chartLinkMode);
+        }
+      }
+    } catch (_) {}
+    return defaultLinkGroups(count, chartLinkMode);
+  });
+
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [maximizedIdx, setMaximizedIdx] = useState(null);
 
@@ -138,21 +168,28 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   const chartLinkMode = useSettingsStore(state => state.settings.workspace?.chartLinkMode ?? 'all');
   const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
   const layout = LAYOUTS.find(l => l.id === layoutId);
+  const paneCount = layout?.defaults?.length ?? 4;
+
+  useEffect(() => {
+    setLinkGroups((prev) => resizeLinkGroups(prev, paneCount, chartLinkMode));
+  }, [paneCount, chartLinkMode]);
 
   useEffect(() => {
     if (!activeSymbol) return;
+    const group = linkGroups[focusedIdx];
+    if (!group) return;
     setSymbols(prev => {
-      if (chartLinkMode === 'all') {
-        const next = prev.map(() => activeSymbol);
-        if (next.every((s, i) => s === prev[i])) return prev;
-        return next;
-      }
-      if (prev[focusedIdx] === activeSymbol) return prev;
       const next = [...prev];
-      if (focusedIdx < next.length) next[focusedIdx] = activeSymbol;
-      return next;
+      let changed = false;
+      linkGroups.forEach((g, i) => {
+        if (g === group && i < next.length && next[i] !== activeSymbol) {
+          next[i] = activeSymbol;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
     });
-  }, [activeSymbol, focusedIdx, chartLinkMode]);
+  }, [activeSymbol, focusedIdx, linkGroups]);
 
   useEffect(() => {
     try { localStorage.setItem('terminal_multi_chart_layout_id', layoutId); } catch (_) {}
@@ -161,6 +198,10 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
   useEffect(() => {
     try { localStorage.setItem('terminal_multi_chart_symbols', JSON.stringify(symbols)); } catch (_) {}
   }, [symbols]);
+
+  useEffect(() => {
+    try { localStorage.setItem('terminal_multi_chart_link_groups', JSON.stringify(linkGroups)); } catch (_) {}
+  }, [linkGroups]);
 
   useEffect(() => {
     const onReset = (e) => {
@@ -175,6 +216,7 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
         if (cl.multiChartSymbols[i]) next[i] = cl.multiChartSymbols[i];
       }
       setSymbols(next);
+      setLinkGroups(resizeLinkGroups(linkGroups, next.length, chartLinkMode));
     };
     window.addEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
     return () => window.removeEventListener(CHART_LAYOUT_RESET_EVENT, onReset);
@@ -196,12 +238,38 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
       for (let i = 0; i < Math.min(prev.length, next.length); i++) next[i] = prev[i];
       return next;
     });
+    setLinkGroups(resizeLinkGroups(linkGroups, newLayout.defaults.length, chartLinkMode));
     setFocusedIdx(0);
   };
 
-  const handleFocus = (idx, sym) => {
+  const handlePaneFocus = (idx, sym) => {
     setFocusedIdx(idx);
+    const group = linkGroups[idx];
+    setSymbols(prev => {
+      const next = [...prev];
+      if (group) {
+        linkGroups.forEach((g, i) => {
+          if (g === group && i < next.length) next[i] = sym;
+        });
+      } else if (idx < next.length) {
+        next[idx] = sym;
+      }
+      return next;
+    });
     setActiveSymbol(sym);
+  };
+
+  const handleLinkGroupChange = (idx, nextGroup) => {
+    setLinkGroups(prev => {
+      const next = [...prev];
+      next[idx] = nextGroup;
+      return next;
+    });
+  };
+
+  const applyLinkPreset = (mode) => {
+    updateWorkspace({ chartLinkMode: mode });
+    setLinkGroups(defaultLinkGroups(paneCount, mode));
   };
 
   const getCellClassName = (idx) => cn(
@@ -227,12 +295,9 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
         key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
         defaultSymbol={symbols[i] || layout.defaults[i]}
         isFocused={focusedIdx === i}
-        onFocus={(sym) => {
-          const next = [...symbols];
-          next[i] = sym;
-          setSymbols(next);
-          handleFocus(i, sym);
-        }}
+        linkGroup={linkGroups[i] ?? null}
+        onLinkGroupChange={(g) => handleLinkGroupChange(i, g)}
+        onFocus={(sym) => handlePaneFocus(i, sym)}
         isMaximized={maximizedIdx === i}
         onToggleMaximize={() => setMaximizedIdx((prev) => (prev === i ? null : i))}
       />
@@ -273,20 +338,39 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
             Multi-Chart View
           </span>
           <span className="hidden truncate text-[0.72rem] text-muted-foreground sm:inline">
-            {layout.description} — {chartLinkMode === 'all' ? 'all charts linked' : 'focused chart only'}
+            {layout.description} — link groups {LINK_GROUPS.join('/')}{linkGroups[focusedIdx] ? ` · pane ${focusedIdx + 1} in ${linkGroups[focusedIdx]}` : ' · focused pane unlinked'}
           </span>
         </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 shrink-0 gap-1 text-xs"
-          title={chartLinkMode === 'all' ? 'All charts follow watchlist' : 'Only focused chart follows watchlist'}
-          onClick={() => updateWorkspace({ chartLinkMode: chartLinkMode === 'all' ? 'focused' : 'all' })}
-        >
-          {chartLinkMode === 'all' ? <Link2 size={12} /> : <Unlink size={12} />}
-          {chartLinkMode === 'all' ? 'Linked' : 'Focus'}
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          {LINK_GROUPS.map((g) => (
+            <span
+              key={g}
+              className="multi-chart-link-legend__dot"
+              style={{ background: LINK_GROUP_COLORS[g] }}
+              title={`Group ${g}`}
+            />
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 gap-1 text-xs"
+            title="All panes in group A"
+            onClick={() => applyLinkPreset('all')}
+          >
+            <Link2 size={12} />
+            All A
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 text-xs"
+            title="Only focused pane linked (group A)"
+            onClick={() => applyLinkPreset('focused')}
+          >
+            Focus
+          </Button>
+        </div>
 
         <div className="scroll-fade-x shrink-0">
           <ToggleGroup

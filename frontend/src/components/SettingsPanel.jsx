@@ -626,7 +626,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             <section className="settings-section">
               <h3 className="settings-section__title">Multi-chart linking</h3>
               <p className="settings-section__hint">
-                When linked, watchlist changes update every chart. Focus mode updates only the focused pane.
+                Assign link groups A, B, or C per chart pane. Watchlist updates panes sharing the focused pane&apos;s group.
               </p>
               <ToggleGroup
                 type="single"
@@ -634,8 +634,8 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 onValueChange={(v) => v && updateWorkspace({ chartLinkMode: v })}
                 className="w-full"
               >
-                <ToggleGroupItem value="all" className="flex-1 text-xs">All linked</ToggleGroupItem>
-                <ToggleGroupItem value="focused" className="flex-1 text-xs">Focused only</ToggleGroupItem>
+                <ToggleGroupItem value="all" className="flex-1 text-xs">All in group A</ToggleGroupItem>
+                <ToggleGroupItem value="focused" className="flex-1 text-xs">Focused pane only</ToggleGroupItem>
               </ToggleGroup>
             </section>
 

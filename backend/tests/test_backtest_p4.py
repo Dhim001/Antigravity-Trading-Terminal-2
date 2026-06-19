@@ -107,5 +107,39 @@ class TestResearchSimMode(unittest.TestCase):
         self.assertIn("benchmark", research["summary"])
 
 
+    def test_research_mode_allows_short_entries(self):
+        from unittest.mock import MagicMock
+        import app.services.bots.backtester as bt_mod
+
+        class AlwaysShortStrategy:
+            def evaluate(self, df_row):
+                return {"signal": "SELL", "stop_loss_distance": 2.0}
+
+        strategy = AlwaysShortStrategy()
+        original_get = bt_mod.get_strategy
+        bt_mod.get_strategy = lambda _name, _cfg: strategy
+        self.backtester.screener.process_candles = MagicMock(
+            return_value=self.backtester.screener.process_candles(
+                "TEST", self.candles, {}, "MACD_RSI", full_history=True,
+            )
+        )
+        try:
+            result = self.backtester.run_backtest(
+                "TEST",
+                "MACD_RSI",
+                {"allocation": 1000, "sim_mode": "research"},
+                self.candles,
+            )
+        finally:
+            bt_mod.get_strategy = original_get
+
+        self.assertNotIn("error", result)
+        short_entries = [
+            t for t in result.get("trades", [])
+            if not t.get("is_exit") and t.get("reason") == "ENTRY_SHORT"
+        ]
+        self.assertGreater(len(short_entries), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

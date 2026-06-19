@@ -89,6 +89,67 @@ export async function fetchBacktestRun(runId, storeActions) {
   return { run, results };
 }
 
+export async function fetchActiveBacktestJob() {
+  const body = await apiRequest('/api/v1/backtest/jobs/active');
+  return body?.job ?? null;
+}
+
+export async function fetchBacktestJob(jobId) {
+  const body = await apiRequest(`/api/v1/backtest/jobs/${encodeURIComponent(jobId)}`);
+  if (!body?.ok) throw new Error(body?.error || 'Job not found');
+  return body.job;
+}
+
+let _backtestPollTimer = null;
+
+export function resumeActiveBacktestJob(storeActions) {
+  if (_backtestPollTimer) {
+    clearTimeout(_backtestPollTimer);
+    _backtestPollTimer = null;
+  }
+  return fetchActiveBacktestJob().then((job) => {
+    if (!job || !['pending', 'running'].includes(job.status)) return null;
+    storeActions.setBacktestJobId(job.id);
+    storeActions.setBacktestRunning(true);
+    storeActions.setBacktestProgress(job.progress ?? { pct: 0, message: 'Resuming…' });
+    const poll = () => {
+      fetchBacktestJob(job.id)
+        .then((fresh) => {
+          if (!fresh) return;
+          if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
+          if (fresh.status === 'completed' && fresh.results) {
+            const wire = {
+              ...fresh.results,
+              run_id: fresh.run_id ?? fresh.results.run_id,
+            };
+            storeActions.setBacktestResults(wire);
+            storeActions.setBacktestRunning(false);
+            storeActions.setBacktestProgress(null);
+            return;
+          }
+          if (fresh.status === 'failed') {
+            storeActions.setBacktestRunning(false);
+            storeActions.setBacktestProgress(null);
+            return;
+          }
+          if (fresh.status === 'cancelled') {
+            storeActions.setBacktestRunning(false);
+            storeActions.setBacktestProgress(null);
+            return;
+          }
+          if (['pending', 'running'].includes(fresh.status)) {
+            _backtestPollTimer = setTimeout(poll, 2000);
+          }
+        })
+        .catch(() => {
+          _backtestPollTimer = setTimeout(poll, 3000);
+        });
+    };
+    _backtestPollTimer = setTimeout(poll, 1500);
+    return job;
+  }).catch(() => null);
+}
+
 export async function fetchAccount(storeActions) {
   const body = await apiAction('/api/v1/account');
   applyHttpEnvelope(body, storeActions);

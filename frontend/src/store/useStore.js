@@ -10,6 +10,7 @@ import {
 } from '../services/marketSnapshot';
 import { getHmrData } from '../services/hmrState';
 import { agentInsightKey, normalizeAnalystTimeframe } from '../lib/agentInsights';
+import { normalizeBotLogEntry } from '../lib/botLogInsight';
 
 const initialSnapshot = hydrateFromSnapshot();
 const hmrStore = getHmrData()?.zustandSnapshot;
@@ -86,6 +87,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   backtestRuns: [],
   backtestRunning: false,
   backtestProgress: null,
+  backtestJobId: null,
   backtestLabOpen: false,
   /** Fingerprint of params used for the last completed backtest run */
   backtestSnapshot: null,
@@ -285,31 +287,20 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     return { botConfig: next };
   }),
   addBotLog: (log) => set((state) => {
-    const time = new Date().toLocaleTimeString();
-    let entry;
-    if (typeof log === 'string') {
-      entry = `[${time}] ${log}`;
-    } else {
-      const botTag = log.bot_id ? `[${String(log.bot_id).slice(0, 8)}] ` : '';
-      const level = log.level ? `${log.level} - ` : '';
-      entry = `[${time}] ${botTag}${level}${log.message || ''}`;
-    }
+    const entry = normalizeBotLogEntry(log, Date.now());
     const newLogs = [entry, ...state.botLogs];
     if (newLogs.length > 100) newLogs.pop();
     return { botLogs: newLogs };
   }),
   setBotLogs: (logsArray) => set({
     botLogs: [...logsArray]
-      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
-      .map(log => {
-        const ts = log.timestamp;
-        const d = typeof ts === 'string' && !ts.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(ts)
-          ? new Date(`${ts}Z`)
-          : new Date(ts);
-        const time = Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString();
-        const botTag = log.bot_id ? `[${String(log.bot_id).slice(0, 8)}] ` : '';
-        return `[${time}] ${botTag}${log.level || 'INFO'} - ${log.message}`;
-      }),
+      .sort((a, b) => {
+        const ta = a.timestamp ?? 0;
+        const tb = b.timestamp ?? 0;
+        const toMs = (v) => (typeof v === 'string' ? new Date(v).getTime() : Number(v) || 0);
+        return toMs(tb) - toMs(ta);
+      })
+      .map((log, i) => normalizeBotLogEntry(log, i)),
   }),
   clearBotLogs: () => set({ botLogs: [] }),
 
@@ -317,6 +308,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBacktestRuns: (runs) => set({ backtestRuns: Array.isArray(runs) ? runs : [] }),
   setBacktestRunning: (running) => set({ backtestRunning: Boolean(running) }),
   setBacktestProgress: (progress) => set({ backtestProgress: progress ?? null }),
+  setBacktestJobId: (jobId) => set({ backtestJobId: jobId ?? null }),
   setBacktestLabOpen: (open) => set({ backtestLabOpen: Boolean(open) }),
   setBacktestSnapshot: (snapshot) => set({ backtestSnapshot: snapshot }),
   setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),

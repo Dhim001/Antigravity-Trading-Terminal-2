@@ -1,18 +1,57 @@
 /**
- * Parameter sweep + walk-forward controls (P3/P4).
+ * Parameter sweep + walk-forward controls with arbitrary param grid (P3/P4/P5).
  */
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { toast } from 'sonner';
 
-const DEFAULT_SWEEP = {
-  trailing_stop_percent: [1, 2, 3],
-  take_profit_percent: [2, 3, 5],
-};
+export const SWEEP_PARAM_DEFS = [
+  { key: 'trailing_stop_percent', label: 'Trailing SL %', placeholder: '1, 2, 3' },
+  { key: 'take_profit_percent', label: 'Take profit %', placeholder: '2, 3, 5' },
+  { key: 'stop_loss_percent', label: 'Stop loss %', placeholder: '1, 2' },
+  { key: 'min_confidence', label: 'Min confidence', placeholder: '0.5, 0.6, 0.7' },
+  { key: 'allocation', label: 'Allocation $', placeholder: '5000, 10000' },
+  { key: 'slippage_bps', label: 'Slippage bps', placeholder: '0, 5, 10' },
+  { key: 'fee_bps', label: 'Fee bps', placeholder: '0, 5' },
+];
+
+function parseSweepValues(text) {
+  if (!text || !String(text).trim()) return [];
+  return String(text)
+    .split(/[,;\s]+/)
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .map((v) => {
+      const n = Number(v);
+      return Number.isNaN(n) ? v : n;
+    });
+}
+
+function buildSweepGrid(enabled, valuesByKey, maxCombos) {
+  const sweep = { max_combos: maxCombos };
+  for (const def of SWEEP_PARAM_DEFS) {
+    if (!enabled[def.key]) continue;
+    const vals = parseSweepValues(valuesByKey[def.key]);
+    if (vals.length) sweep[def.key] = vals;
+  }
+  return Object.keys(sweep).length > 1 ? sweep : null;
+}
+
+function countCombos(sweep) {
+  if (!sweep) return 0;
+  let n = 1;
+  for (const def of SWEEP_PARAM_DEFS) {
+    const vals = sweep[def.key];
+    if (Array.isArray(vals) && vals.length) n *= vals.length;
+  }
+  return Math.min(n, sweep.max_combos ?? 24);
+}
 
 export default function BacktestSweepPanel({
   symbol,
@@ -27,12 +66,42 @@ export default function BacktestSweepPanel({
   const updateBotConfig = useStore((s) => s.updateBotConfig);
   const sweep = results?.sweep;
 
+  const [enabled, setEnabled] = useState({
+    trailing_stop_percent: true,
+    take_profit_percent: true,
+    stop_loss_percent: false,
+    min_confidence: false,
+    allocation: false,
+    slippage_bps: false,
+    fee_bps: false,
+  });
+  const [valuesByKey, setValuesByKey] = useState({
+    trailing_stop_percent: '1, 2, 3',
+    take_profit_percent: '2, 3, 5',
+    stop_loss_percent: '1, 2',
+    min_confidence: '0.55, 0.6, 0.65',
+    allocation: String(botConfig.allocation ?? 10000),
+    slippage_bps: '0, 5',
+    fee_bps: '0, 5',
+  });
+  const [maxCombos, setMaxCombos] = useState(24);
+
+  const sweepGrid = useMemo(
+    () => buildSweepGrid(enabled, valuesByKey, maxCombos),
+    [enabled, valuesByKey, maxCombos],
+  );
+  const comboCount = useMemo(() => countCombos(sweepGrid), [sweepGrid]);
+
   const runSweep = async (walkForward = false) => {
+    if (!sweepGrid) {
+      toast.error('Enable at least one parameter with values');
+      return;
+    }
     if (backtestRunning) return;
     useStore.getState().setBacktestRunning(true);
     useStore.getState().setBacktestProgress({
       pct: 0,
-      phase: walkForward ? 'sweep' : 'sweep',
+      phase: 'sweep',
       message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
     });
     const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, {
@@ -44,7 +113,7 @@ export default function BacktestSweepPanel({
       oos_pct: oosPct || undefined,
       walk_forward: walkForward || undefined,
       train_pct: walkForward ? 70 : undefined,
-      sweep: DEFAULT_SWEEP,
+      sweep: sweepGrid,
     });
     if (!ok && error) toast.error(error);
     if (!ok) {
@@ -71,17 +140,17 @@ export default function BacktestSweepPanel({
             variant="outline"
             size="xs"
             className="h-6 text-[0.62rem]"
-            disabled={backtestRunning}
+            disabled={backtestRunning || !sweepGrid}
             onClick={() => runSweep(false)}
           >
-            Sweep SL × TP
+            Run sweep ({comboCount})
           </Button>
           <Button
             type="button"
             variant="outline"
             size="xs"
             className="h-6 text-[0.62rem]"
-            disabled={backtestRunning}
+            disabled={backtestRunning || !sweepGrid}
             onClick={() => runSweep(true)}
             title="Optimize on first 70% of bars, validate on last 30%"
           >
@@ -89,17 +158,50 @@ export default function BacktestSweepPanel({
           </Button>
         </div>
       </div>
-      <p className="algo-backtest-sweep__hint text-[0.58rem] text-muted-foreground">
-        Tests {DEFAULT_SWEEP.trailing_stop_percent.length * DEFAULT_SWEEP.take_profit_percent.length} SL/TP combos.
-        Walk-forward picks best on train window, reports OOS metrics.
-      </p>
+
+      <div className="algo-backtest-sweep__grid space-y-2">
+        {SWEEP_PARAM_DEFS.map((def) => (
+          <div key={def.key} className="algo-backtest-sweep__row flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[0.58rem] min-w-[7rem] cursor-pointer">
+              <input
+                type="checkbox"
+                className="size-3 accent-primary"
+                checked={Boolean(enabled[def.key])}
+                onChange={(e) => setEnabled((prev) => ({ ...prev, [def.key]: e.target.checked }))}
+              />
+              {def.label}
+            </label>
+            <Input
+              className="h-7 flex-1 min-w-[8rem] text-[0.62rem]"
+              placeholder={def.placeholder}
+              value={valuesByKey[def.key] ?? ''}
+              disabled={!enabled[def.key]}
+              onChange={(e) => setValuesByKey((prev) => ({ ...prev, [def.key]: e.target.value }))}
+            />
+          </div>
+        ))}
+        <div className="flex items-center gap-2 text-[0.58rem]">
+          <Label className="text-muted-foreground shrink-0">Max combos</Label>
+          <Input
+            type="number"
+            min={1}
+            max={24}
+            className="h-7 w-16 text-[0.62rem]"
+            value={maxCombos}
+            onChange={(e) => setMaxCombos(Math.min(24, Math.max(1, parseInt(e.target.value, 10) || 24)))}
+          />
+          <span className="text-muted-foreground">
+            {comboCount} configuration{comboCount === 1 ? '' : 's'} (capped at 24)
+          </span>
+        </div>
+      </div>
 
       {bestConfig && (
         <Button
           type="button"
           variant="ghost"
           size="xs"
-          className="h-6 text-[0.62rem] self-start"
+          className="h-6 text-[0.62rem] self-start mt-2"
           onClick={() => applyConfig(bestConfig)}
         >
           Apply best config to deploy
@@ -107,7 +209,7 @@ export default function BacktestSweepPanel({
       )}
 
       {sweep?.results?.length > 0 && (
-        <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
+        <table className="terminal-table algo-backtest-table m-0 mt-2 text-[0.58rem]">
           <thead>
             <tr>
               <th>Config</th>

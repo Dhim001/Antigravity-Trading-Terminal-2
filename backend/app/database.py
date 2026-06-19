@@ -136,6 +136,7 @@ def init_db():
     
     conn.commit()
 
+    _safe_alter(cursor, "ALTER TABLE bot_logs ADD COLUMN meta TEXT DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN take_profit_percent REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN stop_loss_percent REAL DEFAULT NULL")
@@ -269,6 +270,25 @@ def init_db():
     """)
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_backtest_runs_symbol ON backtest_runs (symbol, created_at DESC)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_jobs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'pending',
+            request_json TEXT NOT NULL,
+            progress_json TEXT,
+            run_id TEXT,
+            error TEXT,
+            results_json TEXT,
+            client_key TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backtest_jobs_status ON backtest_jobs (status, created_at DESC)"
     )
 
     cursor.execute("""

@@ -20,6 +20,7 @@ from app.api.http.auth import ApiKeyMiddleware
 from app.database import get_db_stats
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.backtest_store import get_backtest_run, get_backtest_trades, list_backtest_runs
+from app.services.bots.backtest_job_store import get_active_backtest_job, get_backtest_job, list_backtest_jobs
 from app.services.events import channels
 
 ensure_routes_loaded()
@@ -137,6 +138,33 @@ async def get_backtest_trades_handler(request: Request) -> JSONResponse:
     })
 
 
+async def get_active_backtest_job_handler(request: Request) -> JSONResponse:
+    job = get_active_backtest_job()
+    if not job:
+        return JSONResponse({"ok": True, "job": None})
+    return JSONResponse({"ok": True, "job": job})
+
+
+async def get_backtest_job_handler(request: Request) -> JSONResponse:
+    job_id = request.path_params.get("job_id")
+    if not job_id:
+        return JSONResponse({"ok": False, "error": "job_id is required"}, status_code=400)
+    job = get_backtest_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "Backtest job not found"}, status_code=404)
+    return JSONResponse({"ok": True, "job": job})
+
+
+async def list_backtest_jobs_handler(request: Request) -> JSONResponse:
+    status = request.query_params.get("status")
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    jobs = list_backtest_jobs(limit=limit, status=status or None)
+    return JSONResponse({"ok": True, "jobs": jobs, "count": len(jobs)})
+
+
 async def list_api_routes(request: Request) -> JSONResponse:
     routes = list_routes()
     items = [
@@ -228,6 +256,9 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/runs/{run_id}", get_backtest_run_handler, methods=["GET"]),
         Route("/api/v1/backtest/runs/{run_id}/trades", get_backtest_trades_handler, methods=["GET"]),
+        Route("/api/v1/backtest/jobs", list_backtest_jobs_handler, methods=["GET"]),
+        Route("/api/v1/backtest/jobs/active", get_active_backtest_job_handler, methods=["GET"]),
+        Route("/api/v1/backtest/jobs/{job_id}", get_backtest_job_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),
     ]

@@ -99,7 +99,7 @@ class BotManagerService:
         cursor = conn.cursor()
         try:
             cursor.executemany(
-                "INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)",
+                "INSERT INTO bot_logs (bot_id, level, message, meta) VALUES (?, ?, ?, ?)",
                 batch,
             )
             conn.commit()
@@ -109,8 +109,10 @@ class BotManagerService:
         finally:
             conn.close()
 
-        for bot_id, level, message in batch:
-            await publish_bot_log(self.broadcast_cb, bot_id, level, message)
+        for entry in batch:
+            bot_id, level, message, meta_json = entry
+            meta = json.loads(meta_json) if meta_json else None
+            await publish_bot_log(self.broadcast_cb, bot_id, level, message, meta=meta)
 
     async def _schedule_log_flush(self):
         if self._log_flush_task and not self._log_flush_task.done():
@@ -123,9 +125,10 @@ class BotManagerService:
 
         self._log_flush_task = asyncio.create_task(_delayed())
 
-    async def log_bot_event(self, bot_id: str, level: str, message: str):
+    async def log_bot_event(self, bot_id: str, level: str, message: str, *, meta: dict | None = None):
         self.logger.info(f"[BOT {bot_id}] {level} - {message}")
-        self._log_buffer.append((bot_id, level, message))
+        meta_json = json.dumps(meta) if meta else None
+        self._log_buffer.append((bot_id, level, message, meta_json))
         if len(self._log_buffer) >= 12:
             await self._flush_log_buffer()
         else:
@@ -156,12 +159,25 @@ class BotManagerService:
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT bot_id, level, message, timestamp FROM bot_logs ORDER BY timestamp DESC LIMIT ?",
+            """
+            SELECT bot_id, level, message, timestamp, meta
+            FROM bot_logs ORDER BY timestamp DESC LIMIT ?
+            """,
             (limit,),
         )
         rows = cursor.fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        out = []
+        for row in rows:
+            item = dict(row)
+            raw_meta = item.pop("meta", None)
+            if raw_meta:
+                try:
+                    item["meta"] = json.loads(raw_meta)
+                except (json.JSONDecodeError, TypeError):
+                    item["meta"] = None
+            out.append(item)
+        return out
 
     def _calc_exit_pnl(self, side: str, qty: float, exit_price: float, entry_price: float) -> float:
         if side == "SELL":
@@ -581,10 +597,24 @@ class BotManagerService:
 
         action = "Exit" if is_exit else "Entry"
         bot["last_signal_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        timeframe = bot.get("timeframe", "1m")
+        sym_key = str(symbol or "").upper()
+        signal_meta = {
+            "event_type": "signal",
+            "bar_time": bar_time,
+            "signal_id": signal_id,
+            "insight_id": f"{sym_key}:{timeframe}:{bar_time}" if bar_time is not None else None,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "side": side,
+            "is_exit": is_exit,
+            "strategy": bot.get("strategy"),
+        }
         await self.log_bot_event(
             bot_id,
             "INFO",
             f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f}",
+            meta=signal_meta,
         )
 
         tp_pct = None

@@ -1,4 +1,4 @@
-"""In-process backtest job tokens — cooperative cancel per WebSocket client."""
+"""In-process backtest job tokens — cooperative cancel per WebSocket client + job_id."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from typing import Any
 
 
 class _BacktestJob:
-    __slots__ = ("cancelled",)
+    __slots__ = ("cancelled", "job_id")
 
-    def __init__(self) -> None:
+    def __init__(self, job_id: str | None = None) -> None:
         self.cancelled = False
+        self.job_id = job_id
 
     def cancel(self) -> None:
         self.cancelled = True
@@ -21,6 +22,7 @@ class _BacktestJob:
 
 _lock = threading.Lock()
 _jobs: dict[int, _BacktestJob] = {}
+_job_id_to_client: dict[str, int] = {}
 
 
 def _client_key(websocket: Any) -> int | None:
@@ -29,16 +31,18 @@ def _client_key(websocket: Any) -> int | None:
     return id(websocket)
 
 
-def start_job(websocket: Any) -> _BacktestJob | None:
+def start_job(websocket: Any, job_id: str | None = None) -> _BacktestJob | None:
     key = _client_key(websocket)
     if key is None:
-        return None
-    job = _BacktestJob()
+        return _BacktestJob(job_id=job_id)
+    job = _BacktestJob(job_id=job_id)
     with _lock:
         old = _jobs.get(key)
         if old:
             old.cancel()
         _jobs[key] = job
+        if job_id:
+            _job_id_to_client[job_id] = key
     return job
 
 
@@ -55,6 +59,9 @@ def cancel_job(websocket: Any) -> bool:
     if not job:
         return False
     job.cancel()
+    if job.job_id:
+        from app.services.bots.backtest_job_store import request_cancel_job
+        request_cancel_job(job.job_id)
     return True
 
 
@@ -63,4 +70,6 @@ def clear_job(websocket: Any) -> None:
     if key is None:
         return
     with _lock:
-        _jobs.pop(key, None)
+        job = _jobs.pop(key, None)
+        if job and job.job_id:
+            _job_id_to_client.pop(job.job_id, None)

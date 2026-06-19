@@ -3,7 +3,7 @@
  */
 import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { Download, Maximize2, AlertTriangle, LineChart, Loader2 } from 'lucide-react';
+import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,7 @@ import {
   ensureBacktestChartHistory,
   symbolsMatch,
 } from '@/lib/backtestDisplay';
+import { exportBacktestPdf } from '@/lib/backtestExport';
 
 const EMPTY_TRADES = [];
 
@@ -351,6 +352,17 @@ export default function BacktestResultsPanel({
     );
   }, [displayTrades, results, symbol, strategy]);
 
+  const onExportPdf = useCallback(() => {
+    exportBacktestPdf({
+      results,
+      symbol: symbol ?? results?.meta?.symbol,
+      strategy: strategy ?? results?.meta?.strategy,
+      days: backtestDays,
+      timeframe: backtestTimeframe ?? results?.meta?.timeframe,
+      trades: displayTrades,
+    });
+  }, [displayTrades, results, symbol, strategy, backtestDays, backtestTimeframe]);
+
   const loadSavedRun = useCallback(async (runId) => {
     if (!runId || loadingRun) return;
     setLoadingRun(true);
@@ -456,10 +468,16 @@ export default function BacktestResultsPanel({
             </Button>
           )}
           {displayTrades.length > 0 && (
-            <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={onExport}>
-              <Download data-icon="inline-start" />
-              CSV
-            </Button>
+            <>
+              <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={onExport}>
+                <Download data-icon="inline-start" />
+                CSV
+              </Button>
+              <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={onExportPdf} title="Print / save as PDF">
+                <FileText data-icon="inline-start" />
+                PDF
+              </Button>
+            </>
           )}
         </div>
       </div>

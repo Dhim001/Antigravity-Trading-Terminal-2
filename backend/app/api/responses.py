@@ -15,6 +15,8 @@ from app.api.outbound import (
 
 
 async def send_to(ctx: RequestContext, payload: dict) -> None:
+    if ctx.websocket is None:
+        return
     await ctx.manager.send_to(ctx.websocket, payload)
 
 

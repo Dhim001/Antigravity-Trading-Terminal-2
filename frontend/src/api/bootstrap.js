@@ -9,6 +9,7 @@ import {
   fetchHealth,
   fetchHistory,
   fetchStrategies,
+  resumeActiveBacktestJob,
 } from './endpoints';
 
 /**
@@ -38,6 +39,10 @@ export async function runBootstrap(opts = {}) {
   }
 
   const results = await Promise.allSettled(tasks);
+
+  if (!light) {
+    resumeActiveBacktestJob(storeActions);
+  }
   const succeeded = results.filter((r) => r.status === 'fulfilled').length;
 
   if (succeeded > 0) {

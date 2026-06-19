@@ -15,6 +15,7 @@ import ErrorBoundary         from './components/ErrorBoundary';
 import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
 import ActivityCenter        from './components/ActivityCenter';
 import BacktestLabSheet      from './components/BacktestLabSheet';
+import SignalInsightDrawer   from './components/SignalInsightDrawer';
 import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
@@ -316,6 +317,7 @@ export default function App() {
       </Suspense>
       <ActivityCenter open={activityOpen} onOpenChange={setActivityOpen} />
       <BacktestLabSheet />
+      <SignalInsightDrawer />
 
       <ErrorBoundary name="Header">
       <header className="terminal-header">

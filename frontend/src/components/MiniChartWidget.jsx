@@ -9,7 +9,8 @@ import { getChartEchartsTheme } from '../settings/applySettings';
 import { calcEMA } from '../utils/indicators';
 import { cn } from '@/lib/utils';
 import { getCandles } from '../services/candleBuffer';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import { Maximize2, Minimize2, Link2 } from 'lucide-react';
+import { cycleLinkGroup, LINK_GROUP_COLORS } from '../lib/chartLinkGroups';
 import { Button } from '@/components/ui/button';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -96,6 +97,8 @@ export default function MiniChartWidget({
   onFocus,
   isMaximized = false,
   onToggleMaximize,
+  linkGroup = null,
+  onLinkGroupChange,
 }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -373,6 +376,28 @@ export default function MiniChartWidget({
             ))}
           </SelectContent>
         </Select>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className={cn(
+            'mini-chart-link-group h-6 w-6 shrink-0',
+            !linkGroup && 'text-muted-foreground/60',
+          )}
+          style={linkGroup ? { color: LINK_GROUP_COLORS[linkGroup] } : undefined}
+          title={linkGroup ? `Link group ${linkGroup} — click to change` : 'Unlinked — click to assign group A'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onLinkGroupChange?.(cycleLinkGroup(linkGroup));
+          }}
+        >
+          {linkGroup ? (
+            <span className="text-[0.62rem] font-bold leading-none">{linkGroup}</span>
+          ) : (
+            <Link2 className="size-3 opacity-50" aria-hidden />
+          )}
+        </Button>
 
         <MiniChartHeaderPrice symbol={symbol} />
 

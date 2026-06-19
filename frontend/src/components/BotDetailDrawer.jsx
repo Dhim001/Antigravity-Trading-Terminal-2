@@ -3,7 +3,9 @@ import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { fetchAgentInsights } from '../api/endpoints';
-import SubReportCards from './SubReportCards';
+import TradeExplainCard from './TradeExplainCard';
+import BotSnapshotChart from './BotSnapshotChart';
+import BotConfigPanel from './BotConfigPanel';
 import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -12,10 +14,6 @@ import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
-import { normalizeAnalystTimeframe, selectAgentInsight } from '@/lib/agentInsights';
-import { invokeHttpAction } from '../api/transport';
-import BotSnapshotChart from './BotSnapshotChart';
-import BotConfigPanel from './BotConfigPanel';
 import { Pause, PlayCircle, OctagonX, Loader2, GripVertical } from 'lucide-react';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
@@ -40,136 +38,6 @@ function formatTradeTime(timestamp) {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function isEntryTrade(trade) {
-  if (!trade) return false;
-  const v = trade.is_exit;
-  return v === false || v === 0 || v === '0' || v == null;
-}
-
-function tradeIdKey(trade) {
-  if (trade?.id == null || trade.id === '') return null;
-  return String(trade.id);
-}
-
-function findInsightForTrade(trade, symbol, timeframe, agentInsights, agentInsightHistory) {
-  if (!trade || !isEntryTrade(trade)) return null;
-  const tf = normalizeAnalystTimeframe(timeframe);
-  const barTime = trade.signal_bar_time;
-  if (barTime != null) {
-    const history = agentInsightHistory[symbol] ?? [];
-    const match = history.find(
-      (i) => i.bar_time === barTime && normalizeAnalystTimeframe(i.timeframe) === tf,
-    );
-    if (match) return match;
-  }
-  const current = selectAgentInsight(agentInsights, symbol, tf);
-  if (current && barTime != null && current.bar_time === barTime) {
-    return current;
-  }
-  return null;
-}
-
-function TradeExplain({
-  trade,
-  symbol,
-  botId,
-  botStrategy,
-  botTimeframe,
-  agentInsights,
-  agentInsightHistory,
-}) {
-  const tradeKey = tradeIdKey(trade);
-  const explain = useStore((s) => (tradeKey ? s.tradeExplains[tradeKey] : null));
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  if (botStrategy !== 'CHART_AGENT' || !isEntryTrade(trade)) return null;
-
-  const insight = explain?.insight
-    ?? findInsightForTrade(trade, symbol, botTimeframe, agentInsights, agentInsightHistory);
-
-  const fetchExplain = async () => {
-    if (!tradeKey || !botId || loading || explain) return;
-    setLoading(true);
-    setError(null);
-    try {
-      await invokeHttpAction(Action.EXPLAIN_TRADE, { bot_id: botId, trade_id: tradeKey });
-    } catch (err) {
-      setError(err?.message || 'Could not load explanation');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleToggle = (e) => {
-    e.stopPropagation();
-    if (e.currentTarget.open) {
-      void fetchExplain();
-    }
-  };
-
-  const handleSummaryClick = (e) => {
-    e.stopPropagation();
-  };
-
-  const hasContent = Boolean(
-    explain?.summary
-    || explain?.narrative
-    || insight?.reasons?.length
-    || insight?.narrative
-    || insight?.sub_reports,
-  );
-
-  return (
-    <details
-      className="bot-trade-explain"
-      onToggle={handleToggle}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <summary className="bot-trade-explain__summary" onClick={handleSummaryClick}>
-        <span>Why we entered</span>
-        {loading && <Loader2 className="size-3 animate-spin shrink-0" aria-hidden />}
-      </summary>
-      <div className="bot-trade-explain__body">
-        {loading && !hasContent && (
-          <p className="bot-trade-explain__status">Loading explanation…</p>
-        )}
-        {error && (
-          <p className="bot-trade-explain__error">{error}</p>
-        )}
-        {!tradeKey && (
-          <p className="bot-trade-explain__status">Explanation unavailable for this fill.</p>
-        )}
-        {explain?.summary && (
-          <p className="bot-trade-explain__summary-text">{explain.summary}</p>
-        )}
-        {explain?.narrative && (
-          <p className="bot-trade-explain__narrative">{explain.narrative}</p>
-        )}
-        {insight?.sub_reports ? (
-          <div className="bot-trade-explain__reports">
-            <SubReportCards subReports={insight.sub_reports} />
-          </div>
-        ) : insight?.reasons?.length > 0 ? (
-          <ul className="bot-trade-explain__reasons">
-            {insight.reasons.map((r, i) => (
-              <li key={i}>{r}</li>
-            ))}
-          </ul>
-        ) : null}
-        {!explain?.summary && insight?.narrative && (
-          <p className="bot-trade-explain__narrative">{insight.narrative}</p>
-        )}
-        {!loading && !error && tradeKey && !hasContent && (
-          <p className="bot-trade-explain__status">
-            No analyst insight recorded for this entry bar.
-          </p>
-        )}
-      </div>
-    </details>
-  );
 }
 
 export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, onResume, nested = false }) {
@@ -405,7 +273,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                       </tr>
                     ) : (
                       trades.map((t) => {
-                        const showExplain = bot?.strategy === 'CHART_AGENT' && isEntryTrade(t);
+                        const showExplain = t.id != null;
                         return (
                           <React.Fragment key={t.id ?? `${t.timestamp}-${t.side}-${t.price}`}>
                             <tr>
@@ -444,7 +312,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                             {showExplain && (
                               <tr className="bot-detail-trades-table__explain-row">
                                 <td colSpan={6}>
-                                  <TradeExplain
+                                  <TradeExplainCard
                                     trade={t}
                                     symbol={bot?.symbol}
                                     botId={bot?.id}
@@ -452,6 +320,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                                     botTimeframe={bot?.timeframe}
                                     agentInsights={agentInsights}
                                     agentInsightHistory={agentInsightHistory}
+                                    useLlm={Boolean(bot?.config?.use_llm)}
                                   />
                                 </td>
                               </tr>

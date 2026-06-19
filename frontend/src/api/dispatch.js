@@ -24,6 +24,7 @@ export function getStoreActions() {
     setBacktestRuns: s.setBacktestRuns,
     setBacktestRunning: s.setBacktestRunning,
     setBacktestProgress: s.setBacktestProgress,
+    setBacktestJobId: s.setBacktestJobId,
     setBacktestLabOpen: s.setBacktestLabOpen,
     setBacktestOverlay: s.setBacktestOverlay,
     clearBacktestOverlay: s.clearBacktestOverlay,
@@ -99,11 +100,13 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.setSystemStats(data);
       break;
     case MessageType.BACKTEST_PROGRESS:
+      if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
       storeActions.setBacktestProgress(data);
       break;
     case MessageType.BACKTEST_RESULT:
       storeActions.setBacktestRunning(false);
       storeActions.setBacktestProgress(null);
+      if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
       if (data?.status === 'cancelled') {
         toast.info(data?.message || 'Backtest cancelled');
         break;

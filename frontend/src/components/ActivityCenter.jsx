@@ -55,13 +55,14 @@ export default function ActivityCenter({ open, onOpenChange }) {
       });
     }
     for (const log of (botLogs || []).slice(0, 8)) {
+      const msg = log?.message ?? log?.line ?? (typeof log === 'string' ? log : '');
       list.push({
-        id: `log-${log.ts}-${log.message?.slice(0, 12)}`,
+        id: `log-${log?.id ?? log?.timestamp ?? msg.slice(0, 12)}`,
         kind: 'info',
         icon: Bot,
-        title: log.message?.slice(0, 60) || 'Bot log',
-        detail: log.level || 'info',
-        ts: log.ts || Date.now(),
+        title: msg.slice(0, 60) || 'Bot log',
+        detail: log?.level || 'info',
+        ts: log?.timestamp ? new Date(log.timestamp).getTime() : Date.now(),
       });
     }
     for (const a of alerts.filter((x) => x.enabled !== false)) {

@@ -1,17 +1,18 @@
 /**
  * All bots (active + stopped) from bot_list_all.
  */
-import React, { useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import StrategyBadge from './StrategyBadge';
+import TradeExplainCard from './TradeExplainCard';
 import { WidgetEmpty } from './WidgetShell';
-import { RefreshCw, History, ExternalLink } from 'lucide-react';
+import { RefreshCw, History, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { shortBotId } from '@/lib/botAttribution';
+import { shortBotId, parseTradeTimestamp } from '@/lib/botAttribution';
 
 function statusVariant(status) {
   if (status === 'RUNNING') return 'buy';
@@ -20,10 +21,22 @@ function statusVariant(status) {
   return 'secondary';
 }
 
+function formatTradeTime(timestamp) {
+  const d = parseTradeTimestamp(timestamp);
+  if (!d) return '—';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 export default function BotHistoryTab() {
   const botHistory = useStore(s => s.botHistory);
+  const botDetail = useStore(s => s.botDetail);
+  const agentInsights = useStore(s => s.agentInsights);
+  const agentInsightHistory = useStore(s => s.agentInsightHistory);
   const setSelectedBotId = useStore(s => s.setSelectedBotId);
   const setBotDrawerOpen = useStore(s => s.setBotDrawerOpen);
+
+  const [expandedBotId, setExpandedBotId] = useState(null);
+  const [detailCache, setDetailCache] = useState({});
 
   const refresh = useCallback(() => {
     sendAction(Action.BOT_LIST_ALL, { limit: 200 });
@@ -32,6 +45,14 @@ export default function BotHistoryTab() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!botDetail?.bot?.id) return;
+    setDetailCache((prev) => ({
+      ...prev,
+      [botDetail.bot.id]: botDetail,
+    }));
+  }, [botDetail]);
 
   const sorted = useMemo(() => [...(botHistory ?? [])].sort((a, b) => {
     const sa = a.status === 'RUNNING' ? 0 : a.status === 'PAUSED' ? 1 : 2;
@@ -58,6 +79,17 @@ export default function BotHistoryTab() {
     setSelectedBotId(botId);
     setBotDrawerOpen(true);
     sendAction(Action.BOT_GET_DETAIL, { bot_id: botId });
+  };
+
+  const toggleExpand = (botId) => {
+    if (expandedBotId === botId) {
+      setExpandedBotId(null);
+      return;
+    }
+    setExpandedBotId(botId);
+    if (!detailCache[botId]) {
+      sendAction(Action.BOT_GET_DETAIL, { bot_id: botId });
+    }
   };
 
   const pnlPositive = stats.totalPnl >= 0;
@@ -114,6 +146,7 @@ export default function BotHistoryTab() {
             <table className="terminal-table dock-panel-tab__table min-w-[640px] text-[0.62rem]">
               <thead>
                 <tr>
+                  <th className="w-8" />
                   <th>Symbol</th>
                   <th>Strategy</th>
                   <th>Status</th>
@@ -124,33 +157,96 @@ export default function BotHistoryTab() {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map(bot => (
-                  <tr key={bot.id} className={cn(bot.status === 'STOPPED' && 'opacity-75')}>
-                    <td className="font-semibold">{bot.symbol}</td>
-                    <td><StrategyBadge strategy={bot.strategy} compact /></td>
-                    <td><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></td>
-                    <td className={cn(
-                      'num-mono text-right',
-                      (bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                    )}>
-                      ${Number(bot.total_pnl ?? 0).toFixed(2)}
-                    </td>
-                    <td className="num-mono text-right">
-                      {bot.win_rate != null ? `${bot.win_rate}%` : '—'}
-                    </td>
-                    <td className="num-mono text-right">{bot.trade_count ?? 0}</td>
-                    <td className="text-center">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => openDetail(bot.id)}
-                        title={`View ${shortBotId(bot.id)}`}
-                      >
-                        <ExternalLink />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {sorted.map(bot => {
+                  const expanded = expandedBotId === bot.id;
+                  const detail = detailCache[bot.id];
+                  const trades = (detail?.trades ?? []).slice(0, 5);
+                  return (
+                    <React.Fragment key={bot.id}>
+                      <tr className={cn(bot.status === 'STOPPED' && 'opacity-75')}>
+                        <td className="text-center">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-6 w-6"
+                            onClick={() => toggleExpand(bot.id)}
+                            title={expanded ? 'Collapse fills' : 'Show recent fills & explain'}
+                          >
+                            {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                          </Button>
+                        </td>
+                        <td className="font-semibold">{bot.symbol}</td>
+                        <td><StrategyBadge strategy={bot.strategy} compact /></td>
+                        <td><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></td>
+                        <td className={cn(
+                          'num-mono text-right',
+                          (bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                        )}>
+                          ${Number(bot.total_pnl ?? 0).toFixed(2)}
+                        </td>
+                        <td className="num-mono text-right">
+                          {bot.win_rate != null ? `${bot.win_rate}%` : '—'}
+                        </td>
+                        <td className="num-mono text-right">{bot.trade_count ?? 0}</td>
+                        <td className="text-center">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => openDetail(bot.id)}
+                            title={`View ${shortBotId(bot.id)}`}
+                          >
+                            <ExternalLink />
+                          </Button>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr className="bot-history-expand-row">
+                          <td colSpan={8} className="p-0">
+                            <div className="bot-history-expand px-3 py-2">
+                              {!detail ? (
+                                <p className="text-xs text-muted-foreground py-2">Loading fills…</p>
+                              ) : trades.length === 0 ? (
+                                <p className="text-xs text-muted-foreground py-2">No fills yet</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {trades.map((t) => (
+                                    <div key={t.id ?? `${t.timestamp}-${t.side}`} className="bot-history-fill">
+                                      <div className="flex flex-wrap items-center gap-2 text-[0.62rem]">
+                                        <span className="text-muted-foreground">{formatTradeTime(t.timestamp)}</span>
+                                        <Badge variant={t.side === 'BUY' ? 'buy' : 'sell'} className="h-4 text-[0.55rem]">
+                                          {t.side}{t.is_exit ? ' exit' : ''}
+                                        </Badge>
+                                        <span className="num-mono">{Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(4)}</span>
+                                        {t.pnl != null && (
+                                          <span className={cn('num-mono', t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+                                            ${Number(t.pnl).toFixed(2)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {t.id != null && (
+                                        <TradeExplainCard
+                                          trade={t}
+                                          symbol={bot.symbol}
+                                          botId={bot.id}
+                                          botStrategy={bot.strategy}
+                                          botTimeframe={detail?.bot?.timeframe ?? bot.timeframe ?? '1m'}
+                                          agentInsights={agentInsights}
+                                          agentInsightHistory={agentInsightHistory}
+                                          useLlm={Boolean(bot.config?.use_llm)}
+                                          compact
+                                        />
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
