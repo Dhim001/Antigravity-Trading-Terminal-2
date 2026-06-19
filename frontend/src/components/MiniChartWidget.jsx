@@ -6,6 +6,7 @@ import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme } from '../settings/applySettings';
+import { getIndicatorTheme, emaLineStyle } from '../settings/indicatorThemes';
 import { calcEMA } from '../utils/indicators';
 import { cn } from '@/lib/utils';
 import { getCandles } from '../services/candleBuffer';
@@ -172,6 +173,10 @@ export default function MiniChartWidget({
     () => getChartEchartsTheme(settings, resolvedTheme),
     [settings, resolvedTheme],
   );
+  const indicatorTheme = useMemo(
+    () => getIndicatorTheme(resolvedTheme),
+    [resolvedTheme],
+  );
 
   const accentCol = SYMBOL_COLORS[symbol] || '#6366f1';
 
@@ -238,7 +243,7 @@ export default function MiniChartWidget({
           data: ema9Data,
           showSymbol: false,
           animation: false,
-          lineStyle: { color: '#f59e0b', width: 1, opacity: 0.8 },
+          lineStyle: emaLineStyle(9, indicatorTheme),
         },
         {
           id: 'ema21',
@@ -247,11 +252,11 @@ export default function MiniChartWidget({
           data: ema21Data,
           showSymbol: false,
           animation: false,
-          lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.8 },
+          lineStyle: emaLineStyle(21, indicatorTheme),
         },
       ],
     };
-  }, [priceDecimals, symbol, chartTheme]);
+  }, [priceDecimals, symbol, chartTheme, indicatorTheme]);
 
   const resolveZoomWindow = useCallback((chart, candles, resetZoom) => {
     const categoryData = buildMiniCategoryData(candles);
@@ -433,7 +438,7 @@ export default function MiniChartWidget({
   useEffect(() => {
     if (!chartRef.current || !chartReadyRef.current) return;
     configureChart();
-  }, [chartTheme, configureChart]);
+  }, [chartTheme, indicatorTheme, configureChart]);
 
   useEffect(() => {
     const sym = symbol;

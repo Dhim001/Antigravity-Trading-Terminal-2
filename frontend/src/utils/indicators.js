@@ -4,6 +4,13 @@
  * Each function returns an array of { time, value } points for lightweight-charts.
  */
 
+import { toUnixSeconds } from '../services/candleBuffer';
+
+/** UTC day bucket — TradingView-style session VWAP resets each calendar day. */
+export function vwapSessionKey(timeSec) {
+  return Math.floor(timeSec / 86400);
+}
+
 // ─── Simple Moving Average ────────────────────────────────────────────────────
 export function calcSMA(candles, period) {
   const result = [];
@@ -113,7 +120,6 @@ export function calcMACD(candles, fastPeriod = 12, slowPeriod = 26, signalPeriod
     .map(p => ({
       time: p.time,
       value: parseFloat((p.value - sigMap.get(p.time)).toFixed(6)),
-      color: p.value - sigMap.get(p.time) >= 0 ? 'rgba(16, 185, 129, 0.7)' : 'rgba(239, 68, 68, 0.7)'
     }));
 
   const macdLine = macdRaw.filter(p => sigMap.has(p.time));
@@ -122,19 +128,48 @@ export function calcMACD(candles, fastPeriod = 12, slowPeriod = 26, signalPeriod
 }
 
 // ─── VWAP (Volume Weighted Average Price) ────────────────────────────────────
+/** Session VWAP — resets at each UTC day (matches TradingView default for 24h markets). */
 export function calcVWAP(candles) {
   const result = [];
-  let cumTPV = 0; // cumulative typical price × volume
+  let cumTPV = 0;
   let cumVol = 0;
+  let sessionKey = null;
+  let sessionVwap = null;
+
   for (const c of candles) {
-    const typicalPrice = (c.high + c.low + c.close) / 3;
-    cumTPV += typicalPrice * c.volume;
-    cumVol += c.volume;
-    if (cumVol > 0) {
-      result.push({ time: c.time, value: parseFloat((cumTPV / cumVol).toFixed(6)) });
+    const sec = toUnixSeconds(c.time);
+    if (sec == null) {
+      result.push({ time: c.time, value: null });
+      continue;
     }
+
+    const dayKey = vwapSessionKey(sec);
+    if (dayKey !== sessionKey) {
+      cumTPV = 0;
+      cumVol = 0;
+      sessionKey = dayKey;
+      sessionVwap = null;
+    }
+
+    const typicalPrice = (c.high + c.low + c.close) / 3;
+    const vol = Number(c.volume) || 0;
+    if (vol > 0) {
+      cumTPV += typicalPrice * vol;
+      cumVol += vol;
+      sessionVwap = parseFloat((cumTPV / cumVol).toFixed(6));
+    } else if (sessionVwap == null) {
+      // No volume yet this session — anchor to typical price so the line does not gap
+      sessionVwap = parseFloat(typicalPrice.toFixed(6));
+    }
+
+    result.push({ time: c.time, value: sessionVwap });
   }
   return result;
+}
+
+/** Bar-aligned VWAP values (one per candle, no session-break nulls). */
+export function buildVwapSeriesValues(candles) {
+  return calcVWAP(candles).map((p) => p.value);
 }
 
 // ─── ATR (Average True Range) ─────────────────────────────────────────────────
