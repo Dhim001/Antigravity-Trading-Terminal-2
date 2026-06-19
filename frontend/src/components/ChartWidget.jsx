@@ -51,6 +51,42 @@ const CHART_DISPLAY_MAX = 15000;
 const ARCHIVE_LOAD_CHUNK = 1000;
 const ARCHIVE_1M_RETENTION_SEC = 90 * 86400;
 const FUTURE_PADDING = 15;
+/** Wait for bulk history before first paint (avoids 1-bar → full-history jump). */
+const CHART_HISTORY_MIN_BARS = 3;
+const CHART_HISTORY_CACHED_BARS = 20;
+const CHART_HISTORY_GATE_MS = 4000;
+const LOAD_OLDER_MIN_INTERVAL_MS = 2000;
+const CONFIGURE_DEBOUNCE_MS = 80;
+const INDICATOR_BAR_DEBOUNCE_MS = 200;
+const CHART_VISIBLE_BARS = 50;
+
+function sliceRawForTimeframe(raw, intervalSecs, displayLimit) {
+  if (!raw.length) return raw;
+  const barsPerBucket = Math.max(1, Math.ceil(intervalSecs / 60));
+  const tail = Math.min(raw.length, (displayLimit + 4) * barsPerBucket + 32);
+  return tail < raw.length ? raw.slice(-tail) : raw;
+}
+
+function chartStructureKey(chartType, subPanes, showBacktestEquity) {
+  return `${chartType}|${subPanes.join(',')}|${showBacktestEquity ? 1 : 0}`;
+}
+
+const SERIES_ANIM_OFF = {
+  animation: false,
+  animationDuration: 0,
+  animationDurationUpdate: 0,
+};
+
+function isChartHistoryReady(barCount, historyRev, gateForced) {
+  if (barCount <= 0) return false;
+  if (gateForced) return true;
+  if (barCount >= CHART_HISTORY_CACHED_BARS) return true;
+  return historyRev > 0 && barCount >= CHART_HISTORY_MIN_BARS;
+}
+
+function withSeriesAnimOff(series) {
+  return { ...series, ...SERIES_ANIM_OFF };
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -81,37 +117,55 @@ function lastRealCategoryIndex(categoryData) {
 }
 
 function defaultDataZoomPercent(candleCount, totalCategoryCount, visibleBars = 50) {
-  const endPct = (candleCount / totalCategoryCount) * 100;
+  const liveGap = Math.min(5, FUTURE_PADDING);
+  const endPct = Math.min(100, ((candleCount + liveGap) / totalCategoryCount) * 100);
   const startPct = Math.max(0, ((candleCount - visibleBars) / totalCategoryCount) * 100);
   return { start: startPct, end: endPct };
+}
+
+function dataZoomEndIndex(dz, categoryData) {
+  if (!dz || !categoryData.length) return -1;
+  if (dz.endValue != null) {
+    const idx = indexOfCategoryKey(categoryData, dz.endValue);
+    if (idx >= 0) return idx;
+  }
+  if (typeof dz.end === 'number') {
+    return Math.round((dz.end / 100) * categoryData.length);
+  }
+  return -1;
+}
+
+/** True when the viewport right edge is at or past the last real candle. */
+function isDataZoomAtLiveEdge(dz, categoryData) {
+  if (!dz || !categoryData.length) return true;
+  const realEnd = lastRealCategoryIndex(categoryData);
+  const endIdx = dataZoomEndIndex(dz, categoryData);
+  if (endIdx < 0) return true;
+  return endIdx >= realEnd - 1;
+}
+
+function liveEdgeDataZoomForBars(barCount, categoryData, visibleBars = CHART_VISIBLE_BARS) {
+  return defaultDataZoomPercent(barCount, categoryData.length, visibleBars);
+}
+
+function buildDataZoomOption(start, end) {
+  return [
+    { type: 'inside', start, end },
+    { type: 'slider', start, end },
+  ];
 }
 
 function preserveDataZoomPercent(prevCategoryData, nextCategoryData, prevDz, candleCount, nextCandleCount) {
   if (prevDz?.start == null || prevDz?.end == null) return null;
 
-  const prevRealEnd = lastRealCategoryIndex(prevCategoryData);
-  const prevEndIdx = prevDz.endValue != null
-    ? indexOfCategoryKey(prevCategoryData, prevDz.endValue)
-    : Math.round((prevDz.end / 100) * prevCategoryData.length);
-  const wasAtEnd = prevEndIdx >= prevRealEnd - 1;
+  const wasAtEnd = isDataZoomAtLiveEdge(prevDz, prevCategoryData);
   const diff = nextCategoryData.length - prevCategoryData.length;
 
-  if (diff > 0 && wasAtEnd) {
-    return defaultDataZoomPercent(nextCandleCount, nextCategoryData.length);
+  if (diff !== 0 && wasAtEnd) {
+    return liveEdgeDataZoomForBars(nextCandleCount, nextCategoryData);
   }
 
   return { start: prevDz.start, end: prevDz.end };
-}
-
-function isDataZoomNearLeftEdge(dz, categoryData) {
-  if (!dz || !categoryData.length) return false;
-  if (typeof dz.start === 'number' && dz.start <= 2) return true;
-  const start = dz.startValue;
-  if (start == null) return false;
-  let idx = indexOfCategoryKey(categoryData, start);
-  if (idx < 0 && typeof start === 'number' && start <= 10) idx = Math.floor(start);
-  if (idx < 0) return false;
-  return idx <= 10;
 }
 
 /** TOS-style: buys below bar, sells above; exits at fill price. */
@@ -173,19 +227,48 @@ function aggregateBucket(raw, cfg) {
   const lastSec = toUnixSeconds(raw[raw.length - 1].time);
   if (lastSec == null) return null;
   const t = Math.floor(lastSec / cfg.secs) * cfg.secs;
-  const bucket = raw.filter((c) => {
+
+  let open = null;
+  let high = null;
+  let low = null;
+  let close = null;
+  let volume = 0;
+  let found = false;
+
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const c = raw[i];
     const sec = toUnixSeconds(c.time);
-    return sec != null && Math.floor(sec / cfg.secs) * cfg.secs === t;
-  });
-  if (!bucket.length) return null;
-  return {
-    time: t,
-    open: bucket[0].open,
-    high: Math.max(...bucket.map(c => c.high)),
-    low: Math.min(...bucket.map(c => c.low)),
-    close: bucket[bucket.length - 1].close,
-    volume: bucket.reduce((sum, c) => sum + (c.volume || 0), 0),
-  };
+    if (sec == null) continue;
+    const bt = Math.floor(sec / cfg.secs) * cfg.secs;
+    if (bt < t) break;
+    if (bt !== t) continue;
+    if (!found) {
+      open = c.open;
+      high = c.high;
+      low = c.low;
+      close = c.close;
+      volume = c.volume || 0;
+      found = true;
+      continue;
+    }
+    open = c.open;
+    high = Math.max(high, c.high);
+    low = Math.min(low, c.low);
+    volume += c.volume || 0;
+  }
+
+  if (!found) return null;
+  return { time: t, open, high, low, close, volume };
+}
+
+function barMatches(a, b) {
+  if (!a || !b) return false;
+  return a.time === b.time
+    && a.open === b.open
+    && a.high === b.high
+    && a.low === b.low
+    && a.close === b.close
+    && (a.volume || 0) === (b.volume || 0);
 }
 
 function bucketCandles(raw, intervalSecs) {
@@ -278,28 +361,72 @@ function mapVwapSeries(candles) {
   return padIndicatorValues(candles.map((_, i) => vwap[i]?.value ?? null));
 }
 
+/** Fast live patch: price (+ volume) only — indicators update on new bar / full rebuild. */
+function updateLiveSeriesCache(cache, bars, chartType, active, chartTheme, { forceRebuild = false } = {}) {
+  const barCount = bars.length;
+  const needRebuild = forceRebuild
+    || !cache.main
+    || cache.barCount !== barCount
+    || cache.chartType !== chartType;
+
+  if (needRebuild) {
+    cache.barCount = barCount;
+    cache.chartType = chartType;
+    cache.main = buildMainSeriesData(bars, chartType);
+    cache.volume = active.volume ? buildVolumeSeriesData(bars, chartTheme) : null;
+    return;
+  }
+
+  const idx = barCount - 1;
+  const bar = bars[idx];
+  if (chartType === 'line') {
+    cache.main[idx] = bar.close;
+  } else {
+    cache.main[idx] = [bar.open, bar.close, bar.low, bar.high];
+  }
+  if (active.volume) {
+    if (!cache.volume) cache.volume = buildVolumeSeriesData(bars, chartTheme);
+    else cache.volume[idx] = volumeSeriesEntry(bar, chartTheme);
+  }
+}
+
+function buildLightLiveSeriesPatchesFromCache(cache, chartType, active) {
+  const patches = [
+    {
+      id: 'main',
+      type: chartType === 'line' ? 'line' : 'candlestick',
+      data: cache.main,
+      ...SERIES_ANIM_OFF,
+    },
+  ];
+  if (active.volume && cache.volume) {
+    patches.push({ id: 'volume', data: cache.volume, ...SERIES_ANIM_OFF });
+  }
+  return patches;
+}
+
 /** Series patches for live candle updates — keeps sub-panes in sync with price/volume. */
 function buildIndicatorSeriesPatches(bars, active, chartTheme) {
   const patches = [];
-  if (active.ema9) patches.push({ id: 'ema9', data: mapEmaSeries(bars, 9) });
-  if (active.ema21) patches.push({ id: 'ema21', data: mapEmaSeries(bars, 21) });
-  if (active.ema50) patches.push({ id: 'ema50', data: mapEmaSeries(bars, 50) });
+  if (active.ema9) patches.push({ id: 'ema9', data: mapEmaSeries(bars, 9), ...SERIES_ANIM_OFF });
+  if (active.ema21) patches.push({ id: 'ema21', data: mapEmaSeries(bars, 21), ...SERIES_ANIM_OFF });
+  if (active.ema50) patches.push({ id: 'ema50', data: mapEmaSeries(bars, 50), ...SERIES_ANIM_OFF });
   if (active.bb) {
     const bb = mapBbSeries(bars);
-    patches.push({ id: 'bb-upper', data: bb.upper });
-    patches.push({ id: 'bb-mid', data: bb.middle });
-    patches.push({ id: 'bb-lower', data: bb.lower });
+    patches.push({ id: 'bb-upper', data: bb.upper, ...SERIES_ANIM_OFF });
+    patches.push({ id: 'bb-mid', data: bb.middle, ...SERIES_ANIM_OFF });
+    patches.push({ id: 'bb-lower', data: bb.lower, ...SERIES_ANIM_OFF });
   }
-  if (active.vwap) patches.push({ id: 'vwap', data: mapVwapSeries(bars) });
-  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars, chartTheme) });
-  if (active.rsi) patches.push({ id: 'rsi', data: mapRsiSeries(bars) });
+  if (active.vwap) patches.push({ id: 'vwap', data: mapVwapSeries(bars), ...SERIES_ANIM_OFF });
+  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars, chartTheme), ...SERIES_ANIM_OFF });
+  if (active.rsi) patches.push({ id: 'rsi', data: mapRsiSeries(bars), ...SERIES_ANIM_OFF });
   if (active.macd) {
     const m = mapMacdSeries(bars);
-    patches.push({ id: 'macd', data: m.macd });
-    patches.push({ id: 'macd-signal', data: m.signal });
-    patches.push({ id: 'macd-hist', data: m.hist });
+    patches.push({ id: 'macd', data: m.macd, ...SERIES_ANIM_OFF });
+    patches.push({ id: 'macd-signal', data: m.signal, ...SERIES_ANIM_OFF });
+    patches.push({ id: 'macd-hist', data: m.hist, ...SERIES_ANIM_OFF });
   }
-  if (active.atr) patches.push({ id: 'atr', data: mapAtrSeries(bars) });
+  if (active.atr) patches.push({ id: 'atr', data: mapAtrSeries(bars), ...SERIES_ANIM_OFF });
   return patches;
 }
 
@@ -571,15 +698,28 @@ export default function ChartWidget() {
   const chartLayoutRef = useRef({ xAxisCount: 1, showVolume: true });
   const liveRafRef = useRef(null);
   const liveLastPaintMs = useRef(0);
-  const LIVE_MIN_INTERVAL_MS = 66;
+  const LIVE_MIN_INTERVAL_MS = 250;
+const DATAZOOM_HANDLER_MIN_MS = 400;
   const configureChartRef = useRef(() => {});
   const applyOverlayPatchRef = useRef(() => {});
   const chartReadyRef = useRef(false);
+  const chartConfiguringRef = useRef(false);
+  const configureDebounceRef = useRef(null);
+  const indicatorBarDebounceRef = useRef(null);
+  const prevStructureKeyRef = useRef('');
+  const suppressDataZoomEventsRef = useRef(0);
+  const loadOlderLastMsRef = useRef(0);
   const loadingOlderRef = useRef(false);
   const olderExhaustedRef = useRef({});
   const loadOlderRef = useRef(null);
+  const pinnedToLiveRef = useRef(true);
+  const liveSeriesCacheRef = useRef({ main: null, volume: null, barCount: 0, chartType: null });
+  const dataZoomHandlerLastMsRef = useRef(0);
+  const lastConfigureRevisionRef = useRef('');
+  const chartHistoryReadyRef = useRef(false);
 
   const [displayBarLimit, setDisplayBarLimit] = useState(CHART_DISPLAY_BARS);
+  const [historyGateForced, setHistoryGateForced] = useState(false);
   const settings = useSettingsStore(state => state.settings);
   const resolvedTheme = useSettingsStore(state => state.resolvedTheme);
   const [timeframe, setTimeframe] = useState(() => settings.chartLayout?.timeframe || '1m');
@@ -661,6 +801,21 @@ export default function ChartWidget() {
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
 
   useEffect(() => {
+    setHistoryGateForced(false);
+    pinnedToLiveRef.current = true;
+    prevStructureKeyRef.current = '';
+    lastConfigureRevisionRef.current = '';
+    const t = setTimeout(() => setHistoryGateForced(true), CHART_HISTORY_GATE_MS);
+    return () => clearTimeout(t);
+  }, [activeSymbol]);
+
+  useEffect(() => {
+    pinnedToLiveRef.current = true;
+    prevStructureKeyRef.current = '';
+    lastConfigureRevisionRef.current = '';
+  }, [timeframe]);
+
+  useEffect(() => {
     setDisplayBarLimit(CHART_DISPLAY_BARS);
     olderExhaustedRef.current[activeSymbol] = false;
   }, [activeSymbol, timeframe]);
@@ -669,6 +824,14 @@ export default function ChartWidget() {
     ...DEFAULT_TERMINAL_SETTINGS.chartLayout.activeIndicators,
     ...(settings.chartLayout?.activeIndicators || {}),
   }));
+
+  useEffect(() => {
+    lastConfigureRevisionRef.current = '';
+    if (indicatorBarDebounceRef.current) {
+      clearTimeout(indicatorBarDebounceRef.current);
+      indicatorBarDebounceRef.current = null;
+    }
+  }, [activeSymbol, timeframe, active]);
 
 
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
@@ -737,14 +900,38 @@ export default function ChartWidget() {
     if (!raw.length) return [];
 
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    const series = bucketCandles(raw, cfg.secs);
+    const rawSlice = sliceRawForTimeframe(raw, cfg.secs, displayBarLimit);
+    const series = bucketCandles(rawSlice, cfg.secs);
     const limit = displayBarLimit;
     return series.length > limit ? series.slice(-limit) : series;
   }, [timeframe, activeSymbol, historyRev, displayBarLimit]);
 
+  const chartHistoryReady = useMemo(
+    () => isChartHistoryReady(aggregatedCandles.length, historyRev, historyGateForced),
+    [aggregatedCandles.length, historyRev, historyGateForced],
+  );
+
+  chartHistoryReadyRef.current = chartHistoryReady;
+
+  const configureRevision = useMemo(() => [
+    activeSymbol,
+    timeframe,
+    chartType,
+    historyRev,
+    displayBarLimit,
+    chartHistoryReady ? 1 : 0,
+    activeIndicatorKeys.join(','),
+    backtestOverlayKey,
+    resolvedTheme,
+  ].join('|'), [
+    activeSymbol, timeframe, chartType, historyRev, displayBarLimit, chartHistoryReady,
+    activeIndicatorKeys, backtestOverlayKey, resolvedTheme,
+  ]);
+
   useEffect(() => {
     displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
     candlesRef.current = displayBarsRef.current;
+    liveSeriesCacheRef.current = { main: null, volume: null, barCount: 0, chartType: null };
   }, [aggregatedCandles]);
 
   // Direct DOM Legend update
@@ -782,9 +969,20 @@ export default function ChartWidget() {
 
   // Set up chart options
   const configureChart = useCallback(() => {
-    if (!chartRef.current || aggregatedCandles.length === 0) {
+    if (!chartRef.current || aggregatedCandles.length === 0 || !chartHistoryReady) {
       chartReadyRef.current = false;
       return;
+    }
+
+    chartConfiguringRef.current = true;
+    chartReadyRef.current = false;
+    if (indicatorBarDebounceRef.current) {
+      clearTimeout(indicatorBarDebounceRef.current);
+      indicatorBarDebounceRef.current = null;
+    }
+    if (liveRafRef.current != null) {
+      cancelAnimationFrame(liveRafRef.current);
+      liveRafRef.current = null;
     }
 
     const candles = aggregatedCandles;
@@ -792,11 +990,14 @@ export default function ChartWidget() {
 
     const categoryData = buildCategoryAxisData(candles);
 
-    // Preserve zoom (% window) — stable under indicator toggles; timestamp keys on scatter x
+    const layoutChanged = prevConfigRef.current.symbol !== activeSymbol
+      || prevConfigRef.current.timeframe !== timeframe;
+
+    // Preserve zoom (% window) — skip getOption when symbol/timeframe changed (expensive + stale)
     let zoomStart = null;
     let zoomEnd = null;
 
-    if (prevConfigRef.current.symbol === activeSymbol && prevConfigRef.current.timeframe === timeframe && chartRef.current) {
+    if (!layoutChanged && chartRef.current) {
       try {
         const currentOption = chartRef.current.getOption();
         const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
@@ -820,7 +1021,13 @@ export default function ChartWidget() {
     }
 
     if (zoomStart == null || zoomEnd == null) {
-      ({ start: zoomStart, end: zoomEnd } = defaultDataZoomPercent(candles.length, categoryData.length));
+      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(candles.length, categoryData));
+      pinnedToLiveRef.current = true;
+    } else {
+      pinnedToLiveRef.current = isDataZoomAtLiveEdge(
+        { start: zoomStart, end: zoomEnd },
+        categoryData,
+      );
     }
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
 
@@ -917,6 +1124,11 @@ export default function ChartWidget() {
     const showBacktestEquity = backtestOverlay?.visible
       && symbolsMatch(backtestOverlay.symbol, activeSymbol)
       && backtestOverlay.equityCurve?.length;
+
+    const structureKey = chartStructureKey(chartType, subPanes, Boolean(showBacktestEquity));
+    const fullReplace = structureKey !== prevStructureKeyRef.current;
+    prevStructureKeyRef.current = structureKey;
+
     yAxes.push({
       id: 'backtest-equity-axis',
       scale: true,
@@ -940,7 +1152,7 @@ export default function ChartWidget() {
     if (chartType === 'line') {
       const lineData = candles.map(c => c.close);
       for (let i = 0; i < FUTURE_PADDING; i++) lineData.push('-');
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'main',
         name: activeSymbol,
         type: 'line',
@@ -949,9 +1161,9 @@ export default function ChartWidget() {
         yAxisIndex: 0,
         showSymbol: false,
         lineStyle: { color: chartTheme.crosshairLabelBg, width: 2 },
-      });
+      }));
     } else {
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'main',
         name: activeSymbol,
         type: 'candlestick',
@@ -964,11 +1176,11 @@ export default function ChartWidget() {
           borderColor: chartTheme.bullishColor,
           borderColor0: chartTheme.bearishColor,
         },
-      });
+      }));
     }
 
     // Signal markers — scatter layer shares the category x-axis (stable under zoom/pan)
-    series.push({
+    series.push(withSeriesAnimOff({
       id: 'signal-markers',
       name: 'Signals',
       type: 'scatter',
@@ -979,13 +1191,13 @@ export default function ChartWidget() {
       z: 6,
       animation: false,
       tooltip: { show: false },
-    });
+    }));
 
     const equityOverlayData = showBacktestEquity
       ? mapBacktestEquityLine(backtestOverlay.equityCurve, candles)
       : [];
 
-    series.push({
+    series.push(withSeriesAnimOff({
       id: 'backtest-equity',
       name: 'BT Equity',
       type: 'line',
@@ -996,92 +1208,92 @@ export default function ChartWidget() {
       silent: true,
       z: 2,
       lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed', opacity: 0.85 },
-    });
+    }));
 
     // Overlay indicators
     if (active.ema9) {
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'ema9',
         name: 'EMA 9', type: 'line', data: mapEmaSeries(candles, 9), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#f59e0b', width: 1, opacity: 0.85 }
-      });
+      }));
     }
     if (active.ema21) {
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'ema21',
         name: 'EMA 21', type: 'line', data: mapEmaSeries(candles, 21), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.85 }
-      });
+      }));
     }
     if (active.ema50) {
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'ema50',
         name: 'EMA 50', type: 'line', data: mapEmaSeries(candles, 50), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#06b6d4', width: 1, opacity: 0.85 }
-      });
+      }));
     }
     if (active.bb) {
       const bb = mapBbSeries(candles);
       series.push(
-        { id: 'bb-upper', name: 'BB Upper', type: 'line', data: bb.upper, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } },
-        { id: 'bb-mid', name: 'BB Mid', type: 'line', data: bb.middle, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: 'rgba(99,102,241,0.3)', width: 1, type: 'dotted' } },
-        { id: 'bb-lower', name: 'BB Lower', type: 'line', data: bb.lower, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }
+        withSeriesAnimOff({ id: 'bb-upper', name: 'BB Upper', type: 'line', data: bb.upper, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }),
+        withSeriesAnimOff({ id: 'bb-mid', name: 'BB Mid', type: 'line', data: bb.middle, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: 'rgba(99,102,241,0.3)', width: 1, type: 'dotted' } }),
+        withSeriesAnimOff({ id: 'bb-lower', name: 'BB Lower', type: 'line', data: bb.lower, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#6366f1', width: 1, type: 'dashed', opacity: 0.7 } }),
       );
     }
     if (active.vwap) {
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'vwap',
         name: 'VWAP', type: 'line', data: mapVwapSeries(candles), xAxisIndex: 0, yAxisIndex: 0,
         showSymbol: false, lineStyle: { color: '#ec4899', width: 1.5 }
-      });
+      }));
     }
 
     // Sub grids series
     if (showVol) {
       const gIdx = paneGridMap.volume;
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'volume',
         name: 'Volume',
         type: 'bar',
         xAxisIndex: gIdx,
         yAxisIndex: gIdx,
         data: buildVolumeSeriesData(candles, chartTheme),
-      });
+      }));
     }
 
     if (showRsi) {
       const gIdx = paneGridMap.rsi;
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'rsi',
         name: 'RSI', type: 'line', data: mapRsiSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
         showSymbol: false, lineStyle: { color: '#fbbf24', width: 1.5 }
-      });
+      }));
     }
 
     if (showMacd) {
       const gIdx = paneGridMap.macd;
       const macd = mapMacdSeries(candles);
       series.push(
-        { id: 'macd', name: 'MACD', type: 'line', data: macd.macd, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#34d399', width: 1.2 } },
-        { id: 'macd-signal', name: 'Signal', type: 'line', data: macd.signal, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#f87171', width: 1.2 } },
-        {
+        withSeriesAnimOff({ id: 'macd', name: 'MACD', type: 'line', data: macd.macd, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#34d399', width: 1.2 } }),
+        withSeriesAnimOff({ id: 'macd-signal', name: 'Signal', type: 'line', data: macd.signal, xAxisIndex: gIdx, yAxisIndex: gIdx, showSymbol: false, lineStyle: { color: '#f87171', width: 1.2 } }),
+        withSeriesAnimOff({
           id: 'macd-hist',
           name: 'Hist',
           type: 'bar',
           xAxisIndex: gIdx,
           yAxisIndex: gIdx,
           data: macd.hist,
-        }
+        }),
       );
     }
 
     if (showAtr) {
       const gIdx = paneGridMap.atr;
-      series.push({
+      series.push(withSeriesAnimOff({
         id: 'atr',
         name: 'ATR', type: 'line', data: mapAtrSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
         showSymbol: false, lineStyle: { color: '#94a3b8', width: 1.5 }
-      });
+      }));
     }
 
     // Zoom and pan links
@@ -1089,6 +1301,9 @@ export default function ChartWidget() {
 
     const option = {
       backgroundColor: chartTheme.backgroundColor,
+      animation: false,
+      animationDuration: 0,
+      animationDurationUpdate: 0,
       axisPointer: {
         link: [{ xAxisIndex: 'all' }],
         label: { backgroundColor: chartTheme.crosshairLabelBg }
@@ -1108,23 +1323,46 @@ export default function ChartWidget() {
       series: series
     };
 
-    chartRef.current.setOption(option, { notMerge: true });
+    suppressDataZoomEventsRef.current += 1;
+    try {
+      chartRef.current.setOption(
+        option,
+        fullReplace
+          ? { notMerge: true }
+          : { replaceMerge: ['grid', 'xAxis', 'yAxis', 'series', 'dataZoom'] },
+      );
+    } catch (err) {
+      console.warn('[ChartWidget] configureChart setOption failed:', err);
+    } finally {
+      requestAnimationFrame(() => {
+        suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
+      });
+      chartConfiguringRef.current = false;
+    }
 
     chartLayoutRef.current = { xAxisCount: xAxes.length, showVolume: showVol };
     chartReadyRef.current = true;
+    updateLiveSeriesCache(
+      liveSeriesCacheRef.current,
+      candles,
+      chartType,
+      active,
+      chartTheme,
+      { forceRebuild: true },
+    );
 
     // Initial legend display
     const lastBar = candles[candles.length - 1];
     updateLegendDOM(lastBar);
 
     requestAnimationFrame(() => applyOverlayPatchRef.current?.());
-  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, backtestOverlay, backtestOverlayKey]);
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, backtestOverlay, backtestOverlayKey, chartHistoryReady]);
 
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
     const chart = chartRef.current;
     const bars = candlesRef.current;
-    if (!chart || !bars.length || !chartReadyRef.current) return;
+    if (!chart || !bars.length || !chartReadyRef.current || chartConfiguringRef.current) return;
 
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
     const bucketSecs = cfg.secs;
@@ -1173,7 +1411,7 @@ export default function ChartWidget() {
             data: scatterData,
           },
         ],
-      }, { lazyUpdate: false });
+      }, { lazyUpdate: true });
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
@@ -1181,6 +1419,28 @@ export default function ChartWidget() {
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
+
+  const scheduleIndicatorBarRefresh = useCallback(() => {
+    const hasIndicators = Object.entries(active).some(([, on]) => on);
+    if (!hasIndicators) return;
+
+    if (indicatorBarDebounceRef.current) clearTimeout(indicatorBarDebounceRef.current);
+    indicatorBarDebounceRef.current = setTimeout(() => {
+      indicatorBarDebounceRef.current = null;
+      const chart = chartRef.current;
+      if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
+      const bars = displayBarsRef.current;
+      if (!bars.length) return;
+      try {
+        chart.setOption(
+          { series: buildIndicatorSeriesPatches(bars, active, chartTheme) },
+          { lazyUpdate: true },
+        );
+      } catch (err) {
+        console.warn('[ChartWidget] indicator bar refresh failed:', err);
+      }
+    }, INDICATOR_BAR_DEBOUNCE_MS);
+  }, [active, chartTheme]);
 
   const loadOlderHistory = useCallback(async () => {
     if (loadingOlderRef.current || olderExhaustedRef.current[activeSymbol]) return;
@@ -1252,19 +1512,28 @@ export default function ChartWidget() {
         }
       });
 
-      chart.on('datazoom', () => {
-        if (!chartReadyRef.current) return;
-        try {
-          const currentOption = chart.getOption();
-          const dataZoomList = normalizeEchartsList(currentOption?.dataZoom);
-          const xAxisList = normalizeEchartsList(currentOption?.xAxis);
-          const dz = dataZoomList[0];
-          const cats = xAxisList[0]?.data ?? [];
-          if (isDataZoomNearLeftEdge(dz, cats)) {
-            loadOlderRef.current?.();
+      chart.on('datazoom', (ev) => {
+        if (!chartReadyRef.current || suppressDataZoomEventsRef.current > 0) return;
+
+        const batch = ev.batch?.[0] ?? ev;
+        const bars = displayBarsRef.current;
+        if (bars.length) {
+          const categoryLen = bars.length + FUTURE_PADDING;
+          if (typeof batch.end === 'number') {
+            const endIdx = Math.round((batch.end / 100) * categoryLen);
+            pinnedToLiveRef.current = endIdx >= bars.length - 1;
           }
-        } catch (err) {
-          console.warn('[ChartWidget] datazoom handler failed:', err);
+        }
+
+        const now = Date.now();
+        if (now - dataZoomHandlerLastMsRef.current < DATAZOOM_HANDLER_MIN_MS) return;
+        dataZoomHandlerLastMsRef.current = now;
+
+        if (typeof batch.start === 'number' && batch.start <= 2) {
+          if (loadingOlderRef.current) return;
+          if (now - loadOlderLastMsRef.current < LOAD_OLDER_MIN_INTERVAL_MS) return;
+          loadOlderLastMsRef.current = now;
+          loadOlderRef.current?.();
         }
       });
 
@@ -1286,12 +1555,12 @@ export default function ChartWidget() {
         el.__chartInstance = chart;
       }
 
-      if (displayBarsRef.current.length > 0) {
-        requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (chartHistoryReadyRef.current) {
+          lastConfigureRevisionRef.current = '';
           configureChartRef.current();
-          applyOverlayPatchRef.current();
-        });
-      }
+        }
+      });
       return true;
     };
 
@@ -1308,6 +1577,16 @@ export default function ChartWidget() {
     return () => {
       disposed = true;
       ro.disconnect();
+      if (configureDebounceRef.current) {
+        clearTimeout(configureDebounceRef.current);
+        configureDebounceRef.current = null;
+      }
+      if (indicatorBarDebounceRef.current) {
+        clearTimeout(indicatorBarDebounceRef.current);
+        indicatorBarDebounceRef.current = null;
+      }
+      chartConfiguringRef.current = false;
+      lastConfigureRevisionRef.current = '';
       chart?.dispose();
       chartRef.current = null;
       chartReadyRef.current = false;
@@ -1315,15 +1594,28 @@ export default function ChartWidget() {
     };
   }, [updateLegendDOM, chartTheme.echartsTheme, resolvedTheme]);
 
-  // Full rebuild when structure/data/indicators change
+  // Full rebuild when structure/history/indicators change (debounced — coalesces timeframe toggles)
   useEffect(() => {
-    configureChart();
-  }, [configureChart]);
+    if (configureDebounceRef.current) clearTimeout(configureDebounceRef.current);
+    configureDebounceRef.current = setTimeout(() => {
+      configureDebounceRef.current = null;
+      if (configureRevision === lastConfigureRevisionRef.current) return;
+      lastConfigureRevisionRef.current = configureRevision;
+      configureChartRef.current();
+    }, CONFIGURE_DEBOUNCE_MS);
+    return () => {
+      if (configureDebounceRef.current) {
+        clearTimeout(configureDebounceRef.current);
+        configureDebounceRef.current = null;
+      }
+    };
+  }, [configureRevision]);
 
   // Lightweight overlay patch — trades, positions, and after full rebuild
   useEffect(() => {
-    applyOverlayPatch();
-  }, [applyOverlayPatch, positionOverlayKey, tradeOverlayKey, botOverlayKey, backtestOverlayKey]);
+    if (!chartReadyRef.current) return;
+    applyOverlayPatchRef.current?.();
+  }, [positionOverlayKey, tradeOverlayKey, botOverlayKey, backtestOverlayKey]);
 
   useEffect(() => {
     const onOverlayChanged = () => applyOverlayPatchRef.current?.();
@@ -1351,12 +1643,14 @@ export default function ChartWidget() {
       const start = Math.max(0, ((catIdx - half) / total) * 100);
       const end = Math.min(100, ((catIdx + half) / total) * 100);
       try {
+        suppressDataZoomEventsRef.current += 1;
         chart.setOption({
-          dataZoom: [
-            { type: 'inside', start, end },
-            { type: 'slider', start, end },
-          ],
+          dataZoom: buildDataZoomOption(start, end),
         });
+        requestAnimationFrame(() => {
+          suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
+        });
+        pinnedToLiveRef.current = false;
       } catch (err) {
         console.warn('[ChartWidget] backtest focus zoom failed:', err);
       }
@@ -1365,10 +1659,9 @@ export default function ChartWidget() {
     return () => window.removeEventListener('backtest-focus-bar', onFocusBar);
   }, [activeSymbol]);
 
-  // Live tick updates — patch by series/xAxis id (no getOption mutation)
   const applyLiveCandleUpdate = useCallback(() => {
     const chart = chartRef.current;
-    if (!chart || !chartReadyRef.current) return;
+    if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
 
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
     const raw = getCandles(activeSymbol);
@@ -1379,55 +1672,86 @@ export default function ChartWidget() {
     if (!bars.length) return;
 
     const last = bars[bars.length - 1];
+    let isNewBar = false;
     if (last && last.time === aggregatedLive.time) {
+      if (barMatches(last, aggregatedLive)) return;
       bars[bars.length - 1] = aggregatedLive;
     } else if (!last || aggregatedLive.time > last.time) {
+      isNewBar = true;
       bars.push({ ...aggregatedLive });
-        if (bars.length > displayBarLimit) bars.shift();
+      if (bars.length > displayBarLimit) {
+        bars.shift();
+      }
     } else {
       return;
     }
 
     candlesRef.current = bars;
-
-    const categoryData = buildCategoryAxisData(bars);
-    const { xAxisCount } = chartLayoutRef.current;
-    const patch = {
-      xAxis: Array.from({ length: xAxisCount }, (_, i) => ({
-        id: `x-${i}`,
-        data: categoryData,
-      })),
-      series: [
-        {
-          id: 'main',
-          type: chartType === 'line' ? 'line' : 'candlestick',
-          data: buildMainSeriesData(bars, chartType),
-        },
-        ...buildIndicatorSeriesPatches(bars, active, chartTheme),
-      ],
-    };
+    const cache = liveSeriesCacheRef.current;
 
     try {
-      chart.setOption(patch, { lazyUpdate: false });
+      const patch = {};
+
+      if (isNewBar) {
+        const categoryData = buildCategoryAxisData(bars);
+        const { xAxisCount } = chartLayoutRef.current;
+        patch.xAxis = Array.from({ length: xAxisCount }, (_, i) => ({
+          id: `x-${i}`,
+          data: categoryData,
+        }));
+        updateLiveSeriesCache(cache, bars, chartType, active, chartTheme, { forceRebuild: true });
+        patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
+        if (pinnedToLiveRef.current) {
+          const { start, end } = liveEdgeDataZoomForBars(bars.length, categoryData);
+          patch.dataZoom = buildDataZoomOption(start, end);
+          suppressDataZoomEventsRef.current += 1;
+        }
+        scheduleIndicatorBarRefresh();
+      } else {
+        updateLiveSeriesCache(cache, bars, chartType, active, chartTheme);
+        patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
+      }
+
+      // Merge by series id only — never replaceMerge (drops indicator series not in patch)
+      chart.setOption(patch, { lazyUpdate: true });
+      if (isNewBar && suppressDataZoomEventsRef.current > 0) {
+        requestAnimationFrame(() => {
+          suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
+        });
+      }
       updateLegendDOM(aggregatedLive);
-      applyOverlayPatchRef.current?.();
+      if (isNewBar) {
+        applyOverlayPatchRef.current?.();
+      }
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, chartTheme]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, chartTheme, scheduleIndicatorBarRefresh]);
+
+  const pumpLiveCandleUpdate = useCallback(() => {
+    const now = performance.now();
+    if (now - liveLastPaintMs.current < LIVE_MIN_INTERVAL_MS) {
+      if (liveRafRef.current == null) {
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null;
+          pumpLiveCandleUpdate();
+        });
+      }
+      return;
+    }
+    liveLastPaintMs.current = now;
+    applyLiveCandleUpdate();
+  }, [applyLiveCandleUpdate]);
 
   useEffect(() => {
     const symbol = activeSymbol;
     const unsubscribe = useStore.subscribe(
       (state) => state.candleRevision[symbol] || 0,
       () => {
-        const now = performance.now();
-        if (now - liveLastPaintMs.current < LIVE_MIN_INTERVAL_MS) return;
         if (liveRafRef.current != null) return;
         liveRafRef.current = requestAnimationFrame(() => {
           liveRafRef.current = null;
-          liveLastPaintMs.current = performance.now();
-          applyLiveCandleUpdate();
+          pumpLiveCandleUpdate();
         });
       },
     );
@@ -1438,7 +1762,7 @@ export default function ChartWidget() {
         liveRafRef.current = null;
       }
     };
-  }, [activeSymbol, applyLiveCandleUpdate]);
+  }, [activeSymbol, pumpLiveCandleUpdate]);
 
   // Handle ESC key to cancel interaction mode
   useEffect(() => {
@@ -1600,6 +1924,11 @@ export default function ChartWidget() {
         </div>
 
         <div ref={containerRef} className="h-full w-full" data-chart-root="main" />
+        {!chartHistoryReady && (
+          <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center bg-background/40">
+            <span className="text-xs text-muted-foreground">Loading chart history…</span>
+          </div>
+        )}
       </div>
     </WidgetShell>
   );

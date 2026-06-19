@@ -25,7 +25,56 @@ const SYMBOL_COLORS = {
 };
 
 const pad = (n) => String(n).padStart(2, '0');
-const DEFAULT_ZOOM = { start: 75, end: 100 };
+const MINI_FUTURE_PADDING = 8;
+const MINI_VISIBLE_BARS = 24;
+const LIVE_MIN_INTERVAL_MS = 250;
+
+function formatMiniTimeLabel(timeSec) {
+  const d = new Date(timeSec * 1000);
+  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+function buildMiniCategoryData(candles) {
+  const keys = candles.map((c) => formatMiniTimeLabel(c.time));
+  for (let i = 0; i < MINI_FUTURE_PADDING; i++) keys.push(`__pad_${i}__`);
+  return keys;
+}
+
+function miniCategoryLabelFormatter(val) {
+  if (val == null || val === '' || String(val).startsWith('__pad_')) return '';
+  return val;
+}
+
+function lastRealMiniCategoryIndex(categoryData) {
+  return Math.max(0, categoryData.length - MINI_FUTURE_PADDING - 1);
+}
+
+function defaultMiniDataZoom(candleCount, totalCategoryCount, visibleBars = MINI_VISIBLE_BARS) {
+  const liveGap = Math.min(3, MINI_FUTURE_PADDING);
+  const endPct = Math.min(100, ((candleCount + liveGap) / totalCategoryCount) * 100);
+  const startPct = Math.max(0, ((candleCount - visibleBars) / totalCategoryCount) * 100);
+  return { start: startPct, end: endPct };
+}
+
+function dataZoomEndIndex(dz, categoryData) {
+  if (!dz || !categoryData.length) return -1;
+  if (typeof dz.end === 'number') {
+    return Math.round((dz.end / 100) * categoryData.length);
+  }
+  return -1;
+}
+
+function isDataZoomAtLiveEdge(dz, categoryData) {
+  if (!dz || !categoryData.length) return true;
+  const realEnd = lastRealMiniCategoryIndex(categoryData);
+  const endIdx = dataZoomEndIndex(dz, categoryData);
+  if (endIdx < 0) return true;
+  return endIdx >= realEnd - 1;
+}
+
+function liveEdgeDataZoomForMini(candleCount, categoryData) {
+  return defaultMiniDataZoom(candleCount, categoryData.length);
+}
 
 function normalizeEchartsList(value) {
   if (value == null) return [];
@@ -42,19 +91,20 @@ function readDataZoomWindow(chart) {
   return null;
 }
 
-function buildMiniChartSeriesData(candles, symbol) {
-  const categoryData = candles.map((c) => {
-    const d = new Date(c.time * 1000);
-    return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-  });
-
+function buildMiniChartSeriesData(candles) {
   const candlestickData = candles.map((c) => [c.open, c.close, c.low, c.high]);
   const ema9 = calcEMA(candles, 9);
   const ema9Data = candles.map((_, i) => (i >= 8 ? ema9[i - 8]?.value : null));
   const ema21 = calcEMA(candles, 21);
   const ema21Data = candles.map((_, i) => (i >= 20 ? ema21[i - 20]?.value : null));
 
-  return { categoryData, candlestickData, ema9Data, ema21Data, symbol };
+  for (let i = 0; i < MINI_FUTURE_PADDING; i++) {
+    candlestickData.push('-');
+    ema9Data.push(null);
+    ema21Data.push(null);
+  }
+
+  return { candlestickData, ema9Data, ema21Data };
 }
 
 function MiniChartHeaderPrice({ symbol }) {
@@ -104,8 +154,13 @@ export default function MiniChartWidget({
   const chartRef = useRef(null);
   const chartReadyRef = useRef(false);
   const liveRafRef = useRef(null);
+  const liveLastPaintMs = useRef(0);
   const prevSymbolRef = useRef(defaultSymbol);
   const configureChartRef = useRef(() => {});
+  const pinnedToLiveRef = useRef(true);
+  const categoryDataRef = useRef([]);
+  const candlesRef = useRef([]);
+  const suppressDataZoomEventsRef = useRef(0);
 
   const [symbol, setSymbol] = useState(defaultSymbol);
 
@@ -132,10 +187,12 @@ export default function MiniChartWidget({
 
   const buildFullOption = useCallback((candles, zoomWindow) => {
     const dec = priceDecimals(candles);
-    const { categoryData, candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles, symbol);
-    const zoom = zoomWindow ?? DEFAULT_ZOOM;
+    const categoryData = buildMiniCategoryData(candles);
+    const { candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles);
+    const zoom = zoomWindow ?? liveEdgeDataZoomForMini(candles.length, categoryData);
 
     return {
+      animation: false,
       backgroundColor: chartTheme.backgroundColor,
       grid: { left: '2%', right: '8%', top: '6%', bottom: '18%' },
       tooltip: { show: false },
@@ -146,7 +203,11 @@ export default function MiniChartWidget({
         boundaryGap: false,
         axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
         splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
-        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9 },
+        axisLabel: {
+          color: chartTheme.axisLabelColor,
+          fontSize: 9,
+          formatter: miniCategoryLabelFormatter,
+        },
       },
       yAxis: {
         scale: true,
@@ -158,9 +219,11 @@ export default function MiniChartWidget({
       dataZoom: [{ type: 'inside', start: zoom.start, end: zoom.end }],
       series: [
         {
+          id: 'candles',
           name: symbol,
           type: 'candlestick',
           data: candlestickData,
+          animation: false,
           itemStyle: {
             color: chartTheme.bullishColor,
             color0: chartTheme.bearishColor,
@@ -169,22 +232,49 @@ export default function MiniChartWidget({
           },
         },
         {
+          id: 'ema9',
           name: 'EMA 9',
           type: 'line',
           data: ema9Data,
           showSymbol: false,
+          animation: false,
           lineStyle: { color: '#f59e0b', width: 1, opacity: 0.8 },
         },
         {
+          id: 'ema21',
           name: 'EMA 21',
           type: 'line',
           data: ema21Data,
           showSymbol: false,
+          animation: false,
           lineStyle: { color: '#8b5cf6', width: 1, opacity: 0.8 },
         },
       ],
     };
   }, [priceDecimals, symbol, chartTheme]);
+
+  const resolveZoomWindow = useCallback((chart, candles, resetZoom) => {
+    const categoryData = buildMiniCategoryData(candles);
+    if (resetZoom) {
+      pinnedToLiveRef.current = true;
+      return liveEdgeDataZoomForMini(candles.length, categoryData);
+    }
+
+    const prev = readDataZoomWindow(chart);
+    const prevCategory = categoryDataRef.current;
+    if (!prev || !prevCategory.length) {
+      pinnedToLiveRef.current = true;
+      return liveEdgeDataZoomForMini(candles.length, categoryData);
+    }
+
+    if (isDataZoomAtLiveEdge(prev, prevCategory)) {
+      pinnedToLiveRef.current = true;
+      return liveEdgeDataZoomForMini(candles.length, categoryData);
+    }
+
+    pinnedToLiveRef.current = false;
+    return prev;
+  }, []);
 
   const configureChart = useCallback((opts = {}) => {
     const chart = chartRef.current;
@@ -192,13 +282,18 @@ export default function MiniChartWidget({
     if (!chart || candles.length === 0) return;
 
     const resetZoom = opts.resetZoom === true;
-    const zoomWindow = resetZoom
-      ? DEFAULT_ZOOM
-      : (readDataZoomWindow(chart) ?? DEFAULT_ZOOM);
+    const zoomWindow = resolveZoomWindow(chart, candles, resetZoom);
+    const categoryData = buildMiniCategoryData(candles);
 
     chart.setOption(buildFullOption(candles, zoomWindow), { notMerge: true });
+    categoryDataRef.current = categoryData;
+    candlesRef.current = candles;
     chartReadyRef.current = true;
-  }, [buildFullOption, getDisplayCandles]);
+  }, [buildFullOption, getDisplayCandles, resolveZoomWindow]);
+
+  const barMatches = (a, b) => (
+    a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close
+  );
 
   const applyLiveUpdate = useCallback(() => {
     const chart = chartRef.current;
@@ -207,23 +302,75 @@ export default function MiniChartWidget({
     const candles = getDisplayCandles();
     if (!candles.length) return;
 
-    const { categoryData, candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles, symbol);
+    const prev = candlesRef.current;
+    const last = candles[candles.length - 1];
+    const prevLast = prev[prev.length - 1];
+    let isNewBar = false;
+
+    if (!prev.length || !last) {
+      configureChart();
+      return;
+    }
+
+    if (last.time === prevLast?.time) {
+      if (barMatches(last, prevLast)) return;
+    } else if (last.time > (prevLast?.time ?? 0)) {
+      isNewBar = true;
+    } else {
+      return;
+    }
+
+    candlesRef.current = candles;
+    const { candlestickData, ema9Data, ema21Data } = buildMiniChartSeriesData(candles);
 
     try {
-      chart.setOption({
-        xAxis: { data: categoryData },
+      const patch = {
         series: [
-          { data: candlestickData },
-          { data: ema9Data },
-          { data: ema21Data },
+          { id: 'candles', data: candlestickData },
+          { id: 'ema9', data: ema9Data },
+          { id: 'ema21', data: ema21Data },
         ],
-      }, { lazyUpdate: false });
+      };
+
+      if (isNewBar) {
+        const categoryData = buildMiniCategoryData(candles);
+        patch.xAxis = { data: categoryData };
+        categoryDataRef.current = categoryData;
+        if (pinnedToLiveRef.current) {
+          const zoom = liveEdgeDataZoomForMini(candles.length, categoryData);
+          patch.dataZoom = [{ type: 'inside', start: zoom.start, end: zoom.end }];
+          suppressDataZoomEventsRef.current += 1;
+        }
+      }
+
+      chart.setOption(patch, { lazyUpdate: true });
+
+      if (isNewBar && suppressDataZoomEventsRef.current > 0) {
+        requestAnimationFrame(() => {
+          suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
+        });
+      }
     } catch (err) {
       console.warn('[MiniChartWidget] live update failed:', err);
     }
-  }, [getDisplayCandles, symbol]);
+  }, [getDisplayCandles, configureChart]);
 
   configureChartRef.current = configureChart;
+
+  const pumpLiveUpdate = useCallback(() => {
+    const now = performance.now();
+    if (now - liveLastPaintMs.current < LIVE_MIN_INTERVAL_MS) {
+      if (liveRafRef.current == null) {
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null;
+          pumpLiveUpdate();
+        });
+      }
+      return;
+    }
+    liveLastPaintMs.current = now;
+    applyLiveUpdate();
+  }, [applyLiveUpdate]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -239,6 +386,17 @@ export default function MiniChartWidget({
 
       chart = echarts.init(el, chartTheme.echartsTheme || undefined);
       chartRef.current = chart;
+
+      chart.on('datazoom', (ev) => {
+        if (suppressDataZoomEventsRef.current > 0) return;
+        const batch = ev.batch?.[0] ?? ev;
+        if (typeof batch.start !== 'number' || typeof batch.end !== 'number') return;
+        pinnedToLiveRef.current = isDataZoomAtLiveEdge(
+          { start: batch.start, end: batch.end },
+          categoryDataRef.current,
+        );
+      });
+
       requestAnimationFrame(() => configureChartRef.current({ resetZoom: true }));
       return true;
     };
@@ -266,6 +424,9 @@ export default function MiniChartWidget({
     if (!chartRef.current) return;
     if (prevSymbolRef.current === symbol) return;
     prevSymbolRef.current = symbol;
+    pinnedToLiveRef.current = true;
+    candlesRef.current = [];
+    categoryDataRef.current = [];
     configureChart({ resetZoom: true });
   }, [symbol, configureChart]);
 
@@ -282,7 +443,7 @@ export default function MiniChartWidget({
         if (liveRafRef.current != null) return;
         liveRafRef.current = requestAnimationFrame(() => {
           liveRafRef.current = null;
-          applyLiveUpdate();
+          pumpLiveUpdate();
         });
       },
     );
@@ -293,7 +454,7 @@ export default function MiniChartWidget({
         liveRafRef.current = null;
       }
     };
-  }, [symbol, applyLiveUpdate]);
+  }, [symbol, pumpLiveUpdate]);
 
   useEffect(() => {
     const sym = symbol;
