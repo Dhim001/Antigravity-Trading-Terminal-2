@@ -618,6 +618,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [backtestDays, setBacktestDays] = useState('7');
   const [backtestOos, setBacktestOos] = useState(false);
+  const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
   const backtestTimeoutRef = useRef(null);
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
@@ -676,7 +677,7 @@ export function AlgoTab({ hideToolbar = false }) {
     const { ok, error } = await sendAction(Action.RUN_BACKTEST, {
       strategy: botStrategy,
       symbol: activeSymbol,
-      config: botConfig,
+      config: { ...botConfig, sim_mode: backtestSimMode },
       days,
       timeframe: botTimeframe,
       oos_pct: backtestOos ? 30 : undefined,
@@ -718,6 +719,7 @@ export function AlgoTab({ hideToolbar = false }) {
       config: {
         ...botConfig,
         trailing_stop_percent: botConfig.trailing_stop_percent ?? 2,
+        backtest_run_id: useStore.getState().backtestResults?.run_id ?? undefined,
       },
     });
   };
@@ -1188,6 +1190,19 @@ export function AlgoTab({ hideToolbar = false }) {
               />
               Walk-forward OOS — test on last 30% of range only
             </label>
+
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Simulation mode</Label>
+              <Select value={backtestSimMode} onValueChange={setBacktestSimMode}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest simulation mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="live_aligned" className="text-xs">Live-aligned (risk gates)</SelectItem>
+                  <SelectItem value="research" className="text-xs">Research (no risk gates)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Backtest Range</Label>

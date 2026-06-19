@@ -10,8 +10,10 @@ from app.services.bots.backtest_costs import (
 from app.services.bots.indicators import first_eval_index, prepare_strategy_df
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
+from app.services.bots.backtest_analytics import drawdown_curve, enrich_summary
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 
+_SIM_MODES = frozenset({"live_aligned", "research"})
 _MIN_QTY = 0.001
 _DEFAULT_ALLOCATION = 10_000.0
 
@@ -162,6 +164,10 @@ class BacktesterService:
             return {"error": "Not enough historical data"}
 
         cfg = config or {}
+        sim_mode = str(cfg.get("sim_mode") or "live_aligned").lower()
+        if sim_mode not in _SIM_MODES:
+            sim_mode = "live_aligned"
+        research = sim_mode == "research"
         allocation = float(cfg.get("allocation") or _DEFAULT_ALLOCATION)
         if allocation <= 0:
             allocation = _DEFAULT_ALLOCATION
@@ -264,13 +270,13 @@ class BacktesterService:
                 exit_row["hold_seconds"] = hold_seconds
             trade_log.append(exit_row)
             position = None
-            if loss_limit > 0 and daily_pnl <= -loss_limit:
+            if not research and loss_limit > 0 and daily_pnl <= -loss_limit:
                 halted = True
                 bot_stub["status"] = "ERROR"
 
         def _try_entry(signal: str, signal_data: dict, row: dict, bar_time) -> None:
             nonlocal position, last_signal_bar_time, blocked_entries, equity, total_fees
-            if halted or signal != "BUY":
+            if (not research and halted) or signal != "BUY":
                 return
             if bar_time is not None and last_signal_bar_time == bar_time:
                 return
@@ -288,20 +294,22 @@ class BacktesterService:
                 return
 
             qty = risk_per_entry / price_diff
-            decision = self._risk_gate.validate_trade(
-                bot_stub,
-                "BUY",
-                qty,
-                current_price,
-                is_exit=False,
-                daily_pnl=daily_pnl,
-                position_size=0.0,
-            )
-            if not decision.allowed:
-                blocked_entries += 1
-                return
-
-            qty = decision.quantity if decision.quantity is not None else qty
+            if research:
+                qty = min(qty, allocation / max(current_price, 1e-9))
+            else:
+                decision = self._risk_gate.validate_trade(
+                    bot_stub,
+                    "BUY",
+                    qty,
+                    current_price,
+                    is_exit=False,
+                    daily_pnl=daily_pnl,
+                    position_size=0.0,
+                )
+                if not decision.allowed:
+                    blocked_entries += 1
+                    return
+                qty = decision.quantity if decision.quantity is not None else qty
             if qty < _MIN_QTY:
                 blocked_entries += 1
                 return
@@ -406,6 +414,13 @@ class BacktesterService:
             slippage_bps=slippage_bps,
             fee_bps=fee_bps,
         )
+        summary = enrich_summary(
+            summary,
+            equity_curve=equity_curve,
+            candles=candles,
+            starting_equity=starting_equity,
+        )
+        dd_curve = drawdown_curve(equity_curve)
 
         return {
             "win_rate": summary["win_rate"],
@@ -413,12 +428,13 @@ class BacktesterService:
             "max_drawdown": summary["max_drawdown"],
             "trade_count": total_trades,
             "equity_curve": equity_curve,
+            "drawdown_curve": dd_curve,
             "starting_equity": round(starting_equity, 2),
             "allocation": round(allocation, 2),
             "trades": trade_log,
             "trades_total": len(trade_log),
             "summary": summary,
-            "sim_mode": "live_aligned",
+            "sim_mode": sim_mode,
             "costs": {
                 "slippage_bps": slippage_bps,
                 "fee_bps": fee_bps,

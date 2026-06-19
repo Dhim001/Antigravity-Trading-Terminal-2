@@ -9,6 +9,7 @@ import { fetchBots } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import { AlgoTab } from './ResizableDock';
 import ErrorBoundary from './ErrorBoundary';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 const STUDIO_WIDTH_KEY = 'terminal_automation_studio_width';
@@ -32,6 +33,8 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
   const startW = useRef(0);
 
   const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
+  const backtestResults = useStore((s) => s.backtestResults);
+  const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
 
   useEffect(() => {
     try { localStorage.setItem(STUDIO_WIDTH_KEY, String(panelWidth)); } catch (_) {}
@@ -132,6 +135,19 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
             <ErrorBoundary name="Automation studio algo">
               <AlgoTab hideToolbar />
             </ErrorBoundary>
+            {backtestResults && (
+              <div className="automation-studio__backtest-strip border-t px-3 py-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="h-6 text-[0.62rem]"
+                  onClick={() => setBacktestLabOpen(true)}
+                >
+                  Open backtest report
+                </Button>
+              </div>
+            )}
           </div>
         </SheetContent>
       </Sheet>

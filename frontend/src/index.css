@@ -4464,6 +4464,103 @@ body {
   grid-template-columns: 1fr;
 }
 
+.algo-backtest-parity,
+.algo-backtest-wf,
+.algo-backtest-sweep {
+  border-radius: var(--r-md);
+  border: 1px solid color-mix(in oklab, var(--border) 75%, transparent);
+  background: color-mix(in oklab, var(--surface-1) 45%, transparent);
+  padding: 0.55rem 0.65rem;
+}
+
+.algo-backtest-parity__title,
+.algo-backtest-wf__title,
+.algo-backtest-sweep__header .algo-backtest-table-scroll__caption {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 0.4rem;
+}
+
+.algo-backtest-parity__grid,
+.algo-backtest-wf__grid {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.algo-backtest-wf__grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.algo-backtest-parity__cell,
+.algo-backtest-wf__metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.62rem;
+}
+
+.algo-backtest-wf__col-title {
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 0.35rem;
+}
+
+.algo-backtest-parity__meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.55rem;
+}
+
+.algo-backtest-sweep__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.algo-backtest-sweep__hint {
+  margin: 0 0 0.4rem;
+}
+
+.algo-backtest-trade-filters {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-left: 0.35rem;
+}
+
+.algo-backtest-trade-filters__btn {
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  background: transparent;
+  font-size: 0.55rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.algo-backtest-trade-filters__btn:hover {
+  color: var(--foreground);
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--border));
+}
+
+.algo-backtest-trade-filters__btn--active {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+  border-color: color-mix(in oklab, var(--primary) 42%, var(--border));
+}
+
+.automation-studio__backtest-strip {
+  flex-shrink: 0;
+}
+
 @container backtest-lab (min-width: 640px) {
   .algo-backtest-lab__tools-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6339,88 +6436,42 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   BACKTEST LAB (floating draggable report panel)
+   BACKTEST LAB (right resizable sheet — matches Automation Studio)
 ═══════════════════════════════════════════════════════════════════ */
-.backtest-lab-overlay {
-  background: color-mix(in oklab, var(--background) 35%, transparent) !important;
-  backdrop-filter: blur(2px);
+.backtest-lab {
+  border-left: 1px solid var(--border-color);
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.32);
 }
 
-[data-slot="sheet-content"][data-side="floating"].backtest-lab {
-  border-color: var(--border-color);
-  background: var(--bg-primary);
-}
-
-.backtest-lab--interacting {
+.backtest-lab--resizing {
   transition: none !important;
   user-select: none;
 }
 
-.backtest-lab--expanded {
-  box-shadow:
-    0 32px 80px rgba(0, 0, 0, 0.48),
-    0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent);
-}
-
 .backtest-lab__resize {
   position: absolute;
-  z-index: 6;
-  touch-action: none;
-  background: transparent;
-  transition: background 0.15s ease;
-}
-
-.backtest-lab__resize--left {
   top: 0;
   left: -6px;
-  bottom: 12px;
+  bottom: 0;
+  z-index: 5;
   display: flex;
   width: 10px;
   align-items: center;
   justify-content: center;
   cursor: ew-resize;
+  background: transparent;
+  touch-action: none;
+  transition: background 0.15s ease;
 }
 
-.backtest-lab__resize--bottom {
-  left: 12px;
-  right: 0;
-  bottom: -4px;
-  height: 10px;
-  cursor: ns-resize;
-}
-
-.backtest-lab__resize--corner {
-  left: -4px;
-  bottom: -4px;
-  width: 16px;
-  height: 16px;
-  cursor: nesw-resize;
-  border-bottom-left-radius: var(--r-xl);
-}
-
-.backtest-lab__resize--left:hover,
-.backtest-lab__resize--left.dragging {
+.backtest-lab__resize:hover,
+.backtest-lab__resize.dragging {
   background: linear-gradient(
     to bottom,
     transparent,
     color-mix(in oklab, var(--primary) 38%, transparent),
     transparent
   );
-}
-
-.backtest-lab__resize--bottom:hover,
-.backtest-lab__resize--bottom.dragging {
-  background: linear-gradient(
-    to right,
-    transparent,
-    color-mix(in oklab, var(--primary) 38%, transparent),
-    transparent
-  );
-}
-
-.backtest-lab__resize--corner:hover,
-.backtest-lab__resize--corner.dragging {
-  background: color-mix(in oklab, var(--primary) 22%, transparent);
 }
 
 .backtest-lab__resize-grip {
@@ -6436,6 +6487,39 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.backtest-lab__resize:hover .backtest-lab__resize-grip,
+.backtest-lab__resize.dragging .backtest-lab__resize-grip {
+  opacity: 1;
+  color: var(--color-accent-light);
+  border-color: color-mix(in oklab, var(--primary) 42%, var(--border-color));
+}
+
+.backtest-lab [data-slot="sheet-close"] {
+  top: 0.85rem;
+  right: 0.85rem;
+  z-index: 2;
+  color: var(--text-muted);
+}
+
+.backtest-lab__title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.backtest-lab__title svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-accent-light);
+}
+
+.backtest-lab__description {
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .backtest-lab__resize--left:hover .backtest-lab__resize-grip,

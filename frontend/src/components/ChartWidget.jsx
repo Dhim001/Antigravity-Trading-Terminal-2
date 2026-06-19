@@ -1331,6 +1331,40 @@ export default function ChartWidget() {
     return () => window.removeEventListener(BACKTEST_OVERLAY_EVENT, onOverlayChanged);
   }, []);
 
+  useEffect(() => {
+    const onFocusBar = (e) => {
+      const { time, symbol: sym } = e.detail ?? {};
+      if (time == null || !symbolsMatch(sym, activeSymbol)) return;
+      const chart = chartRef.current;
+      if (!chart || !chartReadyRef.current) return;
+      const bars = displayBarsRef.current;
+      if (!bars.length) return;
+      const target = toUnixSeconds(time);
+      let idx = bars.findIndex((b) => toUnixSeconds(b.time) === target);
+      if (idx < 0) {
+        idx = bars.findIndex((b) => Math.abs(toUnixSeconds(b.time) - target) < 120);
+      }
+      if (idx < 0) return;
+      const total = buildCategoryAxisData(bars).length;
+      const catIdx = FUTURE_PADDING + idx;
+      const half = 25;
+      const start = Math.max(0, ((catIdx - half) / total) * 100);
+      const end = Math.min(100, ((catIdx + half) / total) * 100);
+      try {
+        chart.setOption({
+          dataZoom: [
+            { type: 'inside', start, end },
+            { type: 'slider', start, end },
+          ],
+        });
+      } catch (err) {
+        console.warn('[ChartWidget] backtest focus zoom failed:', err);
+      }
+    };
+    window.addEventListener('backtest-focus-bar', onFocusBar);
+    return () => window.removeEventListener('backtest-focus-bar', onFocusBar);
+  }, [activeSymbol]);
+
   // Live tick updates — patch by series/xAxis id (no getOption mutation)
   const applyLiveCandleUpdate = useCallback(() => {
     const chart = chartRef.current;

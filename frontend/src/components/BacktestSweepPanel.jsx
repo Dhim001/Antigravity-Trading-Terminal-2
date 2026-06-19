@@ -1,5 +1,5 @@
 /**
- * Parameter sweep controls + results table (P3).
+ * Parameter sweep + walk-forward controls (P3/P4).
  */
 import React from 'react';
 import { cn } from '@/lib/utils';
@@ -27,10 +27,14 @@ export default function BacktestSweepPanel({
   const updateBotConfig = useStore((s) => s.updateBotConfig);
   const sweep = results?.sweep;
 
-  const handleSweep = async () => {
+  const runSweep = async (walkForward = false) => {
     if (backtestRunning) return;
     useStore.getState().setBacktestRunning(true);
-    useStore.getState().setBacktestProgress({ pct: 0, phase: 'sweep', message: 'Starting sweep…' });
+    useStore.getState().setBacktestProgress({
+      pct: 0,
+      phase: walkForward ? 'sweep' : 'sweep',
+      message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
+    });
     const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, {
       symbol,
       strategy,
@@ -38,6 +42,8 @@ export default function BacktestSweepPanel({
       days: parseInt(days, 10) || 7,
       timeframe,
       oos_pct: oosPct || undefined,
+      walk_forward: walkForward || undefined,
+      train_pct: walkForward ? 70 : undefined,
       sweep: DEFAULT_SWEEP,
     });
     if (!ok && error) toast.error(error);
@@ -53,25 +59,52 @@ export default function BacktestSweepPanel({
     toast.success('Applied sweep winner to deploy settings');
   };
 
+  const bestConfig = results?.walk_forward?.best_config ?? results?.sweep?.best_config;
+
   return (
     <div className="algo-backtest-sweep">
       <div className="algo-backtest-sweep__header">
         <span className="algo-backtest-table-scroll__caption m-0">Parameter sweep</span>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          className="h-6 text-[0.62rem]"
-          disabled={backtestRunning}
-          onClick={handleSweep}
-        >
-          Sweep SL × TP
-        </Button>
+        <div className="flex flex-wrap gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            disabled={backtestRunning}
+            onClick={() => runSweep(false)}
+          >
+            Sweep SL × TP
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            disabled={backtestRunning}
+            onClick={() => runSweep(true)}
+            title="Optimize on first 70% of bars, validate on last 30%"
+          >
+            Walk-forward
+          </Button>
+        </div>
       </div>
       <p className="algo-backtest-sweep__hint text-[0.58rem] text-muted-foreground">
-        Tests {DEFAULT_SWEEP.trailing_stop_percent.length * DEFAULT_SWEEP.take_profit_percent.length} combos
-        (SL 1–3%, TP 2–5%). Saves the best run.
+        Tests {DEFAULT_SWEEP.trailing_stop_percent.length * DEFAULT_SWEEP.take_profit_percent.length} SL/TP combos.
+        Walk-forward picks best on train window, reports OOS metrics.
       </p>
+
+      {bestConfig && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          className="h-6 text-[0.62rem] self-start"
+          onClick={() => applyConfig(bestConfig)}
+        >
+          Apply best config to deploy
+        </Button>
+      )}
 
       {sweep?.results?.length > 0 && (
         <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">

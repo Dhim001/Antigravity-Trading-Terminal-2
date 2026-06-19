@@ -67,6 +67,28 @@ export async function fetchBacktestTrades(runId) {
   return body?.trades ?? [];
 }
 
+export async function fetchBacktestRun(runId, storeActions) {
+  const body = await apiRequest(`/api/v1/backtest/runs/${encodeURIComponent(runId)}`);
+  if (!body?.ok || !body?.run) {
+    throw new Error(body?.error || 'Backtest run not found');
+  }
+  const run = body.run;
+  const results = {
+    ...(run.results || {}),
+    run_id: run.id,
+    meta: {
+      ...(run.results?.meta || {}),
+      symbol: run.symbol,
+      strategy: run.strategy,
+      days: run.days,
+    },
+  };
+  if (storeActions?.setBacktestResults) {
+    storeActions.setBacktestResults(results);
+  }
+  return { run, results };
+}
+
 export async function fetchAccount(storeActions) {
   const body = await apiAction('/api/v1/account');
   applyHttpEnvelope(body, storeActions);

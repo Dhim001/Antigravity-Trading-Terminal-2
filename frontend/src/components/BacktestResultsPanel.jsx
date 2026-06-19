@@ -12,8 +12,10 @@ import { StatCard } from '@/components/StatCard';
 import BacktestMiniChart from './BacktestMiniChart';
 import BacktestComparePanel from './BacktestComparePanel';
 import BacktestSweepPanel from './BacktestSweepPanel';
+import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
+import BacktestParityPanel from './BacktestParityPanel';
 import { useStore } from '../store/useStore';
-import { fetchBacktestTrades } from '../api/endpoints';
+import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   backtestFingerprint,
@@ -138,6 +140,16 @@ function BacktestSummaryCards({ summary, results, isFull }) {
             value={s.sharpe_ratio != null ? Number(s.sharpe_ratio).toFixed(2) : '—'}
           />
           <StatCard
+            label="Sortino"
+            value={s.sortino_ratio != null ? Number(s.sortino_ratio).toFixed(2) : '—'}
+          />
+          <StatCard
+            label="Alpha vs B&H"
+            value={s.alpha_pnl != null ? `$${Number(s.alpha_pnl).toFixed(2)}` : '—'}
+            tone={(s.alpha_pnl ?? 0) >= 0 ? 'up' : 'down'}
+            sub={s.benchmark?.return_pct != null ? `B&H ${Number(s.benchmark.return_pct).toFixed(1)}%` : undefined}
+          />
+          <StatCard
             label="Time in mkt"
             value={s.time_in_market_pct != null ? `${Number(s.time_in_market_pct).toFixed(1)}%` : '—'}
           />
@@ -178,6 +190,7 @@ export default function BacktestResultsPanel({
   oosPct = null,
 }) {
   const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
+  const setBacktestResults = useStore((s) => s.setBacktestResults);
   const setBacktestOverlay = useStore((s) => s.setBacktestOverlay);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
   const backtestOverlay = useStore((s) => s.backtestOverlay);
@@ -188,6 +201,8 @@ export default function BacktestResultsPanel({
 
   const [fullTrades, setFullTrades] = useState(null);
   const [loadingTrades, setLoadingTrades] = useState(false);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [tradeReasonFilter, setTradeReasonFilter] = useState('all');
   const loadRef = useRef(0);
 
   const isFull = variant === 'full';
@@ -248,10 +263,17 @@ export default function BacktestResultsPanel({
     return isBacktestStale(snapshot, current);
   }, [snapshot, results, activeSymbol, botStrategy, backtestDays, botTimeframe, botConfig]);
 
-  const allTrades = useMemo(
-    () => [...displayTrades].reverse(),
-    [displayTrades],
-  );
+  const allTrades = useMemo(() => {
+    let rows = [...displayTrades].reverse();
+    if (tradeReasonFilter === 'entries') {
+      rows = rows.filter((t) => !t.is_exit);
+    } else if (tradeReasonFilter === 'exits') {
+      rows = rows.filter((t) => t.is_exit);
+    } else if (tradeReasonFilter !== 'all') {
+      rows = rows.filter((t) => (t.reason || (t.is_exit ? 'EXIT' : 'ENTRY')) === tradeReasonFilter);
+    }
+    return rows;
+  }, [displayTrades, tradeReasonFilter]);
 
   const closedTrades = useMemo(
     () => displayTrades.filter(t => t.is_exit),
@@ -329,6 +351,27 @@ export default function BacktestResultsPanel({
     );
   }, [displayTrades, results, symbol, strategy]);
 
+  const loadSavedRun = useCallback(async (runId) => {
+    if (!runId || loadingRun) return;
+    setLoadingRun(true);
+    try {
+      const { results: loaded } = await fetchBacktestRun(runId, { setBacktestResults });
+      setBacktestResults(loaded);
+      toast.success('Loaded saved backtest run');
+    } catch (err) {
+      toast.error(err?.message || 'Failed to load run');
+    } finally {
+      setLoadingRun(false);
+    }
+  }, [loadingRun, setBacktestResults]);
+
+  const onTradeRowClick = useCallback((trade) => {
+    if (!trade?.time) return;
+    window.dispatchEvent(new CustomEvent('backtest-focus-bar', {
+      detail: { time: trade.time, symbol: results?.meta?.symbol ?? symbol },
+    }));
+  }, [results, symbol]);
+
   if (!results) return null;
 
   const simMode = results.sim_mode;
@@ -367,19 +410,24 @@ export default function BacktestResultsPanel({
           />
         </div>
         <div className="algo-backtest-lab__actions shrink-0">
-          {simMode && !results.meta?.oos_pct && (
+          {simMode && (
             <Badge variant="outline" className="text-[0.58rem] h-5">
-              {simMode === 'live_aligned' ? 'Live-aligned' : simMode}
+              {simMode === 'research' ? 'Research' : simMode === 'live_aligned' ? 'Live-aligned' : simMode}
+            </Badge>
+          )}
+          {results.meta?.walk_forward && (
+            <Badge variant="outline" className="text-[0.58rem] h-5">
+              WF {results.meta?.train_pct ?? results.walk_forward?.train_pct ?? 70}%
+            </Badge>
+          )}
+          {results.meta?.oos_pct && !results.meta?.walk_forward && (
+            <Badge variant="outline" className="text-[0.58rem] h-5">
+              OOS {results.meta.oos_pct}%
             </Badge>
           )}
           {results.sweep && (
             <Badge variant="outline" className="text-[0.58rem] h-5">
               Sweep best
-            </Badge>
-          )}
-          {results.meta?.oos_pct && (
-            <Badge variant="outline" className="text-[0.58rem] h-5">
-              OOS {results.meta.oos_pct}%
             </Badge>
           )}
           {displayTrades.length > 0 && (
@@ -418,6 +466,11 @@ export default function BacktestResultsPanel({
 
       <BacktestSummaryCards summary={summary} results={results} isFull={isFull} />
 
+      {isFull && <BacktestWalkForwardPanel walkForward={results.walk_forward} />}
+      {isFull && (
+        <BacktestParityPanel results={results} symbol={symbol} strategy={strategy} />
+      )}
+
       {isFull && (
         <div className="algo-backtest-lab__tools-grid">
           <BacktestComparePanel
@@ -438,6 +491,7 @@ export default function BacktestResultsPanel({
       <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
         <BacktestMiniChart
           equityCurve={results.equity_curve}
+          drawdownCurve={results.drawdown_curve}
           totalPnl={results.total_pnl}
           trades={displayTrades}
           className={isFull ? 'backtest-mini-chart--lab' : undefined}
@@ -470,7 +524,15 @@ export default function BacktestResultsPanel({
             </thead>
             <tbody>
               {recentRuns.slice(0, isFull ? 15 : 5).map(run => (
-                <tr key={run.id} className={run.id === results.run_id ? 'bg-primary/5' : ''}>
+                <tr
+                  key={run.id}
+                  className={cn(
+                    'cursor-pointer hover:bg-muted/40',
+                    run.id === results.run_id && 'bg-primary/5',
+                  )}
+                  onClick={() => loadSavedRun(run.id)}
+                  title="Load saved run"
+                >
                   <td className="text-muted-foreground whitespace-nowrap">{run.created_at?.slice(0, 16) ?? '—'}</td>
                   <td className="whitespace-nowrap">{run.strategy}</td>
                   <td className="num-mono">{run.days}</td>
@@ -498,9 +560,26 @@ export default function BacktestResultsPanel({
         <section className="algo-backtest-lab__section algo-backtest-lab__section--trades">
         <BacktestTable
           caption={(
-            <span className="inline-flex items-center gap-2">
-              {`Trade log (${tradesTotal} fills)`}
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <span>{`Trade log (${tradesTotal} fills)`}</span>
               {loadingTrades && <Loader2 className="size-3 animate-spin" aria-hidden />}
+              {isFull && (
+                <span className="algo-backtest-trade-filters">
+                  {['all', 'entries', 'exits', 'SL', 'TP', 'SIGNAL'].map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={cn(
+                        'algo-backtest-trade-filters__btn',
+                        tradeReasonFilter === f && 'algo-backtest-trade-filters__btn--active',
+                      )}
+                      onClick={() => setTradeReasonFilter(f)}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </span>
+              )}
             </span>
           )}
           className={cn(
@@ -523,7 +602,12 @@ export default function BacktestResultsPanel({
             <tbody>
               <VirtualTablePadding height={tradeWindow.topPad} colSpan={6} />
               {tradeWindow.slice.map((t, i) => (
-                <tr key={`${t.time}-${t.side}-${tradeWindow.start + i}`}>
+                <tr
+                  key={`${t.time}-${t.side}-${tradeWindow.start + i}`}
+                  className="cursor-pointer hover:bg-muted/30"
+                  onClick={() => onTradeRowClick(t)}
+                  title="Focus chart on this bar"
+                >
                   <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
                   <td className="whitespace-nowrap">{t.side}{t.is_exit ? ' ↗' : ''}</td>
                   <td className="num-mono text-right whitespace-nowrap">{Number(t.quantity).toFixed(4)}</td>
