@@ -66,7 +66,7 @@ function runStepAction(action) {
       window.dispatchEvent(new CustomEvent('sidebar-expand'));
       break;
     case 'chart':
-      window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'positions' }));
+      window.dispatchEvent(new CustomEvent('chart-focus'));
       break;
     case 'order':
       window.dispatchEvent(new CustomEvent('trading-panel-expand'));
