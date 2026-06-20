@@ -490,6 +490,13 @@ body {
   display: none;
 }
 
+/* Keep the chart's own toolbar (timeframe / chart type / indicators) usable
+   while the chart is maximized — otherwise Preferences is the only way to
+   change them in zen mode. */
+.dashboard-container[data-zen] .chart-toolbar-stack .widget-toolbar {
+  display: flex;
+}
+
 .dashboard-container[data-dock-hidden]:not([data-zen]) {
   grid-template-rows: var(--header-h) var(--command-h) 1fr 0px;
 }

@@ -836,6 +836,16 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     ...(settings.chartLayout?.activeIndicators || {}),
   }));
 
+  // Live mirrors of local chart state — let the settings→chart sync compare
+  // against the latest values without depending on them (which would revert
+  // header-toggle changes before they propagate to settings).
+  const timeframeRef = useRef(timeframe);
+  const chartTypeRef = useRef(chartType);
+  const activeRef = useRef(active);
+  timeframeRef.current = timeframe;
+  chartTypeRef.current = chartType;
+  activeRef.current = active;
+
   useEffect(() => {
     lastConfigureRevisionRef.current = '';
   }, [activeSymbol, timeframe, active]);
@@ -850,17 +860,17 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     if (!cl) return;
 
     let pulled = false;
-    if (cl.timeframe && cl.timeframe !== timeframe) {
+    if (cl.timeframe && cl.timeframe !== timeframeRef.current) {
       setTimeframe(cl.timeframe);
       pulled = true;
     }
-    if (cl.chartType && cl.chartType !== chartType) {
+    if (cl.chartType && cl.chartType !== chartTypeRef.current) {
       setChartType(cl.chartType);
       pulled = true;
     }
     if (cl.activeIndicators) {
       const keys = Object.keys(indicatorToolbar);
-      const differs = keys.some((k) => Boolean(cl.activeIndicators[k]) !== Boolean(active[k]));
+      const differs = keys.some((k) => Boolean(cl.activeIndicators[k]) !== Boolean(activeRef.current[k]));
       if (differs) {
         setActive((prev) => ({ ...prev, ...cl.activeIndicators }));
         pulled = true;
@@ -872,9 +882,6 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     chartLayoutFromSettings?.chartType,
     chartLayoutFromSettings?.activeIndicators,
     indicatorToolbar,
-    timeframe,
-    chartType,
-    active,
   ]);
 
   useEffect(() => {
