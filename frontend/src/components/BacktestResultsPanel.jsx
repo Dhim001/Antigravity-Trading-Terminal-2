@@ -3,7 +3,7 @@
  */
 import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText } from 'lucide-react';
+import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +14,7 @@ import BacktestComparePanel from './BacktestComparePanel';
 import BacktestSweepPanel from './BacktestSweepPanel';
 import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import BacktestParityPanel from './BacktestParityPanel';
+import BacktestReasoningPanel from './BacktestReasoningPanel';
 import { useStore } from '../store/useStore';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
@@ -79,28 +80,26 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
 
   return (
     <div className="algo-backtest-lab__meta">
-      <div className="algo-backtest-lab__meta-row">
-        <span className="font-medium text-foreground">{symbol}</span>
-        <span className="text-muted-foreground">·</span>
-        <span>{strategy}</span>
-        <span className="text-muted-foreground">·</span>
-        <span>{meta.days ?? backtestDays}d</span>
-        <span className="text-muted-foreground">·</span>
-        <span>{meta.timeframe ?? backtestTimeframe}</span>
+      <div className="algo-backtest-lab__meta-chips">
+        <span className="algo-backtest-lab__chip algo-backtest-lab__chip--symbol">{symbol}</span>
+        <span className="algo-backtest-lab__chip">{strategy}</span>
+        <span className="algo-backtest-lab__chip">{meta.days ?? backtestDays}d</span>
+        <span className="algo-backtest-lab__chip">{meta.timeframe ?? backtestTimeframe}</span>
         {allocation != null && (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <span className="num-mono">${Number(allocation).toLocaleString()} alloc</span>
-          </>
+          <span className="algo-backtest-lab__chip num-mono">
+            ${Number(allocation).toLocaleString()}
+          </span>
         )}
       </div>
-      {range && (
-        <p className="algo-backtest-lab__meta-range">{range}</p>
-      )}
-      {(meta.resolution_note || meta.timeframe_note) && (
-        <p className="algo-backtest-lab__meta-note">
-          {[meta.resolution_note, meta.timeframe_note].filter(Boolean).join(' · ')}
-        </p>
+      {(range || meta.resolution_note || meta.timeframe_note) && (
+        <div className="algo-backtest-lab__meta-secondary">
+          {range && <span className="algo-backtest-lab__meta-range">{range}</span>}
+          {(meta.resolution_note || meta.timeframe_note) && (
+            <span className="algo-backtest-lab__meta-note">
+              {[meta.resolution_note, meta.timeframe_note].filter(Boolean).join(' · ')}
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
@@ -111,8 +110,8 @@ function BacktestSummaryCards({ summary, results, isFull }) {
   const pnl = s.total_pnl ?? results?.total_pnl ?? 0;
   const pnlTone = pnl >= 0 ? 'up' : 'down';
 
-  return (
-    <div className="algo-backtest-stat-grid">
+  const compactCards = (
+    <>
       <StatCard label="Est PnL" value={`$${Number(pnl).toFixed(2)}`} tone={pnlTone} />
       <StatCard
         label="Return"
@@ -127,6 +126,20 @@ function BacktestSummaryCards({ summary, results, isFull }) {
         value={s.profit_factor != null ? Number(s.profit_factor).toFixed(2) : '—'}
         sub={s.profit_factor == null && (s.gross_profit > 0) ? 'No losses' : undefined}
       />
+    </>
+  );
+
+  if (!isFull) {
+    return (
+      <div className="algo-backtest-stat-grid algo-backtest-stat-grid--compact">
+        {compactCards}
+      </div>
+    );
+  }
+
+  return (
+    <div className="algo-backtest-stat-grid">
+      {compactCards}
       <StatCard label="Avg win" value={`$${Number(s.avg_win ?? 0).toFixed(2)}`} tone="up" />
       <StatCard label="Avg loss" value={`$${Number(s.avg_loss ?? 0).toFixed(2)}`} tone="down" />
       <StatCard label="Expectancy" value={`$${Number(s.expectancy ?? 0).toFixed(2)}`} tone={pnlTone} />
@@ -134,47 +147,43 @@ function BacktestSummaryCards({ summary, results, isFull }) {
         label="Avg hold"
         value={s.avg_hold_hours ? `${Number(s.avg_hold_hours).toFixed(1)}h` : '—'}
       />
-      {isFull && (
-        <>
-          <StatCard
-            label="Sharpe"
-            value={s.sharpe_ratio != null ? Number(s.sharpe_ratio).toFixed(2) : '—'}
-          />
-          <StatCard
-            label="Sortino"
-            value={s.sortino_ratio != null ? Number(s.sortino_ratio).toFixed(2) : '—'}
-          />
-          <StatCard
-            label="Alpha vs B&H"
-            value={s.alpha_pnl != null ? `$${Number(s.alpha_pnl).toFixed(2)}` : '—'}
-            tone={(s.alpha_pnl ?? 0) >= 0 ? 'up' : 'down'}
-            sub={s.benchmark?.return_pct != null ? `B&H ${Number(s.benchmark.return_pct).toFixed(1)}%` : undefined}
-          />
-          <StatCard
-            label="Time in mkt"
-            value={s.time_in_market_pct != null ? `${Number(s.time_in_market_pct).toFixed(1)}%` : '—'}
-          />
-          <StatCard
-            label="Blocked"
-            value={String(s.blocked_entries ?? 0)}
-            sub="Risk gate rejects"
-          />
-          <StatCard
-            label="Max loss streak"
-            value={String(s.max_consecutive_losses ?? 0)}
-            tone={s.max_consecutive_losses > 2 ? 'down' : 'neutral'}
-          />
-          <StatCard
-            label="Fees"
-            value={`$${Number(s.total_fees ?? results?.costs?.total_fees ?? 0).toFixed(2)}`}
-            sub={
-              (s.slippage_bps || results?.costs?.slippage_bps)
-                ? `${s.slippage_bps ?? results?.costs?.slippage_bps}bps slip`
-                : undefined
-            }
-          />
-        </>
-      )}
+      <StatCard
+        label="Sharpe"
+        value={s.sharpe_ratio != null ? Number(s.sharpe_ratio).toFixed(2) : '—'}
+      />
+      <StatCard
+        label="Sortino"
+        value={s.sortino_ratio != null ? Number(s.sortino_ratio).toFixed(2) : '—'}
+      />
+      <StatCard
+        label="Alpha vs B&H"
+        value={s.alpha_pnl != null ? `$${Number(s.alpha_pnl).toFixed(2)}` : '—'}
+        tone={(s.alpha_pnl ?? 0) >= 0 ? 'up' : 'down'}
+        sub={s.benchmark?.return_pct != null ? `B&H ${Number(s.benchmark.return_pct).toFixed(1)}%` : undefined}
+      />
+      <StatCard
+        label="Time in mkt"
+        value={s.time_in_market_pct != null ? `${Number(s.time_in_market_pct).toFixed(1)}%` : '—'}
+      />
+      <StatCard
+        label="Blocked"
+        value={String(s.blocked_entries ?? 0)}
+        sub="Risk gate rejects"
+      />
+      <StatCard
+        label="Max loss streak"
+        value={String(s.max_consecutive_losses ?? 0)}
+        tone={s.max_consecutive_losses > 2 ? 'down' : 'neutral'}
+      />
+      <StatCard
+        label="Fees"
+        value={`$${Number(s.total_fees ?? results?.costs?.total_fees ?? 0).toFixed(2)}`}
+        sub={
+          (s.slippage_bps || results?.costs?.slippage_bps)
+            ? `${s.slippage_bps ?? results?.costs?.slippage_bps}bps slip`
+            : undefined
+        }
+      />
     </div>
   );
 }
@@ -189,6 +198,8 @@ export default function BacktestResultsPanel({
   variant = 'compact',
   snapshot = null,
   oosPct = null,
+  reasoningPending = false,
+  showReasoningSection = false,
 }) {
   const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
   const setBacktestResults = useStore((s) => s.setBacktestResults);
@@ -281,6 +292,13 @@ export default function BacktestResultsPanel({
     [displayTrades],
   );
 
+  const entryCount = useMemo(
+    () => displayTrades.filter((t) => !t.is_exit).length,
+    [displayTrades],
+  );
+
+  const reasoningRequested = Boolean(results?.meta?.reasoning || reasoningPending);
+
   const { onScroll: onTradeScroll, window: tradeWindow } = useVirtualRows(allTrades, {
     rowHeight: 28,
     overscan: 10,
@@ -353,15 +371,21 @@ export default function BacktestResultsPanel({
   }, [displayTrades, results, symbol, strategy]);
 
   const onExportPdf = useCallback(() => {
-    exportBacktestPdf({
+    const exportTrades = fullTrades ?? previewTrades;
+    const outcome = exportBacktestPdf({
       results,
       symbol: symbol ?? results?.meta?.symbol,
       strategy: strategy ?? results?.meta?.strategy,
       days: backtestDays,
       timeframe: backtestTimeframe ?? results?.meta?.timeframe,
-      trades: displayTrades,
+      trades: exportTrades,
     });
-  }, [displayTrades, results, symbol, strategy, backtestDays, backtestTimeframe]);
+    if (!outcome?.ok) {
+      toast.error(outcome?.error || 'Could not open PDF export');
+      return;
+    }
+    toast.message('Print dialog opened — choose Save as PDF');
+  }, [fullTrades, previewTrades, results, symbol, strategy, backtestDays, backtestTimeframe]);
 
   const loadSavedRun = useCallback(async (runId) => {
     if (!runId || loadingRun) return;
@@ -387,12 +411,32 @@ export default function BacktestResultsPanel({
   if (!results) return null;
 
   const simMode = results.sim_mode;
+  const pnl = summary?.total_pnl ?? results?.total_pnl ?? 0;
+  const pnlTone = pnl >= 0 ? 'up' : 'down';
+
+  const runTags = [
+    simMode && {
+      key: 'sim',
+      label: simMode === 'research' ? 'Research' : simMode === 'live_aligned' ? 'Live-aligned' : simMode,
+    },
+    results.meta?.walk_forward && {
+      key: 'wf',
+      label: `WF ${results.meta?.train_pct ?? results.walk_forward?.train_pct ?? 70}%`,
+    },
+    results.meta?.oos_pct && !results.meta?.walk_forward && {
+      key: 'oos',
+      label: `OOS ${results.meta.oos_pct}%`,
+    },
+    results.sweep && { key: 'sweep', label: 'Sweep best' },
+    results.reasoning?.trades?.length > 0 && { key: 'llm', label: 'LLM explained', icon: Sparkles },
+  ].filter(Boolean);
 
   return (
     <div className={cn(
       'algo-backtest-lab',
       isFull && 'algo-backtest-lab--full',
-      (results.total_pnl ?? 0) < 0 && 'algo-backtest-lab--down',
+      !isFull && 'algo-backtest-lab--compact',
+      pnl < 0 && 'algo-backtest-lab--down',
     )}>
       {stale && (
         <Alert variant="default" className="algo-backtest-stale-banner py-2">
@@ -403,16 +447,24 @@ export default function BacktestResultsPanel({
         </Alert>
       )}
 
-      <div className="algo-backtest-lab__header">
-        <div className="min-w-0 flex-1">
-          <div className="algo-backtest-lab__title">
-            {results.meta?.days ?? backtestDays}-Day · {results.meta?.timeframe ?? backtestTimeframe} Backtest
+      <header className="algo-backtest-lab__head">
+        <div className="algo-backtest-lab__title-block">
+          <h3 className="algo-backtest-lab__title">
+            <span className="algo-backtest-lab__title-main">
+              {results.meta?.days ?? backtestDays}-Day · {results.meta?.timeframe ?? backtestTimeframe} Backtest
+            </span>
             {results.meta?.count != null && (
-              <span className="text-muted-foreground font-normal ml-1">
-                ({results.meta.count.toLocaleString()} bars)
+              <span className="algo-backtest-lab__title-sub">
+                {results.meta.count.toLocaleString()} bars
               </span>
             )}
-          </div>
+            <span className={cn(
+              'algo-backtest-lab__pnl-pill num-mono',
+              pnlTone === 'up' ? 'algo-backtest-lab__pnl-pill--up' : 'algo-backtest-lab__pnl-pill--down',
+            )}>
+              {pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}
+            </span>
+          </h3>
           <BacktestMetaLine
             results={results}
             backtestDays={backtestDays}
@@ -421,27 +473,19 @@ export default function BacktestResultsPanel({
             strategy={strategy}
           />
         </div>
-        <div className="algo-backtest-lab__actions shrink-0">
-          {simMode && (
-            <Badge variant="outline" className="text-[0.58rem] h-5">
-              {simMode === 'research' ? 'Research' : simMode === 'live_aligned' ? 'Live-aligned' : simMode}
-            </Badge>
-          )}
-          {results.meta?.walk_forward && (
-            <Badge variant="outline" className="text-[0.58rem] h-5">
-              WF {results.meta?.train_pct ?? results.walk_forward?.train_pct ?? 70}%
-            </Badge>
-          )}
-          {results.meta?.oos_pct && !results.meta?.walk_forward && (
-            <Badge variant="outline" className="text-[0.58rem] h-5">
-              OOS {results.meta.oos_pct}%
-            </Badge>
-          )}
-          {results.sweep && (
-            <Badge variant="outline" className="text-[0.58rem] h-5">
-              Sweep best
-            </Badge>
-          )}
+
+        {runTags.length > 0 && (
+          <div className="algo-backtest-lab__tags">
+            {runTags.map((tag) => (
+              <Badge key={tag.key} variant="outline" className="algo-backtest-lab__tag h-5 px-1.5 text-[0.55rem]">
+                {tag.icon && <tag.icon className="size-3" aria-hidden />}
+                {tag.label}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        <div className="algo-backtest-lab__toolbar">
           {displayTrades.length > 0 && (
             <Button
               type="button"
@@ -457,6 +501,7 @@ export default function BacktestResultsPanel({
           )}
           {!isFull && (
             <Button
+              type="button"
               variant="ghost"
               size="xs"
               className="h-6 text-[0.62rem]"
@@ -467,21 +512,33 @@ export default function BacktestResultsPanel({
               Report
             </Button>
           )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            onClick={onExportPdf}
+            title="Print / save as PDF"
+          >
+            <FileText data-icon="inline-start" />
+            PDF
+          </Button>
           {displayTrades.length > 0 && (
-            <>
-              <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={onExport}>
-                <Download data-icon="inline-start" />
-                CSV
-              </Button>
-              <Button variant="ghost" size="xs" className="h-6 text-[0.62rem]" onClick={onExportPdf} title="Print / save as PDF">
-                <FileText data-icon="inline-start" />
-                PDF
-              </Button>
-            </>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="h-6 text-[0.62rem]"
+              onClick={onExport}
+            >
+              <Download data-icon="inline-start" />
+              CSV
+            </Button>
           )}
         </div>
-      </div>
+      </header>
 
+      <div className="algo-backtest-lab__body">
       <BacktestSummaryCards summary={summary} results={results} isFull={isFull} />
 
       {isFull && <BacktestWalkForwardPanel walkForward={results.walk_forward} />}
@@ -520,7 +577,7 @@ export default function BacktestResultsPanel({
         'algo-backtest-lab__tables',
         isFull && 'algo-backtest-lab__tables--full',
       )}>
-      {recentRuns.length > 0 && (
+      {recentRuns.length > 0 && isFull && (
         <section className="algo-backtest-lab__section algo-backtest-lab__section--history">
         <BacktestTable
           caption={recentRuns.length > 1 ? 'Recent runs (same symbol)' : 'Saved runs (same symbol)'}
@@ -652,6 +709,19 @@ export default function BacktestResultsPanel({
           )}
         </BacktestTable>
         </section>
+      )}
+
+      </div>
+
+      {(showReasoningSection || reasoningRequested || results?.reasoning) && (
+        <BacktestReasoningPanel
+          reasoning={results.reasoning}
+          reasoningRequested={reasoningRequested}
+          entryCount={entryCount}
+          tradeLog={fullTrades ?? previewTrades}
+          results={results}
+          className="mt-2"
+        />
       )}
       </div>
     </div>

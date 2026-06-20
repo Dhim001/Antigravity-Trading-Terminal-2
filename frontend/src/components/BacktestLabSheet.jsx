@@ -28,6 +28,7 @@ export default function BacktestLabSheet() {
   const open = useStore((s) => s.backtestLabOpen);
   const setOpen = useStore((s) => s.setBacktestLabOpen);
   const backtestResults = useStore((s) => s.backtestResults);
+  const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const backtestRuns = useStore((s) => s.backtestRuns);
   const backtestRunning = useStore((s) => s.backtestRunning);
   const activeSymbol = useStore((s) => s.activeSymbol);
@@ -138,6 +139,7 @@ export default function BacktestLabSheet() {
                   strategy={backtestResults?.meta?.strategy ?? botStrategy}
                   recentRuns={backtestRuns}
                   snapshot={backtestSnapshot}
+                  showReasoningSection={agentLlmAvailable}
                 />
               </ErrorBoundary>
             ) : !backtestRunning && (

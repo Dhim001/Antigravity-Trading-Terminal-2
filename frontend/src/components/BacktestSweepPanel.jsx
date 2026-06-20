@@ -9,6 +9,13 @@ import { Label } from '@/components/ui/label';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
+import { withLlmModel } from '../api/endpoints';
+import {
+  scheduleBacktestClientTimeout,
+  clearBacktestClientTimeout,
+  formatBacktestTimeoutLabel,
+  getBacktestClientTimeoutMs,
+} from '../lib/backtestTimeouts';
 import { toast } from 'sonner';
 
 export const SWEEP_PARAM_DEFS = [
@@ -108,6 +115,9 @@ export default function BacktestSweepPanel({
     fee_bps: '0, 5',
   });
   const [maxCombos, setMaxCombos] = useState(24);
+  const [reasoning, setReasoning] = useState(false);
+  const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
+  const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
 
   const sweepGrid = useMemo(
     () => buildSweepGrid(enabled, valuesByKey, maxCombos),
@@ -135,7 +145,21 @@ export default function BacktestSweepPanel({
       phase: 'sweep',
       message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
     });
-    const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, {
+    const parsedDays = parseInt(days, 10) || 7;
+    const timeoutMs = getBacktestClientTimeoutMs({ reasoning, days: parsedDays })
+      * Math.max(1, Math.min(comboCount, 12));
+    scheduleBacktestClientTimeout({
+      reasoning,
+      days: parsedDays,
+      timeoutMs,
+      onTimeout: (elapsedMs) => {
+        if (!useStore.getState().backtestRunning) return;
+        useStore.getState().setBacktestRunning(false);
+        useStore.getState().setBacktestProgress(null);
+        toast.error(`Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`);
+      },
+    });
+    const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, withLlmModel({
       symbol,
       strategy,
       config: botConfig,
@@ -145,9 +169,11 @@ export default function BacktestSweepPanel({
       walk_forward: walkForward || undefined,
       train_pct: walkForward ? 70 : undefined,
       sweep: sweepGrid,
-    });
+      reasoning: reasoning || undefined,
+    }));
     if (!ok && error) toast.error(error);
     if (!ok) {
+      clearBacktestClientTimeout();
       useStore.getState().setBacktestRunning(false);
       useStore.getState().setBacktestProgress(null);
     }
@@ -234,6 +260,17 @@ export default function BacktestSweepPanel({
             Stop loss is only used as a fallback when trailing stop is 0 — sweeping both may produce
             duplicate-behaving configs.
           </p>
+        )}
+        {agentLlmAvailable && (
+          <label className="flex items-center gap-2 text-[0.62rem] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={reasoning}
+              onChange={(e) => setReasoning(e.target.checked)}
+              className="rounded border-border"
+            />
+            Generate trade explanations after backtest (local LLM, post-hoc only)
+          </label>
         )}
       </div>
 

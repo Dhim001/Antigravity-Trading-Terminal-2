@@ -1,4 +1,5 @@
 import { toast } from 'sonner';
+import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
@@ -35,6 +36,7 @@ export function getStoreActions() {
     setBotHistory: s.setBotHistory,
     setAgentInsight: s.setAgentInsight,
     setAgentInsightHistory: s.setAgentInsightHistory,
+    setAgentDeepReasoning: s.setAgentDeepReasoning,
     setTradeExplain: s.setTradeExplain,
     setScanResults: s.setScanResults,
     setVisionReport: s.setVisionReport,
@@ -104,6 +106,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.setBacktestProgress(data);
       break;
     case MessageType.BACKTEST_RESULT:
+      clearBacktestClientTimeout();
       storeActions.setBacktestRunning(false);
       storeActions.setBacktestProgress(null);
       if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
@@ -116,10 +119,14 @@ export function applyServerMessage(type, data, storeActions, meta) {
         const sym = data.results?.meta?.symbol;
         const pnl = data.results?.total_pnl;
         const trades = data.results?.trade_count ?? 0;
+        const explained = data.results?.reasoning?.trade_count
+          ?? data.results?.reasoning?.trades?.length
+          ?? 0;
         const pnlLabel = pnl != null
           ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
           : '—';
-        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}`);
+        const explainSuffix = explained > 0 ? ` · ${explained} LLM explained` : '';
+        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`);
         if (data.results?.meta?.symbol && data.results?.run_id) {
           storeActions.setBacktestOverlay({
             runId: data.results.run_id,
@@ -152,6 +159,12 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.AGENT_INSIGHT:
       if (data?.symbol) {
         storeActions.setAgentInsight(data.symbol, data);
+      }
+      break;
+    case MessageType.AGENT_DEEP_REASON:
+      if (data?.insight_id) {
+        storeActions.setAgentDeepReasoning(data.insight_id, data);
+        toast.success('Deep reasoning ready');
       }
       break;
     case MessageType.TRADE_EXPLAIN:

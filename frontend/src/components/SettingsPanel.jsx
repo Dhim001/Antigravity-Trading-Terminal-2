@@ -15,7 +15,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
@@ -52,7 +57,7 @@ import {
 import { themeChartDefaults, getEffectiveSettings } from '../settings/themePresets';
 import { getIndicatorTheme, getIndicatorToolbarMeta } from '../settings/indicatorThemes';
 import { DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
-import { fetchHealth, parseMetricsSummary } from '../api/endpoints';
+import { fetchHealth, parseMetricsSummary, fetchLlmModels, setPreferredLlmModel } from '../api/endpoints';
 import { HTTP_BASE_URL } from '../api/config';
 
 const PRESET_SWATCHES = {
@@ -112,6 +117,25 @@ function ColorField({ id, label, value, onChange, presets = [], onCustomize }) {
   );
 }
 
+function SettingsAccordionSection({ value, title, hint, badge, children }) {
+  return (
+    <AccordionItem value={value} className="settings-accordion__item">
+      <AccordionTrigger className="settings-accordion__trigger">
+        <div className="flex min-w-0 flex-1 items-start justify-between gap-2 pr-1">
+          <div className="flex min-w-0 flex-col gap-0.5 text-left">
+            <span className="settings-accordion__title">{title}</span>
+            {hint && <span className="settings-accordion__hint">{hint}</span>}
+          </div>
+          {badge}
+        </div>
+      </AccordionTrigger>
+      <AccordionContent className="settings-accordion__content">
+        <div className="settings-accordion__inner">{children}</div>
+      </AccordionContent>
+    </AccordionItem>
+  );
+}
+
 export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const { systemTheme: osTheme } = useTheme();
   const settings = useSettingsStore((s) => s.settings);
@@ -144,6 +168,13 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const workerAlive = useStore((s) => s.workerAlive);
   const workerHeartbeatAge = useStore((s) => s.workerHeartbeatAge);
   const isBotRunning = useStore((s) => s.isBotRunning);
+  const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
+  const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
+  const agentLlmProvider = useStore((s) => s.agentLlmProvider);
+  const agentLlmModel = useStore((s) => s.agentLlmModel);
+  const agentLlmModels = useStore((s) => s.agentLlmModels);
+  const selectedLlmModel = useStore((s) => s.selectedLlmModel);
+  const setSelectedLlmModel = useStore((s) => s.setSelectedLlmModel);
 
   const [activeTab, setActiveTab] = React.useState(panelTab);
   const [presetName, setPresetName] = React.useState('');
@@ -194,10 +225,21 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
     let cancelled = false;
     (async () => {
       try {
-        const health = await fetchHealth();
+        const health = await fetchHealth(useStore.getState());
         if (!cancelled) setObsHealth(health);
       } catch {
         if (!cancelled) setObsHealth(null);
+      }
+      try {
+        const models = await fetchLlmModels(useStore.getState());
+        if (!cancelled && models?.ok) {
+          useStore.getState().setTerminalConfig({
+            agentLlmModels: [...(models.ollama || []), ...(models.openrouter || [])],
+            agentLlmModel: models.active_model,
+          });
+        }
+      } catch {
+        /* models optional */
       }
       try {
         const base = HTTP_BASE_URL.replace(/\/$/, '');
@@ -270,296 +312,292 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
           </TabsList>
 
           <TabsContent value="appearance" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <section className="settings-section">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="settings-section__title">Color mode</h3>
-                <Badge variant="outline" className="text-xs capitalize">
-                  {resolvedLabel}
-                </Badge>
-              </div>
-              <ToggleGroup
-                type="single"
-                value={settings.theme}
-                onValueChange={(v) => v && setThemeMode(v)}
-                className="w-full"
+            <Accordion type="multiple" defaultValue={['color-mode', 'trading-colors']} className="settings-accordion">
+              <SettingsAccordionSection
+                value="color-mode"
+                title="Color mode"
+                badge={(
+                  <Badge variant="outline" className="shrink-0 text-xs capitalize">
+                    {resolvedLabel}
+                  </Badge>
+                )}
               >
-                <ToggleGroupItem value="dark" className="flex-1 gap-1.5 text-xs">
-                  <Moon size={13} aria-hidden />
-                  Dark
-                </ToggleGroupItem>
-                <ToggleGroupItem value="light" className="flex-1 gap-1.5 text-xs">
-                  <Sun size={13} aria-hidden />
-                  Light
-                </ToggleGroupItem>
-                <ToggleGroupItem value="system" className="flex-1 gap-1.5 text-xs">
-                  <Monitor size={13} aria-hidden />
-                  System
-                </ToggleGroupItem>
-              </ToggleGroup>
-              {settings.theme === 'system' && (
-                <p className="settings-section__hint">
-                  Following OS preference ({osTheme || resolvedTheme}).
-                </p>
-              )}
-            </section>
+                <ToggleGroup
+                  type="single"
+                  value={settings.theme}
+                  onValueChange={(v) => v && setThemeMode(v)}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="dark" className="flex-1 gap-1.5 text-xs">
+                    <Moon aria-hidden data-icon="inline-start" />
+                    Dark
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="light" className="flex-1 gap-1.5 text-xs">
+                    <Sun aria-hidden data-icon="inline-start" />
+                    Light
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="system" className="flex-1 gap-1.5 text-xs">
+                    <Monitor aria-hidden data-icon="inline-start" />
+                    System
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                {settings.theme === 'system' && (
+                  <p className="settings-section__hint">
+                    Following OS preference ({osTheme || resolvedTheme}).
+                  </p>
+                )}
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Trading colors</h3>
-              <ColorField
-                id="bullish-color"
-                label="Bullish / Up"
-                value={settings.bullishColor}
-                onChange={(v) => updateSettings({
-                  bullishColor: v,
-                  chart: { ...settings.chart, bullishColor: v },
-                })}
-                presets={PRESET_SWATCHES.bullish}
-              />
-              <ColorField
-                id="bearish-color"
-                label="Bearish / Down"
-                value={settings.bearishColor}
-                onChange={(v) => updateSettings({
-                  bearishColor: v,
-                  chart: { ...settings.chart, bearishColor: v },
-                })}
-                presets={PRESET_SWATCHES.bearish}
-              />
-              <ColorField
-                id="accent-color"
-                label="Accent"
-                value={settings.accentColor}
-                onChange={(v) => updateSettings({ accentColor: v })}
-                presets={PRESET_SWATCHES.accent}
-              />
-            </section>
-
-            <Separator />
-
-            <div className="flex justify-end">
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 text-xs"
-                onClick={() => {
-                  resetAppearance();
-                  toast.success('Appearance reset for current theme');
-                }}
-              >
-                <RotateCcw size={13} aria-hidden />
-                Reset appearance
-              </Button>
-            </div>
+              <SettingsAccordionSection value="trading-colors" title="Trading colors">
+                <ColorField
+                  id="bullish-color"
+                  label="Bullish / Up"
+                  value={settings.bullishColor}
+                  onChange={(v) => updateSettings({
+                    bullishColor: v,
+                    chart: { ...settings.chart, bullishColor: v },
+                  })}
+                  presets={PRESET_SWATCHES.bullish}
+                />
+                <ColorField
+                  id="bearish-color"
+                  label="Bearish / Down"
+                  value={settings.bearishColor}
+                  onChange={(v) => updateSettings({
+                    bearishColor: v,
+                    chart: { ...settings.chart, bearishColor: v },
+                  })}
+                  presets={PRESET_SWATCHES.bearish}
+                />
+                <ColorField
+                  id="accent-color"
+                  label="Accent"
+                  value={settings.accentColor}
+                  onChange={(v) => updateSettings({ accentColor: v })}
+                  presets={PRESET_SWATCHES.accent}
+                />
+                <div className="flex justify-end pt-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={() => {
+                      resetAppearance();
+                      toast.success('Appearance reset for current theme');
+                    }}
+                  >
+                    <RotateCcw aria-hidden data-icon="inline-start" />
+                    Reset appearance
+                  </Button>
+                </div>
+              </SettingsAccordionSection>
+            </Accordion>
           </TabsContent>
 
           <TabsContent value="chart" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <section className="settings-section">
-              <h3 className="settings-section__title">Chart controls</h3>
-              <p className="settings-section__hint">
-                Timeframe, chart type, and indicators — synced with the chart toolbar.
-              </p>
+            <Accordion type="multiple" defaultValue={['chart-controls']} className="settings-accordion">
+              <SettingsAccordionSection
+                value="chart-controls"
+                title="Chart controls"
+                hint="Timeframe, chart type, and indicators — synced with the chart toolbar."
+              >
+                <div>
+                  <Label className="mb-1.5 block text-xs text-muted-foreground">Timeframe</Label>
+                  <Select
+                    value={chartLayout.timeframe}
+                    onValueChange={(v) => v && updateChartLayout({ timeframe: v })}
+                  >
+                    <SelectTrigger size="sm" className="w-full text-xs">
+                      <SelectValue placeholder="Timeframe" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CHART_TIMEFRAMES.map((tf) => (
+                        <SelectItem key={tf} value={tf} className="text-xs">
+                          {tf}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div className="mb-3">
-                <Label className="mb-1.5 block text-xs text-muted-foreground">Timeframe</Label>
-                <Select
-                  value={chartLayout.timeframe}
-                  onValueChange={(v) => v && updateChartLayout({ timeframe: v })}
-                >
-                  <SelectTrigger size="sm" className="w-full text-xs">
-                    <SelectValue placeholder="Timeframe" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CHART_TIMEFRAMES.map((tf) => (
-                      <SelectItem key={tf} value={tf} className="text-xs">
-                        {tf}
-                      </SelectItem>
+                <div>
+                  <Label className="mb-1.5 block text-xs text-muted-foreground">Chart type</Label>
+                  <ToggleGroup
+                    type="single"
+                    value={chartLayout.chartType}
+                    onValueChange={(v) => v && updateChartLayout({ chartType: v })}
+                    className="w-full"
+                  >
+                    <ToggleGroupItem value="candle" className="flex-1 text-xs">Candle</ToggleGroupItem>
+                    <ToggleGroupItem value="line" className="flex-1 text-xs">Line</ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+
+                <div>
+                  <Label className="mb-1.5 block text-xs text-muted-foreground">Indicators</Label>
+                  <ToggleGroup
+                    type="multiple"
+                    value={activeIndicatorKeys}
+                    onValueChange={(vals) => {
+                      const next = { ...chartLayout.activeIndicators };
+                      for (const key of Object.keys(indicatorToolbar)) {
+                        next[key] = vals.includes(key);
+                      }
+                      updateChartLayout({ activeIndicators: next });
+                    }}
+                    className="flex flex-wrap gap-1"
+                    spacing={1}
+                  >
+                    {Object.entries(indicatorToolbar).map(([key, ind]) => (
+                      <ToggleGroupItem
+                        key={key}
+                        value={key}
+                        size="sm"
+                        className="gap-1 text-[0.68rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+                        style={{ '--ind-c': ind.color }}
+                      >
+                        <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
+                        {ind.label}
+                      </ToggleGroupItem>
                     ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                  </ToggleGroup>
+                </div>
+              </SettingsAccordionSection>
 
-              <div className="mb-3">
-                <Label className="mb-1.5 block text-xs text-muted-foreground">Chart type</Label>
-                <ToggleGroup
-                  type="single"
-                  value={chartLayout.chartType}
-                  onValueChange={(v) => v && updateChartLayout({ chartType: v })}
-                  className="w-full"
-                >
-                  <ToggleGroupItem value="candle" className="flex-1 text-xs">Candle</ToggleGroupItem>
-                  <ToggleGroupItem value="line" className="flex-1 text-xs">Line</ToggleGroupItem>
-                </ToggleGroup>
-              </div>
+              <SettingsAccordionSection value="chart-canvas" title="Chart canvas">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="settings-section__hint m-0">
+                    When synced, chart background and grid update with Dark / Light / System.
+                  </p>
+                  <Button
+                    variant={settings.syncChartToTheme !== false ? 'secondary' : 'outline'}
+                    size="sm"
+                    className="h-7 shrink-0 text-xs"
+                    onClick={() => {
+                      const enabling = settings.syncChartToTheme === false;
+                      updateSettings({
+                        syncChartToTheme: enabling,
+                        ...(enabling
+                          ? { chart: { ...settings.chart, ...themeChartDefaults(resolvedTheme) } }
+                          : {}),
+                      });
+                    }}
+                  >
+                    {settings.syncChartToTheme !== false ? 'Synced to theme' : 'Custom colors'}
+                  </Button>
+                </div>
+                <ColorField
+                  id="chart-bg"
+                  label="Background"
+                  value={effectiveChart.background}
+                  onChange={(v) => updateSettings({ chart: { ...settings.chart, background: v } })}
+                  onCustomize={markChartCustom}
+                />
+                <ColorField
+                  id="chart-grid"
+                  label="Grid lines"
+                  value={effectiveChart.gridColor}
+                  onChange={(v) => updateSettings({ chart: { ...settings.chart, gridColor: v } })}
+                  onCustomize={markChartCustom}
+                />
+                <ColorField
+                  id="chart-crosshair"
+                  label="Crosshair / focus"
+                  value={effectiveChart.crosshairColor}
+                  onChange={(v) => updateSettings({ chart: { ...settings.chart, crosshairColor: v } })}
+                  presets={PRESET_SWATCHES.accent}
+                  onCustomize={markChartCustom}
+                />
+              </SettingsAccordionSection>
 
-              <div>
-                <Label className="mb-1.5 block text-xs text-muted-foreground">Indicators</Label>
-                <ToggleGroup
-                  type="multiple"
-                  value={activeIndicatorKeys}
-                  onValueChange={(vals) => {
-                    const next = { ...chartLayout.activeIndicators };
-                    for (const key of Object.keys(indicatorToolbar)) {
-                      next[key] = vals.includes(key);
-                    }
-                    updateChartLayout({ activeIndicators: next });
-                  }}
-                  className="flex flex-wrap gap-1"
-                  spacing={1}
-                >
-                  {Object.entries(indicatorToolbar).map(([key, ind]) => (
-                    <ToggleGroupItem
-                      key={key}
-                      value={key}
-                      size="sm"
-                      className="gap-1 text-[0.68rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
-                      style={{ '--ind-c': ind.color }}
-                    >
-                      <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
-                      {ind.label}
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-              </div>
-            </section>
+              <SettingsAccordionSection value="candle-colors" title="Candle colors">
+                <ColorField
+                  id="chart-bullish"
+                  label="Bullish candle"
+                  value={settings.chart.bullishColor}
+                  onChange={(v) => updateSettings({ chart: { ...settings.chart, bullishColor: v } })}
+                  presets={PRESET_SWATCHES.bullish}
+                />
+                <ColorField
+                  id="chart-bearish"
+                  label="Bearish candle"
+                  value={settings.chart.bearishColor}
+                  onChange={(v) => updateSettings({ chart: { ...settings.chart, bearishColor: v } })}
+                  presets={PRESET_SWATCHES.bearish}
+                />
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="settings-section__title">Chart canvas</h3>
-                <Button
-                  variant={settings.syncChartToTheme !== false ? 'secondary' : 'outline'}
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => {
-                    const enabling = settings.syncChartToTheme === false;
-                    updateSettings({
-                      syncChartToTheme: enabling,
-                      ...(enabling
-                        ? { chart: { ...settings.chart, ...themeChartDefaults(resolvedTheme) } }
-                        : {}),
-                    });
-                  }}
-                >
-                  {settings.syncChartToTheme !== false ? 'Synced to theme' : 'Custom colors'}
-                </Button>
-              </div>
-              <p className="settings-section__hint">
-                When synced, chart background and grid update with Dark / Light / System.
-              </p>
-              <ColorField
-                id="chart-bg"
-                label="Background"
-                value={effectiveChart.background}
-                onChange={(v) => updateSettings({ chart: { ...settings.chart, background: v } })}
-                onCustomize={markChartCustom}
-              />
-              <ColorField
-                id="chart-grid"
-                label="Grid lines"
-                value={effectiveChart.gridColor}
-                onChange={(v) => updateSettings({ chart: { ...settings.chart, gridColor: v } })}
-                onCustomize={markChartCustom}
-              />
-              <ColorField
-                id="chart-crosshair"
-                label="Crosshair / focus"
-                value={effectiveChart.crosshairColor}
-                onChange={(v) => updateSettings({ chart: { ...settings.chart, crosshairColor: v } })}
-                presets={PRESET_SWATCHES.accent}
-                onCustomize={markChartCustom}
-              />
-            </section>
-
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Candle colors</h3>
-              <ColorField
-                id="chart-bullish"
-                label="Bullish candle"
-                value={settings.chart.bullishColor}
-                onChange={(v) => updateSettings({ chart: { ...settings.chart, bullishColor: v } })}
-                presets={PRESET_SWATCHES.bullish}
-              />
-              <ColorField
-                id="chart-bearish"
-                label="Bearish candle"
-                value={settings.chart.bearishColor}
-                onChange={(v) => updateSettings({ chart: { ...settings.chart, bearishColor: v } })}
-                presets={PRESET_SWATCHES.bearish}
-              />
-            </section>
-
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Chart overlays</h3>
-              <p className="settings-section__hint">Toggle trade markers, position lines, and analyst levels on the chart.</p>
-              {[
-                ['trades', 'Trade markers'],
-                ['positions', 'Position SL/TP'],
-                ['agentLevels', 'Analyst levels'],
-                ['botMarkers', 'Bot markers'],
-              ].map(([key, label]) => (
-                <label key={key} className="mb-2 flex items-center justify-between text-xs">
-                  <span>{label}</span>
-                  <input
-                    type="checkbox"
-                    checked={settings.chartLayout?.overlays?.[key] !== false}
-                    onChange={(e) => updateChartLayout({
-                      overlays: { ...settings.chartLayout?.overlays, [key]: e.target.checked },
-                    })}
-                  />
-                </label>
-              ))}
-            </section>
+              <SettingsAccordionSection
+                value="chart-overlays"
+                title="Chart overlays"
+                hint="Toggle trade markers, position lines, and analyst levels on the chart."
+              >
+                {[
+                  ['trades', 'Trade markers'],
+                  ['positions', 'Position SL/TP'],
+                  ['agentLevels', 'Analyst levels'],
+                  ['botMarkers', 'Bot markers'],
+                ].map(([key, label]) => (
+                  <label key={key} className="flex items-center justify-between text-xs">
+                    <span>{label}</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.chartLayout?.overlays?.[key] !== false}
+                      onChange={(e) => updateChartLayout({
+                        overlays: { ...settings.chartLayout?.overlays, [key]: e.target.checked },
+                      })}
+                    />
+                  </label>
+                ))}
+              </SettingsAccordionSection>
+            </Accordion>
           </TabsContent>
 
           <TabsContent value="layout" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <section className="settings-section">
-              <h3 className="settings-section__title">Chart layout</h3>
-              <p className="settings-section__hint">
-                Clears saved indicators, chart type, timeframe, and multi-chart grid.
-                Symbol, dock size, and bot settings are preserved.
-              </p>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm" className="gap-1.5 text-xs">
-                    <RotateCcw size={13} aria-hidden />
-                    Reset chart layout
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent className="sm:max-w-md">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Reset chart layout?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Restores default indicators, timeframe (1m), chart type (candle),
-                      and multi-chart grid layout.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      onClick={handleResetLayout}
-                    >
-                      Reset layout
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </section>
+            <Accordion type="multiple" defaultValue={['workspace-presets']} className="settings-accordion">
+              <SettingsAccordionSection
+                value="chart-layout-reset"
+                title="Chart layout"
+                hint="Clears saved indicators, chart type, timeframe, and multi-chart grid. Symbol, dock size, and bot settings are preserved."
+              >
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive" size="sm" className="gap-1.5 text-xs">
+                      <RotateCcw aria-hidden data-icon="inline-start" />
+                      Reset chart layout
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent className="sm:max-w-md">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Reset chart layout?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Restores default indicators, timeframe (1m), chart type (candle),
+                        and multi-chart grid layout.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        onClick={handleResetLayout}
+                      >
+                        Reset layout
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Workspace presets</h3>
-              <p className="settings-section__hint">
-                Save dock layout, sidebar width, view mode, and chart link mode.
-              </p>
+              <SettingsAccordionSection
+                value="workspace-presets"
+                title="Workspace presets"
+                hint="Save dock layout, sidebar width, view mode, and chart link mode."
+                badge={settings.workspacePresets.length > 0 ? (
+                  <Badge variant="secondary" className="shrink-0 text-[0.6rem]">
+                    {settings.workspacePresets.length}
+                  </Badge>
+                ) : null}
+              >
               <div className="flex gap-2">
                 <Input
                   className="h-8 text-xs"
@@ -661,15 +699,18 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   />
                 </label>
               </div>
-            </section>
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Price & signal alerts</h3>
-              <p className="settings-section__hint">
-                Toast notifications when price crosses a level or analyst signal matches.
-              </p>
+              <SettingsAccordionSection
+                value="alerts"
+                title="Price & signal alerts"
+                hint="Toast notifications when price crosses a level or analyst signal matches."
+                badge={(settings.alerts || []).length > 0 ? (
+                  <Badge variant="secondary" className="shrink-0 text-[0.6rem]">
+                    {(settings.alerts || []).length}
+                  </Badge>
+                ) : null}
+              >
               <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 p-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="col-span-2 sm:col-span-1">
@@ -827,197 +868,252 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   ))}
                 </ul>
               )}
-            </section>
+              </SettingsAccordionSection>
 
-            <Separator />
+              <SettingsAccordionSection value="display-density" title="Display density">
+                <ToggleGroup
+                  type="single"
+                  value={settings.workspace?.density ?? 'compact'}
+                  onValueChange={(v) => v && updateWorkspace({ density: v })}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="compact" className="flex-1 text-xs">Compact</ToggleGroupItem>
+                  <ToggleGroupItem value="comfortable" className="flex-1 text-xs">Comfortable</ToggleGroupItem>
+                </ToggleGroup>
+              </SettingsAccordionSection>
 
-            <section className="settings-section">
-              <h3 className="settings-section__title">Display density</h3>
-              <ToggleGroup
-                type="single"
-                value={settings.workspace?.density ?? 'compact'}
-                onValueChange={(v) => v && updateWorkspace({ density: v })}
-                className="w-full"
+              <SettingsAccordionSection value="onboarding" title="Onboarding">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => {
+                    setOnboardingCompleted(false);
+                    toast.message('Tour will show on next page load — refresh if needed');
+                  }}
+                >
+                  Replay welcome tour
+                </Button>
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="chart-linking"
+                title="Multi-chart linking"
+                hint="Assign link groups A, B, or C per chart pane. Watchlist updates panes sharing the focused pane's group."
               >
-                <ToggleGroupItem value="compact" className="flex-1 text-xs">Compact</ToggleGroupItem>
-                <ToggleGroupItem value="comfortable" className="flex-1 text-xs">Comfortable</ToggleGroupItem>
-              </ToggleGroup>
-            </section>
+                <ToggleGroup
+                  type="single"
+                  value={settings.workspace?.chartLinkMode ?? 'all'}
+                  onValueChange={(v) => v && updateWorkspace({ chartLinkMode: v })}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="all" className="flex-1 text-xs">All in group A</ToggleGroupItem>
+                  <ToggleGroupItem value="focused" className="flex-1 text-xs">Focused pane only</ToggleGroupItem>
+                </ToggleGroup>
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Onboarding</h3>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs"
-                onClick={() => {
-                  setOnboardingCompleted(false);
-                  toast.message('Tour will show on next page load — refresh if needed');
-                }}
-              >
-                Replay welcome tour
-              </Button>
-            </section>
-
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Multi-chart linking</h3>
-              <p className="settings-section__hint">
-                Assign link groups A, B, or C per chart pane. Watchlist updates panes sharing the focused pane&apos;s group.
-              </p>
-              <ToggleGroup
-                type="single"
-                value={settings.workspace?.chartLinkMode ?? 'all'}
-                onValueChange={(v) => v && updateWorkspace({ chartLinkMode: v })}
-                className="w-full"
-              >
-                <ToggleGroupItem value="all" className="flex-1 text-xs">All in group A</ToggleGroupItem>
-                <ToggleGroupItem value="focused" className="flex-1 text-xs">Focused pane only</ToggleGroupItem>
-              </ToggleGroup>
-            </section>
-
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Saved layout</h3>
-              <dl className="settings-defaults-list num-mono text-[0.68rem]">
-                <div><dt>Link mode</dt><dd>{settings.workspace?.chartLinkMode ?? 'all'}</dd></div>
-                <div><dt>Dock height</dt><dd>{settings.workspace?.dockHeight ?? '—'}px</dd></div>
-                <div><dt>Sidebar</dt><dd>{settings.workspace?.sidebarWidth ?? '—'}px</dd></div>
-                <div><dt>Timeframe</dt><dd>{settings.chartLayout.timeframe}</dd></div>
-                <div><dt>Chart type</dt><dd>{settings.chartLayout.chartType}</dd></div>
-                <div><dt>Multi layout</dt><dd>{settings.chartLayout.multiChartLayoutId}</dd></div>
-              </dl>
-            </section>
+              <SettingsAccordionSection value="saved-layout" title="Saved layout">
+                <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                  <div><dt>Link mode</dt><dd>{settings.workspace?.chartLinkMode ?? 'all'}</dd></div>
+                  <div><dt>Dock height</dt><dd>{settings.workspace?.dockHeight ?? '—'}px</dd></div>
+                  <div><dt>Sidebar</dt><dd>{settings.workspace?.sidebarWidth ?? '—'}px</dd></div>
+                  <div><dt>Timeframe</dt><dd>{settings.chartLayout.timeframe}</dd></div>
+                  <div><dt>Chart type</dt><dd>{settings.chartLayout.chartType}</dd></div>
+                  <div><dt>Multi layout</dt><dd>{settings.chartLayout.multiChartLayoutId}</dd></div>
+                </dl>
+              </SettingsAccordionSection>
+            </Accordion>
           </TabsContent>
 
           <TabsContent value="system" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <section className="settings-section">
-              <h3 className="settings-section__title">Terminal status</h3>
-              <dl className="settings-defaults-list num-mono text-[0.68rem]">
-                <div>
-                  <dt className="flex items-center gap-1"><Wifi size={11} aria-hidden /> Feed</dt>
-                  <dd className={cn(
-                    connected ? 'text-trading-up' : apiStatus === 'ready' ? 'text-trading-accent' : 'text-trading-down',
-                  )}>
+            <Accordion type="multiple" defaultValue={['terminal-status', 'llm-narrator']} className="settings-accordion">
+              <SettingsAccordionSection
+                value="terminal-status"
+                title="Terminal status"
+                badge={(
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      'shrink-0 text-[0.6rem]',
+                      connected ? 'text-trading-up' : 'text-trading-down',
+                    )}
+                  >
                     {connected ? (isLive ? 'Live' : 'Simulated') : apiStatus}
-                  </dd>
-                </div>
-                <div><dt>Mode</dt><dd>{terminalMode}</dd></div>
-                <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
-                <div><dt>Bots</dt><dd>{isBotRunning ? 'Running' : 'Idle'}</dd></div>
-                {obsHealth?.metrics && (
-                  <>
-                    <div><dt>Open positions</dt><dd>{obsHealth.metrics.open_positions ?? '—'}</dd></div>
-                    <div><dt>Pending orders</dt><dd>{obsHealth.metrics.pending_orders ?? '—'}</dd></div>
-                    <div><dt>Ambiguous</dt><dd>{obsHealth.metrics.ambiguous_orders ?? '—'}</dd></div>
-                  </>
+                  </Badge>
                 )}
-                {obsHealth?.worker && (
+              >
+                <dl className="settings-defaults-list num-mono text-[0.68rem]">
                   <div>
-                    <dt>Worker</dt>
-                    <dd className={obsHealth.worker.alive ? 'text-trading-up' : 'text-trading-down'}>
-                      {obsHealth.worker.alive ? 'Alive' : 'Down'}
-                      {obsHealth.worker.heartbeat_age_sec != null && (
-                        <> ({obsHealth.worker.heartbeat_age_sec}s)</>
-                      )}
+                    <dt className="flex items-center gap-1"><Wifi aria-hidden data-icon="inline-start" /> Feed</dt>
+                    <dd className={cn(
+                      connected ? 'text-trading-up' : apiStatus === 'ready' ? 'text-trading-accent' : 'text-trading-down',
+                    )}>
+                      {connected ? (isLive ? 'Live' : 'Simulated') : apiStatus}
                     </dd>
                   </div>
-                )}
-                {obsHealth?.ws_clients != null && (
-                  <div><dt>WS clients</dt><dd>{obsHealth.ws_clients}</dd></div>
-                )}
-              </dl>
-            </section>
+                  <div><dt>Mode</dt><dd>{terminalMode}</dd></div>
+                  <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
+                  <div><dt>Bots</dt><dd>{isBotRunning ? 'Running' : 'Idle'}</dd></div>
+                  {obsHealth?.metrics && (
+                    <>
+                      <div><dt>Open positions</dt><dd>{obsHealth.metrics.open_positions ?? '—'}</dd></div>
+                      <div><dt>Pending orders</dt><dd>{obsHealth.metrics.pending_orders ?? '—'}</dd></div>
+                      <div><dt>Ambiguous</dt><dd>{obsHealth.metrics.ambiguous_orders ?? '—'}</dd></div>
+                    </>
+                  )}
+                  {obsHealth?.worker && (
+                    <div>
+                      <dt>Worker</dt>
+                      <dd className={obsHealth.worker.alive ? 'text-trading-up' : 'text-trading-down'}>
+                        {obsHealth.worker.alive ? 'Alive' : 'Down'}
+                        {obsHealth.worker.heartbeat_age_sec != null && (
+                          <> ({obsHealth.worker.heartbeat_age_sec}s)</>
+                        )}
+                      </dd>
+                    </div>
+                  )}
+                  {obsHealth?.ws_clients != null && (
+                    <div><dt>WS clients</dt><dd>{obsHealth.ws_clients}</dd></div>
+                  )}
+                </dl>
+              </SettingsAccordionSection>
 
-            <Separator />
-
-            <section className="settings-section">
-              <h3 className="settings-section__title">Operator / environment</h3>
-              <p className="settings-section__hint">
-                Server-controlled, read-only. Set via environment variables on the backend.
-              </p>
-              <dl className="settings-defaults-list num-mono text-[0.68rem]">
-                <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
-                <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
-                <div>
-                  <dt>Live bots</dt>
-                  <dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>
-                    {allowLiveBots ? 'Enabled' : 'Disabled'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Custom strategies</dt>
-                  <dd className={allowCustomStrategies ? 'text-trading-up' : 'text-muted-foreground'}>
-                    {allowCustomStrategies ? 'Enabled' : 'Disabled'}
-                  </dd>
-                </div>
-                <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
-                {distributed && (
+              <SettingsAccordionSection
+                value="llm-narrator"
+                title="LLM narrator"
+                hint="Rules decide BUY/SELL; the LLM adds narrative only. In sim mode, Ollama is preferred when running locally."
+                badge={agentLlmAvailable ? (
+                  <Badge variant="outline" className="shrink-0 text-[0.6rem] text-trading-up">Ready</Badge>
+                ) : (
+                  <Badge variant="outline" className="shrink-0 text-[0.6rem] text-muted-foreground">Off</Badge>
+                )}
+              >
+                <dl className="settings-defaults-list num-mono text-[0.68rem]">
                   <div>
-                    <dt>Worker</dt>
-                    <dd className={
-                      (obsHealth?.worker?.alive ?? workerAlive)
-                        ? 'text-trading-up'
-                        : (obsHealth?.worker?.alive ?? workerAlive) === false
-                          ? 'text-trading-down'
-                          : 'text-muted-foreground'
-                    }>
-                      {(() => {
-                        const alive = obsHealth?.worker?.alive ?? workerAlive;
-                        const age = obsHealth?.worker?.heartbeat_age_sec ?? workerHeartbeatAge;
-                        if (alive == null) return 'Unknown';
-                        return `${alive ? 'Alive' : 'Down'}${age != null ? ` (${age}s)` : ''}`;
-                      })()}
+                    <dt>Server enabled</dt>
+                    <dd className={agentLlmEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {agentLlmEnabled ? 'Yes' : 'No (AGENT_LLM_ENABLED)'}
                     </dd>
                   </div>
+                  <div>
+                    <dt>Provider</dt>
+                    <dd>{agentLlmProvider ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Available</dt>
+                    <dd className={agentLlmAvailable ? 'text-trading-up' : 'text-trading-down'}>
+                      {agentLlmAvailable ? 'Yes' : 'No'}
+                    </dd>
+                  </div>
+                </dl>
+                {agentLlmModels?.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    <Label className="text-xs text-muted-foreground">Model</Label>
+                    <Select
+                      value={selectedLlmModel || agentLlmModel || agentLlmModels[0]}
+                      onValueChange={async (v) => {
+                        try {
+                          await setPreferredLlmModel(v, useStore.getState());
+                          setSelectedLlmModel(v);
+                          toast.success(`LLM model set to ${v}`);
+                        } catch (err) {
+                          toast.error(err?.message || 'Failed to set model');
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Select model" />
+                      </SelectTrigger>
+                      <SelectContent position="popper">
+                        {agentLlmModels.map((m) => (
+                          <SelectItem key={m} value={m} className="text-xs num-mono">{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : (
+                  <p className="text-[0.68rem] text-muted-foreground">
+                    No models detected — start Ollama (<code className="text-[0.62rem]">ollama serve</code>) or set OPENROUTER_API_KEY.
+                  </p>
                 )}
-                <div><dt>Archive backend</dt><dd>{archiveBackend ?? '—'}</dd></div>
-                <div>
-                  <dt>Parquet export</dt>
-                  <dd className={archiveParquetEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
-                    {archiveParquetEnabled ? 'Enabled' : 'Disabled'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Operator build</dt>
-                  <dd className={IS_OPERATOR ? 'text-trading-accent' : 'text-muted-foreground'}>
-                    {IS_OPERATOR ? 'Yes' : 'No'}
-                  </dd>
-                </div>
-              </dl>
-            </section>
+              </SettingsAccordionSection>
 
-            {obsMetrics && (
-              <>
-                <Separator />
-                <section className="settings-section">
-                  <h3 className="settings-section__title">Metrics snapshot</h3>
+              <SettingsAccordionSection
+                value="operator-env"
+                title="Operator / environment"
+                hint="Server-controlled, read-only. Set via environment variables on the backend."
+              >
+                <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                  <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
+                  <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
+                  <div>
+                    <dt>Live bots</dt>
+                    <dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {allowLiveBots ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Custom strategies</dt>
+                    <dd className={allowCustomStrategies ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {allowCustomStrategies ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
+                  {distributed && (
+                    <div>
+                      <dt>Worker</dt>
+                      <dd className={
+                        (obsHealth?.worker?.alive ?? workerAlive)
+                          ? 'text-trading-up'
+                          : (obsHealth?.worker?.alive ?? workerAlive) === false
+                            ? 'text-trading-down'
+                            : 'text-muted-foreground'
+                      }>
+                        {(() => {
+                          const alive = obsHealth?.worker?.alive ?? workerAlive;
+                          const age = obsHealth?.worker?.heartbeat_age_sec ?? workerHeartbeatAge;
+                          if (alive == null) return 'Unknown';
+                          return `${alive ? 'Alive' : 'Down'}${age != null ? ` (${age}s)` : ''}`;
+                        })()}
+                      </dd>
+                    </div>
+                  )}
+                  <div><dt>Archive backend</dt><dd>{archiveBackend ?? '—'}</dd></div>
+                  <div>
+                    <dt>Parquet export</dt>
+                    <dd className={archiveParquetEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {archiveParquetEnabled ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Operator build</dt>
+                    <dd className={IS_OPERATOR ? 'text-trading-accent' : 'text-muted-foreground'}>
+                      {IS_OPERATOR ? 'Yes' : 'No'}
+                    </dd>
+                  </div>
+                </dl>
+              </SettingsAccordionSection>
+
+              {obsMetrics && (
+                <SettingsAccordionSection value="metrics-snapshot" title="Metrics snapshot">
                   <dl className="settings-defaults-list num-mono text-[0.68rem]">
                     <div><dt>Orders placed</dt><dd>{obsMetrics.orders_place_total ?? 0}</dd></div>
                     <div><dt>Preview allowed</dt><dd>{obsMetrics.orders_preview_allowed_total ?? 0}</dd></div>
                     <div><dt>Preview blocked</dt><dd>{obsMetrics.orders_preview_blocked_total ?? 0}</dd></div>
                     <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? '—'}</dd></div>
                   </dl>
-                  <p className="settings-section__hint mt-2">
+                  <p className="settings-section__hint">
                     Full Prometheus scrape at <code className="text-[0.62rem]">/metrics</code>
                   </p>
-                </section>
-              </>
-            )}
+                </SettingsAccordionSection>
+              )}
 
-            {IS_OPERATOR && (
-              <>
-                <Separator />
-
-                <section className="settings-section">
-                  <h3 className="settings-section__title">Admin & simulation</h3>
-                  <p className="settings-section__hint">
-                    Market simulation, account seeding, diagnostics, and emergency controls.
-                  </p>
+              {IS_OPERATOR && (
+                <SettingsAccordionSection
+                  value="admin-simulation"
+                  title="Admin & simulation"
+                  hint="Market simulation, account seeding, diagnostics, and emergency controls."
+                >
                   <Button
                     variant="outline"
                     size="sm"
@@ -1027,12 +1123,12 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       onOpenAdmin?.();
                     }}
                   >
-                    <ShieldAlert size={13} className="text-trading-warn" aria-hidden />
+                    <ShieldAlert className="text-trading-warn" aria-hidden data-icon="inline-start" />
                     Open System Control Panel
                   </Button>
-                </section>
-              </>
-            )}
+                </SettingsAccordionSection>
+              )}
+            </Accordion>
           </TabsContent>
         </Tabs>
       </SheetContent>

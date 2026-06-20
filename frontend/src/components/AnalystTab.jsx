@@ -9,7 +9,7 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { selectAgentInsight, normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
-import { fetchAgentInsights } from '../api/endpoints';
+import { fetchAgentInsights, withLlmModel } from '../api/endpoints';
 import { useWindowedRows } from '../hooks/useWindowedRows';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -21,6 +21,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import SubReportCards from './SubReportCards';
+import LlmNarrativeBlock from './LlmNarrativeBlock';
+import LlmDeepReasoningBlock from './LlmDeepReasoningBlock';
+import LlmAttribution from './LlmAttribution';
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 import { WidgetEmpty } from './WidgetShell';
@@ -78,6 +81,10 @@ export default function AnalystTab() {
   const tickerData = useStore((s) => s.tickerData);
   const visionReports = useStore((s) => s.visionReports);
   const [visionLoading, setVisionLoading] = useState(false);
+  const [deepReasonLoading, setDeepReasonLoading] = useState(null);
+  const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
+  const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
+  const agentDeepReasoning = useStore((s) => s.agentDeepReasoning);
   const [compareMode, setCompareMode] = useState(false);
   const chartTf = useSettingsStore((s) => s.settings.chartLayout?.timeframe || '1m');
   const analysisTf = normalizeAnalystTimeframe(chartTf);
@@ -123,8 +130,19 @@ export default function AnalystTab() {
   }, [loadHistory]);
 
   const runAnalyze = () => {
-    sendAction(Action.CHART_ANALYZE, { symbol, timeframe: analysisTf, force_llm: false });
+    sendAction(Action.CHART_ANALYZE, withLlmModel({ symbol, timeframe: analysisTf, force_llm: false }));
     toast.message(`Analysis requested for ${symbol} (${chartTf})`);
+  };
+
+  const runDeepReason = (row) => {
+    const id = row.insight_id || `${row.symbol}:${row.bar_time}`;
+    setDeepReasonLoading(id);
+    sendAction(Action.CHART_DEEP_REASON, withLlmModel({
+      symbol,
+      timeframe: analysisTf,
+      insight_id: row.insight_id,
+    })).finally(() => setDeepReasonLoading(null));
+    toast.message('Deep reasoning requested…');
   };
 
   const openAlgo = () => {
@@ -283,7 +301,12 @@ export default function AnalystTab() {
             )}
           </span>
           {latest.narrative && (
-            <p className="mt-1.5 leading-relaxed text-foreground/85">{latest.narrative}</p>
+            <LlmNarrativeBlock
+              narrative={latest.narrative}
+              model={latest.model}
+              className="analyst-latest__narrative"
+              compact
+            />
           )}
           {visionReport && (
             <div className="mt-2 rounded border border-border/50 bg-background/40 p-2">
@@ -361,7 +384,7 @@ export default function AnalystTab() {
                         </td>
                         <td>
                           {row.narrative ? (
-                            <Badge variant="outline" className="h-5 px-1 text-[0.55rem]">Yes</Badge>
+                            <LlmAttribution model={row.model} variant="chip" />
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
@@ -382,9 +405,47 @@ export default function AnalystTab() {
                               </ul>
                             ) : null}
                             {row.narrative && (
-                              <p className="rounded border border-border/50 bg-background/50 p-2 leading-relaxed">
-                                {row.narrative}
-                              </p>
+                              <LlmNarrativeBlock
+                                narrative={row.narrative}
+                                model={row.model}
+                                className="analyst-row__narrative"
+                                compact
+                              />
+                            )}
+                            {(agentDeepReasoning[id]?.deep_reasoning || row.deep_reasoning) && (
+                              <LlmDeepReasoningBlock
+                                className="mt-2"
+                                summary={
+                                  agentDeepReasoning[id]?.deep_reasoning?.reasoning_summary
+                                  || row.deep_reasoning?.reasoning_summary
+                                }
+                                riskNotes={
+                                  agentDeepReasoning[id]?.deep_reasoning?.risk_notes
+                                  || row.deep_reasoning?.risk_notes
+                                }
+                                provider={
+                                  agentDeepReasoning[id]?.deep_reasoning?.provider
+                                  || row.deep_reasoning?.provider
+                                }
+                                model={
+                                  agentDeepReasoning[id]?.deep_reasoning?.model
+                                  || row.deep_reasoning?.model
+                                }
+                              />
+                            )}
+                            {agentLlmEnabled && agentLlmAvailable && row.sub_reports && (
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                className="mt-2 h-6 text-[0.62rem]"
+                                disabled={deepReasonLoading === id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  runDeepReason(row);
+                                }}
+                              >
+                                {deepReasonLoading === id ? 'Reasoning…' : 'Deep reasoning'}
+                              </Button>
                             )}
                             {row.levels?.stop_loss_distance != null && (
                               <p className="mt-2 num-mono text-[0.58rem] text-muted-foreground">

@@ -9,6 +9,7 @@ const PHASE_LABELS = {
   resolve: 'Loading candles',
   indicators: 'Indicators',
   simulate: 'Simulating',
+  reasoning: 'LLM explanations',
   save: 'Saving',
   done: 'Complete',
 };

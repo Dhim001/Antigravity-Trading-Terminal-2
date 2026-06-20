@@ -49,6 +49,8 @@ async def metrics(request: Request) -> PlainTextResponse:
 async def health(request: Request) -> JSONResponse:
     import time
 
+    from app.services.agent.llm.router import get_llm_status
+
     state: AppState = request.app.state.terminal
     body = {
         "ok": True,
@@ -63,6 +65,15 @@ async def health(request: Request) -> JSONResponse:
         "archive_parquet_enabled": ARCHIVE_PARQUET_ENABLED,
         "archive_backend": ARCHIVE_BACKEND,
     }
+
+    try:
+        from app.config import AGENT_LLM_ENABLED
+
+        body["llm"] = await get_llm_status()
+        body["agent_llm_enabled"] = AGENT_LLM_ENABLED
+    except Exception:
+        body["llm"] = {"available": False, "provider": "off"}
+        body["agent_llm_enabled"] = False
 
     try:
         stats = get_db_stats()
@@ -109,6 +120,39 @@ async def list_agent_insights(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "Chart analyst unavailable"}, status_code=503)
     insights = analyst.list_insights(symbol, limit=limit)
     return JSONResponse({"ok": True, "symbol": symbol, "insights": insights, "count": len(insights)})
+
+
+async def list_llm_models(request: Request) -> JSONResponse:
+    from app.services.agent.llm.router import list_all_models
+
+    try:
+        data = await list_all_models()
+        return JSONResponse({"ok": True, **data})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
+async def set_llm_model(request: Request) -> JSONResponse:
+    from app.services.agent.llm.router import list_all_models, set_preferred_model
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    model = (body.get("model") or "").strip()
+    if not model:
+        set_preferred_model(None)
+    else:
+        available = await list_all_models()
+        all_names = set(available.get("ollama") or []) | set(available.get("openrouter") or [])
+        if all_names and model not in all_names:
+            return JSONResponse(
+                {"ok": False, "error": f"Model {model!r} not in available models"},
+                status_code=400,
+            )
+        set_preferred_model(model)
+    data = await list_all_models()
+    return JSONResponse({"ok": True, **data})
 
 
 async def list_backtest_runs_handler(request: Request) -> JSONResponse:
@@ -271,6 +315,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/metrics", metrics, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
+        Route("/api/v1/llm/models", list_llm_models, methods=["GET"]),
+        Route("/api/v1/llm/model", set_llm_model, methods=["POST"]),
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/runs/{run_id}", get_backtest_run_handler, methods=["GET"]),
         Route("/api/v1/backtest/runs/{run_id}/trades", get_backtest_trades_handler, methods=["GET"]),

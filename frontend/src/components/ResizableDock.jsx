@@ -14,7 +14,7 @@ import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
-import { fetchBots } from '../api/endpoints';
+import { fetchBots, withLlmModel } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
@@ -55,6 +55,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  scheduleBacktestClientTimeout,
+  clearBacktestClientTimeout,
+  formatBacktestTimeoutLabel,
+} from '../lib/backtestTimeouts';
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
@@ -619,8 +624,10 @@ export function AlgoTab({ hideToolbar = false }) {
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [backtestDays, setBacktestDays] = useState('7');
   const [backtestOos, setBacktestOos] = useState(false);
+  const [backtestReasoning, setBacktestReasoning] = useState(false);
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
-  const backtestTimeoutRef = useRef(null);
+  const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
+  const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
   const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(botLogs, {
@@ -640,7 +647,7 @@ export function AlgoTab({ hideToolbar = false }) {
   }, []);
 
   useEffect(() => () => {
-    if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
+    clearBacktestClientTimeout();
   }, []);
 
   const handleRunBacktest = async () => {
@@ -666,26 +673,34 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Starting backtest…' });
     setBacktestSnapshot(snapshot);
 
-    if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
-    backtestTimeoutRef.current = setTimeout(() => {
-      if (useStore.getState().backtestRunning) {
-        setBacktestRunning(false);
-        setBacktestProgress(null);
-        toast.error('Backtest timed out — try a shorter range or check the server');
-      }
-    }, 120_000);
+    scheduleBacktestClientTimeout({
+      reasoning: backtestReasoning,
+      days,
+      onTimeout: (timeoutMs) => {
+        if (useStore.getState().backtestRunning) {
+          setBacktestRunning(false);
+          setBacktestProgress(null);
+          toast.error(
+            backtestReasoning
+              ? `Backtest timed out after ${formatBacktestTimeoutLabel(timeoutMs)} — increase VITE_BACKTEST_REASONING_TIMEOUT_MS, reduce days, or lower BACKTEST_REASONING_MAX_TRADES`
+              : `Backtest timed out after ${formatBacktestTimeoutLabel(timeoutMs)} — try a shorter range or increase VITE_BACKTEST_TIMEOUT_MS`,
+          );
+        }
+      },
+    });
 
-    const { ok, error } = await sendAction(Action.RUN_BACKTEST, {
+    const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel({
       strategy: botStrategy,
       symbol: activeSymbol,
       config: { ...botConfig, sim_mode: backtestSimMode },
       days,
       timeframe: botTimeframe,
       oos_pct: backtestOos ? 30 : undefined,
-    });
+      reasoning: backtestReasoning || undefined,
+    }));
 
     if (!ok) {
-      if (backtestTimeoutRef.current) clearTimeout(backtestTimeoutRef.current);
+      clearBacktestClientTimeout();
       setBacktestRunning(false);
       setBacktestProgress(null);
       if (error) toast.error(error);
@@ -1122,7 +1137,7 @@ export function AlgoTab({ hideToolbar = false }) {
                     onChange={e => updateBotConfig({ use_llm: e.target.checked })}
                     className="accent-primary"
                   />
-                  Use LLM explanations on strong signals (server must enable AGENT_LLM_ENABLED)
+                  Use LLM explanations on strong signals (Ollama local or OpenRouter when enabled)
                 </label>
               </div>
             )}
@@ -1187,6 +1202,22 @@ export function AlgoTab({ hideToolbar = false }) {
               Walk-forward OOS — test on last 30% of range only
             </label>
 
+            {agentLlmAvailable ? (
+              <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  checked={backtestReasoning}
+                  onChange={(e) => setBacktestReasoning(e.target.checked)}
+                />
+                Generate trade explanations after backtest (LLM post-hoc, rules unchanged)
+              </label>
+            ) : (
+              <p className="text-[0.62rem] text-muted-foreground">
+                LLM unavailable — start Ollama or configure OpenRouter to enable post-backtest trade explanations.
+              </p>
+            )}
+
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Simulation mode</Label>
               <Select value={backtestSimMode} onValueChange={setBacktestSimMode}>
@@ -1236,6 +1267,8 @@ export function AlgoTab({ hideToolbar = false }) {
                 recentRuns={backtestRuns}
                 snapshot={backtestSnapshot}
                 oosPct={backtestOos ? 30 : null}
+                reasoningPending={backtestReasoning && backtestRunning}
+                showReasoningSection={agentLlmAvailable}
               />
             )}
           </div>

@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { Action } from '../api/protocol';
 import { sendAction } from '../api/transport';
 import { useStore } from '../store/useStore';
+import LlmNarrativeBlock from './LlmNarrativeBlock';
 import { getCandles } from '../services/candleBuffer';
 import { generateSignal } from '../utils/indicators';
 import SubReportCards from './SubReportCards';
@@ -187,9 +188,12 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
           )}
 
           {display.narrative ? (
-            <p className="mb-3 rounded-md border border-border/60 bg-muted/30 p-2 text-xs leading-relaxed text-foreground/90">
-              {display.narrative}
-            </p>
+            <LlmNarrativeBlock
+              narrative={display.narrative}
+              model={display.model}
+              className="chart-analyst__narrative"
+              compact
+            />
           ) : null}
 
           <div className="flex flex-wrap gap-2">

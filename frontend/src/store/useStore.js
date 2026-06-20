@@ -52,7 +52,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   botMinCandles: 200,
   archiveTicksEnabled: false,
   ambiguousOrders: [],
-  isLive: false,
+  agentLlmEnabled: false,
+  agentLlmAvailable: false,
+  agentLlmProvider: 'off',
+  agentLlmModel: null,
+  agentLlmModels: [],
+  selectedLlmModel: getLocal('terminal_llm_model', null),
   symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
 
   // Market data states
@@ -254,7 +259,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
-  setTerminalConfig: ({ terminalMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge }) => set((state) => ({
+  setTerminalConfig: ({ terminalMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
     allowLiveBots: allowLiveBots ?? state.allowLiveBots,
@@ -267,7 +272,22 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     archiveBackend: archiveBackend ?? state.archiveBackend,
     workerAlive: workerAlive !== undefined ? workerAlive : state.workerAlive,
     workerHeartbeatAge: workerHeartbeatAge !== undefined ? workerHeartbeatAge : state.workerHeartbeatAge,
+    agentLlmEnabled: agentLlmEnabled ?? state.agentLlmEnabled,
+    agentLlmAvailable: agentLlmAvailable ?? state.agentLlmAvailable,
+    agentLlmProvider: agentLlmProvider ?? state.agentLlmProvider,
+    agentLlmModel: agentLlmModel ?? state.agentLlmModel,
+    agentLlmModels: agentLlmModels ?? state.agentLlmModels,
     ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
+  })),
+
+  setSelectedLlmModel: (model) => {
+    setLocal('terminal_llm_model', model);
+    set({ selectedLlmModel: model });
+  },
+
+  agentDeepReasoning: {},
+  setAgentDeepReasoning: (insightId, data) => set((state) => ({
+    agentDeepReasoning: { ...state.agentDeepReasoning, [insightId]: data },
   })),
 
   setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),

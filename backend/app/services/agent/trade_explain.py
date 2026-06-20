@@ -165,6 +165,7 @@ async def explain_trade(
     *,
     chart_analyst=None,
     use_llm: bool = False,
+    llm_model: str | None = None,
 ) -> dict[str, Any]:
     trade = _fetch_trade(bot_id, trade_id)
     if not trade:
@@ -191,9 +192,10 @@ async def explain_trade(
     summary = _template_summary(trade, insight, bot)
 
     narrative = None
+    llm_provider = None
     if use_llm and insight:
         try:
-            from app.services.agent.llm_client import summarize_insight
+            from app.services.agent.llm.router import summarize_insight
 
             bundle = {
                 **insight,
@@ -205,7 +207,7 @@ async def explain_trade(
                 },
                 "recent_logs": logs[:6],
             }
-            narrative, _model = await summarize_insight(bundle)
+            narrative, _model, llm_provider = await summarize_insight(bundle, model=llm_model)
         except Exception:
             narrative = None
 
@@ -222,6 +224,7 @@ async def explain_trade(
         "insight": insight,
         "recent_logs": logs,
         "narrative": narrative,
+        "llm_provider": llm_provider,
         "sources": [
             s for s, ok in [
                 ("bot_trades", bool(trade)),

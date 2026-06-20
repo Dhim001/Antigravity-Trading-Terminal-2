@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useStore } from '../store/useStore';
 import SubReportCards from './SubReportCards';
+import LlmNarrativeBlock from './LlmNarrativeBlock';
 import { findInsightForLog } from '@/lib/botLogInsight';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { Lightbulb } from 'lucide-react';
@@ -95,7 +96,12 @@ export default function SignalInsightDrawer() {
                 </ul>
               ) : null}
               {insight.narrative && (
-                <p className="text-xs leading-relaxed">{insight.narrative}</p>
+                <LlmNarrativeBlock
+                  narrative={insight.narrative}
+                  model={insight.model}
+                  className="signal-insight__narrative"
+                  compact
+                />
               )}
             </>
           ) : (

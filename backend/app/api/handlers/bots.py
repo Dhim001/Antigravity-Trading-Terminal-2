@@ -62,6 +62,8 @@ def _parse_backtest_request(msg: dict) -> dict:
             oos_pct = None
 
     walk_forward = bool(msg.get("walk_forward"))
+    reasoning = bool(msg.get("reasoning"))
+    llm_model = (msg.get("llm_model") or msg.get("model") or "").strip() or None
     train_pct = msg.get("train_pct")
     if train_pct is not None:
         try:
@@ -87,6 +89,8 @@ def _parse_backtest_request(msg: dict) -> dict:
         "walk_forward": walk_forward,
         "train_pct": train_pct,
         "sweep": msg.get("sweep"),
+        "reasoning": reasoning,
+        "llm_model": llm_model,
     }
 
 
@@ -120,6 +124,8 @@ async def _execute_backtest(
     sweep: dict | None = None,
     walk_forward: bool = False,
     train_pct: float = 70.0,
+    reasoning: bool = False,
+    llm_model: str | None = None,
 ) -> None:
     if not ctx.backtester or not hasattr(ctx.oms, "feed"):
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})
@@ -351,7 +357,41 @@ async def _execute_backtest(
             await _finish("error", message="Sweep produced no valid runs")
             return
 
+        if reasoning:
+            from app.services.bots.backtest_reasoning import generate_backtest_reasoning
+
+            enqueue_progress({"pct": 94, "phase": "reasoning", "message": "Generating trade explanations…"})
+
+            def reasoning_progress(done: int, total: int, message: str) -> None:
+                pct = 94 + int((done / max(total, 1)) * 4)
+                enqueue_progress({"pct": min(pct, 98), "phase": "reasoning", "message": message})
+
+            if walk_forward and is_sweep:
+                run_kind = "walk_forward"
+            elif is_sweep:
+                run_kind = "sweep"
+            else:
+                run_kind = "single"
+
+            reasoning_result = await generate_backtest_reasoning(
+                best_result.get("trades") or [],
+                symbol=symbol,
+                strategy=strategy,
+                model=llm_model,
+                progress_cb=reasoning_progress,
+                run_kind=run_kind,
+                train_pct=train_pct if run_kind == "walk_forward" else None,
+                configs_tested=len(configs) if is_sweep else None,
+            )
+            best_result["reasoning"] = reasoning_result
+            if isinstance(meta, dict):
+                meta["reasoning"] = True
+                meta["reasoning_run_kind"] = run_kind
+        elif isinstance(meta, dict):
+            meta["reasoning"] = False
+
         enqueue_progress({"pct": 98, "phase": "save", "message": "Saving run…"})
+
         meta["strategy"] = strategy
         if oos_pct and not (walk_forward and is_sweep):
             meta["oos_pct"] = oos_pct

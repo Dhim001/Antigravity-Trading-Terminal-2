@@ -39,6 +39,8 @@ def _pick_primary_message(messages: list[dict]) -> dict:
         MessageType.SCAN_RESULTS,
         MessageType.VISION_REPORT,
         MessageType.AGENT_INSIGHT,
+        MessageType.AGENT_DEEP_REASON,
+        MessageType.TRADE_EXPLAIN,
         MessageType.BOTS_UPDATE,
         MessageType.ACCOUNT_UPDATE,
         MessageType.TRADE_HISTORY,

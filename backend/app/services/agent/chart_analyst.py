@@ -14,12 +14,14 @@ from app.config import (
     AGENT_LLM_COOLDOWN_SEC,
     AGENT_LLM_ENABLED,
     AGENT_LLM_MIN_CONFIDENCE,
+    AGENT_LLM_SIM_COOLDOWN_SEC,
     REDIS_URL,
+    TERMINAL_MODE,
 )
 from app.db.connection import get_connection
 from app.services.agent.candle_source import get_agent_candles
 from app.services.agent.feature_builder import FeatureBuilder
-from app.services.agent.llm_client import summarize_insight
+from app.services.agent.llm.router import is_llm_available, summarize_insight
 from app.services.agent.models import ChartAgentInsight, insight_cache_key
 from app.services.agent.rule_engine import score_dataframe
 from app.services.bots.screener import MarketScreenerService
@@ -104,6 +106,16 @@ class ChartAnalystService:
             except Exception:
                 pass
 
+    def _llm_cooldown_sec(self) -> int:
+        if TERMINAL_MODE == "SIMULATED":
+            return AGENT_LLM_SIM_COOLDOWN_SEC
+        return AGENT_LLM_COOLDOWN_SEC
+
+    async def _llm_enabled(self) -> bool:
+        if not AGENT_LLM_ENABLED:
+            return False
+        return await is_llm_available()
+
     def _should_call_llm(self, insight: ChartAgentInsight, force: bool) -> bool:
         if not AGENT_LLM_ENABLED and not force:
             return False
@@ -113,7 +125,7 @@ class ChartAnalystService:
             return False
         llm_key = insight_cache_key(insight.symbol, insight.timeframe)
         last = self._llm_last_at.get(llm_key, 0.0)
-        if not force and (time.monotonic() - last) < AGENT_LLM_COOLDOWN_SEC:
+        if not force and (time.monotonic() - last) < self._llm_cooldown_sec():
             return False
         return True
 
@@ -180,10 +192,12 @@ class ChartAnalystService:
         *,
         llm_called: bool,
         latency_ms: float,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
     ) -> None:
         logger.info(
             "agent_audit insight_id=%s symbol=%s timeframe=%s signal=%s confidence=%.3f "
-            "score=%d llm_called=%s latency_ms=%.1f",
+            "score=%d llm_called=%s llm_provider=%s llm_model=%s latency_ms=%.1f",
             insight.insight_id,
             insight.symbol,
             insight.timeframe,
@@ -191,6 +205,8 @@ class ChartAnalystService:
             insight.confidence,
             insight.score,
             llm_called,
+            llm_provider or "—",
+            llm_model or "—",
             latency_ms,
         )
 
@@ -201,6 +217,7 @@ class ChartAnalystService:
         candles: list[dict] | None = None,
         force_llm: bool = False,
         timeframe: str = "1m",
+        llm_model: str | None = None,
         broadcast: bool = True,
     ) -> ChartAgentInsight | None:
         if not AGENT_ENABLED:
@@ -219,19 +236,28 @@ class ChartAnalystService:
             return None
 
         llm_called = False
+        llm_provider = None
         if self._should_call_llm(insight, force_llm):
-            narrative, model = await summarize_insight(insight.to_dict())
-            if narrative:
-                insight.narrative = narrative
-                insight.model = model
-                llm_called = True
-                self._llm_last_at[insight_cache_key(sym, tf)] = time.monotonic()
+            if await self._llm_enabled() or force_llm:
+                narrative, model, provider = await summarize_insight(insight.to_dict(), model=llm_model)
+                if narrative:
+                    insight.narrative = narrative
+                    insight.model = model
+                    llm_called = True
+                    llm_provider = provider
+                    self._llm_last_at[insight_cache_key(sym, tf)] = time.monotonic()
 
         self._set_cache(insight)
         await asyncio.to_thread(self.persist, insight)
 
         latency_ms = (time.monotonic() - t0) * 1000
-        self._audit(insight, llm_called=llm_called, latency_ms=latency_ms)
+        self._audit(
+            insight,
+            llm_called=llm_called,
+            latency_ms=latency_ms,
+            llm_provider=llm_provider,
+            llm_model=insight.model,
+        )
         try:
             from app.observability.metrics import inc, observe
 
@@ -257,6 +283,7 @@ class ChartAnalystService:
         *,
         timeframe: str = "1m",
         force_llm: bool = False,
+        llm_model: str | None = None,
     ) -> ChartAgentInsight | None:
         """Populate cache for the closed bar if missing or stale."""
         tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
@@ -268,6 +295,7 @@ class ChartAnalystService:
             symbol,
             candles=candles,
             force_llm=force_llm,
+            llm_model=llm_model,
             timeframe=tf,
             broadcast=False,
         )

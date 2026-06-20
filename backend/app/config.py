@@ -114,8 +114,23 @@ AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "true").lower() in ("1", "true",
 AGENT_LLM_ENABLED = os.environ.get("AGENT_LLM_ENABLED", "false").lower() in ("1", "true", "yes")
 AGENT_LLM_MIN_CONFIDENCE = float(os.environ.get("AGENT_LLM_MIN_CONFIDENCE", "0.55"))
 AGENT_LLM_COOLDOWN_SEC = int(os.environ.get("AGENT_LLM_COOLDOWN_SEC", "300"))
+AGENT_LLM_SIM_COOLDOWN_SEC = int(os.environ.get("AGENT_LLM_SIM_COOLDOWN_SEC", "30"))
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL", "openai/gpt-4o-mini")
+# LLM provider: auto | ollama | openrouter | off
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto").lower()
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip()
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b").strip()
+OLLAMA_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "60"))
+_ollama_reasoning_effort = os.environ.get("OLLAMA_REASONING_EFFORT", "none").strip().lower()
+OLLAMA_REASONING_EFFORT = (
+    _ollama_reasoning_effort
+    if _ollama_reasoning_effort in ("none", "low", "medium", "high")
+    else "none"
+)
+AGENT_LLM_PREFER_LOCAL = os.environ.get("AGENT_LLM_PREFER_LOCAL", "true").lower() in ("1", "true", "yes")
+AGENT_LLM_FALLBACK_CLOUD = os.environ.get("AGENT_LLM_FALLBACK_CLOUD", "false").lower() in ("1", "true", "yes")
+BACKTEST_REASONING_MAX_TRADES = int(os.environ.get("BACKTEST_REASONING_MAX_TRADES", "20"))
 
 # Market scanner + on-demand vision
 SCANNER_ENABLED = os.environ.get("SCANNER_ENABLED", "true").lower() in ("1", "true", "yes")

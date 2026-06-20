@@ -8,6 +8,7 @@ import {
   fetchCandles,
   fetchHealth,
   fetchHistory,
+  fetchLlmModels,
   fetchStrategies,
   resumeActiveBacktestJob,
 } from './endpoints';
@@ -28,6 +29,7 @@ export async function runBootstrap(opts = {}) {
 
   const tasks = [
     fetchHealth(storeActions),
+    fetchLlmModels(storeActions),
     fetchAccount(storeActions),
     fetchHistory(storeActions),
     fetchBots(storeActions),

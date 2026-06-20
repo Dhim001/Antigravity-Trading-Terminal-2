@@ -1,11 +1,12 @@
 import { apiAction, apiRequest } from './client';
 import { applyHttpEnvelope } from './dispatch';
 import { useStore } from '../store/useStore';
+import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');
-  if (storeActions && (body.terminal_mode != null || body.terminal_role != null)) {
+  if (storeActions && (body.terminal_mode != null || body.terminal_role != null || body.llm != null)) {
     storeActions.setTerminalConfig({
       terminalMode: body.terminal_mode,
       terminalRole: body.terminal_role,
@@ -13,6 +14,11 @@ export async function fetchHealth(storeActions) {
       allowCustomStrategies: body.allow_custom_strategies,
       archiveParquetEnabled: body.archive_parquet_enabled,
       archiveBackend: body.archive_backend,
+      agentLlmEnabled: body.agent_llm_enabled,
+      agentLlmAvailable: body.llm?.available,
+      agentLlmProvider: body.llm?.provider,
+      agentLlmModel: body.llm?.model,
+      agentLlmModels: body.llm?.models,
       ...(body.worker != null
         ? {
             distributed: true,
@@ -23,6 +29,50 @@ export async function fetchHealth(storeActions) {
     });
   }
   return body;
+}
+
+/** GET /api/v1/llm/models — Ollama + OpenRouter models on this system. */
+export async function fetchLlmModels(storeActions) {
+  try {
+    const body = await apiRequest('/api/v1/llm/models');
+    if (storeActions && body.ok) {
+      const models = [...(body.ollama || []), ...(body.openrouter || [])];
+      storeActions.setTerminalConfig({
+        agentLlmModels: models,
+        agentLlmModel: body.active_model,
+      });
+      if (body.active_model && !useStore.getState().selectedLlmModel) {
+        storeActions.setSelectedLlmModel(body.active_model);
+      }
+    }
+    return body;
+  } catch (e) {
+    console.warn('[bootstrap] LLM models unavailable:', e.message);
+    return null;
+  }
+}
+
+/** POST /api/v1/llm/model — set preferred local/cloud model for narrators. */
+export async function setPreferredLlmModel(model, storeActions) {
+  const body = await apiRequest('/api/v1/llm/model', {
+    method: 'POST',
+    body: { model: model || '' },
+  });
+  if (storeActions && body.ok) {
+    const models = [...(body.ollama || []), ...(body.openrouter || [])];
+    storeActions.setTerminalConfig({
+      agentLlmModels: models,
+      agentLlmModel: body.active_model,
+    });
+    storeActions.setSelectedLlmModel(body.active_model || model || null);
+  }
+  return body;
+}
+
+/** Payload helper — attach user-selected LLM model when set. */
+export function withLlmModel(payload = {}) {
+  const model = useStore.getState().selectedLlmModel;
+  return model ? { ...payload, llm_model: model } : payload;
 }
 
 /** Parse Prometheus text for a few terminal counters/histograms. */
@@ -133,6 +183,7 @@ function startBacktestJobPolling(jobId, storeActions) {
         if (!fresh) return;
         if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
         if (fresh.status === 'completed' && fresh.results) {
+          clearBacktestClientTimeout();
           const wire = {
             ...fresh.results,
             run_id: fresh.run_id ?? fresh.results.run_id,
@@ -143,6 +194,7 @@ function startBacktestJobPolling(jobId, storeActions) {
           return;
         }
         if (fresh.status === 'failed' || fresh.status === 'cancelled') {
+          clearBacktestClientTimeout();
           storeActions.setBacktestRunning(false);
           storeActions.setBacktestProgress(null);
           return;

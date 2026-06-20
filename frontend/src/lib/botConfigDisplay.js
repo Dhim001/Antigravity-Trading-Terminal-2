@@ -17,7 +17,7 @@ export const FIELD_META = {
   take_profit_price: { label: 'Take profit price', group: 'risk', kind: 'price', readOnly: true },
   tp_mode: { label: 'Take profit mode', group: 'risk', kind: 'tp_mode' },
   min_confidence: { label: 'Min confidence', group: 'agent', kind: 'confidence', hint: 'Agent only trades when signal confidence meets this threshold.' },
-  use_llm: { label: 'LLM analysis', group: 'agent', kind: 'boolean', hint: 'Use the LLM layer for chart narrative (requires API key).' },
+  use_llm: { label: 'LLM analysis', group: 'agent', kind: 'boolean', hint: 'Use the LLM narrator for chart explanations (Ollama local or OpenRouter).' },
   rsi_length: { label: 'RSI period', group: 'indicators', kind: 'integer' },
   macd_fast: { label: 'MACD fast', group: 'indicators', kind: 'integer' },
   macd_slow: { label: 'MACD slow', group: 'indicators', kind: 'integer' },
