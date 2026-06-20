@@ -44,6 +44,11 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   terminalRole: 'all',
   distributed: false,
   allowLiveBots: false,
+  allowCustomStrategies: false,
+  archiveParquetEnabled: false,
+  archiveBackend: 'db',
+  workerAlive: null,
+  workerHeartbeatAge: null,
   botMinCandles: 200,
   archiveTicksEnabled: false,
   ambiguousOrders: [],
@@ -249,14 +254,19 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
-  setTerminalConfig: ({ terminalMode, allowLiveBots, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled }) => set((state) => ({
+  setTerminalConfig: ({ terminalMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
     allowLiveBots: allowLiveBots ?? state.allowLiveBots,
+    allowCustomStrategies: allowCustomStrategies ?? state.allowCustomStrategies,
     terminalRole: terminalRole ?? state.terminalRole,
     distributed: distributed ?? state.distributed,
     botMinCandles: botMinCandles ?? state.botMinCandles,
     archiveTicksEnabled: archiveTicksEnabled ?? state.archiveTicksEnabled,
+    archiveParquetEnabled: archiveParquetEnabled ?? state.archiveParquetEnabled,
+    archiveBackend: archiveBackend ?? state.archiveBackend,
+    workerAlive: workerAlive !== undefined ? workerAlive : state.workerAlive,
+    workerHeartbeatAge: workerHeartbeatAge !== undefined ? workerHeartbeatAge : state.workerHeartbeatAge,
     ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
   })),
 

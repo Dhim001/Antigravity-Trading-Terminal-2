@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 export const SWEEP_PARAM_DEFS = [
   { key: 'trailing_stop_percent', label: 'Trailing SL %', placeholder: '1, 2, 3' },
   { key: 'take_profit_percent', label: 'Take profit %', placeholder: '2, 3, 5' },
-  { key: 'stop_loss_percent', label: 'Stop loss %', placeholder: '1, 2' },
+  { key: 'stop_loss_percent', label: 'Stop loss % (fallback)', placeholder: '1, 2' },
   { key: 'min_confidence', label: 'Min confidence', placeholder: '0.5, 0.6, 0.7' },
   { key: 'allocation', label: 'Allocation $', placeholder: '5000, 10000' },
   { key: 'slippage_bps', label: 'Slippage bps', placeholder: '0, 5, 10' },
@@ -41,6 +41,29 @@ function buildSweepGrid(enabled, valuesByKey, maxCombos) {
     if (vals.length) sweep[def.key] = vals;
   }
   return Object.keys(sweep).length > 1 ? sweep : null;
+}
+
+// Bars/day per timeframe for a 24h market (crypto) vs a ~6.5h equity session.
+// Used only to disable walk-forward when the estimate can't satisfy its
+// 50-train + 50-test minimum.
+const BARS_PER_DAY_24H = { '1m': 1440, '5m': 288, '15m': 96, '1h': 24, '4h': 6, '1d': 1 };
+const BARS_PER_DAY_EQUITY = { '1m': 390, '5m': 78, '15m': 26, '1h': 7, '4h': 2, '1d': 1 };
+const WALK_FORWARD_MIN_BARS = 100;
+
+function isCryptoSymbol(symbol) {
+  const s = String(symbol || '').toUpperCase();
+  return s.includes('USDT') || s.endsWith('USD');
+}
+
+function estimateMaxBars(days, timeframe, symbol) {
+  const d = parseInt(days, 10) || 0;
+  const tf = String(timeframe || '1m').toLowerCase();
+  if (isCryptoSymbol(symbol)) {
+    return d * (BARS_PER_DAY_24H[tf] ?? 1440);
+  }
+  // Equities/ETFs: ~5 trading days per 7 calendar days, ~6.5h sessions.
+  const tradingDays = d * (5 / 7);
+  return tradingDays * (BARS_PER_DAY_EQUITY[tf] ?? 390);
 }
 
 function countCombos(sweep) {
@@ -91,10 +114,18 @@ export default function BacktestSweepPanel({
     [enabled, valuesByKey, maxCombos],
   );
   const comboCount = useMemo(() => countCombos(sweepGrid), [sweepGrid]);
+  const walkForwardTooFewBars = useMemo(
+    () => estimateMaxBars(days, timeframe, symbol) < WALK_FORWARD_MIN_BARS,
+    [days, timeframe, symbol],
+  );
 
   const runSweep = async (walkForward = false) => {
     if (!sweepGrid) {
       toast.error('Enable at least one parameter with values');
+      return;
+    }
+    if (walkForward && walkForwardTooFewBars) {
+      toast.error(`Walk-forward needs ~${WALK_FORWARD_MIN_BARS}+ bars — increase days or lower the timeframe`);
       return;
     }
     if (backtestRunning) return;
@@ -150,9 +181,13 @@ export default function BacktestSweepPanel({
             variant="outline"
             size="xs"
             className="h-6 text-[0.62rem]"
-            disabled={backtestRunning || !sweepGrid}
+            disabled={backtestRunning || !sweepGrid || walkForwardTooFewBars}
             onClick={() => runSweep(true)}
-            title="Optimize on first 70% of bars, validate on last 30%"
+            title={
+              walkForwardTooFewBars
+                ? `Need ~${WALK_FORWARD_MIN_BARS}+ bars for a 70/30 split — increase days or use a lower timeframe`
+                : 'Optimize on first 70% of bars, validate on last 30%'
+            }
           >
             Walk-forward
           </Button>
@@ -194,6 +229,12 @@ export default function BacktestSweepPanel({
             {comboCount} configuration{comboCount === 1 ? '' : 's'} (capped at 24)
           </span>
         </div>
+        {enabled.trailing_stop_percent && enabled.stop_loss_percent && (
+          <p className="text-[0.55rem] text-trading-warn">
+            Stop loss is only used as a fallback when trailing stop is 0 — sweeping both may produce
+            duplicate-behaving configs.
+          </p>
+        )}
       </div>
 
       {bestConfig && (

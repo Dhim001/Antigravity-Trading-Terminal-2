@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../store/useStore';
 import { cn } from '@/lib/utils';
+import { IS_OPERATOR } from '../lib/operator';
 import {
   CommandDialog,
   Command,
@@ -205,14 +206,16 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
               <span>Preferences</span>
               <CommandShortcut>⌘,</CommandShortcut>
             </CommandItem>
-            <CommandItem
-              value="system control admin"
-              className="command-palette__item"
-              onSelect={() => run(() => onOpenAdmin?.())}
-            >
-              <ShieldAlert aria-hidden />
-              <span>System Control Panel</span>
-            </CommandItem>
+            {IS_OPERATOR && (
+              <CommandItem
+                value="system control admin"
+                className="command-palette__item"
+                onSelect={() => run(() => onOpenAdmin?.())}
+              >
+                <ShieldAlert aria-hidden />
+                <span>System Control Panel</span>
+              </CommandItem>
+            )}
           </CommandGroup>
         </CommandList>
 

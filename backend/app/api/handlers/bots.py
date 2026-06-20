@@ -194,14 +194,19 @@ async def _execute_backtest(
             await _finish("cancelled")
             return
 
-        candles = _apply_oos_window(candles, meta, oos_pct)
-        bar_count = len(candles or [])
         configs = expand_sweep_grid(config, sweep) if sweep else [config]
         is_sweep = len(configs) > 1 or bool(sweep)
 
         if walk_forward and not is_sweep:
             await _finish("error", message="Walk-forward requires a parameter sweep grid")
             return
+
+        # Walk-forward already performs its own train/test (out-of-sample) split, so
+        # applying the OOS window first would double-trim the data. Only honor
+        # oos_pct for non-walk-forward runs.
+        if not (walk_forward and is_sweep):
+            candles = _apply_oos_window(candles, meta, oos_pct)
+        bar_count = len(candles or [])
 
         if walk_forward and is_sweep:
             from app.services.bots.backtest_walk_forward import run_walk_forward
@@ -214,14 +219,23 @@ async def _execute_backtest(
                 "total_runs": len(configs),
             })
 
-            def wf_progress(done: int, total: int) -> None:
-                pct = 10 + int((done / max(total, 1)) * 80)
+            def wf_progress(done: int, total: int, run_idx: int = 0, total_runs: int = 1, is_oos: bool = False) -> None:
+                frac = done / max(total, 1)
+                if is_oos:
+                    pct = 90 + frac * 7  # OOS validation occupies 90→97%
+                    message = f"Walk-forward OOS validation: bar {done}/{total}…"
+                else:
+                    run_span = 78 / max(total_runs, 1)  # in-sample sweep spans 10→88%
+                    pct = 10 + run_idx * run_span + frac * run_span
+                    message = f"Walk-forward train {run_idx + 1}/{total_runs}: bar {done}/{total}…"
                 enqueue_progress({
-                    "pct": min(pct, 92),
+                    "pct": min(int(pct), 97),
                     "phase": "sweep",
-                    "message": f"Walk-forward bar {done}/{total}…",
+                    "message": message,
                     "bar": done,
                     "bars": total,
+                    "run": run_idx + 1,
+                    "total_runs": total_runs,
                 })
 
             best_result = await asyncio.to_thread(
@@ -339,7 +353,7 @@ async def _execute_backtest(
 
         enqueue_progress({"pct": 98, "phase": "save", "message": "Saving run…"})
         meta["strategy"] = strategy
-        if oos_pct:
+        if oos_pct and not (walk_forward and is_sweep):
             meta["oos_pct"] = oos_pct
         if walk_forward and is_sweep:
             meta["walk_forward"] = True

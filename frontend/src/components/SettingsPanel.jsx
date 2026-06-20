@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
 import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { IS_OPERATOR, brokerLabel } from '../lib/operator';
 import {
   Sheet,
   SheetContent,
@@ -112,6 +113,7 @@ function ColorField({ id, label, value, onChange, presets = [], onCustomize }) {
 }
 
 export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
+  const { systemTheme: osTheme } = useTheme();
   const settings = useSettingsStore((s) => s.settings);
   const resolvedTheme = useSettingsStore((s) => s.resolvedTheme);
   const panelTab = useSettingsStore((s) => s.panelTab);
@@ -133,7 +135,14 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const apiStatus = useStore((s) => s.apiStatus);
   const isLive = useStore((s) => s.isLive);
   const terminalMode = useStore((s) => s.terminalMode);
+  const terminalRole = useStore((s) => s.terminalRole);
   const distributed = useStore((s) => s.distributed);
+  const allowLiveBots = useStore((s) => s.allowLiveBots);
+  const allowCustomStrategies = useStore((s) => s.allowCustomStrategies);
+  const archiveParquetEnabled = useStore((s) => s.archiveParquetEnabled);
+  const archiveBackend = useStore((s) => s.archiveBackend);
+  const workerAlive = useStore((s) => s.workerAlive);
+  const workerHeartbeatAge = useStore((s) => s.workerHeartbeatAge);
   const isBotRunning = useStore((s) => s.isBotRunning);
 
   const [activeTab, setActiveTab] = React.useState(panelTab);
@@ -924,6 +933,64 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </dl>
             </section>
 
+            <Separator />
+
+            <section className="settings-section">
+              <h3 className="settings-section__title">Operator / environment</h3>
+              <p className="settings-section__hint">
+                Server-controlled, read-only. Set via environment variables on the backend.
+              </p>
+              <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
+                <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
+                <div>
+                  <dt>Live bots</dt>
+                  <dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>
+                    {allowLiveBots ? 'Enabled' : 'Disabled'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Custom strategies</dt>
+                  <dd className={allowCustomStrategies ? 'text-trading-up' : 'text-muted-foreground'}>
+                    {allowCustomStrategies ? 'Enabled' : 'Disabled'}
+                  </dd>
+                </div>
+                <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
+                {distributed && (
+                  <div>
+                    <dt>Worker</dt>
+                    <dd className={
+                      (obsHealth?.worker?.alive ?? workerAlive)
+                        ? 'text-trading-up'
+                        : (obsHealth?.worker?.alive ?? workerAlive) === false
+                          ? 'text-trading-down'
+                          : 'text-muted-foreground'
+                    }>
+                      {(() => {
+                        const alive = obsHealth?.worker?.alive ?? workerAlive;
+                        const age = obsHealth?.worker?.heartbeat_age_sec ?? workerHeartbeatAge;
+                        if (alive == null) return 'Unknown';
+                        return `${alive ? 'Alive' : 'Down'}${age != null ? ` (${age}s)` : ''}`;
+                      })()}
+                    </dd>
+                  </div>
+                )}
+                <div><dt>Archive backend</dt><dd>{archiveBackend ?? '—'}</dd></div>
+                <div>
+                  <dt>Parquet export</dt>
+                  <dd className={archiveParquetEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                    {archiveParquetEnabled ? 'Enabled' : 'Disabled'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Operator build</dt>
+                  <dd className={IS_OPERATOR ? 'text-trading-accent' : 'text-muted-foreground'}>
+                    {IS_OPERATOR ? 'Yes' : 'No'}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+
             {obsMetrics && (
               <>
                 <Separator />
@@ -942,26 +1009,30 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </>
             )}
 
-            <Separator />
+            {IS_OPERATOR && (
+              <>
+                <Separator />
 
-            <section className="settings-section">
-              <h3 className="settings-section__title">Admin & simulation</h3>
-              <p className="settings-section__hint">
-                Market simulation, account seeding, diagnostics, and emergency controls.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 text-xs"
-                onClick={() => {
-                  onOpenChange(false);
-                  onOpenAdmin?.();
-                }}
-              >
-                <ShieldAlert size={13} className="text-trading-warn" aria-hidden />
-                Open System Control Panel
-              </Button>
-            </section>
+                <section className="settings-section">
+                  <h3 className="settings-section__title">Admin & simulation</h3>
+                  <p className="settings-section__hint">
+                    Market simulation, account seeding, diagnostics, and emergency controls.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={() => {
+                      onOpenChange(false);
+                      onOpenAdmin?.();
+                    }}
+                  >
+                    <ShieldAlert size={13} className="text-trading-warn" aria-hidden />
+                    Open System Control Panel
+                  </Button>
+                </section>
+              </>
+            )}
           </TabsContent>
         </Tabs>
       </SheetContent>

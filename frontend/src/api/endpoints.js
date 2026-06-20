@@ -9,7 +9,17 @@ export async function fetchHealth(storeActions) {
     storeActions.setTerminalConfig({
       terminalMode: body.terminal_mode,
       terminalRole: body.terminal_role,
-      distributed: body.worker != null,
+      allowLiveBots: body.allow_live_bots,
+      allowCustomStrategies: body.allow_custom_strategies,
+      archiveParquetEnabled: body.archive_parquet_enabled,
+      archiveBackend: body.archive_backend,
+      ...(body.worker != null
+        ? {
+            distributed: true,
+            workerAlive: body.worker.alive ?? null,
+            workerHeartbeatAge: body.worker.heartbeat_age_sec ?? null,
+          }
+        : {}),
     });
   }
   return body;

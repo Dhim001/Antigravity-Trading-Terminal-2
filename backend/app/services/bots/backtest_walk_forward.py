@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
+from app.services.bots.backtest_sweep import sweep_label
+
 
 def split_train_test(
     candles: list[dict],
@@ -69,17 +71,28 @@ def run_walk_forward(
     if len(train) < 50 or len(test) < 50:
         return {"error": "Not enough bars for walk-forward split"}
 
+    total_runs = len(configs)
     sweep_rows: list[dict] = []
     for idx, cfg in enumerate(configs):
         if cancel_cb and cancel_cb():
             return {"error": "Backtest cancelled", "cancelled": True}
-        res = run_backtest(symbol, strategy, cfg, train, progress_cb=progress_cb, cancel_cb=cancel_cb)
+
+        def _is_progress(done: int, total: int, _idx: int = idx) -> None:
+            if progress_cb:
+                progress_cb(done, total, _idx, total_runs, False)
+
+        res = run_backtest(
+            symbol, strategy, cfg, train,
+            progress_cb=_is_progress if progress_cb else None,
+            cancel_cb=cancel_cb,
+        )
         if res.get("cancelled"):
             return res
         if res.get("error"):
-            sweep_rows.append({"config": cfg, "error": res["error"]})
+            sweep_rows.append({"label": sweep_label(cfg), "config": cfg, "error": res["error"]})
             continue
         sweep_rows.append({
+            "label": sweep_label(cfg),
             "config": cfg,
             "summary": res.get("summary") or {},
             "total_pnl": res.get("total_pnl"),
@@ -94,9 +107,14 @@ def run_walk_forward(
     if cancel_cb and cancel_cb():
         return {"error": "Backtest cancelled", "cancelled": True}
 
+    def _oos_progress(done: int, total: int) -> None:
+        if progress_cb:
+            progress_cb(done, total, total_runs, total_runs, True)
+
     oos = run_backtest(
         symbol, strategy, best_config, test,
-        progress_cb=progress_cb, cancel_cb=cancel_cb,
+        progress_cb=_oos_progress if progress_cb else None,
+        cancel_cb=cancel_cb,
     )
     if oos.get("cancelled"):
         return oos

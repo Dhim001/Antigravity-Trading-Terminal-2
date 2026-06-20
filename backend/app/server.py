@@ -11,6 +11,7 @@ from app.config import (
     TERMINAL_MODE,
     TERMINAL_ROLE,
     ALLOW_LIVE_BOTS,
+    ALLOW_CUSTOM_STRATEGIES,
     BOT_MIN_CANDLES,
     REDIS_URL,
     HTTP_ENABLED,
@@ -18,6 +19,8 @@ from app.config import (
     HTTP_PORT,
     ARCHIVE_ENABLED,
     ARCHIVE_TICKS_ENABLED,
+    ARCHIVE_PARQUET_ENABLED,
+    ARCHIVE_BACKEND,
 )
 from app.database import init_db
 from app.api.http_server import run_http_server
@@ -170,9 +173,12 @@ async def websocket_handler(websocket):
         "terminalRole": TERMINAL_ROLE,
         "symbols": list(state.feed.symbols),
         "allowLiveBots": ALLOW_LIVE_BOTS,
+        "allowCustomStrategies": ALLOW_CUSTOM_STRATEGIES,
         "distributed": bool(REDIS_URL),
         "botMinCandles": BOT_MIN_CANDLES,
         "archiveTicksEnabled": ARCHIVE_TICKS_ENABLED,
+        "archiveParquetEnabled": ARCHIVE_PARQUET_ENABLED,
+        "archiveBackend": ARCHIVE_BACKEND,
         "wsMsgpackEnabled": WS_MSGPACK_ENABLED,
     }))
 

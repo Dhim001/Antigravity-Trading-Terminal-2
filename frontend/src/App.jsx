@@ -43,12 +43,15 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { brokerLabel } from '@/lib/operator';
 import {
   TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX,
   CircleHelp, Bell,
 } from 'lucide-react';
 import { sendAction } from './api/transport';
 import { Action } from './api/protocol';
+import { fetchHealth } from './api/endpoints';
+import { getStoreActions } from './api/dispatch';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -68,6 +71,8 @@ export default function App() {
   const botDrawerOpen    = useStore(state => state.botDrawerOpen);
   const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
   const distributed      = useStore(state => state.distributed);
+  const workerAlive      = useStore(state => state.workerAlive);
+  const workerHeartbeatAge = useStore(state => state.workerHeartbeatAge);
   const workspace = useSettingsStore(state => state.settings.workspace);
   const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
   const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);
@@ -158,6 +163,23 @@ export default function App() {
   useEffect(() => {
     updateWorkspace({ viewMode });
   }, [viewMode, updateWorkspace]);
+
+  // Poll /health for worker liveness while running distributed (badge stays fresh
+  // without dedicated WS worker frames).
+  useEffect(() => {
+    if (!distributed) return undefined;
+    let cancelled = false;
+    const poll = () => {
+      if (cancelled) return;
+      fetchHealth(getStoreActions()).catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [distributed]);
 
   useEffect(() => {
     const onWorkspaceLoaded = (e) => {
@@ -338,14 +360,14 @@ export default function App() {
             </div>
 
             {isLive ? (
-              <Badge variant="live" className="header-mode-badge header-mode-badge--live icon-label px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider">
+              <Badge variant="live" className="header-mode-badge header-mode-badge--live icon-label px-2 py-0.5 text-[0.62rem] font-extrabold tracking-wider" title={`Live broker: ${brokerLabel(terminalMode)}`}>
                 <span className="size-1.5 animate-ping rounded-full bg-current" />
                 <span>LIVE</span>
-                <span className="header-live-detail">· {terminalMode}</span>
+                <span className="header-live-detail">· {brokerLabel(terminalMode)}</span>
               </Badge>
             ) : (
-              <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-[0.62rem] font-bold tracking-wide">
-                SIMULATED
+              <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-[0.62rem] font-bold tracking-wide" title="Simulated market (no live broker)">
+                SIM
               </Badge>
             )}
           </div>
@@ -376,8 +398,31 @@ export default function App() {
           <div className="header-actions">
             <div className="header-actions-cluster">
             {distributed && (
-              <Badge variant="outline" className="header-distributed-badge hidden sm:inline-flex">
-                Distributed
+              <Badge
+                variant="outline"
+                className="header-distributed-badge icon-label hidden sm:inline-flex"
+                title={
+                  workerAlive == null
+                    ? 'Distributed mode — worker status unknown'
+                    : workerAlive
+                      ? `Worker online${workerHeartbeatAge != null ? ` · ${workerHeartbeatAge}s ago` : ''}`
+                      : 'Worker offline — no recent heartbeat'
+                }
+              >
+                <span
+                  className={cn(
+                    'header-status-dot',
+                    workerAlive == null
+                      ? 'header-status-dot--rest'
+                      : workerAlive
+                        ? 'header-status-dot--live'
+                        : 'header-status-dot--down',
+                  )}
+                  aria-hidden
+                />
+                <span className="header-label">
+                  {workerAlive == null ? 'Distributed' : workerAlive ? 'Worker' : 'Worker down'}
+                </span>
               </Badge>
             )}
 

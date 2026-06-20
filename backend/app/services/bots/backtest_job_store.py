@@ -155,7 +155,8 @@ def claim_next_pending_job() -> dict[str, Any] | None:
     try:
         cursor.execute(
             """
-            SELECT id, request_json, progress_json, client_key, created_at
+            SELECT id, status, request_json, progress_json, run_id, error,
+                   results_json, client_key, created_at, started_at, finished_at
             FROM backtest_jobs
             WHERE status = 'pending'
             ORDER BY created_at ASC

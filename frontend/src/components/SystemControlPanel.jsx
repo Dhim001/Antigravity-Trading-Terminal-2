@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { IS_OPERATOR } from '../lib/operator';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import {
@@ -82,7 +83,13 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   const isLive = useStore((state) => state.isLive);
   const terminalMode = useStore((state) => state.terminalMode);
   const symbolsList = useStore((state) => state.symbolsList);
+  const archiveParquetEnabled = useStore((state) => state.archiveParquetEnabled);
   const [activeTab, setActiveTab] = useState('simulation');
+  const parquetReason = !IS_OPERATOR
+    ? 'Operator build required'
+    : !archiveParquetEnabled
+      ? 'Set ARCHIVE_PARQUET_ENABLED'
+      : null;
 
   const getAvailableAssets = () => {
     const assets = new Set(['USD', 'USDT']);
@@ -585,10 +592,13 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                   variant="outline"
                   size="sm"
                   className="text-xs"
+                  disabled={Boolean(parquetReason)}
+                  title={parquetReason ?? 'Export 90 days of bars to Parquet'}
                   onClick={() => sendAction(Action.ADMIN_ARCHIVE_EXPORT, { days: 90, interval: 'auto' })}
                 >
                   <Database data-icon="inline-start" aria-hidden />
                   Export Parquet (90d)
+                  {parquetReason && <span className="ml-1 text-muted-foreground">· {parquetReason}</span>}
                 </Button>
                 {(systemStats.archive?.ticks ?? 0) > 0 && (
                   <StatCard

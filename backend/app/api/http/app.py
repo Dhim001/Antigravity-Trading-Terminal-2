@@ -15,7 +15,21 @@ from app.api.http.dispatch import http_status_and_body, invoke_action
 from app.api.openapi import build_openapi_spec
 from app.api.router import ensure_routes_loaded, list_routes
 from app.api.state import AppState
-from app.config import HTTP_API_KEY, HTTP_CORS_ORIGINS, HTTP_HOST, HTTP_PORT, REDIS_URL, TERMINAL_MODE, TERMINAL_ROLE, WS_HOST, WS_PORT
+from app.config import (
+    ALLOW_CUSTOM_STRATEGIES,
+    ALLOW_LIVE_BOTS,
+    ARCHIVE_BACKEND,
+    ARCHIVE_PARQUET_ENABLED,
+    HTTP_API_KEY,
+    HTTP_CORS_ORIGINS,
+    HTTP_HOST,
+    HTTP_PORT,
+    REDIS_URL,
+    TERMINAL_MODE,
+    TERMINAL_ROLE,
+    WS_HOST,
+    WS_PORT,
+)
 from app.api.http.auth import ApiKeyMiddleware
 from app.database import get_db_stats
 from app.services.bots.strategy_catalog import list_strategy_catalog
@@ -44,6 +58,10 @@ async def health(request: Request) -> JSONResponse:
         "ws_clients": len(state.manager.connected_clients),
         "websocket": f"ws://{WS_HOST}:{WS_PORT}",
         "http": f"http://{HTTP_HOST}:{HTTP_PORT}",
+        "allow_live_bots": ALLOW_LIVE_BOTS,
+        "allow_custom_strategies": ALLOW_CUSTOM_STRATEGIES,
+        "archive_parquet_enabled": ARCHIVE_PARQUET_ENABLED,
+        "archive_backend": ARCHIVE_BACKEND,
     }
 
     try:
