@@ -119,10 +119,13 @@ AGENT_LLM_COOLDOWN_SEC = int(os.environ.get("AGENT_LLM_COOLDOWN_SEC", "300"))
 AGENT_LLM_SIM_COOLDOWN_SEC = int(os.environ.get("AGENT_LLM_SIM_COOLDOWN_SEC", "30"))
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 AGENT_LLM_MODEL = os.environ.get("AGENT_LLM_MODEL", "openai/gpt-4o-mini")
+AGENT_LLM_MODEL_DEEP = os.environ.get("AGENT_LLM_MODEL_DEEP", "").strip() or AGENT_LLM_MODEL
 # LLM provider: auto | ollama | openrouter | off
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto").lower()
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip()
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:3b").strip()
+OLLAMA_MODEL_NARRATOR = os.environ.get("OLLAMA_MODEL_NARRATOR", "").strip() or OLLAMA_MODEL
+OLLAMA_MODEL_DEEP = os.environ.get("OLLAMA_MODEL_DEEP", "").strip()
 OLLAMA_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "60"))
 _ollama_reasoning_effort = os.environ.get("OLLAMA_REASONING_EFFORT", "none").strip().lower()
 OLLAMA_REASONING_EFFORT = (

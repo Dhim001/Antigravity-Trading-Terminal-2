@@ -5,7 +5,7 @@ from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 
 
 class _StubScreener:
-    def process_candles(self, symbol, candles, config, strategy_name):
+    def process_candles(self, symbol, candles, config, strategy_name, full_history=False):
         import pandas as pd
 
         rows = []

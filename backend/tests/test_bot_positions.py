@@ -24,11 +24,36 @@ from app.services.bots import analytics as bot_analytics  # noqa: E402
 from app.services.bots import positions as bot_positions  # noqa: E402
 
 
+def _reset_bot_db() -> None:
+    db_conn.DB_PATH = os.path.join(_TEST_DIR, "bot_positions_test.db")
+    app_config.DB_PATH = db_conn.DB_PATH
+    db_conn._pool = None
+    path = db_conn.DB_PATH
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except PermissionError:
+            conn = get_connection()
+            cursor = conn.cursor()
+            for table in (
+                "bot_pending_fills",
+                "bot_positions",
+                "bot_trades",
+                "bot_snapshots",
+                "bot_logs",
+                "orders",
+                "positions",
+                "bots",
+            ):
+                cursor.execute(f"DELETE FROM {table}")
+            conn.commit()
+            conn.close()
+    init_db()
+
+
 class BotPositionsTests(unittest.TestCase):
     def setUp(self):
-        if os.path.exists(db_conn.DB_PATH):
-            os.remove(db_conn.DB_PATH)
-        init_db()
+        _reset_bot_db()
         conn = get_connection()
         cursor = conn.cursor()
         self.bot_id = str(uuid.uuid4())
@@ -60,9 +85,7 @@ class BotPositionsTests(unittest.TestCase):
 
 class PendingFillReconcileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        if os.path.exists(db_conn.DB_PATH):
-            os.remove(db_conn.DB_PATH)
-        init_db()
+        _reset_bot_db()
         conn = get_connection()
         cursor = conn.cursor()
         self.bot_id = str(uuid.uuid4())

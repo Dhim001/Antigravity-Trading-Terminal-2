@@ -5,7 +5,9 @@ from app.services.agent.llm.router import (
     is_llm_available,
     list_all_models,
     set_preferred_model,
+    summarize_backtest_entry,
     summarize_insight,
+    summarize_trade_explain,
     summarize_with_critique,
 )
 
@@ -14,6 +16,8 @@ __all__ = [
     "is_llm_available",
     "list_all_models",
     "set_preferred_model",
+    "summarize_backtest_entry",
     "summarize_insight",
+    "summarize_trade_explain",
     "summarize_with_critique",
 ]

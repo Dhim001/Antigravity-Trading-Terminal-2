@@ -43,7 +43,7 @@ function DockTabFallback() {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Label } from '@/components/ui/label';
 import {
   InputGroup, InputGroupAddon, InputGroupInput, InputGroupText,
@@ -575,7 +575,7 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestRunning, setBacktestProgress, setBacktestSnapshot, setBacktestLabOpen,
     openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
     setChartInteractionMode,
-    isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
+    isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
     ambiguousOrders, setAmbiguousOrders,
@@ -608,6 +608,7 @@ export function AlgoTab({ hideToolbar = false }) {
     setChartInteractionMode: s.setChartInteractionMode,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
+    allowCustomStrategies: s.allowCustomStrategies,
     terminalMode: s.terminalMode,
     terminalRole: s.terminalRole,
     distributed: s.distributed,
@@ -780,7 +781,8 @@ export function AlgoTab({ hideToolbar = false }) {
   };
 
   const filteredTemplates = strategyTemplates.filter(
-    t => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode,
+    (t) => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode
+      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
   );
 
   const selectTemplate = (template) => {
@@ -808,6 +810,13 @@ export function AlgoTab({ hideToolbar = false }) {
       setActiveSymbol(bot.symbol);
     }
     setChartInteractionMode('edit_sl');
+  }, [activeSymbol, setActiveSymbol, setChartInteractionMode]);
+
+  const handleSetBotTakeProfit = useCallback((bot) => {
+    if (bot.symbol && bot.symbol !== activeSymbol) {
+      setActiveSymbol(bot.symbol);
+    }
+    setChartInteractionMode('edit_tp');
   }, [activeSymbol, setActiveSymbol, setChartInteractionMode]);
 
   const handleStopAll = () => {
@@ -862,6 +871,11 @@ export function AlgoTab({ hideToolbar = false }) {
 
   const handleDismissAmbiguous = (orderId) => {
     sendAction(Action.ADMIN_RESOLVE_AMBIGUOUS, { order_id: orderId, resolution: 'dismissed' });
+    setAmbiguousOrders(ambiguousOrders.filter(o => o.id !== orderId));
+  };
+
+  const handleConfirmAmbiguous = (orderId) => {
+    sendAction(Action.ADMIN_RESOLVE_AMBIGUOUS, { order_id: orderId, resolution: 'confirmed_filled' });
     setAmbiguousOrders(ambiguousOrders.filter(o => o.id !== orderId));
   };
 
@@ -960,9 +974,14 @@ export function AlgoTab({ hideToolbar = false }) {
                     <td className="num-mono text-right">{Number(o.quantity).toFixed(4)}</td>
                     <td className="text-muted-foreground truncate max-w-[180px]" title={o.message}>{o.message}</td>
                     <td className="text-right">
-                      <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => handleDismissAmbiguous(o.id)}>
-                        Dismiss
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleConfirmAmbiguous(o.id)}>
+                          Confirm filled
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => handleDismissAmbiguous(o.id)}>
+                          Dismiss
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1004,7 +1023,10 @@ export function AlgoTab({ hideToolbar = false }) {
                 value={botExecutionMode}
                 onValueChange={(mode) => {
                   setBotExecutionMode(mode);
-                  const first = strategyTemplates.find(t => (t.execution_mode || 'BAR_CLOSE') === mode);
+                  const first = strategyTemplates.find(
+                    (t) => (t.execution_mode || 'BAR_CLOSE') === mode
+                      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
+                  );
                   if (first) selectTemplate(first);
                 }}
               >
@@ -1630,6 +1652,16 @@ export function AlgoTab({ hideToolbar = false }) {
                           </Button>
                         )}
                         {bot.status !== 'STOPPED' && (
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            onClick={() => handleSetBotTakeProfit(bot)}
+                            title="Set take profit on chart"
+                          >
+                            TP
+                          </Button>
+                        )}
+                        {bot.status !== 'STOPPED' && (
                           <Button variant="destructive" size="xs" onClick={() => handleStopBot(bot.id)} title="Stop bot">
                             STOP
                           </Button>
@@ -1967,8 +1999,8 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null, group: 'portfolio' },
     { id: 'balances',  label: 'Balances',  icon: Landmark, group: 'portfolio' },
     { id: 'algo',      label: 'Algo Bot',  icon: Cpu,      group: 'automation' },
-    { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge, group: 'intelligence' },
-    { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge, group: 'intelligence' },
+    { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full scanner workspace' },
+    { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full analyst history' },
     { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: ambiguousCount || null, group: 'automation' },
     { id: 'bots',      label: 'Bot History', icon: History, badge: botHistoryCount || null, group: 'automation' },
     { id: 'ticks',     label: 'Ticks',     icon: Zap,      group: 'data' },
@@ -2086,7 +2118,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
                       key={tab.id}
                       value={tab.id}
                       className="dock-tab-trigger shrink-0 px-2 text-xs xl:px-3"
-                      title={tab.label}
+                      title={tab.hint || tab.label}
                     >
                       <Icon data-icon="inline-start" />
                       <span className="header-label">{tab.label}</span>
@@ -2105,7 +2137,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
             </div>
             <div className="dock-tab-actions">
             {activeGroup === 'intelligence' && (
-              <Button variant="outline" size="xs" onClick={() => window.dispatchEvent(new CustomEvent('insights-hub-open'))}>
+              <Button
+                variant="outline"
+                size="xs"
+                title="Open Insights Hub — resizable scanner + analyst workspace (⌘I)"
+                onClick={() => window.dispatchEvent(new CustomEvent('insights-hub-open'))}
+              >
                 Hub
               </Button>
             )}
@@ -2220,6 +2257,10 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           showCloseButton={false}
           className="terminal-sheet terminal-sheet--bottom flex min-h-0 flex-col gap-0 overflow-hidden rounded-t-xl border-t p-0 sm:max-w-full"
         >
+          <SheetHeader className="sr-only">
+            <SheetTitle>Trade history</SheetTitle>
+            <SheetDescription>Expanded trade history view</SheetDescription>
+          </SheetHeader>
           <ErrorBoundary name="Trade history (expanded)">
             <TradeHistoryContent embedded={false} onClose={() => setHistoryFullscreen(false)} />
           </ErrorBoundary>

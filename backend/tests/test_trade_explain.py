@@ -7,7 +7,7 @@ import unittest
 
 from app.database import init_db
 from app.db.connection import get_connection
-from app.services.agent.trade_explain import explain_trade, _find_insight
+from app.services.agent.trade_explain import explain_trade, _find_insight, _fetch_trade_relevant_logs
 
 
 class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
@@ -86,6 +86,31 @@ class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
         result = await explain_trade("bot-explain-1", trade_id)
         self.assertEqual(result["insight"]["signal"], "BUY")
         self.assertEqual(result["insight"]["reasons"][0], "Stored reason")
+
+    async def test_trade_relevant_logs_prioritize_signal_context(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config, execution_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("bot-log-1", "CHART_AGENT", "BTCUSDT", "1m", "STOPPED", 1000, "{}", "BAR_CLOSE"),
+        )
+        for msg in ("Heartbeat ok", "BTCUSDT signal BUY at bar 1700", "Unrelated maintenance"):
+            cursor.execute(
+                "INSERT INTO bot_logs (bot_id, level, message) VALUES (?, ?, ?)",
+                ("bot-log-1", "INFO", msg),
+            )
+        conn.commit()
+        conn.close()
+        ranked = _fetch_trade_relevant_logs(
+            {"symbol": "BTCUSDT", "side": "BUY", "signal_bar_time": 1700},
+            "bot-log-1",
+            limit=2,
+        )
+        self.assertTrue(ranked)
+        self.assertIn("signal", ranked[0].lower())
 
 
 if __name__ == "__main__":

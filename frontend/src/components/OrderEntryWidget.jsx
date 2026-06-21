@@ -5,7 +5,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
-import { apiAction } from '../api/client';
+import { previewOrder } from '../api/endpoints';
 import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -163,9 +163,8 @@ export default function OrderEntryWidget() {
       if (showSLTP && slAbs) payload.stop_loss_price = parseFloat(slAbs.toFixed(8));
       if (showSLTP && tpAbs) payload.take_profit_price = parseFloat(tpAbs.toFixed(8));
       try {
-        const body = await apiAction('/api/v1/orders/preview', { method: 'POST', body: payload });
-        const previewMsg = body.messages?.find((m) => m.type === 'order_preview');
-        setPreview(previewMsg?.data ?? body.data ?? null);
+        const result = await previewOrder(payload);
+        setPreview(result);
       } catch {
         setPreview(null);
       } finally {

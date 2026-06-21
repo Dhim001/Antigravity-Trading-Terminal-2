@@ -45,7 +45,7 @@ class TestChartAgentRules(unittest.TestCase):
         self.assertGreaterEqual(insight.confidence, 0.0)
         self.assertLessEqual(insight.confidence, 1.0)
         self.assertTrue(insight.reasons)
-        self.assertEqual(insight.insight_id, f"BTCUSDT:{insight.bar_time}")
+        self.assertEqual(insight.insight_id, f"BTCUSDT:1m:{insight.bar_time}")
 
     def test_display_label_matches_score_thresholds(self):
         self.assertEqual(display_label(4), "STRONG BUY")
@@ -70,6 +70,8 @@ class TestChartAgentRules(unittest.TestCase):
         momentum = insight.sub_reports["momentum"]["score"]
         self.assertEqual(insight.score, trend + momentum)
         self.assertIn("risk", insight.sub_reports)
+        self.assertIn("indicator", insight.sub_reports)
+        self.assertEqual(insight.sub_reports["indicator"]["score"], momentum)
         self.assertEqual(insight.version, 2)
 
     def test_v1_payload_deserializes_without_sub_reports(self):

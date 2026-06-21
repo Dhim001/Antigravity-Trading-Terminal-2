@@ -158,6 +158,42 @@ class ChartAnalystService:
         conn.commit()
         conn.close()
 
+    def persist_deep_reasoning(self, insight_id: str, deep: dict) -> bool:
+        """Merge deep_reasoning enrichment into a stored insight payload."""
+        if not insight_id or not deep:
+            return False
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT payload FROM agent_insights WHERE insight_id = ?",
+            (insight_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+        raw = row[0] if not isinstance(row, dict) else row.get("payload")
+        if not raw:
+            conn.close()
+            return False
+        payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        payload["deep_reasoning"] = deep
+        encoded = json.dumps(payload)
+        cursor.execute(
+            "UPDATE agent_insights SET payload = ? WHERE insight_id = ?",
+            (encoded, insight_id),
+        )
+        conn.commit()
+        conn.close()
+        sym = payload.get("symbol")
+        tf = payload.get("timeframe", "1m")
+        if sym:
+            key = insight_cache_key(sym, tf)
+            entry = self._cache.get(key)
+            if entry:
+                self._cache[key] = (entry[0], payload)
+        return True
+
     def list_insights(self, symbol: str, limit: int = 20, timeframe: str | None = None) -> list[dict]:
         conn = get_connection()
         cursor = conn.cursor()

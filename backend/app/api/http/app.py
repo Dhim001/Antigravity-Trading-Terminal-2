@@ -20,6 +20,8 @@ from app.config import (
     ALLOW_LIVE_BOTS,
     ARCHIVE_BACKEND,
     ARCHIVE_PARQUET_ENABLED,
+    ARCHIVE_TICKS_ENABLED,
+    BOT_MIN_CANDLES,
     HTTP_API_KEY,
     HTTP_CORS_ORIGINS,
     HTTP_HOST,
@@ -65,16 +67,29 @@ async def health(request: Request) -> JSONResponse:
         "allow_custom_strategies": ALLOW_CUSTOM_STRATEGIES,
         "archive_parquet_enabled": ARCHIVE_PARQUET_ENABLED,
         "archive_backend": ARCHIVE_BACKEND,
+        "bot_min_candles": BOT_MIN_CANDLES,
+        "archive_ticks_enabled": ARCHIVE_TICKS_ENABLED,
     }
 
     try:
-        from app.config import AGENT_LLM_ENABLED
+        from app.config import (
+            AGENT_ENABLED,
+            AGENT_LLM_ENABLED,
+            AGENT_VISION_ENABLED,
+            SCANNER_ENABLED,
+        )
 
         body["llm"] = await get_llm_status()
         body["agent_llm_enabled"] = AGENT_LLM_ENABLED
+        body["agent_vision_enabled"] = AGENT_VISION_ENABLED
+        body["agent_enabled"] = AGENT_ENABLED
+        body["scanner_enabled"] = SCANNER_ENABLED
     except Exception:
         body["llm"] = {"available": False, "provider": "off"}
         body["agent_llm_enabled"] = False
+        body["agent_vision_enabled"] = False
+        body["agent_enabled"] = False
+        body["scanner_enabled"] = False
 
     try:
         stats = get_db_stats()
@@ -115,11 +130,12 @@ async def list_agent_insights(request: Request) -> JSONResponse:
         limit = int(request.query_params.get("limit", "20"))
     except (TypeError, ValueError):
         limit = 20
+    timeframe = request.query_params.get("timeframe") or None
     state: AppState = request.app.state.terminal
     analyst = state.chart_analyst
     if analyst is None:
         return JSONResponse({"ok": False, "error": "Chart analyst unavailable"}, status_code=503)
-    insights = analyst.list_insights(symbol, limit=limit)
+    insights = analyst.list_insights(symbol, limit=limit, timeframe=timeframe)
     return JSONResponse({"ok": True, "symbol": symbol, "insights": insights, "count": len(insights)})
 
 
@@ -131,6 +147,30 @@ async def list_llm_models(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, **data})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
+async def llm_ops_status_handler(request: Request) -> JSONResponse:
+    from app.services.agent.llm.ops import ollama_ops_status
+
+    try:
+        return JSONResponse(await ollama_ops_status())
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+
+async def pull_llm_model_handler(request: Request) -> JSONResponse:
+    from app.services.agent.llm.ops import pull_ollama_model
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    model = (body.get("model") or "").strip()
+    if not model:
+        return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
+    result = await pull_ollama_model(model)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
 
 
 async def set_llm_model(request: Request) -> JSONResponse:
@@ -337,6 +377,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/llm/models", list_llm_models, methods=["GET"]),
+        Route("/api/v1/llm/ops", llm_ops_status_handler, methods=["GET"]),
+        Route("/api/v1/llm/pull", pull_llm_model_handler, methods=["POST"]),
         Route("/api/v1/llm/model", set_llm_model, methods=["POST"]),
         Route("/api/v1/backtest/runs", list_backtest_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/runs/{run_id}", get_backtest_run_handler, methods=["GET"]),

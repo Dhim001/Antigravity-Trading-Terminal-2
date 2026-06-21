@@ -1,6 +1,9 @@
 import { apiAction, apiRequest } from './client';
 import { applyHttpEnvelope } from './dispatch';
+import { Action, MessageType } from './protocol';
+import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
+import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
@@ -19,6 +22,11 @@ export async function fetchHealth(storeActions) {
       agentLlmProvider: body.llm?.provider,
       agentLlmModel: body.llm?.model,
       agentLlmModels: body.llm?.models,
+      agentVisionEnabled: body.agent_vision_enabled,
+      agentEnabled: body.agent_enabled,
+      scannerEnabled: body.scanner_enabled,
+      botMinCandles: body.bot_min_candles,
+      archiveTicksEnabled: body.archive_ticks_enabled,
       ...(body.worker != null
         ? {
             distributed: true,
@@ -31,6 +39,28 @@ export async function fetchHealth(storeActions) {
   return body;
 }
 
+/** POST preview_order — unified server-side order validation. */
+export async function previewOrder(payload) {
+  const body = await invokeHttpAction(Action.PREVIEW_ORDER, payload);
+  const msg = body.messages?.find((m) => m.type === MessageType.ORDER_PREVIEW);
+  return msg?.data ?? body.data ?? null;
+}
+
+/** POST /api/v1/orders/preview — HITL insight draft validation. */
+export async function previewInsightOrder(draft) {
+  if (!draft?.symbol || !draft?.side) {
+    throw new Error('Invalid order draft');
+  }
+  return previewOrder({
+    symbol: draft.symbol,
+    side: draft.side,
+    type: draft.orderType || 'MARKET',
+    quantity: draft.quantity,
+    stop_loss_price: draft.stop_loss_price,
+    take_profit_price: draft.take_profit_price,
+  });
+}
+
 /** GET /api/v1/llm/models — Ollama + OpenRouter models on this system. */
 export async function fetchLlmModels(storeActions) {
   try {
@@ -41,7 +71,9 @@ export async function fetchLlmModels(storeActions) {
         agentLlmModels: models,
         agentLlmModel: body.active_model,
       });
-      if (body.active_model && !useStore.getState().selectedLlmModel) {
+      if (body.preferred_model) {
+        storeActions.setSelectedLlmModel(body.preferred_model);
+      } else if (body.active_model && !useStore.getState().selectedLlmModel) {
         storeActions.setSelectedLlmModel(body.active_model);
       }
     }
@@ -64,9 +96,23 @@ export async function setPreferredLlmModel(model, storeActions) {
       agentLlmModels: models,
       agentLlmModel: body.active_model,
     });
-    storeActions.setSelectedLlmModel(body.active_model || model || null);
+    storeActions.setSelectedLlmModel(body.preferred_model || body.active_model || model || null);
   }
   return body;
+}
+
+/** GET /api/v1/llm/ops — Ollama HTTP + CLI health and tier install status. */
+export async function fetchLlmOps() {
+  return apiRequest('/api/v1/llm/ops');
+}
+
+/** POST /api/v1/llm/pull — operator: ollama pull (long-running). */
+export async function pullLlmModel(model) {
+  return apiRequest('/api/v1/llm/pull', {
+    method: 'POST',
+    body: { model },
+    timeoutMs: 620_000,
+  });
 }
 
 /** Payload helper — attach user-selected LLM model when set. */
@@ -262,10 +308,14 @@ export async function fetchCandles(symbol, storeActions) {
   return body;
 }
 
-export async function fetchAgentInsights(symbol, storeActions, limit = 30) {
+export async function fetchAgentInsights(symbol, storeActions, limit = 30, timeframe = null) {
   try {
     const encoded = encodeURIComponent(symbol);
-    const body = await apiRequest(`/api/v1/agent/insights/${encoded}?limit=${limit}`);
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (timeframe) {
+      qs.set('timeframe', normalizeAnalystTimeframe(timeframe));
+    }
+    const body = await apiRequest(`/api/v1/agent/insights/${encoded}?${qs}`);
     if (body.insights && storeActions?.setAgentInsightHistory) {
       storeActions.setAgentInsightHistory(symbol, body.insights);
     }

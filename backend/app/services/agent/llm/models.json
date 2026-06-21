@@ -1,0 +1,81 @@
+{
+  "models": [
+    {
+      "id": "llama3.2:3b",
+      "label": "Llama 3.2 3B",
+      "tier": "narrator",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "Fast local narrator for chart and backtest batch"
+    },
+    {
+      "id": "gemma3:4b",
+      "label": "Gemma 3 4B",
+      "tier": "narrator",
+      "reasoning_capable": true,
+      "recommended": true,
+      "notes": "Good balance; set OLLAMA_REASONING_EFFORT=none for clean output"
+    },
+    {
+      "id": "phi3:mini",
+      "label": "Phi-3 Mini",
+      "tier": "narrator",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "Lightweight narrator"
+    },
+    {
+      "id": "qwen2.5:7b",
+      "label": "Qwen 2.5 7B",
+      "tier": "deep",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "Deep reasoning and critique enrichment"
+    },
+    {
+      "id": "openai/gpt-4o-mini",
+      "label": "GPT-4o Mini (cloud)",
+      "tier": "narrator",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "OpenRouter cloud narrator"
+    }
+  ],
+  "patterns": [
+    {
+      "match": "deepseek-r1",
+      "tier": "deep",
+      "reasoning_capable": true,
+      "recommended": false,
+      "notes": "Thinking model — heavy CoT; not ideal for batch narration"
+    },
+    {
+      "match": "qwen3",
+      "tier": "deep",
+      "reasoning_capable": true,
+      "recommended": false,
+      "notes": "Thinking model — use reasoning_effort=none or deep tier only"
+    },
+    {
+      "match": "gemma3",
+      "tier": "narrator",
+      "reasoning_capable": true,
+      "recommended": true,
+      "notes": "Narrator tier when reasoning effort disabled"
+    },
+    {
+      "match": "llama3",
+      "tier": "narrator",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "General narrator family"
+    },
+    {
+      "match": "gpt-4o",
+      "tier": "narrator",
+      "reasoning_capable": false,
+      "recommended": true,
+      "notes": "Cloud narrator"
+    }
+  ]
+}

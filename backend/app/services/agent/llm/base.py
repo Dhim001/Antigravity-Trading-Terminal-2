@@ -10,7 +10,7 @@ from typing import Protocol
 SYSTEM_PROMPT = (
     "You are a concise trading chart analyst. Summarize ONLY the JSON insight provided. "
     "Do not invent prices, indicators, or signals. Do not change the signal field. "
-    "When sub_reports are present, mention trend/momentum/risk briefly. "
+    "When sub_reports are present, mention trend, indicator, and risk briefly. "
     "Keep the response under 3 sentences. "
     "Output ONLY the final summary — no commands, code, questions, headings, "
     "chain-of-thought, or references to the prompt or JSON structure."
@@ -34,6 +34,34 @@ BACKTEST_TRADE_SYSTEM_PROMPT = (
     "If bar_time is present, reference the timing briefly. "
     "Output ONLY the final explanation text — no commands, code, questions, headings, "
     "chain-of-thought, or references to the prompt or JSON structure."
+)
+
+NARRATOR_JSON_SYSTEM_PROMPT = (
+    "You are a concise trading narrator. Use ONLY fields in DATA. "
+    "Do not invent prices, indicators, or signals. Never change the signal field. "
+    "Respond with valid JSON only containing exactly one key: "
+    '"explanation" (string, 1-3 sentences for the trader). '
+    "No chain-of-thought, commands, questions, or text outside the JSON object."
+)
+
+BACKTEST_JSON_SYSTEM_PROMPT = (
+    "You explain ONE backtest entry fill using ONLY fields in DATA. "
+    "Do not invent context not in DATA. Do not repeat boilerplate across entries. "
+    "Respond with valid JSON only: "
+    '{"explanation": "1-2 sentences why this entry occurred"}. '
+    "Reference side, timing, and run_scope when present. "
+    "No chain-of-thought or text outside JSON."
+)
+
+TRADE_EXPLAIN_JSON_SYSTEM_PROMPT = (
+    "You explain ONE live or sim bot trade fill using ONLY fields in DATA. "
+    "Use insight sub_reports (trend, indicator, risk), trade_context, recent_logs, "
+    "related_insights, and related_trades when present. "
+    "Do not invent prices, signals, or events not in DATA. "
+    "Respond with valid JSON only: "
+    '{"explanation": "2-4 sentences: why this entry/exit happened and how context supports it"}. '
+    "Mention risk regime or size factor when risk sub_report is present. "
+    "No chain-of-thought or text outside JSON."
 )
 
 _THINKING_BLOCK_RE = re.compile(
@@ -326,6 +354,16 @@ def extract_assistant_text(message: dict | None) -> str | None:
 
 def parse_json_object(text: str | None) -> dict | None:
     """Parse JSON object from model text, stripping reasoning wrappers first."""
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    if t.startswith("{") and t.endswith("}"):
+        try:
+            parsed = json.loads(t)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
     cleaned = strip_reasoning_process(text)
     if not cleaned:
         return None
@@ -341,6 +379,35 @@ def parse_json_object(text: str | None) -> dict | None:
                 return parsed if isinstance(parsed, dict) else None
             except json.JSONDecodeError:
                 return None
+    return None
+
+
+_NARRATIVE_JSON_KEYS = ("explanation", "narrative", "summary")
+
+
+def parse_narrative_field(text: str | None) -> str | None:
+    """Extract trader-facing text from JSON-mode or free-form LLM output."""
+    parsed = parse_json_object(text)
+    if parsed:
+        for key in _NARRATIVE_JSON_KEYS:
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                cleaned = strip_reasoning_process(val.strip())
+                if cleaned:
+                    return cleaned
+    return strip_reasoning_process(text)
+
+
+def finalize_narrative(
+    text: str | None,
+    fallback: str | None = None,
+) -> str | None:
+    """Parse + sanitize model text; use deterministic fallback when empty."""
+    narrative = parse_narrative_field(text)
+    if narrative:
+        return narrative
+    if fallback and fallback.strip():
+        return fallback.strip()
     return None
 
 

@@ -57,6 +57,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   agentLlmProvider: 'off',
   agentLlmModel: null,
   agentLlmModels: [],
+  agentVisionEnabled: false,
+  agentEnabled: true,
+  scannerEnabled: true,
   selectedLlmModel: getLocal('terminal_llm_model', null),
   symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
 
@@ -263,7 +266,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
-  setTerminalConfig: ({ terminalMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels }) => set((state) => ({
+  setTerminalConfig: ({ terminalMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
     allowLiveBots: allowLiveBots ?? state.allowLiveBots,
@@ -281,6 +284,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     agentLlmProvider: agentLlmProvider ?? state.agentLlmProvider,
     agentLlmModel: agentLlmModel ?? state.agentLlmModel,
     agentLlmModels: agentLlmModels ?? state.agentLlmModels,
+    agentVisionEnabled: agentVisionEnabled ?? state.agentVisionEnabled,
+    agentEnabled: agentEnabled ?? state.agentEnabled,
+    scannerEnabled: scannerEnabled ?? state.scannerEnabled,
     ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
   })),
 

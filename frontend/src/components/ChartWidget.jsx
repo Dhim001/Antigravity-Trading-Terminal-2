@@ -919,14 +919,30 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     const onCaptureRequest = (e) => {
       const sym = e.detail?.symbol;
       if (sym && sym !== activeSymbol) return;
-      const chart = chartRef.current;
-      if (!chart) return;
-      try {
-        const image = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#0a0a0a' });
-        window.dispatchEvent(new CustomEvent('chart-capture-ready', {
-          detail: { symbol: activeSymbol, image, bar_time: e.detail?.bar_time },
-        }));
-      } catch (_) {}
+      const captureTfRaw = (e.detail?.timeframe || '').toLowerCase();
+      const captureChartTf = captureTfRaw === '1h' ? '1H' : captureTfRaw === '4h' ? '4H' : null;
+
+      const emitCapture = () => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        try {
+          const image = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#0a0a0a' });
+          window.dispatchEvent(new CustomEvent('chart-capture-ready', {
+            detail: { symbol: activeSymbol, image, bar_time: e.detail?.bar_time },
+          }));
+        } catch (_) {}
+      };
+
+      if (captureChartTf && captureChartTf !== timeframeRef.current) {
+        const prevTf = timeframeRef.current;
+        setTimeframe(captureChartTf);
+        window.setTimeout(() => {
+          emitCapture();
+          setTimeframe(prevTf);
+        }, 500);
+        return;
+      }
+      emitCapture();
     };
     window.addEventListener('chart-capture-request', onCaptureRequest);
     return () => window.removeEventListener('chart-capture-request', onCaptureRequest);

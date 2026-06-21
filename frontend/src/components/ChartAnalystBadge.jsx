@@ -14,6 +14,7 @@ import { Action } from '../api/protocol';
 import { sendAction } from '../api/transport';
 import { useStore } from '../store/useStore';
 import LlmNarrativeBlock from './LlmNarrativeBlock';
+import LlmDeepReasoningBlock from './LlmDeepReasoningBlock';
 import { getCandles } from '../services/candleBuffer';
 import { generateSignal } from '../utils/indicators';
 import SubReportCards from './SubReportCards';
@@ -193,6 +194,16 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
               model={display.model}
               className="chart-analyst__narrative"
               compact
+            />
+          ) : null}
+
+          {display.deep_reasoning ? (
+            <LlmDeepReasoningBlock
+              summary={display.deep_reasoning.reasoning_summary}
+              riskNotes={display.deep_reasoning.risk_notes}
+              provider={display.deep_reasoning.provider}
+              model={display.deep_reasoning.model}
+              className="mb-3"
             />
           ) : null}
 

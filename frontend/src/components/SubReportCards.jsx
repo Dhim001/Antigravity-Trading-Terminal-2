@@ -2,9 +2,17 @@ import { cn } from '@/lib/utils';
 
 const DOMAIN_META = {
   trend: { label: 'Trend', color: 'text-primary' },
-  momentum: { label: 'Momentum', color: 'text-trading-accent' },
+  indicator: { label: 'Indicator', color: 'text-trading-accent' },
+  momentum: { label: 'Indicator', color: 'text-trading-accent' },
   risk: { label: 'Risk', color: 'text-trading-warn' },
 };
+
+function resolveDomainData(subReports, domain) {
+  if (domain === 'indicator') {
+    return subReports.indicator ?? subReports.momentum;
+  }
+  return subReports[domain];
+}
 
 function DomainCard({ domain, data }) {
   if (!data) return null;
@@ -47,15 +55,16 @@ function DomainCard({ domain, data }) {
 }
 
 /**
- * Stacked trend / momentum / risk cards for insight v2.
+ * Stacked trend / indicator / risk cards for insight v2.
  */
 export default function SubReportCards({ subReports, compact = false }) {
   if (!subReports) return null;
+  const domains = ['trend', 'indicator', 'risk'];
   return (
     <div className={cn('grid gap-2', compact ? 'grid-cols-1' : 'sm:grid-cols-3')}>
-      <DomainCard domain="trend" data={subReports.trend} />
-      <DomainCard domain="momentum" data={subReports.momentum} />
-      <DomainCard domain="risk" data={subReports.risk} />
+      {domains.map((domain) => (
+        <DomainCard key={domain} domain={domain} data={resolveDomainData(subReports, domain)} />
+      ))}
     </div>
   );
 }

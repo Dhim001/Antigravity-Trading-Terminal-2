@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.config import BACKTEST_REASONING_MAX_TRADES
-from app.services.agent.llm.base import BACKTEST_TRADE_SYSTEM_PROMPT, strip_reasoning_process
-from app.services.agent.llm.router import _chat, is_llm_available
+from app.services.agent.llm.router import is_llm_available, summarize_backtest_entry
 
 logger = logging.getLogger(__name__)
 
@@ -149,18 +148,12 @@ async def generate_backtest_reasoning(
             bundle["insight"] = insight
             bundle["analyst_signal"] = insight.get("signal")
             bundle["analyst_confidence"] = insight.get("confidence")
-            bundle["analyst_reasons"] = (insight.get("reasons") or [])[:5]
+            bundle["analyst_reasons"] = (insight.get("reasons") or [])[:3]
             bundle["sub_reports"] = insight.get("sub_reports")
-        result = await _chat(
-            system=BACKTEST_TRADE_SYSTEM_PROMPT,
-            user=f"Explain this single backtest entry fill:\n{bundle}",
+        narrative, resolved_model, provider = await summarize_backtest_entry(
+            bundle,
             model=model,
-            max_tokens=256,
-            temperature=0.45,
         )
-        narrative = strip_reasoning_process(result.text)
-        resolved_model = result.model
-        provider = result.provider
 
         if not narrative:
             logger.warning(

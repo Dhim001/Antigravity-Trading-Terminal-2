@@ -19,6 +19,7 @@ export function getStoreActions() {
     addBotLog: s.addBotLog,
     setSystemStats: s.setSystemStats,
     setTerminalConfig: s.setTerminalConfig,
+    setSelectedLlmModel: s.setSelectedLlmModel,
     setBots: s.setBots,
     setBotLogs: s.setBotLogs,
     setBacktestResults: s.setBacktestResults,
@@ -75,6 +76,8 @@ export function applyServerMessage(type, data, storeActions, meta) {
       if (data?.status === 'success' && /market prices preserved/i.test(data?.message ?? '')) {
         forceMarketSnapshotSave(() => useStore.getState());
       }
+      break;
+    case MessageType.ORDER_PREVIEW:
       break;
     case MessageType.TRADE_HISTORY:
       storeActions.setTradeHistory(data);

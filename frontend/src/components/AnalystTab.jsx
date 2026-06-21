@@ -84,7 +84,9 @@ export default function AnalystTab() {
   const [deepReasonLoading, setDeepReasonLoading] = useState(null);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
+  const agentVisionEnabled = useStore((s) => s.agentVisionEnabled);
   const agentDeepReasoning = useStore((s) => s.agentDeepReasoning);
+  const [visionTf, setVisionTf] = useState('4h');
   const [compareMode, setCompareMode] = useState(false);
   const [compareSymbol, setCompareSymbol] = useState(
     () => symbolsList.find((s) => s !== activeSymbol) ?? symbolsList[0] ?? '',
@@ -127,13 +129,13 @@ export default function AnalystTab() {
   const loadHistory = useCallback(async () => {
     setLoading(true);
     try {
-      await fetchAgentInsights(symbol, useStore.getState(), 40);
+      await fetchAgentInsights(symbol, useStore.getState(), 40, analysisTf);
     } catch (err) {
       toast.error(err?.message || 'Failed to load analyst history');
     } finally {
       setLoading(false);
     }
-  }, [symbol]);
+  }, [symbol, analysisTf]);
 
   useEffect(() => {
     loadHistory();
@@ -171,7 +173,7 @@ export default function AnalystTab() {
       }
       sendAction(Action.CHART_VISION, {
         symbol,
-        timeframe: '4h',
+        timeframe: visionTf,
         image_base64: image.replace(/^data:image\/png;base64,/, ''),
         bar_time: bar_time || latest?.bar_time || Math.floor(Date.now() / 1000),
       }).finally(() => setVisionLoading(false));
@@ -179,7 +181,7 @@ export default function AnalystTab() {
     window.addEventListener('chart-capture-ready', handler);
     setActiveSymbol(symbol);
     window.dispatchEvent(new CustomEvent('chart-capture-request', {
-      detail: { symbol, bar_time: latest?.bar_time },
+      detail: { symbol, bar_time: latest?.bar_time, timeframe: visionTf },
     }));
     setTimeout(() => {
       window.removeEventListener('chart-capture-ready', handler);
@@ -187,8 +189,9 @@ export default function AnalystTab() {
     }, 5000);
   };
 
-  const visionKey = `${symbol}:4h`;
+  const visionKey = `${symbol}:${visionTf}`;
   const visionReport = visionReports[visionKey];
+  const visionLabel = visionTf === '1h' ? '1H' : '4H';
 
   return (
     <div className="dock-panel-tab">
@@ -200,7 +203,7 @@ export default function AnalystTab() {
           <div className="dock-panel-tab__toolbar-copy">
             <span className="dock-panel-tab__toolbar-title">Chart Analyst</span>
             <span className="dock-panel-tab__toolbar-subtitle num-mono">
-              {rows.length} insight{rows.length === 1 ? '' : 's'}
+              {rows.length} insight{rows.length === 1 ? '' : 's'} · {chartTf}
               {rows.length > 0 && (
                 <> · {stats.buy} buy · {stats.sell} sell</>
               )}
@@ -242,15 +245,28 @@ export default function AnalystTab() {
           <Button variant="secondary" size="sm" className="h-7 text-xs" onClick={runAnalyze}>
             Analyze
           </Button>
+          <Select value={visionTf} onValueChange={setVisionTf}>
+            <SelectTrigger className="h-7 w-[4.5rem] text-xs" aria-label="Vision timeframe">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper">
+              <SelectItem value="1h" className="text-xs">1H</SelectItem>
+              <SelectItem value="4h" className="text-xs">4H</SelectItem>
+            </SelectContent>
+          </Select>
           <Button
             variant="outline"
             size="sm"
             className="h-7 text-xs"
-            disabled={visionLoading}
+            disabled={visionLoading || !agentVisionEnabled}
             onClick={requestVision}
-            title="Requires AGENT_VISION_ENABLED and OpenRouter key"
+            title={
+              agentVisionEnabled
+                ? `Describe ${visionLabel} structure (on-demand; not a signal)`
+                : 'Requires AGENT_VISION_ENABLED=true and OPENROUTER_API_KEY'
+            }
           >
-            {visionLoading ? 'Capturing…' : 'Describe 4H'}
+            {visionLoading ? 'Capturing…' : `Describe ${visionLabel}`}
           </Button>
         </div>
       </header>
@@ -321,7 +337,7 @@ export default function AnalystTab() {
           {visionReport && (
             <div className="mt-2 rounded border border-border/50 bg-background/40 p-2">
               <p className="text-[0.58rem] font-semibold uppercase text-muted-foreground">
-                Structure notes (not a signal)
+                Structure notes ({visionLabel} · not a signal)
               </p>
               <p className="mt-1 text-xs">{visionReport.structure}</p>
               {visionReport.patterns?.length > 0 && (

@@ -144,6 +144,48 @@ def _fetch_recent_logs(bot_id: str, limit: int = 12) -> list[str]:
     return [r[0] if not isinstance(r, dict) else r.get("message", "") for r in rows if r]
 
 
+def _fetch_trade_relevant_logs(trade: dict, bot_id: str, *, limit: int = 12) -> list[str]:
+    """Rank recent bot logs by relevance to this fill (lightweight RAG)."""
+    sym = (trade.get("symbol") or "").upper()
+    side = (trade.get("side") or "").upper()
+    bar_time = trade.get("signal_bar_time")
+    raw = _fetch_recent_logs(bot_id, limit=40)
+    scored: list[tuple[int, str]] = []
+    for msg in raw:
+        text = str(msg or "")
+        if not text:
+            continue
+        upper = text.upper()
+        score = 0
+        if sym and sym in upper:
+            score += 2
+        if side and side in upper:
+            score += 1
+        if bar_time is not None and str(bar_time) in text:
+            score += 3
+        lower = text.lower()
+        if any(k in lower for k in ("signal", "entry", "insight", "chart", "analyst", "buy", "sell")):
+            score += 1
+        scored.append((score, text))
+    scored.sort(key=lambda item: -item[0])
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, msg in scored:
+        if msg in seen:
+            continue
+        seen.add(msg)
+        out.append(msg)
+        if len(out) >= limit:
+            return out
+    for msg in raw:
+        text = str(msg or "")
+        if text and text not in seen:
+            out.append(text)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _fetch_related_insights(symbol: str, timeframe: str, *, limit: int = 5) -> list[dict]:
     """Recent analyst insights for symbol (RAG context)."""
     sym = symbol.upper()
@@ -174,6 +216,15 @@ def _fetch_related_insights(symbol: str, timeframe: str, *, limit: int = 5) -> l
             "confidence": payload.get("confidence"),
             "score": payload.get("score"),
             "reasons": (payload.get("reasons") or [])[:3],
+            "sub_reports": {
+                name: {
+                    k: report.get(k)
+                    for k in ("score", "atr_regime", "suggested_size_factor")
+                    if isinstance(report, dict) and report.get(k) is not None
+                }
+                for name, report in (payload.get("sub_reports") or {}).items()
+                if isinstance(report, dict)
+            },
         })
         if len(out) >= limit:
             break
@@ -261,32 +312,41 @@ async def explain_trade(
                 chart_analyst=chart_analyst,
             )
 
-    logs = _fetch_recent_logs(bot_id)
+    logs = _fetch_trade_relevant_logs(trade, bot_id)
     related_insights = _fetch_related_insights(symbol, timeframe, limit=5)
     related_trades = _fetch_related_trades(bot_id, symbol, limit=5)
     summary = _template_summary(trade, insight, bot)
 
     narrative = None
     llm_provider = None
-    if use_llm and insight:
+    if use_llm and (insight or logs or related_insights):
         try:
-            from app.services.agent.llm.router import summarize_insight
+            from app.services.agent.llm.router import summarize_trade_explain
 
             bundle = {
-                **insight,
+                "insight": insight or {},
                 "trade_context": {
                     "side": trade.get("side"),
                     "price": trade.get("price"),
                     "quantity": trade.get("quantity"),
                     "signal_bar_time": trade.get("signal_bar_time"),
+                    "is_exit": bool(trade.get("is_exit")),
                 },
-                "recent_logs": logs[:6],
+                "bot": {
+                    "strategy": bot.get("strategy"),
+                    "timeframe": timeframe,
+                    "symbol": symbol,
+                },
+                "recent_logs": logs[:8],
                 "related_insights": related_insights,
                 "related_trades": related_trades,
             }
-            narrative, _model, llm_provider = await summarize_insight(bundle, model=llm_model)
+            narrative, _model, llm_provider = await summarize_trade_explain(bundle, model=llm_model)
         except Exception:
             narrative = None
+
+    if use_llm and not narrative:
+        narrative = summary
 
     return {
         "trade_id": trade_id,

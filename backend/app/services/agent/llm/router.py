@@ -4,31 +4,50 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from app.config import (
     AGENT_LLM_FALLBACK_CLOUD,
     AGENT_LLM_MODEL,
+    AGENT_LLM_MODEL_DEEP,
     AGENT_LLM_PREFER_LOCAL,
     LLM_PROVIDER,
     OLLAMA_MODEL,
+    OLLAMA_MODEL_DEEP,
+    OLLAMA_MODEL_NARRATOR,
     TERMINAL_MODE,
 )
 from app.services.agent.llm.base import (
+    BACKTEST_JSON_SYSTEM_PROMPT,
     CRITIQUE_SYSTEM_PROMPT,
     LLMResult,
-    SYSTEM_PROMPT,
+    NARRATOR_JSON_SYSTEM_PROMPT,
+    TRADE_EXPLAIN_JSON_SYSTEM_PROMPT,
+    finalize_narrative,
     parse_json_object,
     strip_reasoning_process,
 )
+from app.services.agent.llm.model_registry import enrich_models_response
 from app.services.agent.llm.ollama import OllamaProvider
 from app.services.agent.llm.openrouter import OpenRouterProvider
+from app.services.agent.llm.payloads import (
+    dumps_payload,
+    slim_backtest_trade_payload,
+    slim_insight_payload,
+    slim_trade_explain_payload,
+    template_backtest_narrative,
+    template_insight_narrative,
+    template_trade_explain_narrative,
+)
+from app.services.agent.llm.validation import strict_retry_user_suffix, validate_narrative
 
 logger = logging.getLogger(__name__)
 
 _ollama = OllamaProvider()
 _openrouter = OpenRouterProvider()
 _preferred_model: str | None = None
+
+LlmTask = Literal["narrator", "deep"]
 
 
 def set_preferred_model(model: str | None) -> None:
@@ -40,13 +59,18 @@ def get_preferred_model() -> str | None:
     return _preferred_model
 
 
-def resolve_model(explicit: str | None = None) -> str:
+def resolve_model(explicit: str | None = None, task: LlmTask = "narrator") -> str:
+    """Pick model: UI override > preferred > task tier > default."""
     if explicit:
         return explicit
     if _preferred_model:
         return _preferred_model
+    if task == "deep":
+        if LLM_PROVIDER in ("ollama", "auto") and TERMINAL_MODE == "SIMULATED":
+            return OLLAMA_MODEL_DEEP or OLLAMA_MODEL
+        return AGENT_LLM_MODEL_DEEP or AGENT_LLM_MODEL
     if LLM_PROVIDER in ("ollama", "auto") and TERMINAL_MODE == "SIMULATED":
-        return OLLAMA_MODEL
+        return OLLAMA_MODEL_NARRATOR or OLLAMA_MODEL
     return AGENT_LLM_MODEL
 
 
@@ -96,7 +120,7 @@ async def get_llm_status() -> dict[str, Any]:
         except Exception:
             models = []
     active_model = resolve_model()
-    return {
+    return enrich_models_response({
         "provider": name if provider else "off",
         "configured_provider": LLM_PROVIDER,
         "ollama_reachable": ollama_up,
@@ -104,20 +128,24 @@ async def get_llm_status() -> dict[str, Any]:
         "available": provider is not None,
         "model": active_model,
         "preferred_model": _preferred_model,
+        "narrator_model": resolve_model(task="narrator"),
+        "deep_model": resolve_model(task="deep"),
         "models": models,
         "openrouter_model": AGENT_LLM_MODEL if openrouter_up else None,
-    }
+    })
 
 
 async def list_all_models() -> dict[str, Any]:
     ollama_models = await _ollama.list_models() if await _ollama.is_available() else []
     openrouter_models = await _openrouter.list_models() if await _openrouter.is_available() else []
-    return {
+    return enrich_models_response({
         "ollama": ollama_models,
         "openrouter": openrouter_models,
         "active_model": resolve_model(),
         "preferred_model": _preferred_model,
-    }
+        "narrator_model": resolve_model(task="narrator"),
+        "deep_model": resolve_model(task="deep"),
+    })
 
 
 async def _chat(
@@ -125,6 +153,7 @@ async def _chat(
     system: str,
     user: str,
     model: str | None = None,
+    task: LlmTask = "narrator",
     max_tokens: int = 180,
     temperature: float = 0.3,
     json_mode: bool = False,
@@ -133,7 +162,7 @@ async def _chat(
     if provider is None:
         return LLMResult(text=None, model=None, provider="off")
 
-    chosen = resolve_model(model)
+    chosen = resolve_model(model, task=task)
     result = await provider.chat(
         system=system,
         user=user,
@@ -152,10 +181,11 @@ async def _chat(
         and AGENT_LLM_FALLBACK_CLOUD
         and await _openrouter.is_available()
     ):
+        fb_model = AGENT_LLM_MODEL_DEEP if task == "deep" else AGENT_LLM_MODEL
         fb = await _openrouter.chat(
             system=system,
             user=user,
-            model=AGENT_LLM_MODEL,
+            model=fb_model,
             max_tokens=max_tokens,
             temperature=temperature,
             json_mode=json_mode,
@@ -167,19 +197,131 @@ async def _chat(
     return result
 
 
+async def _narrate_json_validated(
+    *,
+    system: str,
+    user: str,
+    context: dict,
+    fallback: str | None,
+    model: str | None,
+    task: LlmTask,
+    max_tokens: int,
+    temperature: float,
+    require_side: bool = True,
+) -> tuple[str | None, str | None, str | None]:
+    """JSON-mode narration with validation and one strict retry."""
+    result = await _chat(
+        system=system,
+        user=user,
+        model=model,
+        task=task,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        json_mode=True,
+    )
+    narrative = finalize_narrative(result.text, None)
+    ok, reason = validate_narrative(narrative, context=context, require_side=require_side)
+    if not ok and result.text:
+        logger.debug("LLM narrative rejected (%s), retrying once", reason)
+        retry = await _chat(
+            system=system,
+            user=user + strict_retry_user_suffix(),
+            model=model,
+            task=task,
+            max_tokens=max_tokens,
+            temperature=0.15,
+            json_mode=True,
+        )
+        retry_narrative = finalize_narrative(retry.text, None)
+        ok2, _ = validate_narrative(retry_narrative, context=context, require_side=require_side)
+        if ok2 and retry_narrative:
+            return retry_narrative, retry.model or result.model, retry.provider or result.provider
+        if retry.text and not narrative:
+            narrative = finalize_narrative(retry.text, fallback)
+
+    if narrative and ok:
+        return narrative, result.model, result.provider
+    if narrative and not ok:
+        logger.debug("LLM narrative failed validation (%s), using template fallback", reason)
+    return fallback, result.model, result.provider
+
+
 async def summarize_insight(
     insight_dict: dict,
     *,
     model: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
-    """Returns (narrative, model, provider)."""
-    result = await _chat(
-        system=SYSTEM_PROMPT,
-        user=f"Summarize this chart analyst insight for a trader:\n{insight_dict}",
+    """Returns (narrative, model, provider). JSON-mode with template fallback."""
+    slim = slim_insight_payload(insight_dict)
+    fallback = template_insight_narrative(slim) or template_insight_narrative(insight_dict)
+    provider, provider_name = await _pick_provider()
+    if provider is None:
+        return fallback, None, provider_name
+
+    user = f"DATA:\n{dumps_payload(slim)}"
+    return await _narrate_json_validated(
+        system=NARRATOR_JSON_SYSTEM_PROMPT,
+        user=user,
+        context=slim,
+        fallback=fallback,
         model=model,
+        task="narrator",
+        max_tokens=120,
+        temperature=0.25,
+        require_side=True,
     )
-    text = strip_reasoning_process(result.text) if result.text else None
-    return text, result.model, result.provider
+
+
+async def summarize_trade_explain(
+    bundle: dict,
+    *,
+    model: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Post-trade explain — dedicated prompt with RAG context."""
+    slim = slim_trade_explain_payload(bundle)
+    fallback = template_trade_explain_narrative(slim) or template_trade_explain_narrative(bundle)
+    provider, provider_name = await _pick_provider()
+    if provider is None:
+        return fallback, None, provider_name
+
+    user = f"DATA:\n{dumps_payload(slim)}"
+    return await _narrate_json_validated(
+        system=TRADE_EXPLAIN_JSON_SYSTEM_PROMPT,
+        user=user,
+        context=slim,
+        fallback=fallback,
+        model=model,
+        task="narrator",
+        max_tokens=180,
+        temperature=0.3,
+        require_side=False,
+    )
+
+
+async def summarize_backtest_entry(
+    bundle: dict,
+    *,
+    model: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Narrate one backtest entry — JSON-mode with template fallback."""
+    slim = slim_backtest_trade_payload(bundle)
+    fallback = template_backtest_narrative(slim) or template_backtest_narrative(bundle)
+    provider, provider_name = await _pick_provider()
+    if provider is None:
+        return fallback, None, provider_name
+
+    user = f"DATA:\n{dumps_payload(slim)}"
+    return await _narrate_json_validated(
+        system=BACKTEST_JSON_SYSTEM_PROMPT,
+        user=user,
+        context=slim,
+        fallback=fallback,
+        model=model,
+        task="narrator",
+        max_tokens=140,
+        temperature=0.35,
+        require_side=True,
+    )
 
 
 async def summarize_with_critique(
@@ -188,11 +330,14 @@ async def summarize_with_critique(
     model: str | None = None,
 ) -> dict[str, Any]:
     """Structured enrichment — metadata only, never alters signal."""
+    slim = slim_insight_payload(insight_dict)
     result = await _chat(
         system=CRITIQUE_SYSTEM_PROMPT,
-        user=f"Review this chart analyst insight:\n{json.dumps(insight_dict)}",
+        user=f"DATA:\n{dumps_payload(slim)}",
         model=model,
+        task="deep",
         max_tokens=280,
+        temperature=0.25,
         json_mode=True,
     )
     out: dict[str, Any] = {
@@ -203,11 +348,21 @@ async def summarize_with_critique(
         "latency_ms": result.latency_ms,
     }
     if not result.text:
+        summary_fb = template_insight_narrative(slim)
+        if summary_fb:
+            out["reasoning_summary"] = summary_fb
         return out
     parsed = parse_json_object(result.text)
     if parsed:
-        out["reasoning_summary"] = strip_reasoning_process(parsed.get("reasoning_summary"))
-        out["risk_notes"] = strip_reasoning_process(parsed.get("risk_notes"))
+        out["reasoning_summary"] = finalize_narrative(
+            parsed.get("reasoning_summary"),
+            template_insight_narrative(slim),
+        )
+        risk = parsed.get("risk_notes")
+        out["risk_notes"] = strip_reasoning_process(risk) if isinstance(risk, str) else None
     else:
-        out["reasoning_summary"] = strip_reasoning_process(result.text[:500])
+        out["reasoning_summary"] = finalize_narrative(
+            result.text[:500],
+            template_insight_narrative(slim),
+        )
     return out

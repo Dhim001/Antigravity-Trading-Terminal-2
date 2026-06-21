@@ -195,8 +195,11 @@ def _build_sub_reports(row: pd.Series, prev: pd.Series | None, price: float, df:
     trend = _score_trend(row, price)
     momentum = _score_momentum(row, prev)
     risk = _risk_report(row, df, idx)
+    indicator = {"score": momentum.score, "reasons": list(momentum.reasons)}
     return {
         "trend": {"score": trend.score, "reasons": trend.reasons},
+        # Plan §Future: Indicator / Trend / Risk — momentum is the indicator domain (RSI/MACD).
+        "indicator": indicator,
         "momentum": {"score": momentum.score, "reasons": momentum.reasons},
         "risk": risk,
     }

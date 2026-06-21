@@ -22,6 +22,9 @@ from app.config import (
     ARCHIVE_PARQUET_ENABLED,
     ARCHIVE_BACKEND,
     AGENT_LLM_ENABLED,
+    AGENT_VISION_ENABLED,
+    AGENT_ENABLED,
+    SCANNER_ENABLED,
 )
 from app.database import init_db
 from app.api.http_server import run_http_server
@@ -194,6 +197,9 @@ async def websocket_handler(websocket):
         "agentLlmProvider": llm_config.get("provider"),
         "agentLlmModel": llm_config.get("model"),
         "agentLlmModels": llm_config.get("models") or [],
+        "agentVisionEnabled": AGENT_VISION_ENABLED,
+        "agentEnabled": AGENT_ENABLED,
+        "scannerEnabled": SCANNER_ENABLED,
     }))
 
     await manager.send_to(websocket, account_update(state.oms.get_account_data()))

@@ -73,7 +73,18 @@ class TestChartAnalyzeApi(unittest.TestCase):
         self.assertEqual(body.get("symbol"), "BTCUSDT")
         self.assertEqual(body.get("count"), 2)
         self.assertEqual(len(body.get("insights", [])), 2)
-        self.state.chart_analyst.list_insights.assert_called_once_with("BTCUSDT", limit=10)
+        self.state.chart_analyst.list_insights.assert_called_once_with(
+            "BTCUSDT", limit=10, timeframe=None,
+        )
+
+    def test_get_agent_insights_list_with_timeframe(self):
+        self.state.chart_analyst.list_insights = MagicMock(return_value=[])
+
+        resp = self.client.get("/api/v1/agent/insights/BTCUSDT?limit=5&timeframe=5m")
+        self.assertEqual(resp.status_code, 200)
+        self.state.chart_analyst.list_insights.assert_called_once_with(
+            "BTCUSDT", limit=5, timeframe="5m",
+        )
 
     def test_get_agent_insights_unavailable(self):
         state = AppState(

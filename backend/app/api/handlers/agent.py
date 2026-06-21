@@ -151,6 +151,10 @@ async def chart_deep_reason(ctx: RequestContext) -> None:
             "latency_ms": enrichment.get("latency_ms"),
         },
     }
+    analyst.persist_deep_reasoning(
+        payload.get("insight_id") or insight_id,
+        payload["deep_reasoning"],
+    )
     await send_to(ctx, {"type": "agent_deep_reason", "data": payload})
 
 

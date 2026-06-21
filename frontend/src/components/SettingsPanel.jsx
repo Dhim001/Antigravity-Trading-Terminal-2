@@ -57,7 +57,8 @@ import {
 import { themeChartDefaults, getEffectiveSettings } from '../settings/themePresets';
 import { getIndicatorTheme, getIndicatorToolbarMeta } from '../settings/indicatorThemes';
 import { DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
-import { fetchHealth, parseMetricsSummary, fetchLlmModels, setPreferredLlmModel } from '../api/endpoints';
+import { fetchHealth, parseMetricsSummary, fetchLlmModels } from '../api/endpoints';
+import LlmSettingsSection from './LlmSettingsSection';
 import { HTTP_BASE_URL } from '../api/config';
 
 const PRESET_SWATCHES = {
@@ -165,6 +166,11 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const allowCustomStrategies = useStore((s) => s.allowCustomStrategies);
   const archiveParquetEnabled = useStore((s) => s.archiveParquetEnabled);
   const archiveBackend = useStore((s) => s.archiveBackend);
+  const archiveTicksEnabled = useStore((s) => s.archiveTicksEnabled);
+  const botMinCandles = useStore((s) => s.botMinCandles);
+  const agentVisionEnabled = useStore((s) => s.agentVisionEnabled);
+  const agentEnabled = useStore((s) => s.agentEnabled);
+  const scannerEnabled = useStore((s) => s.scannerEnabled);
   const workerAlive = useStore((s) => s.workerAlive);
   const workerHeartbeatAge = useStore((s) => s.workerHeartbeatAge);
   const isBotRunning = useStore((s) => s.isBotRunning);
@@ -988,54 +994,15 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   <Badge variant="outline" className="shrink-0 text-[0.6rem] text-muted-foreground">Off</Badge>
                 )}
               >
-                <dl className="settings-defaults-list num-mono text-[0.68rem]">
-                  <div>
-                    <dt>Server enabled</dt>
-                    <dd className={agentLlmEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
-                      {agentLlmEnabled ? 'Yes' : 'No (AGENT_LLM_ENABLED)'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Provider</dt>
-                    <dd>{agentLlmProvider ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>Available</dt>
-                    <dd className={agentLlmAvailable ? 'text-trading-up' : 'text-trading-down'}>
-                      {agentLlmAvailable ? 'Yes' : 'No'}
-                    </dd>
-                  </div>
-                </dl>
-                {agentLlmModels?.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    <Label className="text-xs text-muted-foreground">Model</Label>
-                    <Select
-                      value={selectedLlmModel || agentLlmModel || agentLlmModels[0]}
-                      onValueChange={async (v) => {
-                        try {
-                          await setPreferredLlmModel(v, useStore.getState());
-                          setSelectedLlmModel(v);
-                          toast.success(`LLM model set to ${v}`);
-                        } catch (err) {
-                          toast.error(err?.message || 'Failed to set model');
-                        }
-                      }}
-                    >
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Select model" />
-                      </SelectTrigger>
-                      <SelectContent position="popper">
-                        {agentLlmModels.map((m) => (
-                          <SelectItem key={m} value={m} className="text-xs num-mono">{m}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : (
-                  <p className="text-[0.68rem] text-muted-foreground">
-                    No models detected — start Ollama (<code className="text-[0.62rem]">ollama serve</code>) or set OPENROUTER_API_KEY.
-                  </p>
-                )}
+                <LlmSettingsSection
+                  agentLlmEnabled={agentLlmEnabled}
+                  agentLlmAvailable={agentLlmAvailable}
+                  agentLlmProvider={agentLlmProvider}
+                  agentLlmModel={agentLlmModel}
+                  agentLlmModels={agentLlmModels}
+                  selectedLlmModel={selectedLlmModel}
+                  setSelectedLlmModel={setSelectedLlmModel}
+                />
               </SettingsAccordionSection>
 
               <SettingsAccordionSection
@@ -1056,6 +1023,31 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     <dt>Custom strategies</dt>
                     <dd className={allowCustomStrategies ? 'text-trading-up' : 'text-muted-foreground'}>
                       {allowCustomStrategies ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div><dt>Bot min candles</dt><dd>{botMinCandles ?? '—'}</dd></div>
+                  <div>
+                    <dt>Tick archive</dt>
+                    <dd className={archiveTicksEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {archiveTicksEnabled ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Chart vision (LLM)</dt>
+                    <dd className={agentVisionEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {agentVisionEnabled ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Chart agent</dt>
+                    <dd className={agentEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {agentEnabled ? 'Enabled' : 'Disabled'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Market scanner</dt>
+                    <dd className={scannerEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
+                      {scannerEnabled ? 'Enabled' : 'Disabled'}
                     </dd>
                   </div>
                   <div><dt>Distributed</dt><dd>{distributed ? 'Yes' : 'No'}</dd></div>
