@@ -15,7 +15,8 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 | Charting (ECharts) + 9 overlays + signal badge | Done |
 | Multi-chart grid view | Done |
 | Bottom dock: positions, orders, balances, algo, history, equity | Done |
-| Algo bot engine (4 strategies + backtester) | Done |
+| Algo bot engine (8 strategies + CHART_AGENT + backtester/optimizer) | Done |
+| Backtest Lab (Results / Optimizer / Jobs), sweep, walk-forward, portfolio | Done |
 | Bot risk gates, pause/resume, analytics | Done |
 | Distributed runtime (Redis worker split) | Done |
 | PostgreSQL + custom strategy plugins | Done |

@@ -61,6 +61,8 @@ BOT_MAX_ACTIVE_BOTS = int(os.environ.get("BOT_MAX_ACTIVE_BOTS", "20"))
 BOT_SNAPSHOT_INTERVAL = float(os.environ.get("BOT_SNAPSHOT_INTERVAL", "300"))
 BOT_SNAPSHOT_RETENTION = int(os.environ.get("BOT_SNAPSHOT_RETENTION", "2000"))
 BOT_LOG_RETENTION = int(os.environ.get("BOT_LOG_RETENTION", "5000"))
+OPTIMIZATION_RETENTION_DAYS = int(os.environ.get("OPTIMIZATION_RETENTION_DAYS", "30"))
+BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", "14"))
 
 # Portfolio-level risk (all bots combined)
 PORTFOLIO_MAX_GROSS_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "80"))

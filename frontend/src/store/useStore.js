@@ -99,6 +99,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   backtestProgress: null,
   backtestJobId: null,
   backtestLabOpen: false,
+  backtestLabTab: 'results',
+  backtestDays: '7',
+  backtestOos: false,
+  pendingDeploy: false,
   /** Fingerprint of params used for the last completed backtest run */
   backtestSnapshot: null,
   backtestOverlay: null,
@@ -340,6 +344,16 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBacktestProgress: (progress) => set({ backtestProgress: progress ?? null }),
   setBacktestJobId: (jobId) => set({ backtestJobId: jobId ?? null }),
   setBacktestLabOpen: (open) => set({ backtestLabOpen: Boolean(open) }),
+  setBacktestLabTab: (tab) => set({
+    backtestLabTab: ['results', 'optimizer', 'jobs'].includes(tab) ? tab : 'results',
+  }),
+  openBacktestLab: (tab = 'results') => set({
+    backtestLabOpen: true,
+    backtestLabTab: ['results', 'optimizer', 'jobs'].includes(tab) ? tab : 'results',
+  }),
+  setBacktestDays: (days) => set({ backtestDays: String(days ?? '7') }),
+  setBacktestOos: (oos) => set({ backtestOos: Boolean(oos) }),
+  setPendingDeploy: (pending) => set({ pendingDeploy: Boolean(pending) }),
   setBacktestSnapshot: (snapshot) => set({ backtestSnapshot: snapshot }),
   setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),
   clearBacktestOverlay: () => set({ backtestOverlay: null }),

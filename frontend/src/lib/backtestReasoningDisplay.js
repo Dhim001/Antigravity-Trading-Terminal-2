@@ -38,6 +38,7 @@ export function enrichReasoningTrades(reasoning, tradeLog = []) {
   return reasoning.trades.map((row, i) => {
     const src = findSource(row);
     const barTime = row.bar_time ?? row.time ?? src?.time ?? src?.bar_time ?? null;
+    const insight = row.insight_snapshot ?? src?.insight_snapshot ?? null;
     return {
       ...row,
       _rowKey: `${row.trade_index}-${barTime ?? 't'}-${row.side ?? 's'}-${i}`,
@@ -46,6 +47,7 @@ export function enrichReasoningTrades(reasoning, tradeLog = []) {
       reason: row.reason ?? src?.reason ?? 'ENTRY',
       quantity: row.quantity ?? src?.quantity,
       price: row.price ?? src?.price,
+      insight_snapshot: insight,
     };
   });
 }

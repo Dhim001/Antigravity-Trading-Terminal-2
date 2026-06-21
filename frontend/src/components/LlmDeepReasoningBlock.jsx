@@ -1,5 +1,6 @@
 import { AlertTriangle, Layers } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { stripLlmReasoning } from '@/lib/llmText';
 import LlmAttribution from './LlmAttribution';
 
 /** Deep reasoning enrichment panel (metadata only — does not change signals). */
@@ -10,7 +11,9 @@ export default function LlmDeepReasoningBlock({
   model,
   className,
 }) {
-  if (!summary && !riskNotes) return null;
+  const displaySummary = stripLlmReasoning(summary);
+  const displayRisk = stripLlmReasoning(riskNotes);
+  if (!displaySummary && !displayRisk) return null;
 
   return (
     <div className={cn('llm-deep-reasoning', className)}>
@@ -22,14 +25,14 @@ export default function LlmDeepReasoningBlock({
         </div>
       </div>
 
-      {summary && (
-        <p className="llm-deep-reasoning__summary">{summary}</p>
+      {displaySummary && (
+        <p className="llm-deep-reasoning__summary">{displaySummary}</p>
       )}
 
-      {riskNotes && (
+      {displayRisk && (
         <div className="llm-deep-reasoning__risk">
           <AlertTriangle className="llm-deep-reasoning__risk-icon" aria-hidden />
-          <p className="llm-deep-reasoning__risk-text">{riskNotes}</p>
+          <p className="llm-deep-reasoning__risk-text">{displayRisk}</p>
         </div>
       )}
 

@@ -1,5 +1,5 @@
 /**
- * Backtest Lab — resizable right sheet (reliable layout, matches Automation Studio).
+ * Backtest Lab — resizable right sheet with Results | Optimizer | Jobs tabs.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
@@ -9,12 +9,19 @@ import { useStore } from '../store/useStore';
 import BacktestResultsPanel from './BacktestResultsPanel';
 import BacktestProgressBar from './BacktestProgressBar';
 import BacktestJobHistory from './BacktestJobHistory';
+import BacktestSweepPanel from './BacktestSweepPanel';
 import ErrorBoundary from './ErrorBoundary';
 
 const LAB_WIDTH_KEY = 'terminal_backtest_lab_width';
 const LAB_WIDTH_DEFAULT = 880;
 const LAB_WIDTH_MIN = 520;
 const LAB_WIDTH_MAX = 1280;
+
+const LAB_TABS = [
+  { id: 'results', label: 'Results' },
+  { id: 'optimizer', label: 'Optimizer' },
+  { id: 'jobs', label: 'Jobs' },
+];
 
 function readLabWidth() {
   try {
@@ -27,6 +34,8 @@ function readLabWidth() {
 export default function BacktestLabSheet() {
   const open = useStore((s) => s.backtestLabOpen);
   const setOpen = useStore((s) => s.setBacktestLabOpen);
+  const labTab = useStore((s) => s.backtestLabTab);
+  const setBacktestLabTab = useStore((s) => s.setBacktestLabTab);
   const backtestResults = useStore((s) => s.backtestResults);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const backtestRuns = useStore((s) => s.backtestRuns);
@@ -35,6 +44,8 @@ export default function BacktestLabSheet() {
   const botStrategy = useStore((s) => s.botStrategy);
   const botTimeframe = useStore((s) => s.botTimeframe);
   const backtestSnapshot = useStore((s) => s.backtestSnapshot);
+  const backtestDays = useStore((s) => s.backtestDays);
+  const backtestOos = useStore((s) => s.backtestOos);
 
   const [panelWidth, setPanelWidth] = useState(() => readLabWidth());
   const [resizing, setResizing] = useState(false);
@@ -42,7 +53,10 @@ export default function BacktestLabSheet() {
   const startX = useRef(0);
   const startW = useRef(0);
 
-  const days = backtestResults?.meta?.days;
+  const days = backtestResults?.meta?.days ?? backtestDays;
+  const symbol = backtestResults?.meta?.symbol ?? activeSymbol;
+  const strategy = backtestResults?.meta?.strategy ?? botStrategy;
+  const timeframe = backtestResults?.meta?.timeframe ?? botTimeframe;
 
   useEffect(() => {
     try { localStorage.setItem(LAB_WIDTH_KEY, String(panelWidth)); } catch (_) {}
@@ -115,39 +129,77 @@ export default function BacktestLabSheet() {
             Backtest Lab
           </SheetTitle>
           <SheetDescription className="backtest-lab__description">
-            Strategy replay report — equity, trades, and run history
+            Strategy replay report — equity, trades, optimizer, and run history
           </SheetDescription>
         </SheetHeader>
+
+        <div className="backtest-lab__tabs flex gap-1 px-3 pt-2 pb-1 border-b border-border/50">
+          {LAB_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={cn(
+                'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                labTab === tab.id
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+              )}
+              onClick={() => setBacktestLabTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
         <div className="terminal-sheet__body backtest-lab__body">
           <div className="terminal-sheet__scroll backtest-lab__scroll">
             <BacktestProgressBar />
-            <BacktestJobHistory />
-            {backtestRunning && !backtestResults && (
-              <p className="backtest-lab__loading text-sm text-muted-foreground">
-                Running backtest…
-              </p>
-            )}
-            {backtestResults ? (
-              <ErrorBoundary name="Backtest report">
-                <BacktestResultsPanel
-                  variant="full"
+
+            {labTab === 'jobs' && <BacktestJobHistory />}
+
+            {labTab === 'optimizer' && (
+              <div className="backtest-lab__optimizer px-1 pt-2">
+                <BacktestSweepPanel
+                  symbol={symbol}
+                  strategy={strategy}
+                  days={days != null ? String(days) : backtestDays}
+                  timeframe={timeframe}
+                  oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
                   results={backtestResults}
-                  backtestDays={days != null ? String(days) : '7'}
-                  backtestTimeframe={backtestResults?.meta?.timeframe ?? botTimeframe}
-                  symbol={backtestResults?.meta?.symbol ?? activeSymbol}
-                  strategy={backtestResults?.meta?.strategy ?? botStrategy}
-                  recentRuns={backtestRuns}
-                  snapshot={backtestSnapshot}
-                  showReasoningSection={agentLlmAvailable}
                 />
-              </ErrorBoundary>
-            ) : !backtestRunning && (
-              <div className="backtest-lab__empty">
-                <p className="text-sm text-muted-foreground">
-                  Run a backtest from the Algo Bot deploy panel to see results here.
-                </p>
               </div>
+            )}
+
+            {labTab === 'results' && (
+              <>
+                {backtestRunning && !backtestResults && (
+                  <p className="backtest-lab__loading text-sm text-muted-foreground px-3 pt-2">
+                    Running backtest…
+                  </p>
+                )}
+                {backtestResults ? (
+                  <ErrorBoundary name="Backtest report">
+                    <BacktestResultsPanel
+                      variant="full"
+                      results={backtestResults}
+                      backtestDays={days != null ? String(days) : '7'}
+                      backtestTimeframe={timeframe}
+                      symbol={symbol}
+                      strategy={strategy}
+                      recentRuns={backtestRuns}
+                      snapshot={backtestSnapshot}
+                      showReasoningSection={agentLlmAvailable}
+                      oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
+                    />
+                  </ErrorBoundary>
+                ) : !backtestRunning && (
+                  <div className="backtest-lab__empty px-3 pt-4">
+                    <p className="text-sm text-muted-foreground">
+                      Run a backtest from the Algo Bot deploy panel to see results here.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

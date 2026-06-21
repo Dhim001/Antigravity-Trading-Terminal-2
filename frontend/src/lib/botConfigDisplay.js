@@ -17,6 +17,11 @@ export const FIELD_META = {
   take_profit_price: { label: 'Take profit price', group: 'risk', kind: 'price', readOnly: true },
   tp_mode: { label: 'Take profit mode', group: 'risk', kind: 'tp_mode' },
   min_confidence: { label: 'Min confidence', group: 'agent', kind: 'confidence', hint: 'Agent only trades when signal confidence meets this threshold.' },
+  use_vol_sizing: { label: 'Vol sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by risk sub-report suggested_size_factor.' },
+  require_trend_alignment: { label: 'Trend alignment', group: 'agent', kind: 'boolean', hint: 'BUY only when trend score ≥ +1; SELL when ≤ −1.' },
+  block_elevated_vol: { label: 'Block elevated vol', group: 'agent', kind: 'boolean', hint: 'Skip entries when ATR regime is elevated.' },
+  min_score: { label: 'Min score', group: 'agent', kind: 'integer', hint: 'Require |composite score| ≥ this value.' },
+  confirm_timeframe: { label: 'Confirm TF', group: 'agent', kind: 'text', hint: 'Higher timeframe trend must confirm entry.' },
   use_llm: { label: 'LLM analysis', group: 'agent', kind: 'boolean', hint: 'Use the LLM narrator for chart explanations (Ollama local or OpenRouter).' },
   rsi_length: { label: 'RSI period', group: 'indicators', kind: 'integer' },
   macd_fast: { label: 'MACD fast', group: 'indicators', kind: 'integer' },
@@ -43,7 +48,7 @@ export const FIELD_META = {
 
 const COMMON_FIELD_KEYS = ['trailing_stop_percent', 'tp_mode', 'take_profit_percent'];
 
-const STRATEGY_FIELD_KEYS = {
+export const STRATEGY_FIELD_KEYS = {
   MACD_RSI: ['rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
   SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold'],
   BRS_SCALPING: [
@@ -51,7 +56,7 @@ const STRATEGY_FIELD_KEYS = {
     'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length',
   ],
   VWAP_PULLBACK: ['atr_length'],
-  CHART_AGENT: ['min_confidence', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
+  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
   TICK_MOMENTUM: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_MEAN_REVERT: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_BREAKOUT: ['lookback_ticks', 'tick_cooldown_sec'],
@@ -76,7 +81,7 @@ function humanizeKey(key) {
 
 function inferGroup(key) {
   if (/^(trailing_stop|stop_loss|take_profit|tp_)/.test(key)) return 'risk';
-  if (/^(min_confidence|use_llm)/.test(key)) return 'agent';
+  if (/^(min_confidence|use_llm|use_vol_sizing|require_trend|block_elevated|confirm_timeframe|min_score)/.test(key)) return 'agent';
   if (/^(lookback_ticks|tick_)/.test(key)) return 'tick';
   if (/^(rsi|macd|atr|bb_|stoch|st_|adx)/.test(key)) return 'indicators';
   return 'other';
@@ -93,6 +98,88 @@ function getInputType(key, meta) {
 
 function fieldMeta(key) {
   return FIELD_META[key] ?? { label: humanizeKey(key), group: inferGroup(key), kind: 'text' };
+}
+
+const SWEEP_EXCLUDED_KEYS = new Set(['use_llm', 'take_profit_price', 'tp_mode']);
+
+const SWEEP_EXTRA_KEYS = ['allocation', 'slippage_bps', 'fee_bps', 'stop_loss_percent'];
+
+const SWEEP_DEFAULT_PLACEHOLDERS = {
+  trailing_stop_percent: '1, 2, 3',
+  take_profit_percent: '2, 3, 5',
+  stop_loss_percent: '1, 2',
+  min_confidence: '0.55, 0.6, 0.65',
+  min_score: '2, 3, 4',
+  allocation: '5000, 10000',
+  slippage_bps: '0, 5, 10',
+  fee_bps: '0, 5',
+  rsi_length: '10, 14, 21',
+  macd_fast: '8, 12',
+  macd_slow: '21, 26',
+  macd_signal: '7, 9',
+  atr_length: '10, 14, 20',
+  require_trend_alignment: 'true, false',
+  block_elevated_vol: 'true, false',
+  use_vol_sizing: 'true, false',
+  confirm_timeframe: '15m, 1h',
+  lookback_ticks: '15, 20, 30',
+  tick_cooldown_sec: '5, 10, 15',
+};
+
+/** Strategy-aware sweep param definitions for BacktestSweepPanel. */
+export function getSweepEligibleFields(strategy, config = {}) {
+  const strat = (strategy || '').toUpperCase();
+  const keys = new Set([
+    ...COMMON_FIELD_KEYS.filter((k) => !SWEEP_EXCLUDED_KEYS.has(k)),
+    ...(STRATEGY_FIELD_KEYS[strat] || []).filter((k) => !SWEEP_EXCLUDED_KEYS.has(k)),
+    ...SWEEP_EXTRA_KEYS,
+  ]);
+
+  for (const key of Object.keys(config || {})) {
+    if (key === 'allocation' || SWEEP_EXCLUDED_KEYS.has(key)) continue;
+    const meta = FIELD_META[key];
+    if (meta && !meta.readOnly) keys.add(key);
+  }
+
+  const ordered = [
+    'trailing_stop_percent', 'take_profit_percent', 'stop_loss_percent',
+    'min_confidence', 'min_score', 'require_trend_alignment', 'block_elevated_vol',
+    'confirm_timeframe', 'use_vol_sizing',
+    'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length',
+    'bb_length', 'bb_std', 'stoch_k', 'stoch_d', 'stoch_smooth',
+    'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought',
+    'st_length', 'st_multiplier', 'adx_length', 'adx_threshold',
+    'lookback_ticks', 'tick_cooldown_sec',
+    'allocation', 'slippage_bps', 'fee_bps',
+  ];
+
+  const seen = new Set();
+  const out = [];
+  for (const key of ordered) {
+    if (!keys.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    const meta = fieldMeta(key);
+    out.push({
+      key,
+      label: meta.label,
+      kind: meta.kind,
+      placeholder: SWEEP_DEFAULT_PLACEHOLDERS[key]
+        ?? (meta.kind === 'boolean' ? 'true, false' : '1, 2, 3'),
+      hint: meta.hint,
+    });
+  }
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    const meta = fieldMeta(key);
+    out.push({
+      key,
+      label: meta.label,
+      kind: meta.kind,
+      placeholder: SWEEP_DEFAULT_PLACEHOLDERS[key] ?? '1, 2, 3',
+      hint: meta.hint,
+    });
+  }
+  return out;
 }
 
 export function getEditableConfigFields(strategy, config = {}) {

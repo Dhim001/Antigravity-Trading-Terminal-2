@@ -15,9 +15,12 @@ from app.api.outbound import (
 
 
 async def send_to(ctx: RequestContext, payload: dict) -> None:
-    if ctx.websocket is None:
+    if ctx.websocket is not None:
+        await ctx.manager.send_to(ctx.websocket, payload)
         return
-    await ctx.manager.send_to(ctx.websocket, payload)
+    # HTTP dual-transport: HttpConnectionManager collects replies without a socket.
+    if hasattr(ctx.manager, "messages"):
+        await ctx.manager.send_to(None, payload)
 
 
 async def broadcast(ctx: RequestContext, payload: dict) -> None:

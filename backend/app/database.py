@@ -166,6 +166,7 @@ def init_db():
         )
     """)
     _safe_alter(cursor, "ALTER TABLE bot_trades ADD COLUMN signal_bar_time INTEGER DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_trades ADD COLUMN insight_snapshot TEXT DEFAULT NULL")
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS bot_snapshots (
             id {serial},
@@ -220,6 +221,7 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_bot_pending_fills_bot ON bot_pending_fills (bot_id)"
     )
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN insight_snapshot TEXT DEFAULT NULL")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_signal_ledger (
@@ -290,6 +292,24 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_backtest_jobs_status ON backtest_jobs (status, created_at DESC)"
     )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS optimization_runs (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            objective TEXT NOT NULL DEFAULT 'total_pnl',
+            request_json TEXT NOT NULL,
+            results_json TEXT NOT NULL,
+            best_config TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_optimization_runs_symbol "
+        "ON optimization_runs (symbol, created_at DESC)"
+    )
+    _safe_alter(cursor, "ALTER TABLE optimization_runs ADD COLUMN walk_forward_json TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_insights (

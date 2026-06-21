@@ -34,6 +34,7 @@ from app.api.http.auth import ApiKeyMiddleware
 from app.database import get_db_stats
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.backtest_store import get_backtest_run, get_backtest_trades, list_backtest_runs
+from app.services.bots.optimization_store import get_optimization_run, list_optimization_runs
 from app.services.bots.backtest_job_store import get_active_backtest_job, get_backtest_job, list_backtest_jobs
 from app.services.events import channels
 
@@ -227,6 +228,26 @@ async def list_backtest_jobs_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "jobs": jobs, "count": len(jobs)})
 
 
+async def list_optimization_runs_handler(request: Request) -> JSONResponse:
+    symbol = request.query_params.get("symbol")
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    runs = list_optimization_runs(limit=limit, symbol=symbol or None)
+    return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
+
+
+async def get_optimization_run_handler(request: Request) -> JSONResponse:
+    run_id = request.path_params.get("run_id")
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
+    run = get_optimization_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "Optimization run not found"}, status_code=404)
+    return JSONResponse({"ok": True, "run": run})
+
+
 async def list_api_routes(request: Request) -> JSONResponse:
     routes = list_routes()
     items = [
@@ -323,6 +344,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/jobs", list_backtest_jobs_handler, methods=["GET"]),
         Route("/api/v1/backtest/jobs/active", get_active_backtest_job_handler, methods=["GET"]),
         Route("/api/v1/backtest/jobs/{job_id}", get_backtest_job_handler, methods=["GET"]),
+        Route("/api/v1/backtest/optimizations", list_optimization_runs_handler, methods=["GET"]),
+        Route("/api/v1/backtest/optimizations/{run_id}", get_optimization_run_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),
     ]

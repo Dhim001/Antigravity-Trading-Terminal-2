@@ -12,6 +12,7 @@ import {
   fmtReasoningTime,
   resolveReasoningRunContext,
 } from '@/lib/backtestReasoningDisplay';
+import { stripLlmReasoning } from '@/lib/llmText';
 
 function sideVariant(side) {
   const s = String(side ?? '').toUpperCase();
@@ -157,11 +158,22 @@ export default function BacktestReasoningPanel({
                     {row.reason ?? 'ENTRY'}
                   </td>
                   <td className="llm-backtest-reasoning__explain-cell">
-                    {row.narrative ? (
-                      <p className="llm-backtest-reasoning__explain-text">{row.narrative}</p>
-                    ) : (
-                      <span className="llm-backtest-reasoning__explain-empty">No narrative returned</span>
+                    {row.insight_snapshot?.signal && (
+                      <Badge variant="outline" className="h-4 px-1 text-[0.5rem] mb-0.5 mr-1">
+                        {row.insight_snapshot.signal}
+                        {row.insight_snapshot.confidence != null
+                          ? ` ${Math.round(row.insight_snapshot.confidence * 100)}%`
+                          : ''}
+                      </Badge>
                     )}
+                    {(() => {
+                      const cleaned = stripLlmReasoning(row.narrative);
+                      return cleaned ? (
+                        <p className="llm-backtest-reasoning__explain-text">{cleaned}</p>
+                      ) : (
+                        <span className="llm-backtest-reasoning__explain-empty">No narrative returned</span>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}

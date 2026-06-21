@@ -14,8 +14,8 @@ const GLOSSARY = [
   { term: 'HITL', def: 'Human-in-the-loop — preview an order from an insight before prefilling the ticket.' },
   { term: 'CHART_AGENT', def: 'Bot strategy that trades on Chart Analyst signals at bar close.' },
   { term: 'REST fallback', def: 'When WebSocket is down, the UI loads snapshots via HTTP and shows a stale-data banner.' },
-  { term: 'Backtest sweep', def: 'Grid search over strategy parameters in Backtest Lab — ranks combos by PnL, win rate, or profit factor.' },
-  { term: 'Walk-forward', def: 'Rolling out-of-sample validation: train on in-sample window, test on the next slice, repeat across the range.' },
+  { term: 'Backtest sweep', def: 'Grid search over strategy parameters in Backtest Lab Optimizer tab — pick an objective (PnL, Sharpe, or profit factor) and optional min-trades filter.' },
+  { term: 'Walk-forward', def: 'Out-of-sample validation in Backtest Lab Optimizer: single 70/30 split by default, or rolling mode (2–5 folds) that optimizes on each in-sample slice and aggregates OOS metrics.' },
   { term: 'Research mode', def: 'Backtest sim_mode that allows short positions (SELL opens shorts) without live risk gates — use for hypothesis testing only.' },
   { term: 'PDF export', def: 'Download a formatted backtest report (metrics, equity chart, trade log) from Backtest Lab via the PDF button.' },
   { term: 'Persistent backtest jobs', def: 'Long runs are stored server-side; after refresh or restart the UI resumes polling the active job automatically.' },
@@ -27,7 +27,7 @@ const WORKFLOWS = [
   { title: 'Day trade', steps: ['⌘K pick symbol', 'Read analyst badge', 'Preview order → ticket', 'Submit with pre-trade check'] },
   { title: 'Scan opportunities', steps: ['⌘I Insights Hub → Scanner', 'Scan watchlist', 'Click row → Analyst sub-tab', 'Preview or deploy bot'] },
   { title: 'Bot ops', steps: ['⌘B Algo tab', 'Deploy CHART_AGENT or MACD_RSI', 'Bot logs → Why? links', 'Drawer → Why we entered on trades'] },
-  { title: 'Backtest & optimize', steps: ['Algo tab → Run backtest', 'Backtest Lab opens on completion', 'Sweep or Walk-forward panels', 'Export CSV/PDF from results'] },
+  { title: 'Backtest & optimize', steps: ['Algo tab → Run backtest or OPTIMIZE', 'Backtest Lab: Results | Optimizer | Jobs tabs', 'Pick objective + min trades in Optimizer', 'Export CSV/PDF from results'] },
   { title: 'Research (shorts)', steps: ['Algo tab → Sim mode: Research', 'Run backtest — SELL signals open shorts', 'Review equity in Backtest Lab', 'Switch to Live-aligned before deploy'] },
 ];
 

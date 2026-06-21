@@ -110,6 +110,23 @@ class TestHttpBindings(unittest.TestCase):
         self.assertEqual(body["type"], "scan_results")
         self.assertIn("rows", body["data"])
 
+    def test_market_candles_route(self):
+        state = _make_state()
+        state.oms.feed = SimpleNamespace(
+            get_candles=lambda symbol: [
+                {"time": 1, "open": 100, "high": 101, "low": 99, "close": 100.5, "volume": 1000},
+            ],
+            get_market_data=lambda symbol: {},
+        )
+        client = TestClient(create_http_app(state))
+        resp = client.get("/api/v1/market/AAPL/candles")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["type"], "history_update")
+        self.assertIn("AAPL", body["data"])
+        self.assertEqual(len(body["data"]["AAPL"]), 1)
+
     def test_bot_stop_route(self):
         resp = self.client.post("/api/v1/bots/bot-1/stop")
         self.assertEqual(resp.status_code, 200)

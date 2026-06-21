@@ -18,6 +18,8 @@ from app.services.agent.llm.base import (
     CRITIQUE_SYSTEM_PROMPT,
     LLMResult,
     SYSTEM_PROMPT,
+    parse_json_object,
+    strip_reasoning_process,
 )
 from app.services.agent.llm.ollama import OllamaProvider
 from app.services.agent.llm.openrouter import OpenRouterProvider
@@ -176,7 +178,8 @@ async def summarize_insight(
         user=f"Summarize this chart analyst insight for a trader:\n{insight_dict}",
         model=model,
     )
-    return result.text, result.model, result.provider
+    text = strip_reasoning_process(result.text) if result.text else None
+    return text, result.model, result.provider
 
 
 async def summarize_with_critique(
@@ -201,10 +204,10 @@ async def summarize_with_critique(
     }
     if not result.text:
         return out
-    try:
-        parsed = json.loads(result.text)
-        out["reasoning_summary"] = parsed.get("reasoning_summary")
-        out["risk_notes"] = parsed.get("risk_notes")
-    except json.JSONDecodeError:
-        out["reasoning_summary"] = result.text[:500]
+    parsed = parse_json_object(result.text)
+    if parsed:
+        out["reasoning_summary"] = strip_reasoning_process(parsed.get("reasoning_summary"))
+        out["risk_notes"] = strip_reasoning_process(parsed.get("risk_notes"))
+    else:
+        out["reasoning_summary"] = strip_reasoning_process(result.text[:500])
     return out

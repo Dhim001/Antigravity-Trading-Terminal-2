@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
 from app.api.context import RequestContext
@@ -21,6 +22,12 @@ from app.services.bots.backtest_job_store import (
     update_job_progress,
 )
 from app.services.bots.backtest_sweep import expand_sweep_grid, sweep_label
+from app.services.bots.backtest_walk_forward import (
+    pick_best_config,
+    row_objective_value,
+    row_trade_count,
+    sort_sweep_rows,
+)
 from app.services.events import channels
 from app.services.events import publish as event_publish
 
@@ -62,6 +69,14 @@ def _parse_backtest_request(msg: dict) -> dict:
             oos_pct = None
 
     walk_forward = bool(msg.get("walk_forward"))
+    rolling_folds = msg.get("rolling_folds")
+    if rolling_folds is not None:
+        try:
+            rolling_folds = max(1, min(5, int(rolling_folds)))
+        except (TypeError, ValueError):
+            rolling_folds = 1
+    else:
+        rolling_folds = 1
     reasoning = bool(msg.get("reasoning"))
     llm_model = (msg.get("llm_model") or msg.get("model") or "").strip() or None
     train_pct = msg.get("train_pct")
@@ -78,6 +93,25 @@ def _parse_backtest_request(msg: dict) -> dict:
     if sim_mode:
         config = {**config, "sim_mode": sim_mode}
 
+    sweep = msg.get("sweep")
+    sweep_objective = msg.get("sweep_objective") or (sweep or {}).get("sweep_objective") or "total_pnl"
+    from app.services.bots.backtest_walk_forward import VALID_SWEEP_OBJECTIVES
+    if sweep_objective not in VALID_SWEEP_OBJECTIVES:
+        sweep_objective = "total_pnl"
+    min_trades = msg.get("min_trades")
+    if min_trades is None and isinstance(sweep, dict):
+        min_trades = sweep.get("min_trades")
+    try:
+        min_trades = max(0, int(min_trades if min_trades is not None else 0))
+    except (TypeError, ValueError):
+        min_trades = 0
+
+    portfolio_symbols = msg.get("portfolio_symbols")
+    if isinstance(portfolio_symbols, str):
+        portfolio_symbols = [s.strip() for s in portfolio_symbols.split(",") if s.strip()]
+    elif not isinstance(portfolio_symbols, list):
+        portfolio_symbols = None
+
     return {
         "symbol": msg.get("symbol"),
         "strategy": msg.get("strategy"),
@@ -87,10 +121,14 @@ def _parse_backtest_request(msg: dict) -> dict:
         "timeframe": msg.get("timeframe", "1m"),
         "oos_pct": oos_pct,
         "walk_forward": walk_forward,
+        "rolling_folds": rolling_folds,
         "train_pct": train_pct,
-        "sweep": msg.get("sweep"),
+        "sweep": sweep,
+        "sweep_objective": sweep_objective,
+        "min_trades": min_trades,
         "reasoning": reasoning,
         "llm_model": llm_model,
+        "portfolio_symbols": portfolio_symbols,
     }
 
 
@@ -123,9 +161,13 @@ async def _execute_backtest(
     oos_pct: float | None = None,
     sweep: dict | None = None,
     walk_forward: bool = False,
+    rolling_folds: int = 1,
     train_pct: float = 70.0,
+    sweep_objective: str = "total_pnl",
+    min_trades: int = 0,
     reasoning: bool = False,
     llm_model: str | None = None,
+    portfolio_symbols: list[str] | None = None,
 ) -> None:
     if not ctx.backtester or not hasattr(ctx.oms, "feed"):
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})
@@ -141,7 +183,11 @@ async def _execute_backtest(
         "oos_pct": oos_pct,
         "sweep": sweep,
         "walk_forward": walk_forward,
+        "rolling_folds": rolling_folds,
         "train_pct": train_pct,
+        "sweep_objective": sweep_objective,
+        "min_trades": min_trades,
+        "portfolio_symbols": portfolio_symbols,
     }
     client_key = str(id(ctx.websocket)) if ctx.websocket is not None else None
     if not job_id:
@@ -200,6 +246,71 @@ async def _execute_backtest(
             await _finish("cancelled")
             return
 
+        # Multi-symbol portfolio backtest (no sweep / walk-forward)
+        if portfolio_symbols and len(portfolio_symbols) > 1 and not sweep and not walk_forward:
+            from app.services.bots.backtest_portfolio import run_portfolio_backtest
+
+            enqueue_progress({"pct": 5, "phase": "resolve", "message": f"Portfolio: {len(portfolio_symbols)} symbols…"})
+
+            def resolve_sym(sym: str):
+                c, m = resolve_backtest_candles(
+                    sym,
+                    ctx.oms.feed,
+                    days=days,
+                    interval=interval,
+                    timeframe=timeframe,
+                )
+                if oos_pct:
+                    c = _apply_oos_window(c, m, oos_pct)
+                return c, m
+
+            def portfolio_progress(**kw) -> None:
+                si = kw.get("symbol_index", 1)
+                st = kw.get("symbol_total", 1)
+                sym = kw.get("symbol", "")
+                enqueue_progress({
+                    "pct": min(5 + int((si / max(st, 1)) * 85), 90),
+                    "phase": "portfolio",
+                    "message": f"Portfolio {si}/{st}: {sym}…",
+                    "symbol": sym,
+                })
+
+            portfolio_result = await asyncio.to_thread(
+                partial(
+                    run_portfolio_backtest,
+                    run_backtest=ctx.backtester.run_backtest,
+                    symbols=portfolio_symbols,
+                    strategy=strategy,
+                    config=config,
+                    resolve_candles=resolve_sym,
+                    progress_cb=portfolio_progress,
+                    cancel_cb=is_cancelled,
+                ),
+            )
+            if portfolio_result.get("cancelled"):
+                await _finish("cancelled")
+                return
+            if portfolio_result.get("error") and not portfolio_result.get("portfolio"):
+                await _finish("error", message=portfolio_result["error"])
+                return
+            meta["strategy"] = strategy
+            meta["portfolio"] = True
+            meta["portfolio_symbols"] = portfolio_symbols
+            portfolio_result["meta"] = meta
+            from app.services.bots.backtest_store import save_backtest_run
+
+            run_id = await asyncio.to_thread(
+                save_backtest_run,
+                portfolio_symbols[0],
+                strategy,
+                config,
+                days,
+                portfolio_result,
+            )
+            portfolio_result["run_id"] = run_id
+            await _finish("success", results=portfolio_result, run_id=run_id)
+            return
+
         configs = expand_sweep_grid(config, sweep) if sweep else [config]
         is_sweep = len(configs) > 1 or bool(sweep)
 
@@ -217,23 +328,45 @@ async def _execute_backtest(
         if walk_forward and is_sweep:
             from app.services.bots.backtest_walk_forward import run_walk_forward
 
+            wf_label = (
+                f"Rolling walk-forward ({rolling_folds} folds)"
+                if rolling_folds > 1
+                else f"Walk-forward: optimizing on {int(train_pct)}% train window"
+            )
             enqueue_progress({
                 "pct": 10,
                 "phase": "sweep",
-                "message": f"Walk-forward: optimizing on {int(train_pct)}% train window…",
+                "message": f"{wf_label}…",
                 "bars": bar_count,
                 "total_runs": len(configs),
             })
 
-            def wf_progress(done: int, total: int, run_idx: int = 0, total_runs: int = 1, is_oos: bool = False) -> None:
+            def wf_progress(
+                done: int,
+                total: int,
+                run_idx: int = 0,
+                total_runs: int = 1,
+                is_oos: bool = False,
+                fold_idx: int = 0,
+                total_folds: int = 1,
+            ) -> None:
                 frac = done / max(total, 1)
                 if is_oos:
                     pct = 90 + frac * 7  # OOS validation occupies 90→97%
-                    message = f"Walk-forward OOS validation: bar {done}/{total}…"
+                    if total_folds > 1:
+                        message = f"Fold {fold_idx + 1}/{total_folds} OOS: bar {done}/{total}…"
+                    else:
+                        message = f"Walk-forward OOS validation: bar {done}/{total}…"
                 else:
                     run_span = 78 / max(total_runs, 1)  # in-sample sweep spans 10→88%
                     pct = 10 + run_idx * run_span + frac * run_span
-                    message = f"Walk-forward train {run_idx + 1}/{total_runs}: bar {done}/{total}…"
+                    if total_folds > 1:
+                        message = (
+                            f"Fold {fold_idx + 1}/{total_folds} train "
+                            f"{run_idx + 1}/{total_runs}: bar {done}/{total}…"
+                        )
+                    else:
+                        message = f"Walk-forward train {run_idx + 1}/{total_runs}: bar {done}/{total}…"
                 enqueue_progress({
                     "pct": min(int(pct), 97),
                     "phase": "sweep",
@@ -255,6 +388,9 @@ async def _execute_backtest(
                     meta=meta,
                     configs=configs,
                     train_pct=train_pct,
+                    rolling_folds=rolling_folds,
+                    sweep_objective=sweep_objective,
+                    min_trades=min_trades,
                     progress_cb=wf_progress,
                     cancel_cb=is_cancelled,
                 ),
@@ -267,6 +403,26 @@ async def _execute_backtest(
                 return
             best_config = (best_result.get("walk_forward") or {}).get("best_config") or config
             sweep_rows = (best_result.get("sweep") or {}).get("results") or []
+            try:
+                from app.services.bots.optimization_store import save_optimization_run
+
+                save_optimization_run(
+                    symbol=symbol,
+                    strategy=strategy,
+                    objective=sweep_objective,
+                    request={
+                        **request_payload,
+                        "sweep_objective": sweep_objective,
+                        "min_trades": min_trades,
+                        "walk_forward": True,
+                        "rolling_folds": rolling_folds,
+                    },
+                    results=sweep_rows,
+                    best_config=best_config,
+                    walk_forward=best_result.get("walk_forward"),
+                )
+            except Exception:
+                pass
         else:
             sweep_rows = []
             best_result = None
@@ -285,45 +441,22 @@ async def _execute_backtest(
             best_result = None
             best_config = None
 
-            for run_idx, run_config in enumerate(configs):
+            def _run_config(run_idx: int, run_config: dict) -> tuple[int, dict, dict | None]:
                 if is_cancelled():
-                    await _finish("cancelled")
-                    return
-
-                def progress_cb(done: int, total: int, *, _run=run_idx, _runs=len(configs)) -> None:
-                    run_span = 85 / max(_runs, 1)
-                    base = 10 + _run * run_span
-                    pct = base + int((done / max(total, 1)) * run_span)
-                    enqueue_progress({
-                        "pct": min(int(pct), 95),
-                        "phase": "sweep" if is_sweep else "simulate",
-                        "message": (
-                            f"Sweep {run_idx + 1}/{len(configs)}: bar {done}/{total}…"
-                            if is_sweep
-                            else f"Simulating bar {done}/{total}…"
-                        ),
-                        "bar": done,
-                        "bars": total,
-                        "run": run_idx + 1,
-                        "total_runs": len(configs),
-                    })
-
-                results = await asyncio.to_thread(
-                    partial(
-                        ctx.backtester.run_backtest,
-                        symbol,
-                        strategy,
-                        run_config,
-                        candles,
-                        progress_cb=progress_cb,
-                        cancel_cb=is_cancelled,
-                    ),
+                    return run_idx, run_config, {"cancelled": True}
+                results = ctx.backtester.run_backtest(
+                    symbol,
+                    strategy,
+                    run_config,
+                    candles,
+                    cancel_cb=is_cancelled,
                 )
+                return run_idx, run_config, results
 
+            def _consume_result(run_idx: int, run_config: dict, results: dict | None) -> bool:
+                nonlocal best_result, best_config
                 if isinstance(results, dict) and results.get("cancelled"):
-                    await _finish("cancelled")
-                    return
-
+                    return False
                 if isinstance(results, dict) and results.get("error"):
                     if is_sweep:
                         sweep_rows.append({
@@ -331,27 +464,136 @@ async def _execute_backtest(
                             "config": run_config,
                             "error": results["error"],
                         })
-                        continue
-                    await _finish("error", message=results["error"])
-                    return
-
+                        return True
+                    return False
                 if not isinstance(results, dict):
-                    await _finish("error", message="Invalid backtest response")
-                    return
-
+                    return False
+                summary = results.get("summary") or {}
                 row = {
                     "label": sweep_label(run_config),
                     "config": run_config,
-                    "summary": results.get("summary") or {},
+                    "summary": summary,
                     "total_pnl": results.get("total_pnl"),
                     "trade_count": results.get("trade_count"),
                 }
+                if summary.get("filter_rejects"):
+                    row["filter_rejects"] = summary["filter_rejects"]
+                    row["filter_rejects_total"] = summary.get("filter_rejects_total")
                 sweep_rows.append(row)
-
-                pnl = float(results.get("total_pnl") or 0)
-                if best_result is None or pnl > float(best_result.get("total_pnl") or -1e18):
+                score = row_objective_value(row, sweep_objective)
+                prev_score = (
+                    row_objective_value(
+                        {
+                            "total_pnl": best_result.get("total_pnl"),
+                            "summary": best_result.get("summary") or {},
+                            "trade_count": best_result.get("trade_count"),
+                        },
+                        sweep_objective,
+                    )
+                    if best_result is not None
+                    else -1e18
+                )
+                if (
+                    best_result is None
+                    or (
+                        row_trade_count(row) >= min_trades
+                        and score > prev_score
+                    )
+                ):
                     best_result = results
                     best_config = run_config
+                return True
+
+            use_parallel = is_sweep and len(configs) > 1
+            if use_parallel:
+                workers = min(4, len(configs))
+                completed = 0
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [
+                        pool.submit(_run_config, idx, cfg)
+                        for idx, cfg in enumerate(configs)
+                    ]
+                    for fut in as_completed(futures):
+                        if is_cancelled():
+                            await _finish("cancelled")
+                            return
+                        run_idx, run_config, results = fut.result()
+                        if isinstance(results, dict) and results.get("cancelled"):
+                            await _finish("cancelled")
+                            return
+                        if isinstance(results, dict) and results.get("error") and not is_sweep:
+                            await _finish("error", message=results["error"])
+                            return
+                        if not _consume_result(run_idx, run_config, results):
+                            if not is_sweep:
+                                await _finish("error", message=results.get("error") if isinstance(results, dict) else "Invalid backtest response")
+                                return
+                        completed += 1
+                        enqueue_progress({
+                            "pct": min(10 + int((completed / len(configs)) * 85), 95),
+                            "phase": "sweep",
+                            "message": f"Sweep {completed}/{len(configs)} complete…",
+                            "run": completed,
+                            "total_runs": len(configs),
+                        })
+            else:
+                for run_idx, run_config in enumerate(configs):
+                    if is_cancelled():
+                        await _finish("cancelled")
+                        return
+
+                    def progress_cb(done: int, total: int, *, _run=run_idx, _runs=len(configs)) -> None:
+                        run_span = 85 / max(_runs, 1)
+                        base = 10 + _run * run_span
+                        pct = base + int((done / max(total, 1)) * run_span)
+                        enqueue_progress({
+                            "pct": min(int(pct), 95),
+                            "phase": "sweep" if is_sweep else "simulate",
+                            "message": (
+                                f"Sweep {run_idx + 1}/{len(configs)}: bar {done}/{total}…"
+                                if is_sweep
+                                else f"Simulating bar {done}/{total}…"
+                            ),
+                            "bar": done,
+                            "bars": total,
+                            "run": run_idx + 1,
+                            "total_runs": len(configs),
+                        })
+
+                    results = await asyncio.to_thread(
+                        partial(
+                            ctx.backtester.run_backtest,
+                            symbol,
+                            strategy,
+                            run_config,
+                            candles,
+                            progress_cb=progress_cb,
+                            cancel_cb=is_cancelled,
+                        ),
+                    )
+
+                    if isinstance(results, dict) and results.get("cancelled"):
+                        await _finish("cancelled")
+                        return
+
+                    if isinstance(results, dict) and results.get("error"):
+                        if is_sweep:
+                            sweep_rows.append({
+                                "label": sweep_label(run_config),
+                                "config": run_config,
+                                "error": results["error"],
+                            })
+                            continue
+                        await _finish("error", message=results["error"])
+                        return
+
+                    if not isinstance(results, dict):
+                        await _finish("error", message="Invalid backtest response")
+                        return
+
+                    if not _consume_result(run_idx, run_config, results) and not is_sweep:
+                        await _finish("error", message="Invalid backtest response")
+                        return
 
         if best_result is None:
             await _finish("error", message="Sweep produced no valid runs")
@@ -393,22 +635,50 @@ async def _execute_backtest(
         enqueue_progress({"pct": 98, "phase": "save", "message": "Saving run…"})
 
         meta["strategy"] = strategy
+        if sweep_objective:
+            meta["sweep_objective"] = sweep_objective
+        if min_trades:
+            meta["min_trades"] = min_trades
         if oos_pct and not (walk_forward and is_sweep):
             meta["oos_pct"] = oos_pct
         if walk_forward and is_sweep:
             meta["walk_forward"] = True
             meta["train_pct"] = train_pct
+            meta["rolling_folds"] = rolling_folds
         best_result["meta"] = meta
         if is_sweep and not (walk_forward and is_sweep):
+            ranked = sort_sweep_rows(sweep_rows, objective=sweep_objective, min_trades=min_trades)
+            picked_cfg, _picked_row = pick_best_config(
+                sweep_rows,
+                objective=sweep_objective,
+                min_trades=min_trades,
+            )
+            if picked_cfg:
+                best_config = picked_cfg
             best_result["sweep"] = {
                 "configs_tested": len(configs),
                 "best_config": best_config,
-                "results": sorted(
-                    sweep_rows,
-                    key=lambda r: float(r.get("total_pnl") or -1e18),
-                    reverse=True,
-                ),
+                "objective": sweep_objective,
+                "min_trades": min_trades,
+                "results": ranked,
             }
+            try:
+                from app.services.bots.optimization_store import save_optimization_run
+
+                save_optimization_run(
+                    symbol=symbol,
+                    strategy=strategy,
+                    objective=sweep_objective,
+                    request={
+                        **request_payload,
+                        "sweep_objective": sweep_objective,
+                        "min_trades": min_trades,
+                    },
+                    results=ranked,
+                    best_config=best_config,
+                )
+            except Exception:
+                pass
 
         from app.services.bots.backtest_store import save_backtest_run
 

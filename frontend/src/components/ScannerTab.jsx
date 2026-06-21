@@ -47,6 +47,8 @@ export default function ScannerTab() {
   const setOrderPrefill = useStore((s) => s.setOrderPrefill);
   const agentInsights = useStore((s) => s.agentInsights);
   const tickerData = useStore((s) => s.tickerData);
+  const setBotStrategy = useStore((s) => s.setBotStrategy);
+  const openBacktestLab = useStore((s) => s.openBacktestLab);
 
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -144,6 +146,14 @@ export default function ScannerTab() {
     }
     setPreviewDraft(draft);
     setPreviewOpen(true);
+  };
+
+  const openAlgoForSymbol = (row, tab = 'results') => {
+    setActiveSymbol(row.symbol);
+    setBotStrategy('CHART_AGENT');
+    window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
+    openBacktestLab(tab);
+    toast.message(`Algo opened for ${row.symbol}`);
   };
 
   const scannedLabel = formatScannedAt(scanResults?.scanned_at);
@@ -269,12 +279,28 @@ export default function ScannerTab() {
                     <td className="num-mono text-right">{row.rsi ?? '—'}</td>
                     <td className="capitalize text-muted-foreground">{row.macd_cross ?? '—'}</td>
                     <td className="capitalize text-muted-foreground">{row.atr_regime ?? '—'}</td>
-                    <td className="text-right">
+                    <td className="text-right whitespace-nowrap">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="h-6 text-[0.58rem]"
+                        onClick={(e) => { e.stopPropagation(); openAlgoForSymbol(row, 'results'); }}
+                      >
+                        Backtest
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="h-6 text-[0.58rem]"
+                        onClick={(e) => { e.stopPropagation(); openAlgoForSymbol(row, 'optimizer'); }}
+                      >
+                        Optimize
+                      </Button>
                       {row.signal !== 'NONE' && (
                         <Button
                           variant="ghost"
                           size="xs"
-                          className="h-6 text-[0.62rem]"
+                          className="h-6 text-[0.58rem]"
                           onClick={(e) => { e.stopPropagation(); onPreview(row); }}
                         >
                           Preview

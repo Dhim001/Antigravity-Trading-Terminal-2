@@ -168,6 +168,20 @@ export async function fetchBacktestJobs({ status, limit = 20 } = {}) {
   return body?.jobs ?? [];
 }
 
+export async function fetchOptimizationRuns({ symbol, limit = 20 } = {}) {
+  const qs = new URLSearchParams();
+  if (symbol) qs.set('symbol', symbol);
+  qs.set('limit', String(limit));
+  const body = await apiRequest(`/api/v1/backtest/optimizations?${qs}`);
+  return body?.runs ?? [];
+}
+
+export async function fetchOptimizationRun(runId) {
+  const body = await apiRequest(`/api/v1/backtest/optimizations/${encodeURIComponent(runId)}`);
+  if (!body?.ok || !body?.run) throw new Error(body?.error || 'Optimization run not found');
+  return body.run;
+}
+
 let _backtestPollTimer = null;
 
 function startBacktestJobPolling(jobId, storeActions) {

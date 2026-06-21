@@ -1,5 +1,6 @@
 """Persistent bot trade history, snapshots, and aggregated stats."""
 
+import json
 import uuid
 
 from app.config import BOT_SNAPSHOT_RETENTION
@@ -47,6 +48,19 @@ def _stats_row(
     }
 
 
+def _parse_insight_snapshot(raw) -> dict | None:
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
 def record_trade(
     bot_id: str,
     order_id: str | None,
@@ -59,18 +73,20 @@ def record_trade(
     signal_id: str | None = None,
     signal_bar_time: int | None = None,
     is_exit: bool = False,
+    insight_snapshot: dict | None = None,
 ):
+    snapshot_json = json.dumps(insight_snapshot) if insight_snapshot else None
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO bot_trades
-        (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit, insight_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             bot_id, order_id, symbol, side, quantity, price, pnl, signal_id,
-            signal_bar_time, 1 if is_exit else 0,
+            signal_bar_time, 1 if is_exit else 0, snapshot_json,
         ),
     )
     conn.commit()
@@ -83,7 +99,7 @@ def get_trades(bot_id: str, limit: int = 50) -> list:
     cursor.execute(
         """
         SELECT id, bot_id, order_id, symbol, side, quantity, price, pnl, signal_id,
-               signal_bar_time, is_exit, timestamp
+               signal_bar_time, is_exit, timestamp, insight_snapshot
         FROM bot_trades WHERE bot_id = ?
         ORDER BY timestamp DESC LIMIT ?
         """,
@@ -91,6 +107,8 @@ def get_trades(bot_id: str, limit: int = 50) -> list:
     )
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
+    for row in rows:
+        row["insight_snapshot"] = _parse_insight_snapshot(row.get("insight_snapshot"))
     return rows
 
 
@@ -260,16 +278,18 @@ def record_pending_fill(
     signal_id: str | None = None,
     is_exit: bool = False,
     entry_price: float | None = None,
+    insight_snapshot: dict | None = None,
 ) -> str:
     """Queue a live order for broker confirmation before bot_trades write."""
     pending_id = str(uuid.uuid4())
+    snapshot_json = json.dumps(insight_snapshot) if insight_snapshot else None
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT INTO bot_pending_fills
-        (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price, insight_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             pending_id,
@@ -282,6 +302,7 @@ def record_pending_fill(
             signal_id,
             1 if is_exit else 0,
             entry_price,
+            snapshot_json,
         ),
     )
     conn.commit()
@@ -296,7 +317,7 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
         cursor.execute(
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
-                   signal_id, is_exit, entry_price, created_at
+                   signal_id, is_exit, entry_price, created_at, insight_snapshot
             FROM bot_pending_fills WHERE bot_id = ?
             ORDER BY created_at ASC
             """,
@@ -306,13 +327,15 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
         cursor.execute(
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
-                   signal_id, is_exit, entry_price, created_at
+                   signal_id, is_exit, entry_price, created_at, insight_snapshot
             FROM bot_pending_fills
             ORDER BY created_at ASC
             """
         )
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
+    for row in rows:
+        row["insight_snapshot"] = _parse_insight_snapshot(row.get("insight_snapshot"))
     return rows
 
 

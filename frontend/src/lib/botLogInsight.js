@@ -15,11 +15,27 @@ export function findInsightForLog(log, agentInsightHistory = {}) {
   const symbol = (meta.symbol || '').toUpperCase();
   const tf = normalizeAnalystTimeframe(meta.timeframe);
   const barTime = meta.bar_time;
-  if (!symbol || barTime == null) return null;
-  const history = agentInsightHistory[symbol] ?? [];
-  return history.find(
-    (i) => i.bar_time === barTime && normalizeAnalystTimeframe(i.timeframe) === tf,
-  ) ?? null;
+  if (symbol && barTime != null) {
+    const history = agentInsightHistory[symbol] ?? [];
+    const match = history.find(
+      (i) => i.bar_time === barTime && normalizeAnalystTimeframe(i.timeframe) === tf,
+    );
+    if (match) return match;
+  }
+  if (meta.sub_reports || meta.reasons?.length || meta.confidence != null) {
+    return {
+      symbol: meta.symbol,
+      timeframe: meta.timeframe,
+      bar_time: meta.bar_time,
+      signal: meta.side,
+      confidence: meta.confidence,
+      score: meta.score,
+      reasons: meta.reasons,
+      sub_reports: meta.sub_reports,
+      insight_id: meta.insight_id,
+    };
+  }
+  return null;
 }
 
 export function formatLogTimestamp(ts) {

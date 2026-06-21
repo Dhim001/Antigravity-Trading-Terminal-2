@@ -285,3 +285,29 @@ def _row_to_job(row) -> dict[str, Any]:
     item["progress"] = _parse_json_field(item.pop("progress_json", None), {})
     item["results"] = _parse_json_field(item.pop("results_json", None), None)
     return item
+
+
+def prune_backtest_jobs(retention_days: int) -> int:
+    """Delete finished backtest jobs older than retention_days."""
+    if retention_days <= 0:
+        return 0
+    from datetime import timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=int(retention_days))).isoformat().replace("+00:00", "Z")
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            DELETE FROM backtest_jobs
+            WHERE status IN ('completed', 'failed', 'cancelled')
+              AND finished_at IS NOT NULL
+              AND finished_at < ?
+            """,
+            (cutoff,),
+        )
+        deleted = cursor.rowcount or 0
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()

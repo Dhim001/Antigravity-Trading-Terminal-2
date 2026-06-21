@@ -25,13 +25,17 @@ async def _send_orderbook_snapshot(ctx: RequestContext, symbol: str) -> None:
 @route(Action.SUBSCRIBE_SYMBOL, tags=["market"])
 async def subscribe_symbol(ctx: RequestContext) -> None:
     symbol = ctx.message.get("symbol")
-    if symbol:
-        ctx.manager.set_client_symbol(ctx.websocket, symbol)
+    if not symbol:
+        await send_error(ctx, "symbol is required")
+        return
+    ctx.manager.set_client_symbol(ctx.websocket, symbol)
     feed = _feed_for(ctx)
-    if symbol and feed:
-        candles = feed.get_candles(symbol)
-        await send_history_update(ctx, {symbol: candles})
-        await _send_orderbook_snapshot(ctx, symbol)
+    if not feed:
+        await send_error(ctx, "Market feed unavailable")
+        return
+    candles = feed.get_candles(symbol) or []
+    await send_history_update(ctx, {symbol: candles})
+    await _send_orderbook_snapshot(ctx, symbol)
 
 
 @route(Action.GET_MARKET_HISTORY, tags=["market"])

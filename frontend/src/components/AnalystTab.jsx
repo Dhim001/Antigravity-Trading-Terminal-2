@@ -86,12 +86,22 @@ export default function AnalystTab() {
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
   const agentDeepReasoning = useStore((s) => s.agentDeepReasoning);
   const [compareMode, setCompareMode] = useState(false);
+  const [compareSymbol, setCompareSymbol] = useState(
+    () => symbolsList.find((s) => s !== activeSymbol) ?? symbolsList[0] ?? '',
+  );
   const chartTf = useSettingsStore((s) => s.settings.chartLayout?.timeframe || '1m');
   const analysisTf = normalizeAnalystTimeframe(chartTf);
 
   useEffect(() => {
     setSymbol(activeSymbol);
   }, [activeSymbol]);
+
+  useEffect(() => {
+    if (compareSymbol === symbol) {
+      const alt = symbolsList.find((s) => s !== symbol);
+      if (alt) setCompareSymbol(alt);
+    }
+  }, [symbol, compareSymbol, symbolsList]);
 
   const rows = useMemo(
     () => agentInsightHistory[symbol] ?? [],

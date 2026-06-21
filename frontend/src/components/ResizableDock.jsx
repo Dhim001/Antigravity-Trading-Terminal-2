@@ -66,6 +66,7 @@ import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from 
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
+import ChartAgentDeployPreview from './ChartAgentDeployPreview';
 import { buildBotLookup, getPositionBots, shortBotId } from '@/lib/botAttribution';
 import { DOCK_GROUP_CONFIG, dockGroupForTab } from '../settings/layoutModes';
 import { selectPositionStats } from '../store/selectors';
@@ -572,6 +573,7 @@ export function AlgoTab({ hideToolbar = false }) {
     setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
     setBacktestRunning, setBacktestProgress, setBacktestSnapshot, setBacktestLabOpen,
+    openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
     setChartInteractionMode,
     isLive, allowLiveBots, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
@@ -600,6 +602,9 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestProgress: s.setBacktestProgress,
     setBacktestSnapshot: s.setBacktestSnapshot,
     setBacktestLabOpen: s.setBacktestLabOpen,
+    openBacktestLab: s.openBacktestLab,
+    setStoreBacktestDays: s.setBacktestDays,
+    setStoreBacktestOos: s.setBacktestOos,
     setChartInteractionMode: s.setChartInteractionMode,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
@@ -617,20 +622,36 @@ export function AlgoTab({ hideToolbar = false }) {
   })));
   const positions = useStore((state) => state.positions);
   const agentInsights = useStore((state) => state.agentInsights);
+  const tickerPrice = useStore((state) => state.tickerData[state.activeSymbol]?.price);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
-  const [backtestDays, setBacktestDays] = useState('7');
-  const [backtestOos, setBacktestOos] = useState(false);
+  const [backtestDays, setBacktestDaysLocal] = useState('7');
+  const [backtestOos, setBacktestOosLocal] = useState(false);
   const [backtestReasoning, setBacktestReasoning] = useState(false);
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
+  const [portfolioBacktest, setPortfolioBacktest] = useState(false);
+  const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
-  const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(botLogs, {
+  const filteredBotLogs = useMemo(() => {
+    if (logFilter === 'agent_skips') {
+      return botLogs.filter((l) => {
+        const text = l.message ?? l.line ?? '';
+        return /CHART_AGENT skipped|reject_reason|filter reject/i.test(text)
+          || l.meta?.reject_reason;
+      });
+    }
+    if (logFilter === 'signals') {
+      return botLogs.filter((l) => isSignalLog(l));
+    }
+    return botLogs;
+  }, [botLogs, logFilter]);
+  const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(filteredBotLogs, {
     rowHeight: 22,
     overscan: 14,
   });
@@ -650,22 +671,34 @@ export function AlgoTab({ hideToolbar = false }) {
     clearBacktestClientTimeout();
   }, []);
 
+  const setBacktestDays = (days) => {
+    setBacktestDaysLocal(days);
+    setStoreBacktestDays(days);
+  };
+  const setBacktestOos = (oos) => {
+    setBacktestOosLocal(oos);
+    setStoreBacktestOos(oos);
+  };
+
+  const handleOpenOptimizer = () => {
+    setStoreBacktestDays(backtestDays);
+    setStoreBacktestOos(backtestOos);
+    openBacktestLab('optimizer');
+  };
+
   const handleRunBacktest = async () => {
-    if (botExecutionMode === 'TICK') {
-      toast.error('Backtest applies to bar-close strategies only');
-      return;
-    }
     if (!botConfig?.allocation || botConfig.allocation <= 0) {
       toast.error('Set a valid capital allocation before backtesting');
       return;
     }
 
     const days = parseInt(backtestDays, 10) || 7;
+    const isTick = botExecutionMode === 'TICK';
     const snapshot = backtestFingerprint({
       symbol: activeSymbol,
       strategy: botStrategy,
       days: String(days),
-      timeframe: botTimeframe,
+      timeframe: isTick ? 'tick' : botTimeframe,
       config: botConfig,
     });
 
@@ -689,14 +722,19 @@ export function AlgoTab({ hideToolbar = false }) {
       },
     });
 
+    const portfolioSymbols = portfolioBacktest
+      ? (symbolsList || []).slice(0, 5).filter(Boolean)
+      : undefined;
+
     const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel({
       strategy: botStrategy,
       symbol: activeSymbol,
       config: { ...botConfig, sim_mode: backtestSimMode },
       days,
-      timeframe: botTimeframe,
+      timeframe: isTick ? 'tick' : botTimeframe,
       oos_pct: backtestOos ? 30 : undefined,
       reasoning: backtestReasoning || undefined,
+      portfolio_symbols: portfolioSymbols?.length > 1 ? portfolioSymbols : undefined,
     }));
 
     if (!ok) {
@@ -1114,6 +1152,13 @@ export function AlgoTab({ hideToolbar = false }) {
             {botStrategy === 'CHART_AGENT' && (
               <div className="algo-deploy-field space-y-2">
                 <Label className="algo-field-label">Chart Agent Settings</Label>
+                <ChartAgentDeployPreview
+                  symbol={activeSymbol}
+                  timeframe={botTimeframe}
+                  agentInsights={agentInsights}
+                  allocation={botConfig?.allocation}
+                  tickerPrice={tickerPrice}
+                />
                 <div>
                   <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
                     <span>Min confidence</span>
@@ -1129,6 +1174,69 @@ export function AlgoTab({ hideToolbar = false }) {
                     className="w-full accent-primary"
                     aria-label="Minimum signal confidence"
                   />
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={botConfig?.use_vol_sizing !== false}
+                    onChange={e => updateBotConfig({ use_vol_sizing: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Scale size by risk sub-report (volatility factor)
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(botConfig?.require_trend_alignment)}
+                    onChange={e => updateBotConfig({ require_trend_alignment: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Require trend alignment (BUY ≥ +1, SELL ≤ −1)
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(botConfig?.block_elevated_vol)}
+                    onChange={e => updateBotConfig({ block_elevated_vol: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Block entries when ATR regime is elevated
+                </label>
+                <div>
+                  <Label className="text-[0.62rem] text-muted-foreground">Min score (optional)</Label>
+                  <InputGroup className="mt-1 h-8">
+                    <InputGroupInput
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="text-xs"
+                      placeholder="Any"
+                      value={botConfig?.min_score ?? ''}
+                      onChange={(e) => updateBotConfig({
+                        min_score: e.target.value === '' ? undefined : parseInt(e.target.value, 10) || 0,
+                      })}
+                    />
+                  </InputGroup>
+                </div>
+                <div>
+                  <Label className="text-[0.62rem] text-muted-foreground">Confirm timeframe</Label>
+                  <Select
+                    value={botConfig?.confirm_timeframe || '__none__'}
+                    onValueChange={(v) => updateBotConfig({
+                      confirm_timeframe: v === '__none__' ? '' : v,
+                    })}
+                  >
+                    <SelectTrigger className="mt-1 h-8 w-full text-xs" aria-label="Higher timeframe confirmation">
+                      <SelectValue placeholder="Disabled" />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      <SelectItem value="__none__" className="text-xs">Disabled</SelectItem>
+                      {BAR_TIMEFRAMES.filter((tf) => tf !== botTimeframe).map((tf) => (
+                        <SelectItem key={tf} value={tf} className="text-xs">{tf} trend confirm</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="algo-field-hint">Higher-TF trend must agree before entry.</span>
                 </div>
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
                   <input
@@ -1199,7 +1307,17 @@ export function AlgoTab({ hideToolbar = false }) {
                 checked={backtestOos}
                 onChange={(e) => setBacktestOos(e.target.checked)}
               />
-              Walk-forward OOS — test on last 30% of range only
+              Hold-out test (last 30%) — test on last 30% of range only
+            </label>
+
+            <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                checked={portfolioBacktest}
+                onChange={(e) => setPortfolioBacktest(e.target.checked)}
+              />
+              Portfolio backtest — run same strategy on top 5 watchlist symbols
             </label>
 
             {agentLlmAvailable ? (
@@ -1279,8 +1397,7 @@ export function AlgoTab({ hideToolbar = false }) {
             size="sm"
             className="flex-1 text-xs"
             onClick={handleRunBacktest}
-            disabled={botExecutionMode === 'TICK' || backtestRunning}
-            title={botExecutionMode === 'TICK' ? 'Backtest applies to bar-close strategies only' : undefined}
+            disabled={backtestRunning}
           >
             {backtestRunning ? (
               <Loader2 className="size-3.5 animate-spin" data-icon="inline-start" />
@@ -1288,6 +1405,16 @@ export function AlgoTab({ hideToolbar = false }) {
               <Activity data-icon="inline-start" />
             )}
             {backtestRunning ? 'RUNNING…' : 'BACKTEST'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 text-xs"
+            onClick={handleOpenOptimizer}
+            disabled={backtestRunning}
+            title="Open Backtest Lab optimizer with current symbol, strategy, and config"
+          >
+            OPTIMIZE
           </Button>
           {backtestRunning && (
             <Button
@@ -1525,11 +1652,23 @@ export function AlgoTab({ hideToolbar = false }) {
               <Activity size={13} className="text-muted-foreground" aria-hidden />
               Bot Log
             </div>
-            <span className="algo-tab__panel-subtitle">{botLogs.length} entries</span>
+            <span className="algo-tab__panel-subtitle">{filteredBotLogs.length} entries</span>
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
-            <Trash2 />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Select value={logFilter} onValueChange={setLogFilter}>
+              <SelectTrigger className="h-6 w-[7.5rem] text-[0.58rem]" aria-label="Log filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="all" className="text-xs">All logs</SelectItem>
+                <SelectItem value="signals" className="text-xs">Signals only</SelectItem>
+                <SelectItem value="agent_skips" className="text-xs">Agent skips</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="ghost" size="icon-sm" onClick={clearBotLogs} title="Clear log" aria-label="Clear bot log">
+              <Trash2 />
+            </Button>
+          </div>
         </header>
 
         <div
@@ -1538,25 +1677,55 @@ export function AlgoTab({ hideToolbar = false }) {
           onScroll={onLogScroll}
         >
           <div className="algo-tab__log-list">
-            {botLogs.length === 0 ? (
+            {filteredBotLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
             ) : (
               <>
                 <div style={{ height: logWindow.topPad }} aria-hidden />
                 {logWindow.slice.map((log, i) => {
                   const idx = logWindow.start + i;
-                  const showInsight = isSignalLog(log) && (log.meta?.bar_time != null || /signal @/i.test(log.message || log.line || ''));
+                  const hasInsightMeta = Boolean(
+                    log.meta?.insight_id
+                    || log.meta?.sub_reports
+                    || (log.meta?.reasons?.length > 0),
+                  );
+                  const showInsight = isSignalLog(log) && (
+                    hasInsightMeta
+                    || log.meta?.bar_time != null
+                    || /signal @/i.test(log.message || log.line || '')
+                  );
                   const display = log.line ?? log.message ?? String(log);
+                  const openInsight = () => {
+                    window.dispatchEvent(new CustomEvent('signal-insight-open', { detail: { log } }));
+                  };
                   return (
-                    <div key={log.id ?? `${idx}-${display.slice(0, 24)}`} className={cn(logLineClassLocal(log), showInsight && 'group relative')}>
+                    <div
+                      key={log.id ?? `${idx}-${display.slice(0, 24)}`}
+                      className={cn(
+                        logLineClassLocal(log),
+                        showInsight && 'group relative cursor-pointer hover:bg-muted/30',
+                      )}
+                      role={showInsight ? 'button' : undefined}
+                      tabIndex={showInsight ? 0 : undefined}
+                      onClick={showInsight ? openInsight : undefined}
+                      onKeyDown={showInsight ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openInsight();
+                        }
+                      } : undefined}
+                    >
                       <span>{display}</span>
                       {showInsight && (
                         <button
                           type="button"
-                          className="ml-2 text-[0.58rem] text-primary opacity-0 group-hover:opacity-100"
-                          onClick={() => window.dispatchEvent(new CustomEvent('signal-insight-open', { detail: { log } }))}
+                          className="ml-2 text-[0.58rem] text-primary opacity-70 group-hover:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openInsight();
+                          }}
                         >
-                          Why?
+                          Explain
                         </button>
                       )}
                     </div>
@@ -1570,6 +1739,97 @@ export function AlgoTab({ hideToolbar = false }) {
       </section>
       </div>
     </div>
+  );
+}
+
+// ── Global deploy dialog (optimizer + cross-tab pendingDeploy) ────
+function GlobalDeployDialog({ switchToAlgoTab }) {
+  const pendingDeploy = useStore((s) => s.pendingDeploy);
+  const setPendingDeploy = useStore((s) => s.setPendingDeploy);
+  const {
+    botStrategy, botConfig, activeSymbol, botExecutionMode, botTimeframe,
+    isLive, allowLiveBots,
+  } = useStore(useShallow((s) => ({
+    botStrategy: s.botStrategy,
+    botConfig: s.botConfig,
+    activeSymbol: s.activeSymbol,
+    botExecutionMode: s.botExecutionMode,
+    botTimeframe: s.botTimeframe,
+    isLive: s.isLive,
+    allowLiveBots: s.allowLiveBots,
+  })));
+  const [deployOpen, setDeployOpen] = useState(false);
+
+  useEffect(() => {
+    if (pendingDeploy) {
+      switchToAlgoTab();
+      setDeployOpen(true);
+      setPendingDeploy(false);
+    }
+  }, [pendingDeploy, setPendingDeploy, switchToAlgoTab]);
+
+  const liveBotsBlocked = isLive && !allowLiveBots;
+
+  const confirmDeploy = () => {
+    setDeployOpen(false);
+    if (liveBotsBlocked) {
+      toast.error('Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true on the server.');
+      return;
+    }
+    if (!botConfig?.allocation || botConfig.allocation <= 0) {
+      toast.error('Enter a valid capital allocation amount');
+      return;
+    }
+    sendAction(Action.BOT_CREATE, {
+      strategy: botStrategy,
+      symbol: activeSymbol,
+      timeframe: botExecutionMode === 'TICK' ? 'tick' : botTimeframe,
+      allocation: botConfig.allocation,
+      execution_mode: botExecutionMode,
+      config: {
+        ...botConfig,
+        trailing_stop_percent: botConfig.trailing_stop_percent ?? 2,
+        backtest_run_id: useStore.getState().backtestResults?.run_id ?? undefined,
+      },
+    });
+  };
+
+  return (
+    <Dialog open={deployOpen} onOpenChange={setDeployOpen}>
+      <DialogContent className="algo-dialog sm:max-w-md" overlayClassName="admin-panel-overlay">
+        <DialogHeader>
+          <DialogTitle>Deploy trading bot</DialogTitle>
+          <DialogDescription className="text-xs leading-relaxed">
+            This will start a live bot on the server using your current template and allocation.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="algo-dialog-summary">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground shrink-0">Strategy:</span>
+            <StrategyBadge strategy={botStrategy} />
+          </div>
+          <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
+          <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
+          <div>
+            <span className="text-muted-foreground">Stop / TP:</span>{' '}
+            <strong>
+              SL {botConfig?.trailing_stop_percent ?? botConfig?.stop_loss_percent ?? '—'}%
+              {' · '}
+              {botConfig?.tp_mode === 'none'
+                ? 'no TP'
+                : botConfig?.tp_mode === 'strategy'
+                  ? 'strategy target'
+                  : `${botConfig?.take_profit_percent ?? '—'}% TP`}
+            </strong>
+          </div>
+          <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
+        </div>
+        <DialogFooter showCloseButton={false}>
+          <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
+          <Button variant="buy" size="sm" onClick={confirmDeploy} disabled={liveBotsBlocked}>Confirm deploy</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1729,7 +1989,9 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     const groupTotal = groupBadge(activeGroup);
 
     return (
-      <div
+      <>
+        <GlobalDeployDialog switchToAlgoTab={() => handleTabChange('algo')} />
+        <div
         className="bottom-dock bottom-dock--collapsed dock-collapsed-rail"
         data-layout-mode={layoutMode}
         data-dock-group={activeGroup}
@@ -1776,11 +2038,13 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           </div>
         </div>
       </div>
+      </>
     );
   }
 
   return (
     <>
+      <GlobalDeployDialog switchToAlgoTab={() => handleTabChange('algo')} />
       <div
         className="bottom-dock flex flex-col"
         data-tour="bottom-dock"

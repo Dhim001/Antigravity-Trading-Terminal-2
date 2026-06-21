@@ -8,7 +8,13 @@ from app.services.bots.backtest_analytics import (
     enrich_summary,
     sortino_ratio,
 )
-from app.services.bots.backtest_walk_forward import pick_best_config, split_train_test
+from app.services.bots.backtest_walk_forward import (
+    aggregate_fold_oos,
+    build_rolling_fold_windows,
+    pick_best_config,
+    sort_sweep_rows,
+    split_train_test,
+)
 from app.services.bots.backtester import BacktesterService
 from app.services.bots.screener import MarketScreenerService
 from tests.test_backtest_align import _make_candles
@@ -71,13 +77,99 @@ class TestWalkForward(unittest.TestCase):
 
     def test_pick_best_config(self):
         rows = [
-            {"config": {"a": 1}, "total_pnl": 10},
-            {"config": {"a": 2}, "total_pnl": 25, "summary": {"total_pnl": 25}},
+            {"config": {"a": 1}, "total_pnl": 10, "trade_count": 5},
+            {"config": {"a": 2}, "total_pnl": 25, "summary": {"total_pnl": 25}, "trade_count": 3},
             {"config": {"a": 3}, "error": "fail"},
         ]
         cfg, row = pick_best_config(rows)
         self.assertEqual(cfg, {"a": 2})
         self.assertEqual(row["total_pnl"], 25)
+
+    def test_pick_best_config_sharpe_objective(self):
+        rows = [
+            {"config": {"a": 1}, "total_pnl": 50, "summary": {"sharpe_ratio": 0.5}, "trade_count": 10},
+            {"config": {"a": 2}, "total_pnl": 10, "summary": {"sharpe_ratio": 1.8}, "trade_count": 8},
+        ]
+        cfg, row = pick_best_config(rows, objective="sharpe_ratio")
+        self.assertEqual(cfg, {"a": 2})
+
+    def test_pick_best_config_min_trades(self):
+        rows = [
+            {"config": {"a": 1}, "total_pnl": 100, "trade_count": 1},
+            {"config": {"a": 2}, "total_pnl": 20, "trade_count": 5},
+        ]
+        cfg, row = pick_best_config(rows, min_trades=3)
+        self.assertEqual(cfg, {"a": 2})
+        ranked = sort_sweep_rows(rows, min_trades=3)
+        self.assertEqual(len(ranked), 1)
+
+    def test_build_rolling_fold_windows_single(self):
+        candles = _make_candles(200)
+        meta = {"symbol": "TEST"}
+        windows = build_rolling_fold_windows(candles, meta, rolling_folds=1)
+        self.assertEqual(len(windows), 1)
+        train, test, _, _ = windows[0]
+        self.assertEqual(len(train) + len(test), len(candles))
+
+    def test_build_rolling_fold_windows_multi(self):
+        candles = _make_candles(500)
+        meta = {"symbol": "TEST"}
+        windows = build_rolling_fold_windows(candles, meta, rolling_folds=3)
+        self.assertEqual(len(windows), 3)
+        for train, test, train_meta, test_meta in windows:
+            self.assertGreaterEqual(len(train), 50)
+            self.assertGreaterEqual(len(test), 50)
+            self.assertEqual(train_meta.get("window"), "in_sample")
+            self.assertEqual(test_meta.get("window"), "out_of_sample")
+
+    def test_aggregate_fold_oos(self):
+        folds = [
+            {"out_of_sample": {"total_pnl": 10, "summary": {"sharpe_ratio": 1.0}}},
+            {"out_of_sample": {"total_pnl": -5, "summary": {"sharpe_ratio": 0.5}}},
+            {"out_of_sample": {"total_pnl": 20, "summary": {"sharpe_ratio": 1.5}}},
+        ]
+        agg = aggregate_fold_oos(folds)
+        self.assertEqual(agg["fold_count"], 3)
+        self.assertAlmostEqual(agg["mean_pnl"], 25 / 3, places=2)
+        self.assertAlmostEqual(agg["stability_score"], 2 / 3, places=2)
+
+    def test_rolling_walk_forward_mock(self):
+        from unittest.mock import MagicMock
+        from app.services.bots.backtest_walk_forward import run_walk_forward
+
+        candles = _make_candles(500)
+        meta = {"symbol": "TEST"}
+        configs = [{"a": 1}, {"a": 2}]
+
+        call_count = {"n": 0}
+
+        def mock_backtest(symbol, strategy, cfg, bars, progress_cb=None, cancel_cb=None):
+            call_count["n"] += 1
+            pnl = float(cfg.get("a", 0)) * 10
+            return {
+                "summary": {"total_pnl": pnl, "sharpe_ratio": pnl / 10, "total_trades": 5},
+                "total_pnl": pnl,
+                "trade_count": 5,
+            }
+
+        result = run_walk_forward(
+            run_backtest=mock_backtest,
+            symbol="TEST",
+            strategy="MACD_RSI",
+            base_config=configs[0],
+            candles=candles,
+            meta=meta,
+            configs=configs,
+            rolling_folds=3,
+            min_trades=1,
+        )
+        self.assertNotIn("error", result)
+        wf = result.get("walk_forward") or {}
+        self.assertEqual(wf.get("rolling_folds"), 3)
+        self.assertEqual(len(wf.get("folds") or []), 3)
+        self.assertIn("aggregate", wf)
+        self.assertIsNotNone(wf.get("best_config"))
+        self.assertGreater(call_count["n"], 0)
 
 
 class TestResearchSimMode(unittest.TestCase):

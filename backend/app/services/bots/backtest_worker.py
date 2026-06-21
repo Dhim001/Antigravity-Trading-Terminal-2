@@ -36,6 +36,16 @@ async def _run_recovered_job(state, job: dict) -> None:
     from app.api.handlers.bots import _execute_backtest
 
     req = job.get("request") or {}
+    sweep = req.get("sweep")
+    sweep_objective = req.get("sweep_objective") or (sweep or {}).get("sweep_objective") or "total_pnl"
+    min_trades = req.get("min_trades")
+    if min_trades is None and isinstance(sweep, dict):
+        min_trades = sweep.get("min_trades")
+    try:
+        min_trades = max(0, int(min_trades if min_trades is not None else 0))
+    except (TypeError, ValueError):
+        min_trades = 0
+
     ctx = RequestContext(
         websocket=None,
         manager=state.manager,
@@ -56,7 +66,13 @@ async def _run_recovered_job(state, job: dict) -> None:
         interval=req.get("interval"),
         timeframe=req.get("timeframe", "1m"),
         oos_pct=req.get("oos_pct"),
-        sweep=req.get("sweep"),
+        sweep=sweep,
         walk_forward=bool(req.get("walk_forward")),
+        rolling_folds=int(req.get("rolling_folds") or 1),
         train_pct=float(req.get("train_pct") or 70),
+        sweep_objective=sweep_objective,
+        min_trades=min_trades,
+        reasoning=bool(req.get("reasoning")),
+        llm_model=(req.get("llm_model") or req.get("model") or "").strip() or None,
+        portfolio_symbols=req.get("portfolio_symbols"),
     )

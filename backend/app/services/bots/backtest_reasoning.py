@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from app.config import BACKTEST_REASONING_MAX_TRADES
-from app.services.agent.llm.base import BACKTEST_TRADE_SYSTEM_PROMPT
+from app.services.agent.llm.base import BACKTEST_TRADE_SYSTEM_PROMPT, strip_reasoning_process
 from app.services.agent.llm.router import _chat, is_llm_available
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,12 @@ async def generate_backtest_reasoning(
 
         bar_time = _trade_bar_time(trade)
         entry_reason = trade.get("reason") or "ENTRY"
+        insight = trade.get("insight_snapshot")
+        if isinstance(insight, str):
+            try:
+                insight = json.loads(insight)
+            except json.JSONDecodeError:
+                insight = None
         bundle = {
             "symbol": symbol,
             "strategy": strategy,
@@ -138,6 +145,12 @@ async def generate_backtest_reasoning(
                 "pnl": trade.get("pnl"),
             },
         }
+        if insight:
+            bundle["insight"] = insight
+            bundle["analyst_signal"] = insight.get("signal")
+            bundle["analyst_confidence"] = insight.get("confidence")
+            bundle["analyst_reasons"] = (insight.get("reasons") or [])[:5]
+            bundle["sub_reports"] = insight.get("sub_reports")
         result = await _chat(
             system=BACKTEST_TRADE_SYSTEM_PROMPT,
             user=f"Explain this single backtest entry fill:\n{bundle}",
@@ -145,7 +158,7 @@ async def generate_backtest_reasoning(
             max_tokens=256,
             temperature=0.45,
         )
-        narrative = result.text
+        narrative = strip_reasoning_process(result.text)
         resolved_model = result.model
         provider = result.provider
 
@@ -182,6 +195,7 @@ async def generate_backtest_reasoning(
             "narrative": narrative,
             "model": resolved_model,
             "provider": provider,
+            "insight_snapshot": insight if isinstance(insight, dict) else None,
         })
 
     return {

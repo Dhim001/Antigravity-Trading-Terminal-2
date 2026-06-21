@@ -42,6 +42,10 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "atr_length": 14,
         "min_confidence": 0.55,
         "use_llm": False,
+        "use_vol_sizing": True,
+        "require_trend_alignment": False,
+        "block_elevated_vol": False,
+        "confirm_timeframe": "",
     },
 }
 

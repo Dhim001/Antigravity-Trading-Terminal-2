@@ -1,13 +1,18 @@
 /**
- * Recent backtest jobs — status, progress, resume polling.
+ * Recent backtest jobs — status, progress, resume polling, retry.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { useStore } from '../store/useStore';
 import { getStoreActions } from '../api/dispatch';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
 import { fetchBacktestJobs, fetchBacktestRun, watchBacktestJob } from '../api/endpoints';
+import { withLlmModel } from '../api/endpoints';
+import { toast } from 'sonner';
 
 const STATUS_VARIANT = {
   pending: 'secondary',
@@ -68,7 +73,19 @@ export default function BacktestJobHistory() {
     }
   };
 
-  if (!loading && jobs.length === 0) return null;
+  const handleRetry = async (job, e) => {
+    e.stopPropagation();
+    if (backtestRunning) {
+      toast.message('A backtest is already running');
+      return;
+    }
+    const req = job.request || {};
+    const action = req.sweep ? Action.RUN_BACKTEST_SWEEP : Action.RUN_BACKTEST;
+    setBacktestLabOpen(true);
+    const { ok, error } = await sendAction(action, withLlmModel(req));
+    if (!ok && error) toast.error(error);
+    else toast.message('Retrying backtest…');
+  };
 
   return (
     <section className="algo-backtest-lab__section algo-backtest-lab__section--jobs mb-4">
@@ -78,6 +95,8 @@ export default function BacktestJobHistory() {
           <Loader2 size={12} className="animate-spin" aria-hidden />
           Loading jobs…
         </p>
+      ) : jobs.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No backtest jobs yet.</p>
       ) : (
         <div className="algo-backtest-table-scroll algo-backtest-table-scroll--history">
           <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
@@ -87,6 +106,7 @@ export default function BacktestJobHistory() {
                 <th>Symbol</th>
                 <th>Status</th>
                 <th>Progress</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -94,6 +114,7 @@ export default function BacktestJobHistory() {
                 const sym = job.request?.symbol ?? '—';
                 const pct = job.progress?.pct;
                 const isActive = job.id === backtestJobId;
+                const canRetry = ['failed', 'cancelled'].includes(job.status);
                 return (
                   <tr
                     key={job.id}
@@ -123,6 +144,20 @@ export default function BacktestJobHistory() {
                         : job.error
                           ? 'failed'
                           : '—'}
+                    </td>
+                    <td className="text-right">
+                      {canRetry && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="h-6 text-[0.58rem]"
+                          onClick={(e) => handleRetry(job, e)}
+                          title="Retry with same settings"
+                        >
+                          <RotateCcw className="size-3" data-icon="inline-start" />
+                          Retry
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );

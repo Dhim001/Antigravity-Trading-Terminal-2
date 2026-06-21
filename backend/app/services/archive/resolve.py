@@ -103,12 +103,18 @@ def resolve_backtest_candles(
     Non-1m backtests cap range to 1m archive retention so buckets stay accurate.
     """
     days = max(1, min(int(days), 365))
-    if not is_valid_timeframe(timeframe):
+    if timeframe and str(timeframe).lower() == "tick":
+        tf = "1m"
+        meta_timeframe = "tick"
+        timeframe_note = "Tick backtest replays simulated paths from 1m archive"
+    elif not is_valid_timeframe(timeframe):
         raise ValueError(f"Unsupported backtest timeframe: {timeframe}")
+    else:
+        tf = normalize_timeframe(timeframe)
+        meta_timeframe = tf
+        timeframe_note = None
 
-    tf = normalize_timeframe(timeframe)
     effective_days = days
-    timeframe_note = None
 
     if tf != "1m" and days > ARCHIVE_RETENTION_1M_DAYS:
         effective_days = int(ARCHIVE_RETENTION_1M_DAYS)
@@ -127,7 +133,7 @@ def resolve_backtest_candles(
     )
     meta["days"] = days
     meta["effective_days"] = effective_days
-    meta["timeframe"] = tf
+    meta["timeframe"] = meta_timeframe
     meta["interval"] = interval
     if timeframe_note:
         meta["timeframe_note"] = timeframe_note

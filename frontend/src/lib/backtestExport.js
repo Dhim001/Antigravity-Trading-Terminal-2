@@ -189,3 +189,46 @@ export function exportBacktestPdf({ results, symbol, strategy, days, timeframe, 
   setTimeout(triggerPrint, 300);
   return { ok: true };
 }
+
+const SWEEP_CSV_COLUMNS = [
+  'label', 'total_pnl', 'trade_count', 'win_rate', 'sharpe_ratio', 'profit_factor', 'max_drawdown',
+];
+
+function csvEscape(val) {
+  const s = val == null ? '' : String(val);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+/**
+ * Export sweep result rows to CSV.
+ */
+export function exportSweepCsv({ results, symbol, strategy, objective = 'total_pnl' }) {
+  const rows = results?.sweep?.results;
+  if (!rows?.length) {
+    return { ok: false, error: 'No sweep results to export' };
+  }
+  const header = [...SWEEP_CSV_COLUMNS, 'config_json'].join(',');
+  const body = rows.map((row) => {
+    const summary = row.summary ?? {};
+    const vals = [
+      row.label ?? '',
+      row.total_pnl ?? summary.total_pnl ?? '',
+      row.trade_count ?? summary.total_trades ?? '',
+      summary.win_rate ?? '',
+      summary.sharpe_ratio ?? '',
+      summary.profit_factor ?? '',
+      summary.max_drawdown ?? '',
+      JSON.stringify(row.config ?? {}),
+    ];
+    return vals.map(csvEscape).join(',');
+  });
+  const blob = new Blob([header + '\n' + body.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sweep_${symbol}_${strategy}_${objective}_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return { ok: true };
+}

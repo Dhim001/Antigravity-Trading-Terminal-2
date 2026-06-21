@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
-from app.services.bots.indicators import prepare_strategy_df, config_cache_key
+from app.services.bots.indicators import prepare_strategy_df, config_cache_key, merge_strategy_config
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.take_profit import format_tp_summary, merge_tp_config, resolve_take_profit
 from app.services.bots.tick_strategies import get_tick_strategy, is_tick_strategy, merge_tick_config
@@ -15,6 +15,7 @@ from app.services.bots.tick_screener import TickScreener
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
+from app.services.market.resample import resample_candles_for_timeframe
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
@@ -327,6 +328,8 @@ class BotManagerService:
         ):
             return
 
+        await self._warm_chart_agent_caches(symbol, ohlcv_1m, feed=feed)
+
         timeframes = {
             _bot_bar_timeframe(bot)
             for bot in self.active_bots.values()
@@ -350,6 +353,92 @@ class BotManagerService:
                 continue
 
             await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
+
+    async def _warm_chart_agent_caches(
+        self,
+        symbol: str,
+        ohlcv_1m: list | None,
+        *,
+        feed=None,
+    ) -> None:
+        """Prefetch analyst cache for all active CHART_AGENT symbol+TF pairs on this symbol."""
+        try:
+            from app.services.agent.chart_analyst import get_chart_analyst
+
+            analyst = get_chart_analyst()
+            targets = [
+                (sym, tf)
+                for sym, tf in analyst.chart_agent_targets(self)
+                if sym == symbol
+            ]
+            if not targets:
+                return
+
+            warmed_confirm: set[tuple[str, str]] = set()
+            for sym, tf in targets:
+                if feed is not None:
+                    ohlcv = get_bot_candles(sym, feed, timeframe=tf)
+                elif ohlcv_1m:
+                    ohlcv = candles_for_timeframe(ohlcv_1m, tf)
+                else:
+                    continue
+                if not ohlcv or len(ohlcv) < 2:
+                    continue
+
+                bar_time = ohlcv[-2]["time"]
+                force_llm = any(
+                    b.get("config", {}).get("use_llm")
+                    for b in self.active_bots.values()
+                    if b["symbol"] == sym
+                    and normalize_strategy_name(b.get("strategy", "")) == "CHART_AGENT"
+                    and _bot_bar_timeframe(b) == tf
+                )
+                await analyst.ensure_for_bar(
+                    sym,
+                    ohlcv,
+                    bar_time,
+                    timeframe=tf,
+                    force_llm=force_llm,
+                )
+
+                for bot in self.active_bots.values():
+                    if bot.get("status") != "RUNNING":
+                        continue
+                    if bot["symbol"] != sym:
+                        continue
+                    if normalize_strategy_name(bot.get("strategy", "")) != "CHART_AGENT":
+                        continue
+                    if _bot_bar_timeframe(bot) != tf:
+                        continue
+                    confirm_tf = (bot.get("config", {}) or {}).get("confirm_timeframe", "").strip()
+                    if not confirm_tf:
+                        continue
+                    try:
+                        cf_tf = normalize_timeframe(confirm_tf)
+                    except ValueError:
+                        continue
+                    warm_key = (sym, cf_tf)
+                    if warm_key in warmed_confirm:
+                        continue
+                    warmed_confirm.add(warm_key)
+                    if feed is not None:
+                        cf_candles = get_bot_candles(sym, feed, timeframe=cf_tf)
+                    elif ohlcv_1m:
+                        cf_candles = candles_for_timeframe(ohlcv_1m, cf_tf)
+                    else:
+                        continue
+                    if not cf_candles or len(cf_candles) < 2:
+                        continue
+                    cf_bar = cf_candles[-2]["time"]
+                    await analyst.ensure_for_bar(
+                        sym,
+                        cf_candles,
+                        cf_bar,
+                        timeframe=cf_tf,
+                        force_llm=False,
+                    )
+        except RuntimeError:
+            pass
 
     async def _evaluate_bar_close_bots(self, symbol: str, timeframe: str, ohlcv_data: list):
         running = [
@@ -402,6 +491,7 @@ class BotManagerService:
                     try:
                         from app.services.agent.chart_analyst import get_chart_analyst
 
+                        analyst = get_chart_analyst()
                         force_llm = any(
                             b.get("config", {}).get("use_llm")
                             for b in self.active_bots.values()
@@ -409,18 +499,49 @@ class BotManagerService:
                             and normalize_strategy_name(b.get("strategy", "")) == "CHART_AGENT"
                             and _bot_bar_timeframe(b) == timeframe
                         )
-                        await get_chart_analyst().ensure_for_bar(
+                        await analyst.ensure_for_bar(
                             symbol,
                             ohlcv_data,
                             bar_time,
                             timeframe=timeframe,
                             force_llm=force_llm,
                         )
+                        confirm_tf = (bot_config.get("confirm_timeframe") or "").strip()
+                        if confirm_tf:
+                            try:
+                                cf_tf = normalize_timeframe(confirm_tf)
+                                cf_candles = resample_candles_for_timeframe(ohlcv_data, cf_tf)
+                                if cf_candles:
+                                    cf_bar = cf_candles[-2]["time"] if len(cf_candles) >= 2 else cf_candles[-1]["time"]
+                                    await analyst.ensure_for_bar(
+                                        symbol,
+                                        cf_candles,
+                                        cf_bar,
+                                        timeframe=cf_tf,
+                                        force_llm=False,
+                                    )
+                            except ValueError:
+                                pass
                     except RuntimeError:
                         pass
 
                 signal_data = strat.evaluate(eval_row)
                 signal = signal_data.get("signal")
+                if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
+                    reject = signal_data.get("reject_reason")
+                    if reject:
+                        await self.log_bot_event(
+                            bot_id,
+                            "WARN",
+                            f"CHART_AGENT skipped: {reject}",
+                            meta={
+                                "event_type": "chart_agent_skip",
+                                "bar_time": bar_time,
+                                "symbol": symbol,
+                                "timeframe": timeframe,
+                                "reject_reason": reject,
+                            },
+                        )
                 if signal not in ("BUY", "SELL", "CLOSE"):
                     continue
 
@@ -545,6 +666,11 @@ class BotManagerService:
                 return
 
             quantity = risk_amount / price_diff
+            bot_cfg = merge_strategy_config(bot.get("strategy", ""), bot.get("config", {}))
+            if bot_cfg.get("use_vol_sizing", True):
+                size_factor = float(signal_data.get("size_factor") or 1.0)
+                if size_factor > 0 and size_factor != 1.0:
+                    quantity *= size_factor
 
         pos_size = self._get_bot_position_size(bot_id, symbol)
         decision = self._risk_gate.validate_trade(
@@ -599,21 +725,46 @@ class BotManagerService:
         bot["last_signal_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         timeframe = bot.get("timeframe", "1m")
         sym_key = str(symbol or "").upper()
+        insight_snapshot = signal_data.get("insight_snapshot") if not is_exit else None
+        reasons = signal_data.get("reasons") or []
+        confidence = signal_data.get("confidence")
+        top_reason = reasons[0] if reasons else None
+        if not is_exit and confidence is not None:
+            conf_pct = int(round(float(confidence) * 100))
+            reason_bit = f" — {top_reason}" if top_reason else ""
+            log_msg = (
+                f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f} "
+                f"({conf_pct}% conf{reason_bit})"
+            )
+        else:
+            log_msg = f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f}"
         signal_meta = {
             "event_type": "signal",
             "bar_time": bar_time,
             "signal_id": signal_id,
-            "insight_id": f"{sym_key}:{timeframe}:{bar_time}" if bar_time is not None else None,
+            "insight_id": signal_data.get("insight_id") or (
+                f"{sym_key}:{timeframe}:{bar_time}" if bar_time is not None else None
+            ),
             "symbol": symbol,
             "timeframe": timeframe,
             "side": side,
             "is_exit": is_exit,
             "strategy": bot.get("strategy"),
         }
+        if not is_exit:
+            if confidence is not None:
+                signal_meta["confidence"] = confidence
+            if signal_data.get("score") is not None:
+                signal_meta["score"] = signal_data.get("score")
+            if reasons:
+                signal_meta["reasons"] = reasons[:5]
+            summary = signal_data.get("sub_reports_summary")
+            if summary:
+                signal_meta["sub_reports"] = summary
         await self.log_bot_event(
             bot_id,
             "INFO",
-            f"{action} {side} signal @ {current_price:.2f}, qty {quantity:.4f}",
+            log_msg,
             meta=signal_meta,
         )
 
@@ -659,6 +810,7 @@ class BotManagerService:
                         signal_id=signal_id,
                         is_exit=is_exit,
                         entry_price=entry_price,
+                        insight_snapshot=insight_snapshot,
                     )
                     await self.log_bot_event(
                         bot_id,
@@ -686,6 +838,7 @@ class BotManagerService:
                         signal_id=signal_id,
                         signal_bar_time=_coerce_bar_time(bar_time),
                         is_exit=is_exit,
+                        insight_snapshot=insight_snapshot,
                     )
                     self.record_snapshot_for_bot(bot_id)
 
@@ -1017,6 +1170,7 @@ class BotManagerService:
                 signal_id=p.get("signal_id"),
                 signal_bar_time=bot_analytics.signal_bar_time_from_id(p.get("signal_id")),
                 is_exit=is_exit,
+                insight_snapshot=p.get("insight_snapshot"),
             )
             bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price)
             bot_analytics.delete_pending_fill(p["id"])

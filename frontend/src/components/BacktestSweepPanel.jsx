@@ -1,15 +1,27 @@
 /**
- * Parameter sweep + walk-forward controls with arbitrary param grid (P3/P4/P5).
+ * Parameter sweep + walk-forward controls with strategy-aware param grid.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { withLlmModel } from '../api/endpoints';
+import { getSweepEligibleFields } from '../lib/botConfigDisplay';
+import { exportSweepCsv } from '../lib/backtestExport';
+import OptimizerHeatmap from './OptimizerHeatmap';
+import OptimizationHistory from './OptimizationHistory';
+import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import {
   scheduleBacktestClientTimeout,
   clearBacktestClientTimeout,
@@ -18,41 +30,50 @@ import {
 } from '../lib/backtestTimeouts';
 import { toast } from 'sonner';
 
-export const SWEEP_PARAM_DEFS = [
-  { key: 'trailing_stop_percent', label: 'Trailing SL %', placeholder: '1, 2, 3' },
-  { key: 'take_profit_percent', label: 'Take profit %', placeholder: '2, 3, 5' },
-  { key: 'stop_loss_percent', label: 'Stop loss % (fallback)', placeholder: '1, 2' },
-  { key: 'min_confidence', label: 'Min confidence', placeholder: '0.5, 0.6, 0.7' },
-  { key: 'allocation', label: 'Allocation $', placeholder: '5000, 10000' },
-  { key: 'slippage_bps', label: 'Slippage bps', placeholder: '0, 5, 10' },
-  { key: 'fee_bps', label: 'Fee bps', placeholder: '0, 5' },
+const OBJECTIVE_OPTIONS = [
+  { value: 'total_pnl', label: 'Total PnL' },
+  { value: 'sharpe_ratio', label: 'Sharpe ratio' },
+  { value: 'profit_factor', label: 'Profit factor' },
+  { value: 'sortino_ratio', label: 'Sortino ratio' },
+  { value: 'calmar_ratio', label: 'Calmar ratio' },
+  { value: 'max_drawdown_penalty', label: 'PnL − DD penalty' },
 ];
 
-function parseSweepValues(text) {
+function parseSweepValues(text, kind) {
   if (!text || !String(text).trim()) return [];
   return String(text)
     .split(/[,;\s]+/)
     .map((v) => v.trim())
     .filter(Boolean)
     .map((v) => {
+      if (kind === 'boolean') {
+        if (v.toLowerCase() === 'true' || v === '1') return true;
+        if (v.toLowerCase() === 'false' || v === '0') return false;
+        return v;
+      }
       const n = Number(v);
       return Number.isNaN(n) ? v : n;
     });
 }
 
-function buildSweepGrid(enabled, valuesByKey, maxCombos) {
-  const sweep = { max_combos: maxCombos };
-  for (const def of SWEEP_PARAM_DEFS) {
+function buildSweepGrid(paramDefs, enabled, valuesByKey, maxCombos, objective, minTrades, sweepMode) {
+  const sweep = {
+    max_combos: maxCombos,
+    sweep_objective: objective,
+    min_trades: minTrades,
+    sweep_mode: sweepMode,
+  };
+  for (const def of paramDefs) {
     if (!enabled[def.key]) continue;
-    const vals = parseSweepValues(valuesByKey[def.key]);
+    const vals = parseSweepValues(valuesByKey[def.key], def.kind);
     if (vals.length) sweep[def.key] = vals;
   }
-  return Object.keys(sweep).length > 1 ? sweep : null;
+  const paramKeys = Object.keys(sweep).filter(
+    (k) => !['max_combos', 'sweep_objective', 'min_trades', 'sweep_mode'].includes(k),
+  );
+  return paramKeys.length > 0 ? sweep : null;
 }
 
-// Bars/day per timeframe for a 24h market (crypto) vs a ~6.5h equity session.
-// Used only to disable walk-forward when the estimate can't satisfy its
-// 50-train + 50-test minimum.
 const BARS_PER_DAY_24H = { '1m': 1440, '5m': 288, '15m': 96, '1h': 24, '4h': 6, '1d': 1 };
 const BARS_PER_DAY_EQUITY = { '1m': 390, '5m': 78, '15m': 26, '1h': 7, '4h': 2, '1d': 1 };
 const WALK_FORWARD_MIN_BARS = 100;
@@ -68,19 +89,80 @@ function estimateMaxBars(days, timeframe, symbol) {
   if (isCryptoSymbol(symbol)) {
     return d * (BARS_PER_DAY_24H[tf] ?? 1440);
   }
-  // Equities/ETFs: ~5 trading days per 7 calendar days, ~6.5h sessions.
   const tradingDays = d * (5 / 7);
   return tradingDays * (BARS_PER_DAY_EQUITY[tf] ?? 390);
 }
 
-function countCombos(sweep) {
+function countCombos(sweep, paramDefs) {
+  if (!sweep) return 0;
+  let fullGrid = 1;
+  for (const def of paramDefs) {
+    const vals = sweep[def.key];
+    if (Array.isArray(vals) && vals.length) fullGrid *= vals.length;
+  }
+  const mode = sweep.sweep_mode || 'grid';
+  const cap = mode === 'grid' ? Math.min(sweep.max_combos ?? 24, 24) : Math.min(sweep.max_combos ?? 24, 100);
+  if (mode === 'grid') return Math.min(fullGrid, cap);
+  return cap;
+}
+
+function estimateFullGrid(sweep, paramDefs) {
   if (!sweep) return 0;
   let n = 1;
-  for (const def of SWEEP_PARAM_DEFS) {
+  for (const def of paramDefs) {
     const vals = sweep[def.key];
     if (Array.isArray(vals) && vals.length) n *= vals.length;
   }
-  return Math.min(n, sweep.max_combos ?? 24);
+  return n;
+}
+
+function defaultEnabledKeys(strategy) {
+  const strat = (strategy || '').toUpperCase();
+  const base = {
+    trailing_stop_percent: true,
+    take_profit_percent: true,
+    stop_loss_percent: false,
+    allocation: false,
+    slippage_bps: false,
+    fee_bps: false,
+  };
+  if (strat === 'CHART_AGENT') {
+    return { ...base, min_confidence: false, min_score: false };
+  }
+  return base;
+}
+
+function defaultValuesForFields(fields, botConfig) {
+  const values = {};
+  for (const def of fields) {
+    const current = botConfig?.[def.key];
+    if (current != null && current !== '') {
+      values[def.key] = String(current);
+    } else {
+      values[def.key] = def.placeholder ?? '';
+    }
+  }
+  return values;
+}
+
+function metricHeader(objective) {
+  if (objective === 'sharpe_ratio') return 'Sharpe';
+  if (objective === 'profit_factor') return 'PF';
+  return 'PnL';
+}
+
+function formatMetric(row, objective) {
+  const summary = row.summary ?? {};
+  if (objective === 'sharpe_ratio') {
+    const v = summary.sharpe_ratio;
+    return v != null ? Number(v).toFixed(2) : '—';
+  }
+  if (objective === 'profit_factor') {
+    const v = summary.profit_factor;
+    return v != null ? Number(v).toFixed(2) : '—';
+  }
+  if (row.error) return '—';
+  return `$${Number(row.total_pnl ?? 0).toFixed(2)}`;
 }
 
 export default function BacktestSweepPanel({
@@ -94,36 +176,46 @@ export default function BacktestSweepPanel({
   const backtestRunning = useStore((s) => s.backtestRunning);
   const botConfig = useStore((s) => s.botConfig);
   const updateBotConfig = useStore((s) => s.updateBotConfig);
-  const sweep = results?.sweep;
-
-  const [enabled, setEnabled] = useState({
-    trailing_stop_percent: true,
-    take_profit_percent: true,
-    stop_loss_percent: false,
-    min_confidence: false,
-    allocation: false,
-    slippage_bps: false,
-    fee_bps: false,
-  });
-  const [valuesByKey, setValuesByKey] = useState({
-    trailing_stop_percent: '1, 2, 3',
-    take_profit_percent: '2, 3, 5',
-    stop_loss_percent: '1, 2',
-    min_confidence: '0.55, 0.6, 0.65',
-    allocation: String(botConfig.allocation ?? 10000),
-    slippage_bps: '0, 5',
-    fee_bps: '0, 5',
-  });
-  const [maxCombos, setMaxCombos] = useState(24);
-  const [reasoning, setReasoning] = useState(false);
+  const setPendingDeploy = useStore((s) => s.setPendingDeploy);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
-  const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
+
+  const paramDefs = useMemo(
+    () => getSweepEligibleFields(strategy, botConfig),
+    [strategy, botConfig],
+  );
+
+  const [enabled, setEnabled] = useState(() => defaultEnabledKeys(strategy));
+  const [valuesByKey, setValuesByKey] = useState(() =>
+    defaultValuesForFields(getSweepEligibleFields(strategy, botConfig), botConfig),
+  );
+  const [maxCombos, setMaxCombos] = useState(24);
+  const [sweepMode, setSweepMode] = useState('grid');
+  const [objective, setObjective] = useState('total_pnl');
+  const [minTrades, setMinTrades] = useState(1);
+  const [reasoning, setReasoning] = useState(false);
+  const [rollingWf, setRollingWf] = useState(false);
+  const [rollingFolds, setRollingFolds] = useState(3);
+
+  useEffect(() => {
+    setEnabled((prev) => ({ ...defaultEnabledKeys(strategy), ...prev }));
+    setValuesByKey((prev) => ({
+      ...defaultValuesForFields(paramDefs, botConfig),
+      ...prev,
+    }));
+  }, [strategy]);
+
+  const sweep = results?.sweep;
+  const activeObjective = sweep?.objective ?? results?.meta?.sweep_objective ?? objective;
 
   const sweepGrid = useMemo(
-    () => buildSweepGrid(enabled, valuesByKey, maxCombos),
-    [enabled, valuesByKey, maxCombos],
+    () => buildSweepGrid(paramDefs, enabled, valuesByKey, maxCombos, objective, minTrades, sweepMode),
+    [paramDefs, enabled, valuesByKey, maxCombos, objective, minTrades, sweepMode],
   );
-  const comboCount = useMemo(() => countCombos(sweepGrid), [sweepGrid]);
+  const comboCount = useMemo(() => countCombos(sweepGrid, paramDefs), [sweepGrid, paramDefs]);
+  const fullGridSize = useMemo(() => estimateFullGrid(sweepGrid, paramDefs), [sweepGrid, paramDefs]);
+  const comboTruncated = sweepMode === 'grid'
+    ? fullGridSize > comboCount
+    : fullGridSize > comboCount && sweepMode !== 'random';
   const walkForwardTooFewBars = useMemo(
     () => estimateMaxBars(days, timeframe, symbol) < WALK_FORWARD_MIN_BARS,
     [days, timeframe, symbol],
@@ -167,8 +259,11 @@ export default function BacktestSweepPanel({
       timeframe,
       oos_pct: oosPct || undefined,
       walk_forward: walkForward || undefined,
+      rolling_folds: walkForward ? (rollingWf ? rollingFolds : 1) : undefined,
       train_pct: walkForward ? 70 : undefined,
       sweep: sweepGrid,
+      sweep_objective: objective,
+      min_trades: minTrades,
       reasoning: reasoning || undefined,
     }));
     if (!ok && error) toast.error(error);
@@ -185,7 +280,29 @@ export default function BacktestSweepPanel({
     toast.success('Applied sweep winner to deploy settings');
   };
 
+  const deployOptimized = () => {
+    const cfg = results?.walk_forward?.best_config ?? results?.sweep?.best_config;
+    if (!cfg) {
+      toast.error('No optimized config available — run a sweep first');
+      return;
+    }
+    updateBotConfig(cfg);
+    setPendingDeploy(true);
+    toast.success('Optimized params applied — confirm deploy');
+  };
+
+  const handleExportCsv = () => {
+    const res = exportSweepCsv({
+      results,
+      symbol,
+      strategy,
+      objective: activeObjective,
+    });
+    if (!res.ok) toast.error(res.error);
+  };
+
   const bestConfig = results?.walk_forward?.best_config ?? results?.sweep?.best_config;
+  const isChartAgent = (strategy || '').toUpperCase() === 'CHART_AGENT';
 
   return (
     <div className="algo-backtest-sweep">
@@ -212,16 +329,101 @@ export default function BacktestSweepPanel({
             title={
               walkForwardTooFewBars
                 ? `Need ~${WALK_FORWARD_MIN_BARS}+ bars for a 70/30 split — increase days or use a lower timeframe`
-                : 'Optimize on first 70% of bars, validate on last 30%'
+                : rollingWf
+                  ? `Rolling walk-forward (${rollingFolds} folds) — optimize IS, validate OOS per slice`
+                  : 'Optimize on first 70% of bars, validate on last 30%'
             }
           >
-            Walk-forward
+            {rollingWf ? `Rolling WF (${rollingFolds})` : 'Walk-forward'}
           </Button>
+          {sweep?.results?.length > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="h-6 text-[0.62rem]"
+              onClick={handleExportCsv}
+            >
+              Export CSV
+            </Button>
+          )}
         </div>
       </div>
 
+      <div className="algo-backtest-sweep__objective flex flex-wrap items-center gap-3 mb-2">
+        <div className="flex items-center gap-2">
+          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Objective</Label>
+          <Select value={objective} onValueChange={setObjective}>
+            <SelectTrigger className="h-7 w-[8.5rem] text-[0.62rem]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper">
+              {OBJECTIVE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Min trades</Label>
+          <Input
+            type="number"
+            min={0}
+            max={999}
+            className="h-7 w-14 text-[0.62rem]"
+            value={minTrades}
+            onChange={(e) => setMinTrades(Math.max(0, parseInt(e.target.value, 10) || 0))}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Sweep mode</Label>
+          <Select value={sweepMode} onValueChange={(v) => {
+            setSweepMode(v);
+            if (v !== 'grid' && maxCombos > 100) setMaxCombos(100);
+          }}>
+            <SelectTrigger className="h-7 w-[7.5rem] text-[0.62rem]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper">
+              <SelectItem value="grid" className="text-xs">Grid (≤24)</SelectItem>
+              <SelectItem value="random" className="text-xs">Random (≤100)</SelectItem>
+              <SelectItem value="lhs" className="text-xs">LHS (≤100)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Max combos</Label>
+          <Input
+            type="number"
+            min={1}
+            max={sweepMode === 'grid' ? 24 : 100}
+            className="h-7 w-14 text-[0.62rem]"
+            value={maxCombos}
+            onChange={(e) => {
+              const cap = sweepMode === 'grid' ? 24 : 100;
+              setMaxCombos(Math.max(1, Math.min(cap, parseInt(e.target.value, 10) || 1)));
+            }}
+          />
+        </div>
+        <span className="text-[0.55rem] text-muted-foreground">
+          {comboCount} run{comboCount === 1 ? '' : 's'}
+          {fullGridSize > 1 && ` · full grid ${fullGridSize}`}
+          {comboTruncated && (
+            <span className="text-amber-500/90"> · truncated to {comboCount}</span>
+          )}
+        </span>
+      </div>
+
+      {isChartAgent && (
+        <p className="text-[0.55rem] text-muted-foreground mb-2">
+          Chart Agent sweeps replay rules-only signals — LLM analysis is not varied during optimization.
+        </p>
+      )}
+
       <div className="algo-backtest-sweep__grid space-y-2">
-        {SWEEP_PARAM_DEFS.map((def) => (
+        {paramDefs.map((def) => (
           <div key={def.key} className="algo-backtest-sweep__row flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-1.5 text-[0.58rem] min-w-[7rem] cursor-pointer">
               <input
@@ -241,20 +443,6 @@ export default function BacktestSweepPanel({
             />
           </div>
         ))}
-        <div className="flex items-center gap-2 text-[0.58rem]">
-          <Label className="text-muted-foreground shrink-0">Max combos</Label>
-          <Input
-            type="number"
-            min={1}
-            max={24}
-            className="h-7 w-16 text-[0.62rem]"
-            value={maxCombos}
-            onChange={(e) => setMaxCombos(Math.min(24, Math.max(1, parseInt(e.target.value, 10) || 24)))}
-          />
-          <span className="text-muted-foreground">
-            {comboCount} configuration{comboCount === 1 ? '' : 's'} (capped at 24)
-          </span>
-        </div>
         {enabled.trailing_stop_percent && enabled.stop_loss_percent && (
           <p className="text-[0.55rem] text-trading-warn">
             Stop loss is only used as a fallback when trailing stop is 0 — sweeping both may produce
@@ -272,67 +460,128 @@ export default function BacktestSweepPanel({
             Generate trade explanations after backtest (local LLM, post-hoc only)
           </label>
         )}
+        <div className="flex flex-wrap items-center gap-3 text-[0.58rem]">
+          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-3 accent-primary"
+              checked={rollingWf}
+              onChange={(e) => setRollingWf(e.target.checked)}
+            />
+            Rolling walk-forward
+          </label>
+          {rollingWf && (
+            <div className="flex items-center gap-2">
+              <Label className="text-muted-foreground shrink-0">Folds</Label>
+              <Select
+                value={String(rollingFolds)}
+                onValueChange={(v) => setRollingFolds(parseInt(v, 10) || 3)}
+              >
+                <SelectTrigger className="h-7 w-[4.5rem] text-[0.62rem]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {[2, 3, 4, 5].map((n) => (
+                    <SelectItem key={n} value={String(n)} className="text-xs">{n}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <span className="text-[0.55rem] text-muted-foreground">
+            {rollingWf
+              ? 'Sequential IS/OOS slices across the range; best config by mean OOS performance'
+              : 'Walk-forward uses a single 70/30 split when rolling is off'}
+          </span>
+        </div>
       </div>
 
       {bestConfig && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          className="h-6 text-[0.62rem] self-start mt-2"
-          onClick={() => applyConfig(bestConfig)}
-        >
-          Apply best config to deploy
-        </Button>
+        <div className="flex flex-wrap gap-1 mt-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            onClick={() => applyConfig(bestConfig)}
+          >
+            Apply best config to deploy
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            onClick={deployOptimized}
+          >
+            Deploy with optimized params
+          </Button>
+        </div>
       )}
 
+      <BacktestWalkForwardPanel walkForward={results?.walk_forward} />
+
       {sweep?.results?.length > 0 && (
-        <table className="terminal-table algo-backtest-table m-0 mt-2 text-[0.58rem]">
-          <thead>
-            <tr>
-              <th>Config</th>
-              <th className="text-right">PnL</th>
-              <th className="text-right">Trades</th>
-              <th className="text-right">Win%</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {sweep.results.map((row, i) => {
-              const isBest = i === 0;
-              const summary = row.summary ?? {};
-              return (
-                <tr key={row.label ?? i} className={cn(isBest && 'bg-primary/5')}>
-                  <td className="max-w-[9rem] truncate" title={row.label}>{row.label}</td>
-                  <td className={cn(
-                    'num-mono text-right whitespace-nowrap',
-                    (row.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                  )}>
-                    {row.error ? '—' : `$${Number(row.total_pnl ?? 0).toFixed(2)}`}
-                  </td>
-                  <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
-                  <td className="num-mono text-right">
-                    {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
-                  </td>
-                  <td className="text-right">
-                    {isBest && row.config && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        className="h-5 text-[0.55rem] px-1"
-                        onClick={() => applyConfig(row.config)}
-                      >
-                        Apply
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <>
+          <table className="terminal-table algo-backtest-table m-0 mt-2 text-[0.58rem]">
+            <thead>
+              <tr>
+                <th>Config</th>
+                <th className="text-right">{metricHeader(activeObjective)}</th>
+                <th className="text-right">Trades</th>
+                <th className="text-right">Filters</th>
+                <th className="text-right">Win%</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {sweep.results.map((row, i) => {
+                const isBest = i === 0;
+                const summary = row.summary ?? {};
+                return (
+                  <tr key={row.label ?? i} className={cn(isBest && 'bg-primary/5')}>
+                    <td className="max-w-[9rem] truncate" title={row.label}>{row.label}</td>
+                    <td className={cn(
+                      'num-mono text-right whitespace-nowrap',
+                      activeObjective === 'total_pnl' && (row.total_pnl ?? 0) >= 0 && 'text-trading-up',
+                      activeObjective === 'total_pnl' && (row.total_pnl ?? 0) < 0 && 'text-trading-down',
+                    )}>
+                      {formatMetric(row, activeObjective)}
+                    </td>
+                    <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
+                    <td className="num-mono text-right text-muted-foreground" title={
+                      row.filter_rejects
+                        ? Object.entries(row.filter_rejects).filter(([, n]) => n > 0).map(([k, n]) => `${k}:${n}`).join(', ')
+                        : undefined
+                    }>
+                      {row.filter_rejects_total ?? summary.filter_rejects_total ?? '—'}
+                    </td>
+                    <td className="num-mono text-right">
+                      {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="text-right">
+                      {isBest && row.config && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          className="h-5 text-[0.55rem] px-1"
+                          onClick={() => applyConfig(row.config)}
+                        >
+                          Apply
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <OptimizerHeatmap sweep={sweep} paramDefs={paramDefs} objective={activeObjective} />
+        </>
       )}
+
+      <OptimizationHistory />
     </div>
   );
 }

@@ -1436,7 +1436,6 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       candles,
       chartType,
       active,
-      chartTheme,
       indicatorTheme,
       { forceRebuild: true },
     );

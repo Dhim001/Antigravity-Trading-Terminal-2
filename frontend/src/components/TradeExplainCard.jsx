@@ -25,6 +25,9 @@ export function tradeIdKey(trade) {
 
 export function findInsightForTrade(trade, symbol, timeframe, agentInsights, agentInsightHistory) {
   if (!trade) return null;
+  if (trade.insight_snapshot && typeof trade.insight_snapshot === 'object') {
+    return trade.insight_snapshot;
+  }
   const tf = normalizeAnalystTimeframe(timeframe);
   const barTime = trade.signal_bar_time;
   if (barTime != null) {
@@ -93,6 +96,8 @@ export default function TradeExplainCard({
     || insight?.reasons?.length
     || insight?.narrative
     || insight?.sub_reports
+    || (explain?.related_insights?.length > 0)
+    || (explain?.related_trades?.length > 0)
     || (explain?.recent_logs?.length > 0),
   );
 
@@ -159,6 +164,31 @@ export default function TradeExplainCard({
             <ul className="bot-trade-explain__logs-list">
               {explain.recent_logs.map((line, i) => (
                 <li key={i}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {explain?.related_insights?.length > 0 && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Recent analyst signals</p>
+            <ul className="bot-trade-explain__logs-list">
+              {explain.related_insights.map((ins, i) => (
+                <li key={i}>
+                  {ins.signal} · {Math.round((ins.confidence ?? 0) * 100)}% conf
+                  {ins.reasons?.[0] ? ` — ${ins.reasons[0]}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {explain?.related_trades?.length > 0 && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Recent fills on this bot</p>
+            <ul className="bot-trade-explain__logs-list">
+              {explain.related_trades.slice(0, 4).map((t, i) => (
+                <li key={i}>
+                  {t.is_exit ? 'Exit' : 'Entry'} {t.side} @ {Number(t.price).toFixed(2)}
+                </li>
               ))}
             </ul>
           </div>

@@ -41,6 +41,12 @@ const STEPS = [
     action: 'algo',
   },
   {
+    title: 'Backtest Lab & Optimizer',
+    body: 'After a backtest, open Backtest Lab → Optimizer to sweep parameters, run walk-forward validation, and deploy the winning config.',
+    target: 'algo-deploy',
+    action: 'algo',
+  },
+  {
     title: 'Chart Analyst',
     body: 'Press ⌘I for Insights Hub — scanner ranks symbols; Analyst tab shows insight history with sub-reports.',
     target: 'insights-hub',

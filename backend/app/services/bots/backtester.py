@@ -7,7 +7,14 @@ from app.services.bots.backtest_costs import (
     parse_cost_config,
     trade_fee,
 )
-from app.services.bots.indicators import first_eval_index, prepare_strategy_df
+from app.services.bots.indicators import first_eval_index, merge_strategy_config, prepare_strategy_df
+from app.services.bots.strategies_chart_agent import (
+    build_signal_from_insight,
+    classify_filter_reject,
+)
+from app.services.bots.tick_strategies import is_tick_strategy
+from app.services.market.resample import resample_candles_for_timeframe
+from app.services.market.timeframes import normalize_timeframe
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.backtest_analytics import drawdown_curve, enrich_summary
@@ -117,6 +124,7 @@ def _compute_summary(
     bars_in_market: int = 0,
     eval_bars: int = 0,
     blocked_entries: int = 0,
+    filter_rejects: dict | None = None,
     total_fees: float = 0.0,
     slippage_bps: float = 0.0,
     fee_bps: float = 0.0,
@@ -156,6 +164,7 @@ def _compute_summary(
             (bars_in_market / eval_bars) * 100, 2,
         ) if eval_bars > 0 else 0.0,
         "blocked_entries": blocked_entries,
+        "filter_rejects": filter_rejects or {},
         "total_fees": round(total_fees, 2),
         "slippage_bps": slippage_bps,
         "fee_bps": fee_bps,
@@ -180,7 +189,16 @@ class BacktesterService:
         """
         Bar-close backtest aligned with live BotManager semantics:
         long-only entries, allocation-based sizing, risk gates, intra-bar SL/TP.
+        Tick strategies replay simulated intra-bar paths from 1m candles.
         """
+        if is_tick_strategy(strategy_name):
+            from app.services.bots.backtest_tick import run_tick_backtest
+
+            return run_tick_backtest(
+                self, symbol, strategy_name, config, candles,
+                progress_cb=progress_cb, cancel_cb=cancel_cb,
+            )
+
         if not candles or len(candles) < 50:
             return {"error": "Not enough historical data"}
 
@@ -211,22 +229,51 @@ class BacktesterService:
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
         total_fees = 0.0
+        chart_cfg = merge_strategy_config("CHART_AGENT", cfg) if strat_key == "CHART_AGENT" else {}
 
         if strat_key == "CHART_AGENT":
             from app.services.agent.rule_engine import score_at_index
 
+            confirm_tf = (chart_cfg.get("confirm_timeframe") or "").strip()
+            htf_df = None
+            if confirm_tf:
+                try:
+                    cf_tf = normalize_timeframe(confirm_tf)
+                    htf_candles = resample_candles_for_timeframe(candles, cf_tf)
+                    if htf_candles:
+                        htf_df = self.screener.process_candles(
+                            symbol, htf_candles, cfg, strategy_name, full_history=True,
+                        )
+                        htf_df = prepare_strategy_df(htf_df, strategy_name, cfg)
+                except ValueError:
+                    htf_df = None
+
+            def _htf_closed_index(bar_time_val) -> int | None:
+                if htf_df is None or htf_df.empty or bar_time_val is None:
+                    return None
+                mask = htf_df["time"] <= int(bar_time_val)
+                if not mask.any():
+                    return None
+                return int(htf_df.index[mask][-1])
+
             def _chart_agent_signal(i: int) -> dict:
                 insight = score_at_index(df, i, symbol)
-                if not insight or insight.confidence < min_confidence:
+                if not insight:
                     return {"signal": "NONE"}
-                if insight.signal not in ("BUY", "SELL"):
-                    return {"signal": "NONE"}
-                out = {"signal": insight.signal}
-                if insight.levels.get("stop_loss_distance") is not None:
-                    out["stop_loss_distance"] = insight.levels["stop_loss_distance"]
-                if insight.levels.get("take_profit_price") is not None:
-                    out["take_profit_price"] = insight.levels["take_profit_price"]
-                return out
+                insight_dict = insight.to_dict()
+                confirm_insight = None
+                if htf_df is not None:
+                    bar_time_val = df.iloc[i].get("time")
+                    htf_idx = _htf_closed_index(bar_time_val)
+                    if htf_idx is not None and htf_idx >= 1:
+                        confirm = score_at_index(htf_df, htf_idx, symbol)
+                        if confirm:
+                            confirm_insight = confirm.to_dict()
+                return build_signal_from_insight(
+                    insight_dict,
+                    chart_cfg,
+                    confirm_insight=confirm_insight,
+                )
         else:
             _chart_agent_signal = None
 
@@ -245,6 +292,14 @@ class BacktesterService:
         halted = False
         bot_stub = {"status": "RUNNING", "allocation": allocation}
         blocked_entries = 0
+        filter_rejects: dict[str, int] = {
+            "min_score": 0,
+            "trend": 0,
+            "vol": 0,
+            "htf": 0,
+            "confidence": 0,
+            "other": 0,
+        }
         bars_in_market = 0
 
         def _roll_daily(bar_time) -> None:
@@ -318,6 +373,9 @@ class BacktesterService:
                 return
 
             qty = risk_per_entry / price_diff
+            size_factor = float((signal_data or {}).get("size_factor") or 1.0)
+            if strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True) and size_factor > 0:
+                qty *= size_factor
             if research:
                 qty = min(qty, allocation / max(current_price, 1e-9))
             else:
@@ -355,7 +413,7 @@ class BacktesterService:
                 "take_profit": tp_price,
                 "high_watermark": current_price,
             }
-            trade_log.append({
+            entry_row = {
                 "time": int(bar_time) if bar_time is not None else 0,
                 "side": "BUY",
                 "price": round(entry_fill, 4),
@@ -364,8 +422,22 @@ class BacktesterService:
                 "is_exit": False,
                 "reason": "ENTRY",
                 "fee": round(entry_fee, 4),
-            })
+            }
+            snap = signal_data.get("insight_snapshot")
+            if snap:
+                entry_row["insight_snapshot"] = snap
+            trade_log.append(entry_row)
             last_signal_bar_time = bar_time
+
+        def _record_filter_reject(signal_data: dict | None) -> None:
+            if not signal_data:
+                return
+            reason = signal_data.get("reject_reason")
+            if not reason:
+                return
+            bucket = classify_filter_reject(reason)
+            if bucket:
+                filter_rejects[bucket] = filter_rejects.get(bucket, 0) + 1
 
         def _try_short_entry(signal: str, signal_data: dict, row: dict, bar_time) -> None:
             nonlocal position, last_signal_bar_time, blocked_entries, equity, total_fees
@@ -387,6 +459,9 @@ class BacktesterService:
                 return
 
             qty = risk_per_entry / price_diff
+            size_factor = float((signal_data or {}).get("size_factor") or 1.0)
+            if strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True) and size_factor > 0:
+                qty *= size_factor
             qty = min(qty, allocation / max(current_price, 1e-9))
             if qty < _MIN_QTY:
                 blocked_entries += 1
@@ -453,6 +528,9 @@ class BacktesterService:
                 signal_data = strategy.evaluate(row)
             signal = (signal_data or {}).get("signal")
 
+            if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
+                _record_filter_reject(signal_data)
+
             if position:
                 close_signal = (
                     (position["side"] == "BUY" and signal in ("SELL", "CLOSE"))
@@ -500,17 +578,30 @@ class BacktesterService:
             bars_in_market=bars_in_market,
             eval_bars=eval_bars,
             blocked_entries=blocked_entries,
+            filter_rejects=filter_rejects,
             total_fees=total_fees,
             slippage_bps=slippage_bps,
             fee_bps=fee_bps,
         )
+        if strat_key == "CHART_AGENT":
+            summary["filter_rejects_total"] = sum(filter_rejects.values())
         summary = enrich_summary(
             summary,
             equity_curve=equity_curve,
             candles=candles,
             starting_equity=starting_equity,
         )
+        if summary.get("max_drawdown") and float(summary["max_drawdown"]) > 0:
+            ret = float(summary.get("return_pct") or 0)
+            summary["calmar_ratio"] = round(ret / float(summary["max_drawdown"]), 3)
         dd_curve = drawdown_curve(equity_curve)
+
+        from app.services.bots.monte_carlo import monte_carlo_trade_bands
+
+        monte_carlo = monte_carlo_trade_bands(
+            trade_log,
+            starting_equity=starting_equity,
+        )
 
         return {
             "win_rate": summary["win_rate"],
@@ -530,4 +621,5 @@ class BacktesterService:
                 "fee_bps": fee_bps,
                 "total_fees": round(total_fees, 2),
             },
+            "monte_carlo": monte_carlo,
         }

@@ -11,8 +11,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { StatCard } from '@/components/StatCard';
 import BacktestMiniChart from './BacktestMiniChart';
 import BacktestComparePanel from './BacktestComparePanel';
-import BacktestSweepPanel from './BacktestSweepPanel';
-import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
 import { useStore } from '../store/useStore';
@@ -102,6 +100,114 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
         </div>
       )}
     </div>
+  );
+}
+
+const FILTER_REJECT_LABELS = {
+  min_score: 'Score',
+  trend: 'Trend',
+  vol: 'Vol',
+  htf: 'HTF',
+  confidence: 'Conf',
+  other: 'Other',
+};
+
+function FilterRejectsSection({ summary }) {
+  const rejects = summary?.filter_rejects;
+  const total = summary?.filter_rejects_total
+    ?? (rejects ? Object.values(rejects).reduce((a, b) => a + (b || 0), 0) : 0);
+  if (!total || !rejects) return null;
+
+  return (
+    <section className="algo-backtest-lab__section algo-backtest-lab__section--filters">
+      <div className="flex flex-wrap items-center gap-1.5 mb-1">
+        <Badge variant="outline" className="h-5 px-1.5 text-[0.55rem]">
+          CHART_AGENT filter rejects: {total}
+        </Badge>
+        {Object.entries(rejects).map(([key, count]) => (
+          count > 0 ? (
+            <Badge key={key} variant="secondary" className="h-5 px-1.5 text-[0.55rem]">
+              {FILTER_REJECT_LABELS[key] ?? key}: {count}
+            </Badge>
+          ) : null
+        ))}
+      </div>
+      <p className="text-[0.55rem] text-muted-foreground m-0">
+        Entry signals blocked by analyst filters during replay (min_score, trend alignment, elevated vol, HTF confirm).
+      </p>
+    </section>
+  );
+}
+
+function MonteCarloSection({ monteCarlo }) {
+  if (!monteCarlo?.simulations) return null;
+  return (
+    <section className="algo-backtest-lab__section mb-3 rounded border border-border/50 bg-muted/10 p-2">
+      <p className="algo-backtest-table-scroll__caption mb-1.5">Monte Carlo confidence ({monteCarlo.simulations} sims)</p>
+      <div className="grid grid-cols-3 gap-2 text-[0.62rem]">
+        <div>
+          <span className="text-muted-foreground block">PnL 5th</span>
+          <span className="num-mono font-semibold">${Number(monteCarlo.pnl_p5).toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="text-muted-foreground block">Median</span>
+          <span className="num-mono font-semibold">${Number(monteCarlo.pnl_p50).toFixed(2)}</span>
+        </div>
+        <div>
+          <span className="text-muted-foreground block">PnL 95th</span>
+          <span className="num-mono font-semibold">${Number(monteCarlo.pnl_p95).toFixed(2)}</span>
+        </div>
+      </div>
+      <p className="text-[0.55rem] text-muted-foreground m-0 mt-1">
+        Bootstrap resample of {monteCarlo.trade_count} closed trades — not a forward projection.
+      </p>
+    </section>
+  );
+}
+
+function PortfolioResultsSection({ results }) {
+  const rows = results?.symbol_results;
+  if (!results?.portfolio || !rows?.length) return null;
+  return (
+    <section className="algo-backtest-lab__section mb-3">
+      <p className="algo-backtest-table-scroll__caption mb-1.5">
+        Portfolio backtest — {results.symbols_tested} symbol{results.symbols_tested === 1 ? '' : 's'}
+        {results.symbols_failed > 0 ? ` (${results.symbols_failed} failed)` : ''}
+      </p>
+      <div className="algo-backtest-table-scroll">
+        <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th className="text-right">PnL</th>
+              <th className="text-right">Trades</th>
+              <th className="text-right">Win%</th>
+              <th className="text-right">Sharpe</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.symbol}>
+                <td>{row.symbol}</td>
+                <td className={cn(
+                  'num-mono text-right',
+                  row.error ? 'text-muted-foreground' : (row.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                )}>
+                  {row.error ? row.error : `$${Number(row.total_pnl).toFixed(2)}`}
+                </td>
+                <td className="num-mono text-right">{row.trade_count ?? '—'}</td>
+                <td className="num-mono text-right">
+                  {row.win_rate != null ? `${Number(row.win_rate).toFixed(1)}%` : '—'}
+                </td>
+                <td className="num-mono text-right">
+                  {row.sharpe_ratio != null ? Number(row.sharpe_ratio).toFixed(2) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -202,6 +308,7 @@ export default function BacktestResultsPanel({
   showReasoningSection = false,
 }) {
   const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
+  const setBacktestLabTab = useStore((s) => s.setBacktestLabTab);
   const setBacktestResults = useStore((s) => s.setBacktestResults);
   const setBacktestOverlay = useStore((s) => s.setBacktestOverlay);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
@@ -541,9 +648,25 @@ export default function BacktestResultsPanel({
       <div className="algo-backtest-lab__body">
       <BacktestSummaryCards summary={summary} results={results} isFull={isFull} />
 
-      {isFull && <BacktestWalkForwardPanel walkForward={results.walk_forward} />}
+      {isFull && <PortfolioResultsSection results={results} />}
+      {isFull && <MonteCarloSection monteCarlo={results?.monte_carlo} />}
+      {isFull && <FilterRejectsSection summary={summary} />}
+
       {isFull && (
         <BacktestParityPanel results={results} symbol={symbol} strategy={strategy} />
+      )}
+
+      {!isFull && results?.sweep?.results?.length > 0 && (
+        <button
+          type="button"
+          className="algo-backtest-sweep-teaser text-[0.62rem] text-primary hover:underline text-left px-1 py-1"
+          onClick={() => {
+            setBacktestLabTab('optimizer');
+            setBacktestLabOpen(true);
+          }}
+        >
+          {results.sweep.configs_tested ?? results.sweep.results.length} configs tested → Open optimizer
+        </button>
       )}
 
       {isFull && (
@@ -551,14 +674,6 @@ export default function BacktestResultsPanel({
           <BacktestComparePanel
             currentRun={{ run_id: results.run_id, summary }}
             recentRuns={recentRuns}
-          />
-          <BacktestSweepPanel
-            symbol={symbol ?? results?.meta?.symbol}
-            strategy={strategy ?? results?.meta?.strategy}
-            days={results?.meta?.days ?? backtestDays}
-            timeframe={results?.meta?.timeframe ?? backtestTimeframe}
-            oosPct={oosPct ?? results?.meta?.oos_pct}
-            results={results}
           />
         </div>
       )}
