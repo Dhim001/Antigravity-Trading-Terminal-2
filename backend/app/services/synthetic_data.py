@@ -28,18 +28,30 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 class SBBSGenerator:
-    def __init__(self, symbol: str, block_size: int = 60):
+    def __init__(self, symbol: str, block_size: int = 60, *, defer_fetch: bool = False):
         self.symbol = symbol
         self.yf_symbol = YF_SYMBOL_MAP.get(symbol, symbol)
         self.block_size = block_size
         self.empirical_data = None
         self.bs = None
         self.buffer = []
+        self.components = None
+
+        self._load_or_fetch_data(defer_fetch=defer_fetch)
+        if self.empirical_data is not None and not self.empirical_data.empty:
+            self._prepare_bootstrap()
+
+    def ensure_loaded(self) -> bool:
+        """Fetch yfinance data if deferred or missing; return True when ready."""
+        if self.empirical_data is not None and not self.empirical_data.empty:
+            return True
+        self._load_or_fetch_data(defer_fetch=False)
+        if self.empirical_data is not None and not self.empirical_data.empty:
+            self._prepare_bootstrap()
+            return True
+        return False
         
-        self._load_or_fetch_data()
-        self._prepare_bootstrap()
-        
-    def _load_or_fetch_data(self):
+    def _load_or_fetch_data(self, *, defer_fetch: bool = False):
         file_path = os.path.join(DATA_DIR, f"{self.symbol}_7d_1m.parquet")
         
         # Check if we have a recent file (less than 24h old)
@@ -49,6 +61,10 @@ class SBBSGenerator:
                 logger.info(f"Loading cached empirical data for {self.symbol} from {file_path}")
                 self.empirical_data = pd.read_parquet(file_path)
                 return
+
+        if defer_fetch:
+            logger.debug("Deferring yfinance fetch for %s (no fresh cache)", self.symbol)
+            return
                 
         logger.info(f"Fetching 7 days of 1m empirical data for {self.symbol} from yfinance...")
         ticker = yf.Ticker(self.yf_symbol)
@@ -67,6 +83,8 @@ class SBBSGenerator:
         self.empirical_data = df
         
     def _prepare_bootstrap(self):
+        if self.empirical_data is None or self.empirical_data.empty:
+            return
         df = self.empirical_data.copy()
         
         # Calculate intra-candle ratios relative to Open, and Open's return relative to prev Close

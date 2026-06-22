@@ -5,6 +5,60 @@ import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
+import { CHART_SNAPSHOT_BARS } from '../services/candleBuffer';
+
+/** GET /api/v1/session — single-round-trip bootstrap snapshot. */
+export async function fetchSession(storeActions) {
+  try {
+    const body = await apiRequest('/api/v1/session');
+    if (body?.ok && body.session && storeActions) {
+      applySessionToStore(body.session, storeActions);
+    }
+    return body;
+  } catch (e) {
+    console.warn('[bootstrap] Session snapshot unavailable:', e.message);
+    return null;
+  }
+}
+
+/** Hydrate store from GET /api/v1/session payload. */
+export function applySessionToStore(session, storeActions) {
+  if (!session || !storeActions) return;
+  const t = session.terminal || {};
+  const llm = session.llm || {};
+  storeActions.setTerminalConfig({
+    terminalMode: t.terminal_mode,
+    terminalRole: t.terminal_role,
+    allowLiveBots: t.allow_live_bots,
+    allowCustomStrategies: t.allow_custom_strategies,
+    archiveParquetEnabled: t.archive_parquet_enabled,
+    archiveBackend: t.archive_backend,
+    archiveTicksEnabled: t.archive_ticks_enabled,
+    botMinCandles: t.bot_min_candles,
+    agentLlmEnabled: t.agent_llm_enabled,
+    agentLlmAvailable: llm.available,
+    agentLlmProvider: llm.provider,
+    agentLlmModel: llm.model,
+    agentLlmModels: llm.models || [],
+    agentVisionEnabled: t.agent_vision_enabled,
+    agentEnabled: t.agent_enabled,
+    scannerEnabled: t.scanner_enabled,
+  });
+  if (llm.preferred_model) {
+    storeActions.setSelectedLlmModel(llm.preferred_model);
+  } else if (llm.active_model && !useStore.getState().selectedLlmModel) {
+    storeActions.setSelectedLlmModel(llm.active_model);
+  }
+  if (session.account) storeActions.updateAccount(session.account);
+  if (session.history) storeActions.setTradeHistory(session.history);
+  if (session.bots) storeActions.setBots(session.bots);
+  if (session.strategies) storeActions.setStrategyCatalog(session.strategies);
+  if (session.metrics) storeActions.setSystemStats(session.metrics);
+  const job = session.active_backtest_job;
+  if (job && ['pending', 'running'].includes(job.status)) {
+    watchBacktestJob(job.id, storeActions, { progress: job.progress });
+  }
+}
 
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
@@ -228,6 +282,91 @@ export async function fetchOptimizationRun(runId) {
   return body.run;
 }
 
+/** GET /api/v1/bots/calibration — closed-trade win rates by setup bucket. */
+export async function fetchBotCalibration({ botId, symbol, minSamples = 3, limit = 2000 } = {}) {
+  const qs = new URLSearchParams();
+  if (botId) qs.set('bot_id', botId);
+  if (symbol) qs.set('symbol', symbol);
+  qs.set('min_samples', String(minSamples));
+  qs.set('limit', String(limit));
+  const body = await apiRequest(`/api/v1/bots/calibration?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Calibration unavailable');
+  return body.calibration;
+}
+
+/** GET /api/v1/bots/filter-rejects — live + backtest CHART_AGENT filter reject aggregates. */
+export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
+  const qs = new URLSearchParams();
+  if (botId) qs.set('bot_id', botId);
+  if (symbol) qs.set('symbol', symbol);
+  if (strategy) qs.set('strategy', strategy);
+  const body = await apiRequest(`/api/v1/bots/filter-rejects?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Filter rejects unavailable');
+  return body.filter_rejects;
+}
+
+/** POST /api/v1/bots/calibration/apply — merge threshold suggestions into bot config. */
+export async function applyCalibrationSuggestions({
+  botId,
+  symbol,
+  kinds,
+  applyAll = false,
+  minSamples = 3,
+} = {}) {
+  const body = await apiRequest('/api/v1/bots/calibration/apply', {
+    method: 'POST',
+    body: {
+      bot_id: botId,
+      symbol: symbol || undefined,
+      kinds: kinds || undefined,
+      apply_all: applyAll,
+      min_samples: minSamples,
+    },
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Failed to apply calibration suggestions');
+  return body;
+}
+
+/** POST /api/v1/agent/pipeline/scan-deploy — rank scan results and deploy CHART_AGENT bots. */
+export async function pipelineScanDeploy({
+  symbols,
+  maxDeploy = 3,
+  minConfidence = 0.6,
+  minScore = 2,
+  allocation = 1000,
+  timeframe = '1m',
+  signalFilter = 'ACTIONABLE',
+  dryRun = false,
+  config,
+} = {}) {
+  const body = await apiRequest('/api/v1/agent/pipeline/scan-deploy', {
+    method: 'POST',
+    body: {
+      symbols,
+      max_deploy: maxDeploy,
+      min_confidence: minConfidence,
+      min_score: minScore,
+      allocation,
+      timeframe,
+      signal_filter: signalFilter,
+      dry_run: dryRun,
+      config: config || undefined,
+    },
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Pipeline scan-deploy failed');
+  return body.pipeline;
+}
+
+/** GET /api/v1/agent/pipeline/status — active pipeline-deployed bots. */
+export async function fetchPipelineStatus({ strategy, timeframe } = {}) {
+  const qs = new URLSearchParams();
+  if (strategy) qs.set('strategy', strategy);
+  if (timeframe) qs.set('timeframe', timeframe);
+  const body = await apiRequest(`/api/v1/agent/pipeline/status?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Pipeline status unavailable');
+  return body;
+}
+
 let _backtestPollTimer = null;
 
 function startBacktestJobPolling(jobId, storeActions) {
@@ -301,9 +440,10 @@ export async function fetchBots(storeActions) {
   return body;
 }
 
-export async function fetchCandles(symbol, storeActions) {
+export async function fetchCandles(symbol, storeActions, { limit = CHART_SNAPSHOT_BARS } = {}) {
   const encoded = encodeURIComponent(symbol);
-  const body = await apiAction(`/api/v1/market/${encoded}/candles`);
+  const qs = limit != null && limit > 0 ? `?limit=${limit}` : '';
+  const body = await apiAction(`/api/v1/market/${encoded}/candles${qs}`);
   applyHttpEnvelope(body, storeActions);
   return body;
 }

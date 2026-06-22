@@ -13,7 +13,12 @@ export const HTTP_ROUTES = Object.freeze({
   [Action.GET_HISTORY]: { method: 'GET', path: () => '/api/v1/history' },
   [Action.SUBSCRIBE_SYMBOL]: {
     method: 'GET',
-    path: (p) => `/api/v1/market/${encodeURIComponent(p.symbol)}/candles`,
+    path: (p) => {
+      const qs = new URLSearchParams();
+      if (p.limit != null && p.limit !== '') qs.set('limit', String(p.limit));
+      const q = qs.toString();
+      return `/api/v1/market/${encodeURIComponent(p.symbol)}/candles${q ? `?${q}` : ''}`;
+    },
   },
   [Action.GET_MARKET_HISTORY]: {
     method: 'GET',

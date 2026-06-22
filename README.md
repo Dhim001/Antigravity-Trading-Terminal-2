@@ -128,9 +128,12 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 - **`SymbolCommandPalette`** — fuzzy symbol search and view switching
 - **Keyboard shortcuts**
   - `⌘K` / `Ctrl+K` — open command palette
+  - `⌘B` / `Ctrl+B` — Algo tab (Automation · deploy & bots)
+  - `⌘I` / `Ctrl+I` — Insights Hub (Scanner + Analyst sheet)
   - `⌘1` / `Ctrl+1` — single chart view
   - `⌘2` / `Ctrl+2` — multi-chart view
   - `F` — Zen chart (hide dock & order panel)
+  - `?` — keyboard shortcuts sheet
 - **Layout modes (UX overhaul)** — header workspace switcher: **Trade**, **Analyze**, **Automate**, **Portfolio**; each remaps dock, right panel, and default tabs
 - **Grouped dock** — Portfolio · Intelligence · Automation · Data category rails with sub-tabs
 - **Command bar** — merged symbol context, watchlist strip, and portfolio metrics (replaces separate aux + strip rows)
@@ -148,7 +151,7 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 - **Performance (Phase 2)** — lazy-loaded dock tabs, windowed analyst history table, throttled live candle updates
 - **Vision LLM (optional)** — set `OPENAI_API_KEY` (and optionally `OPENAI_VISION_MODEL=gpt-4o-mini`) in backend `.env` to enable chart structure analysis from the Analyst tab **Vision** button; without a key, vision requests return a clear configuration error
 - Trading-specific button variants: `buy`, `sell`, `live` badges
-- **HTTP bootstrap (Phase 4a)** — on mount, parallel REST calls hydrate account, history, bots, and chart candles before WebSocket connects; live ticks still stream over WS. See `frontend/src/api/` and `hooks/useBootstrap.js`. Dev uses Vite proxy (`vite.config.js`); set `VITE_HTTP_BASE_URL` for production builds (`frontend/.env.example`).
+- **HTTP bootstrap (Phase 4a)** — on mount, `GET /api/v1/session` hydrates terminal config, account, history, bots, strategies, and active backtest job in one round-trip (StrictMode-safe dedupe in `bootstrap.js`); chart candles still fetched per symbol. Live ticks stream over WS. Dev uses Vite proxy (`vite.config.js`); set `VITE_HTTP_BASE_URL` for production builds (`frontend/.env.example`).
 - **Unified transport (Phase 4c)** — `sendAction()` in `frontend/src/api/transport.js` tries WebSocket first, then falls back to the matching REST endpoint when WS is offline (orders, bots, admin, SL/TP, etc.).
 
 ---
@@ -532,7 +535,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR:
 
 - Backend unit tests (router, protocol sync, wire guard, HTTP)
 - Frontend production build
-- Playwright E2E smoke (`frontend/e2e/smoke.spec.js`)
+- Playwright E2E (`frontend/e2e/`) — smoke, layout, onboarding, analyst, trading flows, workspace persistence, performance
 - eToro smoke (`backend/scripts/etoro_smoke_test.py`) — skips without secrets; runs when `ETORO_API_KEY` / `ETORO_USER_KEY` or `ETORO_ACCESS_TOKEN` GitHub secrets are set
 
 Local E2E:

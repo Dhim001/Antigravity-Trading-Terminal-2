@@ -103,39 +103,19 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
   );
 }
 
-const FILTER_REJECT_LABELS = {
-  min_score: 'Score',
-  trend: 'Trend',
-  vol: 'Vol',
-  htf: 'HTF',
-  confidence: 'Conf',
-  other: 'Other',
-};
+import FilterRejectsDashboard from './FilterRejectsDashboard';
 
 function FilterRejectsSection({ summary }) {
   const rejects = summary?.filter_rejects;
-  const total = summary?.filter_rejects_total
-    ?? (rejects ? Object.values(rejects).reduce((a, b) => a + (b || 0), 0) : 0);
-  if (!total || !rejects) return null;
-
+  const total = summary?.filter_rejects_total;
+  if (!rejects && !total) return null;
   return (
-    <section className="algo-backtest-lab__section algo-backtest-lab__section--filters">
-      <div className="flex flex-wrap items-center gap-1.5 mb-1">
-        <Badge variant="outline" className="h-5 px-1.5 text-[0.55rem]">
-          CHART_AGENT filter rejects: {total}
-        </Badge>
-        {Object.entries(rejects).map(([key, count]) => (
-          count > 0 ? (
-            <Badge key={key} variant="secondary" className="h-5 px-1.5 text-[0.55rem]">
-              {FILTER_REJECT_LABELS[key] ?? key}: {count}
-            </Badge>
-          ) : null
-        ))}
-      </div>
-      <p className="text-[0.55rem] text-muted-foreground m-0">
-        Entry signals blocked by analyst filters during replay (min_score, trend alignment, elevated vol, HTF confirm).
-      </p>
-    </section>
+    <FilterRejectsDashboard
+      className="algo-backtest-lab__section algo-backtest-lab__section--filters"
+      rejects={rejects}
+      total={total}
+      hint="Entry signals blocked by analyst filters during replay (min_score, trend alignment, elevated vol, HTF confirm)."
+    />
   );
 }
 

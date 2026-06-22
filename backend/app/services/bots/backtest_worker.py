@@ -25,6 +25,7 @@ async def backtest_job_worker_loop(state) -> None:
                 continue
             logger.info("Resuming backtest job %s", job["id"])
             await _run_recovered_job(state, job)
+            await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -75,4 +76,9 @@ async def _run_recovered_job(state, job: dict) -> None:
         reasoning=bool(req.get("reasoning")),
         llm_model=(req.get("llm_model") or req.get("model") or "").strip() or None,
         portfolio_symbols=req.get("portfolio_symbols"),
+        auto_deploy=bool(req.get("auto_deploy")),
+        auto_deploy_allocation=float(req.get("auto_deploy_allocation") or req.get("allocation") or 1000),
+        auto_deploy_min_oos_pnl=float(req.get("auto_deploy_min_oos_pnl") or 0),
+        auto_deploy_min_oos_trades=int(req.get("auto_deploy_min_oos_trades") or 1),
+        auto_deploy_skip_existing=bool(req.get("auto_deploy_skip_existing", True)),
     )

@@ -25,6 +25,7 @@ from app.config import (
     AGENT_VISION_ENABLED,
     AGENT_ENABLED,
     SCANNER_ENABLED,
+    SIM_SBBS_WARM_ON_STARTUP,
 )
 from app.database import init_db
 from app.api.http_server import run_http_server
@@ -78,14 +79,22 @@ async def simulated_market_loop():
     manager = state.manager
     bot_manager = state.bot_manager
     tick_count = 0
+    tick_symbols: set[str] = set()
     while True:
         try:
             data = {}
             now_ms = int(time.time() * 1000)
+            if runs_bot_engine_inline():
+                tick_symbols = {
+                    b["symbol"]
+                    for b in bot_manager.active_bots.values()
+                    if b.get("status") == "RUNNING"
+                    and b.get("execution_mode", "BAR_CLOSE") == "TICK"
+                }
             for symbol in feed.symbols:
                 market_data = feed.get_market_data(symbol)
                 data[symbol] = market_data
-                if runs_bot_engine_inline():
+                if runs_bot_engine_inline() and symbol in tick_symbols:
                     await bot_manager.process_price_tick(
                         symbol, float(market_data["price"]), now_ms
                     )
@@ -141,7 +150,7 @@ async def simulated_market_loop():
             if tick_count % 12 == 0:
                 from app.database import get_db_stats
 
-                stats = get_db_stats()
+                stats = await asyncio.to_thread(get_db_stats)
                 stats["clients"] = len(manager.connected_clients)
                 stats["tick_interval"] = feed.tick_interval
                 stats["volatility_multiplier"] = feed.volatility_multiplier
@@ -157,7 +166,7 @@ async def diagnostics_broadcast_loop():
         try:
             from app.database import get_db_stats
 
-            stats = get_db_stats()
+            stats = await asyncio.to_thread(get_db_stats)
             stats["clients"] = len(manager.connected_clients)
             stats["tick_interval"] = 1.0
             stats["volatility_multiplier"] = 1.0
@@ -167,18 +176,25 @@ async def diagnostics_broadcast_loop():
         await asyncio.sleep(5)
 
 
+async def _send_ws_bootstrap_payloads(websocket):
+    """Defer heavy WS payloads so the client gets terminal_config first."""
+    manager = state.manager
+    try:
+        await manager.send_to(websocket, account_update(state.oms.get_account_data()))
+        await manager.send_to(websocket, bots_update(state.bot_manager.list_bots_public()))
+        await manager.send_to(websocket, trade_history(state.oms.get_trade_history()))
+        await manager.send_to(websocket, bot_logs_history(state.bot_manager.get_recent_logs(100)))
+    except Exception as exc:
+        logging.debug("WS bootstrap payloads skipped: %s", exc)
+
+
 async def websocket_handler(websocket):
     manager = state.manager
     logging.info("New client connected.")
     manager.register(websocket)
 
     llm_config: dict = {"available": False, "provider": "off"}
-    try:
-        from app.services.agent.llm.router import get_llm_status
-
-        llm_config = await get_llm_status()
-    except Exception:
-        pass
+    llm_task = asyncio.create_task(_fetch_llm_config())
 
     await manager.send_to(websocket, terminal_config({
         "terminalMode": TERMINAL_MODE,
@@ -193,20 +209,24 @@ async def websocket_handler(websocket):
         "archiveBackend": ARCHIVE_BACKEND,
         "wsMsgpackEnabled": WS_MSGPACK_ENABLED,
         "agentLlmEnabled": AGENT_LLM_ENABLED,
-        "agentLlmAvailable": llm_config.get("available", False),
-        "agentLlmProvider": llm_config.get("provider"),
-        "agentLlmModel": llm_config.get("model"),
-        "agentLlmModels": llm_config.get("models") or [],
+        "agentLlmAvailable": False,
         "agentVisionEnabled": AGENT_VISION_ENABLED,
         "agentEnabled": AGENT_ENABLED,
         "scannerEnabled": SCANNER_ENABLED,
     }))
 
-    await manager.send_to(websocket, account_update(state.oms.get_account_data()))
-    state.bot_manager.load_bots_from_db()
-    await manager.send_to(websocket, bots_update(state.bot_manager.list_bots_public()))
-    await manager.send_to(websocket, trade_history(state.oms.get_trade_history()))
-    await manager.send_to(websocket, bot_logs_history(state.bot_manager.get_recent_logs(100)))
+    asyncio.create_task(_send_ws_bootstrap_payloads(websocket))
+
+    try:
+        llm_config = await llm_task
+        await manager.send_to(websocket, terminal_config({
+            "agentLlmAvailable": llm_config.get("available", False),
+            "agentLlmProvider": llm_config.get("provider"),
+            "agentLlmModel": llm_config.get("model"),
+            "agentLlmModels": llm_config.get("models") or [],
+        }))
+    except Exception:
+        pass
 
     try:
         async for message_str in websocket:
@@ -215,6 +235,15 @@ async def websocket_handler(websocket):
         logging.info("Client connection closed.")
     finally:
         manager.unregister(websocket)
+
+
+async def _fetch_llm_config() -> dict:
+    try:
+        from app.services.agent.llm.router import get_llm_status
+
+        return await get_llm_status()
+    except Exception:
+        return {"available": False, "provider": "off"}
 
 
 async def heartbeat_loop():
@@ -287,6 +316,8 @@ async def main():
 
         if TERMINAL_MODE == "SIMULATED":
             tasks.append(asyncio.create_task(simulated_market_loop()))
+            if SIM_SBBS_WARM_ON_STARTUP and hasattr(state.feed, "warm_generators"):
+                tasks.append(asyncio.create_task(state.feed.warm_generators()))
         else:
             tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
 

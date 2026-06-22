@@ -22,6 +22,8 @@ ACTION_SUMMARY: dict[str, str] = {
     "bot_get_all": "List bots",
     "run_backtest": "Run strategy backtest",
     "run_backtest_sweep": "Run parameter sweep / walk-forward optimization",
+    "get_bot_calibration": "Closed-trade win rates by setup bucket with threshold hints",
+    "get_filter_rejects": "Live and backtest CHART_AGENT filter-reject aggregates",
     "cancel_backtest": "Cancel in-flight backtest job",
     "trade_explain": "Explain bot trade with insight context",
     "admin_get_stats": "System statistics",

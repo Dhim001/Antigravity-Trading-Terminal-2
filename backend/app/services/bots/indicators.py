@@ -46,6 +46,14 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "require_trend_alignment": False,
         "block_elevated_vol": False,
         "confirm_timeframe": "",
+        "calibration_gate_enabled": False,
+        "calibration_min_samples": 5,
+        "calibration_min_wilson": 0.45,
+        "regime_routing_enabled": False,
+        "elevated_min_confidence": 0.65,
+        "elevated_min_score": 3,
+        "elevated_block_entries": False,
+        "compressed_min_confidence": 0.55,
     },
 }
 

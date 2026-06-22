@@ -37,7 +37,8 @@ async def archive_startup_backfill(feed) -> None:
     if not ARCHIVE_BACKFILL_ON_STARTUP:
         return
     try:
-        result = run_archive_backfill(
+        result = await asyncio.to_thread(
+            run_archive_backfill,
             list(feed.symbols),
             feed=feed,
             source=_archive_source(),

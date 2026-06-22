@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { defaultSettingsInitScript } from './helpers';
+import { seedSettings } from './helpers';
 
 test.describe('Onboarding & help', () => {
   test('onboarding tour opens for new users and advances', async ({ page }) => {
-    await page.addInitScript(defaultSettingsInitScript({ onboardingCompleted: false }));
+    await seedSettings(page, { onboardingCompleted: false });
     await page.goto('/');
     await page.waitForSelector('.dashboard-container', { timeout: 15000 });
 

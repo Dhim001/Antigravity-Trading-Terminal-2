@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Radar, RefreshCw, Search } from 'lucide-react';
+import { Bot, Radar, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction, runMarketScan } from '../api/transport';
 import { Action } from '../api/protocol';
+import { pipelineScanDeploy } from '../api/endpoints';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -60,8 +61,11 @@ export default function ScannerTab() {
   const tickerData = useStore((s) => s.tickerData);
   const setBotStrategy = useStore((s) => s.setBotStrategy);
   const openBacktestLab = useStore((s) => s.openBacktestLab);
+  const botConfig = useStore((s) => s.botConfig);
+  const botTimeframe = useStore((s) => s.botTimeframe);
 
   const [loading, setLoading] = useState(false);
+  const [deploying, setDeploying] = useState(false);
   const [search, setSearch] = useState('');
   const [signalFilter, setSignalFilter] = useState('any');
   const [previewDraft, setPreviewDraft] = useState(null);
@@ -125,6 +129,39 @@ export default function ScannerTab() {
       setLoading(false);
     }
   }, [symbolsList]);
+
+  const deployTopBots = useCallback(async (dryRun = false) => {
+    const symbols = [...new Set((symbolsList || []).filter(Boolean))];
+    if (symbols.length === 0) {
+      toast.error('Watchlist is empty');
+      return;
+    }
+    setDeploying(true);
+    try {
+      const result = await pipelineScanDeploy({
+        symbols,
+        maxDeploy: 3,
+        minConfidence: 0.6,
+        minScore: 2,
+        allocation: botConfig?.allocation ?? 1000,
+        timeframe: botTimeframe || analysisTf,
+        dryRun,
+        config: botConfig,
+      });
+      const n = result?.deployed?.length ?? 0;
+      if (dryRun) {
+        toast.message(`Dry run: would deploy ${n} bot(s) from ${result?.candidates ?? 0} candidates`);
+      } else if (n > 0) {
+        toast.success(`Deployed ${n} CHART_AGENT bot(s) from scan`);
+      } else {
+        toast.message(result?.skipped?.[0]?.reason || 'No symbols met deploy criteria');
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Pipeline deploy failed');
+    } finally {
+      setDeploying(false);
+    }
+  }, [symbolsList, botConfig, botTimeframe, analysisTf]);
 
   useEffect(() => {
     if (!autoRefresh) return undefined;
@@ -204,6 +241,17 @@ export default function ScannerTab() {
           >
             {loading ? <RefreshCw className="size-3 animate-spin" /> : <Radar className="size-3" />}
             Scan watchlist
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            disabled={deploying || loading}
+            onClick={() => deployTopBots(false)}
+            title="Deploy up to 3 CHART_AGENT bots for top actionable scan signals"
+          >
+            {deploying ? <RefreshCw className="size-3 animate-spin" /> : <Bot className="size-3" />}
+            Deploy top 3
           </Button>
           <Button
             variant="outline"
@@ -343,6 +391,39 @@ export default function ScannerTab() {
                           onClick={(e) => { e.stopPropagation(); onPreview(row); }}
                         >
                           Preview
+                        </Button>
+                      )}
+                      {row.signal !== 'NONE' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={deploying}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setDeploying(true);
+                            try {
+                              const result = await pipelineScanDeploy({
+                                symbols: [row.symbol],
+                                maxDeploy: 1,
+                                minConfidence: 0.55,
+                                minScore: 2,
+                                allocation: botConfig?.allocation ?? 1000,
+                                timeframe: botTimeframe || analysisTf,
+                                config: botConfig,
+                              });
+                              if (result?.deployed?.length) {
+                                toast.success(`Deployed bot for ${row.symbol}`);
+                              } else {
+                                toast.message(result?.skipped?.[0]?.reason || 'Deploy skipped');
+                              }
+                            } catch (err) {
+                              toast.error(err?.message || 'Deploy failed');
+                            } finally {
+                              setDeploying(false);
+                            }
+                          }}
+                        >
+                          Bot
                         </Button>
                       )}
                     </td>

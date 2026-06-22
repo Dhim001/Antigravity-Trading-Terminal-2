@@ -15,6 +15,7 @@ from app.services.bots.strategies_chart_agent import (
     classify_filter_reject,
     compact_insight_snapshot,
 )
+from app.services.bots.calibration import get_calibration_store
 from tests.test_chart_agent_rules import make_trending_candles
 
 
@@ -95,6 +96,58 @@ class TestChartAgentFilters(unittest.TestCase):
         self.assertEqual(classify_filter_reject("trend score 0 does not align with BUY"), "trend")
         self.assertEqual(classify_filter_reject("elevated ATR regime blocks entry"), "vol")
         self.assertEqual(classify_filter_reject("4h trend score 0 does not confirm BUY"), "htf")
+        self.assertEqual(
+            classify_filter_reject("calibration gate: setup Wilson lower 0.32 below 0.45 (n=6)"),
+            "calibration",
+        )
+
+    def test_calibration_gate_blocks_via_build_signal(self):
+        from app.database import get_connection, init_db
+        import json
+
+        init_db()
+        get_calibration_store().invalidate()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bot_trades")
+        cursor.execute("DELETE FROM bots")
+        cursor.execute(
+            "INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("bot-filter-gate", "CHART_AGENT", "BTCUSDT", "1m", "RUNNING", 1000.0, "{}"),
+        )
+        snap = json.dumps({
+            "score": 2,
+            "confidence": 0.6,
+            "sub_reports": {"risk": {"atr_regime": "normal"}},
+        })
+        for i in range(6):
+            cursor.execute(
+                "INSERT INTO bot_trades (bot_id, symbol, side, quantity, price, is_exit, insight_snapshot, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("bot-filter-gate", "BTCUSDT", "BUY", 1.0, 100.0, 0, snap, f"2026-06-0{i+1}T10:00:00Z"),
+            )
+            cursor.execute(
+                "INSERT INTO bot_trades (bot_id, symbol, side, quantity, price, pnl, is_exit, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("bot-filter-gate", "BTCUSDT", "SELL", 1.0, 95.0, -5.0, 1, f"2026-06-0{i+1}T11:00:00Z"),
+            )
+        conn.commit()
+        conn.close()
+        get_calibration_store().invalidate("bot-filter-gate")
+
+        cfg = {
+            "symbol": "BTCUSDT",
+            "timeframe": "1m",
+            "min_confidence": 0.55,
+            "calibration_gate_enabled": True,
+            "calibration_min_samples": 5,
+            "calibration_min_wilson": 0.45,
+            "_bot_id": "bot-filter-gate",
+        }
+        out = build_signal_from_insight(_insight(score=2, confidence=0.6), cfg, bot_id="bot-filter-gate")
+        self.assertEqual(out["signal"], "NONE")
+        self.assertIn("calibration gate", out["reject_reason"].lower())
 
     def test_compact_snapshot_shape(self):
         snap = compact_insight_snapshot(_insight())

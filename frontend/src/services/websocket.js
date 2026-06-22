@@ -3,6 +3,7 @@ import { Action, MessageType } from '../api/protocol';
 import { applyServerMessage, getStoreActions } from '../api/dispatch';
 import { runBootstrap, resubscribeMarketSymbols } from '../api/bootstrap';
 import { WS_URL } from '../api/config';
+import { CHART_SNAPSHOT_BARS } from './candleBuffer';
 import { getHmrData, markHmrActive, setupHmrAccept } from './hmrState';
 import { decode as decodeMsgpack } from '@msgpack/msgpack';
 
@@ -12,6 +13,9 @@ const hmr = getHmrData();
 
 let ws = hmr?.ws ?? null;
 let reconnectTimeout = hmr?.reconnectTimeout ?? null;
+let reconnectDelayMs = hmr?.reconnectDelayMs ?? 3000;
+const RECONNECT_BASE_MS = 3000;
+const RECONNECT_MAX_MS = 30000;
 let isConnecting = false;
 let lastUrl = hmr?.lastUrl ?? null;
 
@@ -57,12 +61,15 @@ function attachWebSocketHandlers(socket) {
     isConnecting = false;
     ws = null;
     if (hmr) hmr.ws = null;
-    console.log('WebSocket disconnected. Retrying in 3s...');
+    console.log(`WebSocket disconnected. Retrying in ${Math.round(reconnectDelayMs / 1000)}s...`);
     storeActions.setConnectionStatus('disconnected');
     clearReconnect();
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.6), RECONNECT_MAX_MS);
+    if (hmr) hmr.reconnectDelayMs = reconnectDelayMs;
     reconnectTimeout = setTimeout(() => {
       if (lastUrl) connectWebSocket(lastUrl);
-    }, 3000);
+    }, delay);
     if (hmr) hmr.reconnectTimeout = reconnectTimeout;
   };
 
@@ -74,11 +81,17 @@ function attachWebSocketHandlers(socket) {
 
 function onSocketOpen(socket) {
   isConnecting = false;
+  reconnectDelayMs = RECONNECT_BASE_MS;
+  if (hmr) hmr.reconnectDelayMs = reconnectDelayMs;
   const storeActions = getStoreActions();
   console.log('WebSocket connected successfully.');
   storeActions.setConnectionStatus('connected');
   const activeSymbol = useStore.getState().activeSymbol;
-  socket.send(JSON.stringify({ action: Action.SUBSCRIBE_SYMBOL, symbol: activeSymbol }));
+  socket.send(JSON.stringify({
+    action: Action.SUBSCRIBE_SYMBOL,
+    symbol: activeSymbol,
+    limit: CHART_SNAPSHOT_BARS,
+  }));
   socket.send(JSON.stringify({ action: Action.BOT_GET_ALL }));
   runBootstrap({ symbol: activeSymbol, light: true, skipCandles: true });
   resubscribeMarketSymbols();
@@ -89,6 +102,7 @@ function persistHmrSocket() {
   hmr.ws = ws;
   hmr.lastUrl = lastUrl;
   hmr.reconnectTimeout = reconnectTimeout;
+  hmr.reconnectDelayMs = reconnectDelayMs;
 }
 
 export const connectWebSocket = (url = WS_URL) => {

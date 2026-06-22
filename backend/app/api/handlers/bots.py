@@ -1,5 +1,4 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
 from app.api.context import RequestContext
@@ -112,6 +111,25 @@ def _parse_backtest_request(msg: dict) -> dict:
     elif not isinstance(portfolio_symbols, list):
         portfolio_symbols = None
 
+    auto_deploy = bool(msg.get("auto_deploy"))
+    try:
+        auto_deploy_allocation = float(msg.get("auto_deploy_allocation", msg.get("allocation", 1000)))
+    except (TypeError, ValueError):
+        auto_deploy_allocation = 1000.0
+    try:
+        auto_deploy_min_oos_pnl = float(msg.get("auto_deploy_min_oos_pnl", 0))
+    except (TypeError, ValueError):
+        auto_deploy_min_oos_pnl = 0.0
+    try:
+        auto_deploy_min_oos_trades = max(0, int(msg.get("auto_deploy_min_oos_trades", 1)))
+    except (TypeError, ValueError):
+        auto_deploy_min_oos_trades = 1
+    auto_deploy_skip_existing = msg.get("auto_deploy_skip_existing")
+    if auto_deploy_skip_existing is None:
+        auto_deploy_skip_existing = True
+    else:
+        auto_deploy_skip_existing = bool(auto_deploy_skip_existing)
+
     return {
         "symbol": msg.get("symbol"),
         "strategy": msg.get("strategy"),
@@ -129,6 +147,11 @@ def _parse_backtest_request(msg: dict) -> dict:
         "reasoning": reasoning,
         "llm_model": llm_model,
         "portfolio_symbols": portfolio_symbols,
+        "auto_deploy": auto_deploy,
+        "auto_deploy_allocation": auto_deploy_allocation,
+        "auto_deploy_min_oos_pnl": auto_deploy_min_oos_pnl,
+        "auto_deploy_min_oos_trades": auto_deploy_min_oos_trades,
+        "auto_deploy_skip_existing": auto_deploy_skip_existing,
     }
 
 
@@ -168,6 +191,11 @@ async def _execute_backtest(
     reasoning: bool = False,
     llm_model: str | None = None,
     portfolio_symbols: list[str] | None = None,
+    auto_deploy: bool = False,
+    auto_deploy_allocation: float = 1000.0,
+    auto_deploy_min_oos_pnl: float = 0.0,
+    auto_deploy_min_oos_trades: int = 1,
+    auto_deploy_skip_existing: bool = True,
 ) -> None:
     if not ctx.backtester or not hasattr(ctx.oms, "feed"):
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})
@@ -188,6 +216,11 @@ async def _execute_backtest(
         "sweep_objective": sweep_objective,
         "min_trades": min_trades,
         "portfolio_symbols": portfolio_symbols,
+        "auto_deploy": auto_deploy,
+        "auto_deploy_allocation": auto_deploy_allocation,
+        "auto_deploy_min_oos_pnl": auto_deploy_min_oos_pnl,
+        "auto_deploy_min_oos_trades": auto_deploy_min_oos_trades,
+        "auto_deploy_skip_existing": auto_deploy_skip_existing,
     }
     client_key = str(id(ctx.websocket)) if ctx.websocket is not None else None
     if not job_id:
@@ -507,35 +540,41 @@ async def _execute_backtest(
             use_parallel = is_sweep and len(configs) > 1
             if use_parallel:
                 workers = min(4, len(configs))
+                sem = asyncio.Semaphore(workers)
                 completed = 0
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = [
-                        pool.submit(_run_config, idx, cfg)
-                        for idx, cfg in enumerate(configs)
-                    ]
-                    for fut in as_completed(futures):
+
+                async def _run_one(run_idx: int, run_config: dict):
+                    async with sem:
                         if is_cancelled():
-                            await _finish("cancelled")
+                            return run_idx, run_config, {"cancelled": True}
+                        return await asyncio.to_thread(_run_config, run_idx, run_config)
+
+                for coro in asyncio.as_completed(
+                    [_run_one(idx, cfg) for idx, cfg in enumerate(configs)]
+                ):
+                    if is_cancelled():
+                        await _finish("cancelled")
+                        return
+                    run_idx, run_config, results = await coro
+                    if isinstance(results, dict) and results.get("cancelled"):
+                        await _finish("cancelled")
+                        return
+                    if isinstance(results, dict) and results.get("error") and not is_sweep:
+                        await _finish("error", message=results["error"])
+                        return
+                    if not _consume_result(run_idx, run_config, results):
+                        if not is_sweep:
+                            err = results.get("error") if isinstance(results, dict) else "Invalid backtest response"
+                            await _finish("error", message=err)
                             return
-                        run_idx, run_config, results = fut.result()
-                        if isinstance(results, dict) and results.get("cancelled"):
-                            await _finish("cancelled")
-                            return
-                        if isinstance(results, dict) and results.get("error") and not is_sweep:
-                            await _finish("error", message=results["error"])
-                            return
-                        if not _consume_result(run_idx, run_config, results):
-                            if not is_sweep:
-                                await _finish("error", message=results.get("error") if isinstance(results, dict) else "Invalid backtest response")
-                                return
-                        completed += 1
-                        enqueue_progress({
-                            "pct": min(10 + int((completed / len(configs)) * 85), 95),
-                            "phase": "sweep",
-                            "message": f"Sweep {completed}/{len(configs)} complete…",
-                            "run": completed,
-                            "total_runs": len(configs),
-                        })
+                    completed += 1
+                    enqueue_progress({
+                        "pct": min(10 + int((completed / len(configs)) * 85), 95),
+                        "phase": "sweep",
+                        "message": f"Sweep {completed}/{len(configs)} complete…",
+                        "run": completed,
+                        "total_runs": len(configs),
+                    })
             else:
                 for run_idx, run_config in enumerate(configs):
                     if is_cancelled():
@@ -690,6 +729,28 @@ async def _execute_backtest(
             "trades": all_trades[-100:],
             "run_id": run_id,
         }
+
+        if auto_deploy and walk_forward and is_sweep:
+            from app.services.agent.pipeline import auto_deploy_from_walk_forward
+
+            enqueue_progress({"pct": 99, "phase": "deploy", "message": "Auto-deploying bot from OOS validation…"})
+            deploy_out = await auto_deploy_from_walk_forward(
+                ctx.bot_manager,
+                {**best_result, "run_id": run_id},
+                symbol=symbol,
+                strategy=strategy,
+                timeframe=timeframe,
+                allocation=auto_deploy_allocation,
+                run_id=run_id,
+                min_oos_pnl=auto_deploy_min_oos_pnl,
+                min_oos_trades=auto_deploy_min_oos_trades,
+                skip_existing=auto_deploy_skip_existing,
+                base_config=config,
+            )
+            wire_results["auto_deploy"] = deploy_out
+            if deploy_out.get("deployed"):
+                await broadcast_bots_update(ctx)
+
         enqueue_progress({"pct": 100, "phase": "done", "message": "Complete"})
         await _finish("success", results=wire_results, run_id=run_id)
     finally:

@@ -1,6 +1,10 @@
 /** In-memory OHLCV buffers — mutated in place; persisted across Vite HMR. */
 
 const MAX_BARS = 10080;
+/** Bars requested on subscribe / REST candles (matches backend MARKET_CANDLE_SNAPSHOT_LIMIT). */
+export const CHART_SNAPSHOT_BARS = 600;
+/** Skip duplicate HTTP fetch when buffer already has enough for chart first paint. */
+export const CHART_READY_MIN_BARS = 20;
 /** Larger cap when prepending archived history (supports ~5y of 1h bars). */
 const MAX_ARCHIVE_BARS = 50000;
 const DEFAULT_BAR_SECS = 60;
@@ -139,6 +143,12 @@ export function mergeCandleHistory(symbol, incoming) {
 
 export function hasCandleHistory(symbol) {
   return buffers.has(symbol) && buffers.get(symbol).length > 0;
+}
+
+/** True when WS/REST history is sufficient — safe to skip redundant HTTP candles fetch. */
+export function hasChartReadyHistory(symbol, minBars = CHART_READY_MIN_BARS) {
+  const buf = buffers.get(symbol);
+  return Boolean(buf && buf.length >= minBars);
 }
 
 export function getCandles(symbol) {

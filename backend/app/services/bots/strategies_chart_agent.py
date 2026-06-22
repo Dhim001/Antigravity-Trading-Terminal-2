@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.agent.chart_analyst import get_chart_analyst
+from app.services.agent.regime_routing import resolve_regime_config
 from app.services.bots.indicators import merge_strategy_config
 from app.services.market.timeframes import normalize_timeframe
 
@@ -107,6 +108,8 @@ def classify_filter_reject(reason: str | None) -> str | None:
         return "vol"
     if "confidence" in text:
         return "confidence"
+    if "calibration gate" in text:
+        return "calibration"
     return "other"
 
 
@@ -115,9 +118,14 @@ def build_signal_from_insight(
     cfg: dict,
     *,
     confirm_insight: dict | None = None,
+    bot_id: str | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
 ) -> dict:
     """Map a cached insight dict to bot signal_data (may return NONE + reject_reason)."""
-    min_confidence = float(cfg.get("min_confidence", 0.55))
+    effective_cfg, regime = resolve_regime_config(cfg, insight)
+
+    min_confidence = float(effective_cfg.get("min_confidence", 0.55))
     if float(insight.get("confidence", 0)) < min_confidence:
         return {
             "signal": "NONE",
@@ -128,9 +136,31 @@ def build_signal_from_insight(
     if signal not in ("BUY", "SELL"):
         return {"signal": "NONE", "reject_reason": f"non-actionable signal {signal}"}
 
-    reject = check_entry_filters(insight, cfg, signal, confirm_insight=confirm_insight)
+    reject = check_entry_filters(insight, effective_cfg, signal, confirm_insight=confirm_insight)
     if reject:
-        return {"signal": "NONE", "reject_reason": reject}
+        reason = reject
+        if regime and regime != "normal":
+            reason = f"{reject} (regime={regime})"
+        return {"signal": "NONE", "reject_reason": reason}
+
+    gate_symbol = symbol or effective_cfg.get("symbol") or insight.get("symbol") or ""
+    gate_tf = timeframe or effective_cfg.get("timeframe") or insight.get("timeframe") or "1m"
+    gate_bot_id = bot_id or effective_cfg.get("_bot_id")
+    from app.services.bots.calibration import check_meta_label_gate
+
+    meta_reject = check_meta_label_gate(
+        insight,
+        effective_cfg,
+        symbol=str(gate_symbol),
+        timeframe=str(gate_tf),
+        signal=signal,
+        bot_id=str(gate_bot_id) if gate_bot_id else None,
+    )
+    if meta_reject:
+        reason = meta_reject
+        if regime and regime != "normal":
+            reason = f"{meta_reject} (regime={regime})"
+        return {"signal": "NONE", "reject_reason": reason}
 
     sub = insight.get("sub_reports") or {}
     size_factor = float((sub.get("risk") or {}).get("suggested_size_factor") or 1.0)
@@ -204,4 +234,11 @@ class ChartAgentStrategy:
                 return {"signal": "NONE", "reject_reason": f"invalid confirm_timeframe {confirm_tf}"}
             confirm_insight = analyst.get_cached(symbol, timeframe=confirm_tf_norm)
 
-        return build_signal_from_insight(insight, cfg, confirm_insight=confirm_insight)
+        return build_signal_from_insight(
+            insight,
+            cfg,
+            confirm_insight=confirm_insight,
+            bot_id=cfg.get("_bot_id"),
+            symbol=symbol,
+            timeframe=tf,
+        )

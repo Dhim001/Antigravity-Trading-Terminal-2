@@ -6,6 +6,7 @@ import { fetchAgentInsights } from '../api/endpoints';
 import TradeExplainCard from './TradeExplainCard';
 import BotSnapshotChart from './BotSnapshotChart';
 import BotConfigPanel from './BotConfigPanel';
+import BotCalibrationPanel from './BotCalibrationPanel';
 import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
@@ -219,6 +220,19 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
               botStatus={bot.status}
               position={position}
             />
+
+            {bot.strategy === 'CHART_AGENT' && (
+              <section className="bot-detail-drawer__calibration" aria-label="Trade calibration">
+                <header className="bot-detail-drawer__trades-header">
+                  <span>Calibration & filters</span>
+                </header>
+                <BotCalibrationPanel
+                  botId={bot.id}
+                  symbol={bot.symbol}
+                  strategy={bot.strategy}
+                />
+              </section>
+            )}
 
             <section className="bot-detail-drawer__equity" aria-label="Bot equity snapshots">
               <header className="bot-detail-drawer__trades-header">

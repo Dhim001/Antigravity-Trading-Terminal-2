@@ -15,7 +15,6 @@ from app.services.bots.tick_screener import TickScreener
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
-from app.services.market.resample import resample_candles_for_timeframe
 from app.services.bots.risk_gate import RiskGate
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
@@ -43,6 +42,16 @@ def _bot_bar_timeframe(bot: dict) -> str:
         return "1m"
 
 
+def _strategy_runtime_config(bot_id: str, bot: dict) -> dict:
+    """Runtime-only keys (_bot_id, symbol/timeframe) for strategy evaluation."""
+    config = dict(bot.get("config") or {})
+    config["_bot_id"] = bot_id
+    if normalize_strategy_name(bot.get("strategy", "")) == "CHART_AGENT":
+        config["symbol"] = bot.get("symbol")
+        config["timeframe"] = _bot_bar_timeframe(bot)
+    return config
+
+
 class BotManagerService:
     def __init__(self, oms_service, screener_service, broadcast_cb):
         self.logger = logging.getLogger(__name__)
@@ -61,33 +70,50 @@ class BotManagerService:
         return bot_analytics.get_daily_pnl(bot_id)
 
     def load_bots_from_db(self):
+        runtime_state = {
+            bot_id: {
+                "last_signal_bar_time": bot.get("last_signal_bar_time"),
+                "last_signal_at": bot.get("last_signal_at"),
+                "last_tick_signal_at": bot.get("last_tick_signal_at"),
+            }
+            for bot_id, bot in self.active_bots.items()
+        }
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM bots WHERE status IN ('RUNNING', 'PAUSED', 'ERROR')")
         rows = cursor.fetchall()
+        loaded_ids: set[str] = set()
         for row in rows:
             bot_id = row["id"]
+            loaded_ids.add(bot_id)
             self.active_bots[bot_id] = dict(row)
             self.active_bots[bot_id]["config"] = json.loads(row["config"])
-            self.active_bots[bot_id]["last_signal_bar_time"] = None
-            self.active_bots[bot_id]["last_signal_at"] = None
-            self.active_bots[bot_id]["last_tick_signal_at"] = 0
+            prev = runtime_state.get(bot_id)
+            self.active_bots[bot_id]["last_signal_bar_time"] = (
+                prev["last_signal_bar_time"] if prev else None
+            )
+            self.active_bots[bot_id]["last_signal_at"] = (
+                prev["last_signal_at"] if prev else None
+            )
+            self.active_bots[bot_id]["last_tick_signal_at"] = (
+                prev["last_tick_signal_at"] if prev else 0
+            )
             mode = (row["execution_mode"] or "BAR_CLOSE").upper()
             self.active_bots[bot_id]["execution_mode"] = mode
             self.active_bots[bot_id]["timeframe"] = _bot_bar_timeframe(self.active_bots[bot_id])
             config = self.active_bots[bot_id]["config"]
             strategy = row["strategy"]
-            if normalize_strategy_name(strategy) == "CHART_AGENT":
-                tf = _bot_bar_timeframe(self.active_bots[bot_id])
-                config = {**config, "symbol": row["symbol"], "timeframe": tf}
-                self.active_bots[bot_id]["config"] = config
+            runtime_config = _strategy_runtime_config(bot_id, self.active_bots[bot_id])
             if mode == "TICK" or is_tick_strategy(strategy):
                 self.active_bots[bot_id]["execution_mode"] = "TICK"
-                self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, config)
+                self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, runtime_config)
                 self.active_bots[bot_id]["strategy_instance"] = None
             else:
-                self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, config)
+                self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, runtime_config)
                 self.active_bots[bot_id]["tick_strategy_instance"] = None
+        stale_ids = [bot_id for bot_id in self.active_bots if bot_id not in loaded_ids]
+        for bot_id in stale_ids:
+            del self.active_bots[bot_id]
         conn.close()
         self.logger.info(f"Loaded {len(self.active_bots)} bots from DB.")
 
@@ -276,6 +302,7 @@ class BotManagerService:
 
         if bot_id in self.active_bots:
             self.active_bots[bot_id]["config"] = merged_config
+            self._refresh_strategy_instance(bot_id)
 
         symbol = bot["symbol"]
         pos = bot_positions.get_bot_position(bot_id, symbol)
@@ -305,6 +332,20 @@ class BotManagerService:
         if not detail:
             raise ValueError("Bot not found after config update")
         return detail
+
+    def _refresh_strategy_instance(self, bot_id: str) -> None:
+        bot = self.active_bots.get(bot_id)
+        if not bot:
+            return
+        strategy = bot.get("strategy")
+        mode = (bot.get("execution_mode") or "BAR_CLOSE").upper()
+        runtime = _strategy_runtime_config(bot_id, bot)
+        if mode == "TICK" or is_tick_strategy(strategy):
+            bot["tick_strategy_instance"] = get_tick_strategy(strategy, runtime)
+            bot["strategy_instance"] = None
+        else:
+            bot["strategy_instance"] = get_strategy(strategy, runtime)
+            bot["tick_strategy_instance"] = None
 
     async def _set_bot_status(self, bot_id: str, status: str):
         if bot_id in self.active_bots:
@@ -485,45 +526,6 @@ class BotManagerService:
                 eval_row = bot_df.iloc[-2].to_dict()
                 bar_time = eval_row.get("time")
                 eval_price = eval_row.get("close")
-
-                strat_key = normalize_strategy_name(bot_strategy)
-                if strat_key == "CHART_AGENT":
-                    try:
-                        from app.services.agent.chart_analyst import get_chart_analyst
-
-                        analyst = get_chart_analyst()
-                        force_llm = any(
-                            b.get("config", {}).get("use_llm")
-                            for b in self.active_bots.values()
-                            if b["symbol"] == symbol
-                            and normalize_strategy_name(b.get("strategy", "")) == "CHART_AGENT"
-                            and _bot_bar_timeframe(b) == timeframe
-                        )
-                        await analyst.ensure_for_bar(
-                            symbol,
-                            ohlcv_data,
-                            bar_time,
-                            timeframe=timeframe,
-                            force_llm=force_llm,
-                        )
-                        confirm_tf = (bot_config.get("confirm_timeframe") or "").strip()
-                        if confirm_tf:
-                            try:
-                                cf_tf = normalize_timeframe(confirm_tf)
-                                cf_candles = resample_candles_for_timeframe(ohlcv_data, cf_tf)
-                                if cf_candles:
-                                    cf_bar = cf_candles[-2]["time"] if len(cf_candles) >= 2 else cf_candles[-1]["time"]
-                                    await analyst.ensure_for_bar(
-                                        symbol,
-                                        cf_candles,
-                                        cf_bar,
-                                        timeframe=cf_tf,
-                                        force_llm=False,
-                                    )
-                            except ValueError:
-                                pass
-                    except RuntimeError:
-                        pass
 
                 signal_data = strat.evaluate(eval_row)
                 signal = signal_data.get("signal")
@@ -840,6 +842,10 @@ class BotManagerService:
                         is_exit=is_exit,
                         insight_snapshot=insight_snapshot,
                     )
+                    if is_exit:
+                        from app.services.bots.calibration import get_calibration_store
+
+                        get_calibration_store().invalidate(bot_id)
                     self.record_snapshot_for_bot(bot_id)
 
                 await publish_post_trade_bundle(
@@ -939,10 +945,14 @@ class BotManagerService:
             "last_tick_signal_at": 0,
         }
         if mode == "TICK":
-            self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(strategy, config)
+            self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(
+                strategy, _strategy_runtime_config(bot_id, self.active_bots[bot_id])
+            )
             self.active_bots[bot_id]["strategy_instance"] = None
         else:
-            self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, config)
+            self.active_bots[bot_id]["strategy_instance"] = get_strategy(
+                strategy, _strategy_runtime_config(bot_id, self.active_bots[bot_id])
+            )
             self.active_bots[bot_id]["tick_strategy_instance"] = None
 
         await self.log_bot_event(
@@ -1081,6 +1091,9 @@ class BotManagerService:
                 signal_id=exit_info.get("signal_id"),
                 is_exit=True,
             )
+            from app.services.bots.calibration import get_calibration_store
+
+            get_calibration_store().invalidate(bot_id)
             self.record_snapshot_for_bot(bot_id)
             touched.add(bot_id)
 

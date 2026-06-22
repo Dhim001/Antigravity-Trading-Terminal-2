@@ -298,6 +298,7 @@ class BacktesterService:
             "vol": 0,
             "htf": 0,
             "confidence": 0,
+            "calibration": 0,
             "other": 0,
         }
         bars_in_market = 0

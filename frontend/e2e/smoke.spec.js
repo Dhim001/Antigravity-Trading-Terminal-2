@@ -17,6 +17,26 @@ test.describe('Trading terminal smoke', () => {
     expect(body.service).toBe('trading-terminal');
   });
 
+  test('health/live responds without heavy dependencies', async ({ request }) => {
+    const apiUrl = process.env.E2E_API_URL || 'http://127.0.0.1:8766';
+    const resp = await request.get(`${apiUrl}/health/live`);
+    expect(resp.ok()).toBeTruthy();
+    const body = await resp.json();
+    expect(body.ok).toBe(true);
+    expect(body.service).toBe('trading-terminal');
+  });
+
+  test('session snapshot hydrates terminal metadata', async ({ request }) => {
+    const apiUrl = process.env.E2E_API_URL || 'http://127.0.0.1:8766';
+    const resp = await request.get(`${apiUrl}/api/v1/session`);
+    expect(resp.ok()).toBeTruthy();
+    const body = await resp.json();
+    expect(body.ok).toBe(true);
+    expect(body.session?.terminal).toBeDefined();
+    expect(body.session?.account).toBeDefined();
+    expect(body.session?.bots).toBeDefined();
+  });
+
   test('dashboard loads and shows brand header', async ({ page }) => {
     await gotoDashboard(page);
     await expect(page.locator('.brand-title')).toHaveText('ANTIGRAVITY');

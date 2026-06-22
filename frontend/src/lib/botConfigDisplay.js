@@ -22,6 +22,14 @@ export const FIELD_META = {
   block_elevated_vol: { label: 'Block elevated vol', group: 'agent', kind: 'boolean', hint: 'Skip entries when ATR regime is elevated.' },
   min_score: { label: 'Min score', group: 'agent', kind: 'integer', hint: 'Require |composite score| ≥ this value.' },
   confirm_timeframe: { label: 'Confirm TF', group: 'agent', kind: 'text', hint: 'Higher timeframe trend must confirm entry.' },
+  calibration_gate_enabled: { label: 'Calibration gate', group: 'agent', kind: 'boolean', hint: 'Block entries when the setup bucket underperforms in closed-trade history.' },
+  calibration_min_samples: { label: 'Gate min samples', group: 'agent', kind: 'integer', hint: 'Minimum closed trades in a bucket before the gate can block.' },
+  calibration_min_wilson: { label: 'Gate min Wilson', group: 'agent', kind: 'confidence', hint: 'Wilson lower-bound win rate required to allow entry (0–1).' },
+  regime_routing_enabled: { label: 'Regime routing', group: 'agent', kind: 'boolean', hint: 'Apply stricter thresholds in elevated/compressed ATR regimes.' },
+  elevated_min_confidence: { label: 'Elevated min conf', group: 'agent', kind: 'confidence', hint: 'Minimum confidence when ATR regime is elevated.' },
+  elevated_min_score: { label: 'Elevated min score', group: 'agent', kind: 'integer', hint: 'Minimum |score| when ATR regime is elevated.' },
+  elevated_block_entries: { label: 'Block elevated entries', group: 'agent', kind: 'boolean', hint: 'Hard-block all entries in elevated vol (overrides routing thresholds).' },
+  compressed_min_confidence: { label: 'Compressed min conf', group: 'agent', kind: 'confidence', hint: 'Minimum confidence when ATR regime is compressed.' },
   use_llm: { label: 'LLM analysis', group: 'agent', kind: 'boolean', hint: 'Use the LLM narrator for chart explanations (Ollama local or OpenRouter).' },
   rsi_length: { label: 'RSI period', group: 'indicators', kind: 'integer' },
   macd_fast: { label: 'MACD fast', group: 'indicators', kind: 'integer' },
@@ -56,7 +64,7 @@ export const STRATEGY_FIELD_KEYS = {
     'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length',
   ],
   VWAP_PULLBACK: ['atr_length'],
-  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
+  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
   TICK_MOMENTUM: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_MEAN_REVERT: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_BREAKOUT: ['lookback_ticks', 'tick_cooldown_sec'],
@@ -81,7 +89,7 @@ function humanizeKey(key) {
 
 function inferGroup(key) {
   if (/^(trailing_stop|stop_loss|take_profit|tp_)/.test(key)) return 'risk';
-  if (/^(min_confidence|use_llm|use_vol_sizing|require_trend|block_elevated|confirm_timeframe|min_score)/.test(key)) return 'agent';
+  if (/^(min_confidence|use_llm|use_vol_sizing|require_trend|block_elevated|confirm_timeframe|min_score|calibration_|regime_|elevated_|compressed_)/.test(key)) return 'agent';
   if (/^(lookback_ticks|tick_)/.test(key)) return 'tick';
   if (/^(rsi|macd|atr|bb_|stoch|st_|adx)/.test(key)) return 'indicators';
   return 'other';
@@ -110,6 +118,8 @@ const SWEEP_DEFAULT_PLACEHOLDERS = {
   stop_loss_percent: '1, 2',
   min_confidence: '0.55, 0.6, 0.65',
   min_score: '2, 3, 4',
+  calibration_min_samples: '3, 5, 8',
+  calibration_min_wilson: '0.4, 0.45, 0.5',
   allocation: '5000, 10000',
   slippage_bps: '0, 5, 10',
   fee_bps: '0, 5',
@@ -144,6 +154,7 @@ export function getSweepEligibleFields(strategy, config = {}) {
   const ordered = [
     'trailing_stop_percent', 'take_profit_percent', 'stop_loss_percent',
     'min_confidence', 'min_score', 'require_trend_alignment', 'block_elevated_vol',
+    'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson',
     'confirm_timeframe', 'use_vol_sizing',
     'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length',
     'bb_length', 'bb_std', 'stoch_k', 'stoch_d', 'stoch_smooth',

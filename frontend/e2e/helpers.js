@@ -2,30 +2,47 @@ import { expect } from '@playwright/test';
 
 const SETTINGS_KEY = 'terminal_settings_v1';
 
-/** Seed workspace settings before navigation (Playwright addInitScript). */
+function buildSettings(overrides = {}) {
+  const workspaceOverrides = overrides.workspace || {};
+  const { workspace: _ws, ...rest } = overrides;
+  return {
+    version: 1,
+    theme: 'dark',
+    workspace: {
+      layoutMode: 'trade',
+      zenMode: false,
+      dockCollapsed: false,
+      rightPanelCollapsed: false,
+      dockHeight: 320,
+      dockActiveTab: 'positions',
+      dockGroup: 'portfolio',
+      viewMode: 'single',
+      ...workspaceOverrides,
+    },
+    chartLayout: { timeframe: '1m', chartType: 'candle', activeIndicators: {} },
+    workspacePresets: [],
+    alerts: [],
+    onboardingCompleted: true,
+    ...rest,
+  };
+}
+
+/** Seed persisted settings before navigation (Playwright-serializable args). */
+export async function seedSettings(page, overrides = {}) {
+  const data = buildSettings(overrides);
+  await page.addInitScript(
+    ({ key, payload }) => {
+      localStorage.setItem(key, JSON.stringify(payload));
+    },
+    { key: SETTINGS_KEY, payload: data },
+  );
+}
+
+/** @deprecated Use seedSettings(page, overrides) — closures are not serialized by Playwright. */
 export function defaultSettingsInitScript(overrides = {}) {
+  const data = buildSettings(overrides);
   return () => {
-    const base = {
-      version: 1,
-      theme: 'dark',
-      workspace: {
-        layoutMode: 'trade',
-        zenMode: false,
-        dockCollapsed: false,
-        rightPanelCollapsed: false,
-        dockHeight: 320,
-        dockActiveTab: 'positions',
-        dockGroup: 'portfolio',
-        viewMode: 'single',
-        ...overrides.workspace,
-      },
-      chartLayout: { timeframe: '1m', chartType: 'candle', activeIndicators: {} },
-      workspacePresets: [],
-      alerts: [],
-      onboardingCompleted: true,
-      ...overrides,
-    };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(base));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
   };
 }
 
@@ -38,10 +55,25 @@ export async function dismissOnboardingIfVisible(page) {
 }
 
 /** Navigate to dashboard and wait for shell chrome. */
-export async function gotoDashboard(page, { dismissOnboarding = false } = {}) {
+export async function gotoDashboard(page, { dismissOnboarding = true, settings = null } = {}) {
+  await seedSettings(page, {
+    onboardingCompleted: true,
+    ...(settings || {}),
+    workspace: {
+      layoutMode: 'trade',
+      zenMode: false,
+      dockCollapsed: false,
+      rightPanelCollapsed: false,
+      dockHeight: 320,
+      dockActiveTab: 'positions',
+      dockGroup: 'portfolio',
+      viewMode: 'single',
+      ...(settings?.workspace || {}),
+    },
+  });
   await page.goto('/');
   await expect(page.locator('.dashboard-container')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText('Watchlist')).toBeVisible();
+  await expect(page.getByText('Watchlist', { exact: true })).toBeVisible();
   if (dismissOnboarding) {
     await dismissOnboardingIfVisible(page);
   }
@@ -111,4 +143,21 @@ export async function waitForBootstrap(page) {
       'header [title*="connected"], header [title*="REST"], header [title*="retrying"], header [title*="Live"]',
     ).first(),
   ).toBeVisible({ timeout: 20_000 });
+}
+
+/** Submit a SIM market order from the order entry panel. */
+export async function placeMarketOrder(page, { side = 'BUY', quantity, presetPct = 25 } = {}) {
+  if (side === 'SELL') {
+    await page.locator('.order-entry-side-toggle').getByRole('button', { name: /SELL/i }).click();
+  }
+  if (quantity != null) {
+    await page.getByLabel('Quantity').fill(String(quantity));
+  } else if (presetPct != null) {
+    await page.locator('.order-entry-qty-presets').getByRole('button', { name: `${presetPct}%` }).click();
+  }
+  await page.waitForTimeout(450);
+  const submit = page.locator('button[form="order-entry-form"]');
+  await expect(submit).toBeEnabled({ timeout: 20_000 });
+  await expect(submit).toContainText(new RegExp(`Place ${side}`, 'i'));
+  await submit.click();
 }

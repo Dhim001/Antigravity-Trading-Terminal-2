@@ -3,58 +3,69 @@ import { sendAction } from './transport';
 import { useStore } from '../store/useStore';
 import { getStoreActions } from './dispatch';
 import {
-  fetchAccount,
-  fetchBots,
+  CHART_SNAPSHOT_BARS,
+  hasChartReadyHistory,
+} from '../services/candleBuffer';
+import {
   fetchCandles,
   fetchHealth,
-  fetchHistory,
-  fetchLlmModels,
-  fetchStrategies,
-  resumeActiveBacktestJob,
+  fetchSession,
 } from './endpoints';
+
+let lastBootstrapAt = 0;
+let bootstrapInFlight = null;
+const LIGHT_BOOTSTRAP_COOLDOWN_MS = 45000;
 
 /**
  * HTTP snapshot hydration — used on mount and after WebSocket reconnect.
  * @param {{ symbol?: string, light?: boolean, skipCandles?: boolean }} [opts]
  */
 export async function runBootstrap(opts = {}) {
-  const storeActions = getStoreActions();
-  const symbol = opts.symbol ?? useStore.getState().activeSymbol;
-  const light = opts.light ?? false;
-  const skipCandles = opts.skipCandles ?? false;
-
-  if (!light) {
-    useStore.getState().setApiStatus('loading');
+  if (bootstrapInFlight) {
+    return bootstrapInFlight;
   }
 
-  const tasks = [
-    fetchHealth(storeActions),
-    fetchLlmModels(storeActions),
-    fetchAccount(storeActions),
-    fetchHistory(storeActions),
-    fetchBots(storeActions),
-    fetchStrategies(storeActions),
-  ];
+  const run = async () => {
+    const storeActions = getStoreActions();
+    const symbol = opts.symbol ?? useStore.getState().activeSymbol;
+    const light = opts.light ?? false;
+    const skipCandles = opts.skipCandles ?? false;
 
-  if (!skipCandles) {
-    tasks.push(fetchCandles(symbol, storeActions));
-  }
+    if (light && Date.now() - lastBootstrapAt < LIGHT_BOOTSTRAP_COOLDOWN_MS) {
+      resubscribeMarketSymbols();
+      return { succeeded: 0, total: 0, skipped: true };
+    }
+    lastBootstrapAt = Date.now();
 
-  const results = await Promise.allSettled(tasks);
+    if (!light) {
+      useStore.getState().setApiStatus('loading');
+    }
 
-  if (!light) {
-    resumeActiveBacktestJob(storeActions);
-  }
-  const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const tasks = light
+      ? [fetchHealth(storeActions)]
+      : [fetchSession(storeActions)];
 
-  if (succeeded > 0) {
-    useStore.getState().setApiStatus('ready');
-  } else if (!light) {
-    useStore.getState().setApiStatus('error');
-    console.warn('[bootstrap] All HTTP snapshot requests failed — waiting for WebSocket.');
-  }
+    if (!skipCandles && !hasChartReadyHistory(symbol)) {
+      tasks.push(fetchCandles(symbol, storeActions));
+    }
 
-  return { succeeded, total: tasks.length };
+    const results = await Promise.allSettled(tasks);
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+
+    if (succeeded > 0) {
+      useStore.getState().setApiStatus('ready');
+    } else if (!light) {
+      useStore.getState().setApiStatus('error');
+      console.warn('[bootstrap] All HTTP snapshot requests failed — waiting for WebSocket.');
+    }
+
+    return { succeeded, total: tasks.length };
+  };
+
+  bootstrapInFlight = run().finally(() => {
+    bootstrapInFlight = null;
+  });
+  return bootstrapInFlight;
 }
 
 /** Re-subscribe chart symbols after reconnect (watchlist + active). */
@@ -73,8 +84,10 @@ export function subscribeChartSymbols(symbols, storeActions) {
   const unique = [...new Set((symbols || []).filter(Boolean))];
   unique.forEach((sym, i) => {
     setTimeout(() => {
-      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol: sym });
-      fetchCandles(sym, storeActions);
+      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol: sym, limit: CHART_SNAPSHOT_BARS });
+      if (!hasChartReadyHistory(sym)) {
+        fetchCandles(sym, storeActions);
+      }
     }, i * 80);
   });
 }

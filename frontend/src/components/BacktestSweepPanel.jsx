@@ -26,6 +26,7 @@ import { exportSweepCsv } from '../lib/backtestExport';
 import OptimizerHeatmap from './OptimizerHeatmap';
 import OptimizationHistory from './OptimizationHistory';
 import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
+import FilterRejectsDashboard from './FilterRejectsDashboard';
 import {
   scheduleBacktestClientTimeout,
   clearBacktestClientTimeout,
@@ -199,6 +200,8 @@ export default function BacktestSweepPanel({
   const [reasoning, setReasoning] = useState(false);
   const [rollingWf, setRollingWf] = useState(false);
   const [rollingFolds, setRollingFolds] = useState(3);
+  const [autoDeploy, setAutoDeploy] = useState(false);
+  const [autoDeployMinOosPnl, setAutoDeployMinOosPnl] = useState('0');
 
   useEffect(() => {
     setEnabled((prev) => ({ ...defaultEnabledKeys(strategy), ...prev }));
@@ -210,6 +213,24 @@ export default function BacktestSweepPanel({
 
   const sweep = results?.sweep;
   const activeObjective = sweep?.objective ?? results?.meta?.sweep_objective ?? objective;
+
+  const aggregatedFilterRejects = useMemo(() => {
+    const rows = sweep?.results ?? [];
+    if (!rows.length) return null;
+    const byBucket = {};
+    let total = 0;
+    for (const row of rows) {
+      const fr = row.filter_rejects ?? row.summary?.filter_rejects;
+      if (!fr) continue;
+      for (const [key, count] of Object.entries(fr)) {
+        const n = Number(count) || 0;
+        if (n <= 0) continue;
+        byBucket[key] = (byBucket[key] || 0) + n;
+        total += n;
+      }
+    }
+    return total > 0 ? { rejects: byBucket, total, runs: rows.length } : null;
+  }, [sweep?.results]);
 
   const sweepGrid = useMemo(
     () => buildSweepGrid(paramDefs, enabled, valuesByKey, maxCombos, objective, minTrades, sweepMode),
@@ -269,6 +290,11 @@ export default function BacktestSweepPanel({
       sweep_objective: objective,
       min_trades: minTrades,
       reasoning: reasoning || undefined,
+      auto_deploy: walkForward && autoDeploy ? true : undefined,
+      auto_deploy_allocation: botConfig?.allocation ?? 1000,
+      auto_deploy_min_oos_pnl: parseFloat(autoDeployMinOosPnl) || 0,
+      auto_deploy_min_oos_trades: minTrades,
+      auto_deploy_skip_existing: true,
     }));
     if (!ok && error) toast.error(error);
     if (!ok) {
@@ -501,6 +527,26 @@ export default function BacktestSweepPanel({
               </Select>
             </div>
           )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Checkbox
+              id="sweep-auto-deploy"
+              checked={autoDeploy}
+              onCheckedChange={(c) => setAutoDeploy(c === true)}
+            />
+            <Label htmlFor="sweep-auto-deploy" className="cursor-pointer text-xs font-normal text-muted-foreground">
+              Auto-deploy bot when walk-forward OOS passes
+            </Label>
+            {autoDeploy && (
+              <div className="flex items-center gap-1.5">
+                <Label className="text-xs text-muted-foreground">Min OOS PnL</Label>
+                <Input
+                  className="h-7 w-16 text-xs num-mono"
+                  value={autoDeployMinOosPnl}
+                  onChange={(e) => setAutoDeployMinOosPnl(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
           <span className="text-xs text-muted-foreground">
             {rollingWf
               ? 'Sequential IS/OOS slices across the range; best config by mean OOS performance'
@@ -531,6 +577,28 @@ export default function BacktestSweepPanel({
       )}
 
       <BacktestWalkForwardPanel walkForward={results?.walk_forward} />
+
+      {results?.auto_deploy && (
+        <Alert className={cn(
+          'border-border/60 py-2',
+          results.auto_deploy.deployed ? 'bg-trading-up/10' : 'bg-muted/20',
+        )}>
+          <AlertDescription className="text-xs">
+            {results.auto_deploy.deployed
+              ? `Auto-deployed bot ${results.auto_deploy.bot_id?.slice(0, 8)}… (OOS PnL $${Number(results.auto_deploy.metrics?.oos_pnl ?? 0).toFixed(2)})`
+              : `Auto-deploy skipped: ${results.auto_deploy.reason}`}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {aggregatedFilterRejects && (
+        <FilterRejectsDashboard
+          rejects={aggregatedFilterRejects.rejects}
+          total={aggregatedFilterRejects.total}
+          title="Sweep filter rejects"
+          hint={`Summed across ${aggregatedFilterRejects.runs} optimizer runs — signals blocked before entry during replay.`}
+        />
+      )}
 
       {sweep?.results?.length > 0 && (
         <>

@@ -3,6 +3,7 @@ import {
   gotoDashboard,
   openAlgoTab,
   openDockTab,
+  seedSettings,
   STRATEGY_TEMPLATE_NAMES,
 } from './helpers.js';
 
@@ -54,22 +55,14 @@ test.describe('Layout QA — Algo tab & dock', () => {
 
 test.describe('Layout QA — compact dock', () => {
   test('compact dock applies data-compact when height is low', async ({ page }) => {
-    await page.addInitScript(() => {
-      localStorage.setItem('terminal_settings_v1', JSON.stringify({
-        version: 1,
-        theme: 'dark',
-        workspace: {
-          layoutMode: 'trade',
-          dockHeight: 240,
-          dockActiveTab: 'algo',
-          dockGroup: 'automation',
-          viewMode: 'single',
-        },
-        chartLayout: { timeframe: '1m', chartType: 'candle', activeIndicators: {} },
-        workspacePresets: [],
-        alerts: [],
-        onboardingCompleted: true,
-      }));
+    await seedSettings(page, {
+      workspace: {
+        layoutMode: 'trade',
+        dockHeight: 240,
+        dockActiveTab: 'algo',
+        dockGroup: 'automation',
+        viewMode: 'single',
+      },
     });
     await gotoDashboard(page);
     await openAlgoTab(page);

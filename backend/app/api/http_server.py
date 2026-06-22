@@ -22,6 +22,7 @@ async def run_http_server(state: AppState) -> None:
         log_level="warning",
         access_log=False,
         loop="asyncio",
+        timeout_keep_alive=5,
     )
     server = uvicorn.Server(config)
     logger.info("HTTP API listening on http://%s:%s", HTTP_HOST, HTTP_PORT)

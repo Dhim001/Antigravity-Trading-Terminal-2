@@ -4,7 +4,33 @@ from app.api.responses import send_error, send_history_update, send_to
 from app.api.outbound import history_update, orderbook_update, ticks_update
 from app.api.router import route
 from app.services.archive.query import query_market_history
-from app.config import ARCHIVE_RETENTION_1M_DAYS
+from app.config import (
+    ARCHIVE_RETENTION_1M_DAYS,
+    MARKET_CANDLE_SNAPSHOT_LIMIT,
+    MARKET_CANDLE_SNAPSHOT_MAX,
+)
+
+
+def _parse_candle_snapshot_limit(message: dict) -> int | None:
+    """Return max bars to send; None means full in-memory buffer (limit=0)."""
+    raw = message.get("limit")
+    if raw is None or raw == "":
+        return MARKET_CANDLE_SNAPSHOT_LIMIT
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return MARKET_CANDLE_SNAPSHOT_LIMIT
+    if parsed <= 0:
+        return None
+    return min(parsed, MARKET_CANDLE_SNAPSHOT_MAX)
+
+
+def _tail_candles(candles: list, limit: int | None) -> list:
+    if not candles or limit is None:
+        return candles
+    if len(candles) <= limit:
+        return candles
+    return candles[-limit:]
 
 
 def _feed_for(ctx: RequestContext):
@@ -34,7 +60,9 @@ async def subscribe_symbol(ctx: RequestContext) -> None:
         await send_error(ctx, "Market feed unavailable")
         return
     candles = feed.get_candles(symbol) or []
-    await send_history_update(ctx, {symbol: candles})
+    limit = _parse_candle_snapshot_limit(ctx.message)
+    snapshot = _tail_candles(candles, limit)
+    await send_history_update(ctx, {symbol: snapshot})
     await _send_orderbook_snapshot(ctx, symbol)
 
 

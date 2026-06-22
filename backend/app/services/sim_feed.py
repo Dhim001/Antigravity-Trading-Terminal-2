@@ -3,32 +3,44 @@ import math
 import time
 import copy
 import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Awaitable, List
-from app.config import SYMBOLS, DEFAULT_TICK_INTERVAL, DEFAULT_VOLATILITY_MULTIPLIER
+
+from app.config import (
+    SYMBOLS,
+    DEFAULT_TICK_INTERVAL,
+    DEFAULT_VOLATILITY_MULTIPLIER,
+    SIM_INITIAL_CANDLE_BARS,
+    SIM_SBBS_WARM_PARALLEL,
+)
 from app.services.base_feed import BaseFeedService
 from app.services.feeds.bar_close import BarCloseEmitter
 from app.services.synthetic_data import SBBSGenerator
+
+logger = logging.getLogger(__name__)
+
 
 class SimulatedFeedService(BaseFeedService):
     def __init__(self, tick_interval=1.0):
         self._symbols = copy.deepcopy(SYMBOLS)
         self.tick_interval = tick_interval
         self.volatility_multiplier = DEFAULT_VOLATILITY_MULTIPLIER
-        self.biases = {} # symbol -> 'UP' | 'DOWN' | 'RANDOM'
-        
+        self.biases = {}  # symbol -> 'UP' | 'DOWN' | 'RANDOM'
+
         self.candles = {}
         self.order_books = {}
         self.broadcast_callback = None
-        self._generators = {}
+        self._generators: dict = {}
         self._target_candles = {}
         self._bar_close = BarCloseEmitter()
-        
+        self._sbbs_warmed = False
+        self._sbbs_warming = False
+
         for symbol, info in self._symbols.items():
-            try:
-                self._generators[symbol] = SBBSGenerator(symbol)
-            except Exception as e:
-                print(f"Warning: Could not initialize SBBS for {symbol}: {e}")
-            self.candles[symbol] = self._generate_initial_candles(symbol, info["price"])
+            self.candles[symbol] = self._generate_fallback_candles(
+                symbol, info["price"], SIM_INITIAL_CANDLE_BARS,
+            )
             self.order_books[symbol] = self._generate_order_book(symbol, info["price"])
 
         self._restore_persisted_state()
@@ -69,6 +81,42 @@ class SimulatedFeedService(BaseFeedService):
     def symbols(self) -> List[str]:
         return list(self._symbols.keys())
 
+    async def warm_generators(self) -> None:
+        """Load SBBS generators in parallel after the server is listening."""
+        if self._sbbs_warmed or self._sbbs_warming:
+            return
+        self._sbbs_warming = True
+        symbols = list(self._symbols.keys())
+        workers = min(SIM_SBBS_WARM_PARALLEL, max(1, len(symbols)))
+        logger.info("Warming SBBS for %d symbol(s) (%d workers)…", len(symbols), workers)
+
+        def _load_symbol(sym: str):
+            try:
+                gen = SBBSGenerator(sym, defer_fetch=False)
+                if gen.empirical_data is not None and not gen.empirical_data.empty:
+                    return sym, gen
+            except Exception as exc:
+                logger.debug("SBBS warm skip %s: %s", sym, exc)
+            return sym, None
+
+        loop = asyncio.get_running_loop()
+        loaded = 0
+
+        def _warm_sync():
+            nonlocal loaded
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_load_symbol, sym): sym for sym in symbols}
+                for fut in as_completed(futures):
+                    sym, gen = fut.result()
+                    if gen is not None:
+                        self._generators[sym] = gen
+                        loaded += 1
+
+        await loop.run_in_executor(None, _warm_sync)
+        self._sbbs_warmed = True
+        self._sbbs_warming = False
+        logger.info("SBBS warm complete: %d/%d symbols ready", loaded, len(symbols))
+
     async def start(self) -> None:
         pass
 
@@ -99,7 +147,8 @@ class SimulatedFeedService(BaseFeedService):
         active_candles = self.candles[symbol]
         
         # 1. Determine if we need to draw a new target candle from SBBS for this minute
-        if symbol not in self._target_candles or self._target_candles[symbol]['minute'] < current_minute:
+        existing_target = self._target_candles.get(symbol)
+        if not existing_target or existing_target.get("minute", 0) < current_minute:
             gen = self._generators.get(symbol)
             if gen and gen.empirical_data is not None and not gen.empirical_data.empty:
                 O_ret, H_ret, L_ret, C_ret, Vol = gen.get_next()
@@ -123,7 +172,8 @@ class SimulatedFeedService(BaseFeedService):
                     'vol_accumulated': 0.0
                 }
             else:
-                self._target_candles[symbol] = None
+                # SBBS not ready — use fallback random walk; do not store None (breaks next tick)
+                self._target_candles.pop(symbol, None)
 
         target = self._target_candles.get(symbol)
         
@@ -235,27 +285,38 @@ class SimulatedFeedService(BaseFeedService):
             b["volume"] = round(float(b.get("volume", 0)) + float(c.get("volume", 0)), 2)
         return [by_time[t] for t in sorted(by_time)]
 
+    def _generate_fallback_candles(self, symbol, start_price, count=600):
+        info = self._symbols[symbol]
+        candles = []
+        now_minute = (int(time.time()) // 60) * 60
+        current_time = now_minute - (count * 60)
+        price = start_price
+        for _ in range(count):
+            change = price * random.normalvariate(0, info["volatility"] * 10)
+            open_price = price
+            close_price = price + change
+            high_price = max(open_price, close_price) + abs(random.normalvariate(0, info["volatility"] * 5))
+            low_price = min(open_price, close_price) - abs(random.normalvariate(0, info["volatility"] * 5))
+            volume = random.uniform(10, 100) if "USDT" in symbol else random.uniform(100, 1000)
+            candles.append({
+                "time": current_time,
+                "open": round(open_price, info["decimals"]),
+                "high": round(high_price, info["decimals"]),
+                "low": round(low_price, info["decimals"]),
+                "close": round(close_price, info["decimals"]),
+                "volume": round(volume, 2),
+            })
+            price = close_price
+            current_time += 60
+        return candles
+
     def _generate_initial_candles(self, symbol, start_price, count=10080):
         gen = self._generators.get(symbol)
         now_minute = (int(time.time()) // 60) * 60
-        if not gen or not hasattr(gen, 'empirical_data') or gen.empirical_data is None or gen.empirical_data.empty:
-            candles = []
-            current_time = now_minute - (count * 60)
-            price = start_price
-            info = self._symbols[symbol]
-            for i in range(count):
-                change = price * random.normalvariate(0, info["volatility"] * 10)
-                open_price = price
-                close_price = price + change
-                high_price = max(open_price, close_price) + abs(random.normalvariate(0, info["volatility"] * 5))
-                low_price = min(open_price, close_price) - abs(random.normalvariate(0, info["volatility"] * 5))
-                volume = random.uniform(10, 100) if "USDT" in symbol else random.uniform(100, 1000)
-                candles.append({"time": current_time, "open": round(open_price, info["decimals"]), "high": round(high_price, info["decimals"]), "low": round(low_price, info["decimals"]), "close": round(close_price, info["decimals"]), "volume": round(volume, 2)})
-                price = close_price
-                current_time += 60
-            return candles
+        if not gen or not hasattr(gen, "empirical_data") or gen.empirical_data is None or gen.empirical_data.empty:
+            return self._generate_fallback_candles(symbol, start_price, min(count, SIM_INITIAL_CANDLE_BARS))
 
-        current_close = gen.empirical_data.iloc[-1]['Close']
+        current_close = gen.empirical_data.iloc[-1]["Close"]
         start_time = now_minute - (count * 60)
         candles = []
         for i in range(count):
@@ -271,7 +332,7 @@ class SimulatedFeedService(BaseFeedService):
                 "high": round(hi, 2),
                 "low": round(lo, 2),
                 "close": round(cl, 2),
-                "volume": round(Vol, 2)
+                "volume": round(Vol, 2),
             })
             current_close = cl
         return candles

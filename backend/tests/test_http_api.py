@@ -56,6 +56,24 @@ class TestHttpBindings(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["ok"])
 
+    def test_health_live(self):
+        resp = self.client.get("/health/live")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["service"], "trading-terminal")
+
+    def test_session(self):
+        resp = self.client.get("/api/v1/session")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        session = body["session"]
+        self.assertIn("terminal", session)
+        self.assertIn("account", session)
+        self.assertIn("bots", session)
+        self.assertIn("strategies", session)
+
     def test_openapi_spec(self):
         spec = build_openapi_spec()
         self.assertEqual(spec["openapi"], "3.1.0")
@@ -126,6 +144,32 @@ class TestHttpBindings(unittest.TestCase):
         self.assertEqual(body["type"], "history_update")
         self.assertIn("AAPL", body["data"])
         self.assertEqual(len(body["data"]["AAPL"]), 1)
+
+    def test_market_candles_route_tail_limit(self):
+        state = _make_state()
+        full = [
+            {
+                "time": i,
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+                "volume": 1000,
+            }
+            for i in range(800)
+        ]
+        state.oms.feed = SimpleNamespace(
+            get_candles=lambda symbol: full,
+            get_market_data=lambda symbol: {},
+        )
+        client = TestClient(create_http_app(state))
+        resp = client.get("/api/v1/market/AAPL/candles?limit=600")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        bars = body["data"]["AAPL"]
+        self.assertEqual(len(bars), 600)
+        self.assertEqual(bars[0]["time"], 200)
+        self.assertEqual(bars[-1]["time"], 799)
 
     def test_bot_stop_route(self):
         resp = self.client.post("/api/v1/bots/bot-1/stop")

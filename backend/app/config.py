@@ -22,6 +22,16 @@ USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 # Bot engine on live brokers is opt-in (paper/live safety gate).
 ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
 BOT_MIN_CANDLES = int(os.environ.get("BOT_MIN_CANDLES", "200"))
+# Default tail size for chart subscribe / candles API (full feed buffer may be larger).
+MARKET_CANDLE_SNAPSHOT_LIMIT = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_LIMIT", "600"))
+MARKET_CANDLE_SNAPSHOT_MAX = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_MAX", "10080"))
+CALIBRATION_CACHE_TTL_SEC = int(os.environ.get("CALIBRATION_CACHE_TTL_SEC", "300"))
+# Simulated feed — lightweight startup (defer yfinance SBBS until after listen)
+SIM_INITIAL_CANDLE_BARS = int(os.environ.get("SIM_INITIAL_CANDLE_BARS", "600"))
+SIM_SBBS_WARM_ON_STARTUP = os.environ.get("SIM_SBBS_WARM_ON_STARTUP", "true").lower() in (
+    "1", "true", "yes"
+)
+SIM_SBBS_WARM_PARALLEL = max(1, min(int(os.environ.get("SIM_SBBS_WARM_PARALLEL", "4")), 12))
 
 # Distributed runtime: all (monolith) | server (WS+feed) | worker (bot engine only)
 TERMINAL_ROLE = os.environ.get("TERMINAL_ROLE", "all").lower()
@@ -83,7 +93,7 @@ ARCHIVE_RETENTION_1H_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1H_DAYS", "182
 ARCHIVE_ROLLUP_INTERVAL = float(os.environ.get("ARCHIVE_ROLLUP_INTERVAL", "3600"))
 ARCHIVE_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_FLUSH_INTERVAL", "60"))
 ARCHIVE_BACKEND = os.environ.get("ARCHIVE_BACKEND", "db").lower()
-ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "true").lower() in (
+ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "false").lower() in (
     "1", "true", "yes"
 )
 ARCHIVE_PARQUET_ENABLED = os.environ.get("ARCHIVE_PARQUET_ENABLED", "false").lower() in (

@@ -3,7 +3,7 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import { Action } from '../api/protocol';
 import {
   setCandleHistory, applyLiveCandle, hasCandleHistory, mergeCandleHistory,
-  prependCandleHistory,
+  prependCandleHistory, CHART_SNAPSHOT_BARS,
 } from '../services/candleBuffer';
 import {
   hydrateFromSnapshot, scheduleMarketSnapshotSave, forceMarketSnapshotSave,
@@ -147,7 +147,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     setLocal('terminal_active_symbol', symbol);
     set({ activeSymbol: symbol });
     import('../api/transport').then(({ sendAction }) => {
-      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol });
+      sendAction(Action.SUBSCRIBE_SYMBOL, { symbol, limit: CHART_SNAPSHOT_BARS });
     });
   },
 

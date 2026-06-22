@@ -36,8 +36,8 @@ This document prioritizes three implementation tracks plus a broader backlog. Ea
 | **Performance** | ~1.8MB JS bundle; monolithic `ChartWidget` / `useStore`; no list virtualization |
 | **Observability** | Logging + `/health` only; no metrics/tracing dashboard |
 | **Depth chart** | Basic book visualization; needs polish (aggregation, flash updates) |
-| **E2E** | Smoke/layout/analyst API; no full place-order or bot-deploy flows |
-| **Docs** | README omits Chart Analyst, ⌘B/⌘I, Analyst tab |
+| **E2E** | Smoke/layout/analyst API; full place-order, deploy-bot, workspace, and REST fallback flows added |
+| **Docs** | README synced with session bootstrap, shortcuts, and E2E inventory |
 
 ---
 
@@ -328,6 +328,46 @@ gantt
 
 ---
 
+## Implementation status (2026-06-22)
+
+### Startup / monolith stability — complete
+
+| Item | Delivered |
+|------|-----------|
+| Lazy sim feed | SBBS warm deferred; `SIM_*` config; fast bind |
+| Session bootstrap | `GET /api/v1/session`, frontend single-round-trip |
+| Liveness | `GET /health/live` |
+| WS deferred payloads | Account/bots/history after `terminal_config` |
+| Archive backfill | `asyncio.to_thread`; default off |
+| Backtest sweep | Non-blocking parallel runs |
+
+### Agent automation — complete (v1)
+
+| Item | Delivered |
+|------|-----------|
+| Calibration Phase 2 | Meta-label gate + apply suggestions API/UI |
+| Regime routing | Elevated/compressed ATR config overrides |
+| Pipeline | Scan-deploy, walk-forward auto-deploy |
+
+### Polish / E2E / docs — complete (v1 scope)
+
+| Item | Delivered |
+|------|-----------|
+| Onboarding | Spotlight tour + E2E |
+| Code-split | Lazy dock/panel chunks |
+| Virtualized tables | History, bot logs, scanner |
+| Post-trade explain | `EXPLAIN_TRADE` + BotDetailDrawer |
+| Worker CI | Bar-close + heartbeat smoke jobs |
+| E2E trading flows | `trading-flows.spec.js` — order → history, deploy bot, REST fallback |
+| E2E workspace | `workspace.spec.js` — layout restore, link groups |
+| Docs | README + roadmap sync |
+
+---
+
 ## Next step
 
-Onboarding tour (P1), code-splitting, virtualized tables, RAG post-trade explain, distributed worker CI smoke.
+CHART_AGENT non-1m timeframe alignment, RAG explain hardening, full distributed integration test in CI.
+
+---
+
+## Implementation status (2026-06-15)
