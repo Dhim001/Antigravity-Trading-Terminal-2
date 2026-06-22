@@ -114,15 +114,16 @@ export default function ReconciliationTab() {
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
             <table className="terminal-table dock-panel-tab__table min-w-[720px]">
+              <caption className="sr-only">Ambiguous orders pending reconciliation</caption>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th className="text-right">Qty</th>
-                  <th>Bot</th>
-                  <th>Message</th>
-                  <th className="text-center">Actions</th>
+                  <th scope="col">Time</th>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Side</th>
+                  <th scope="col" className="text-right">Qty</th>
+                  <th scope="col">Bot</th>
+                  <th scope="col">Message</th>
+                  <th scope="col" className="text-center">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -150,7 +151,7 @@ export default function ReconciliationTab() {
                           className="h-6 px-2 text-[0.65rem]"
                           onClick={() => handleConfirmFilled(row.id)}
                         >
-                          Filled
+                          Confirm filled
                         </Button>
                         <Button
                           variant="ghost"

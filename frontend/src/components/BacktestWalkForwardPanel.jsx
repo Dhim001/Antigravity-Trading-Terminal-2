@@ -63,7 +63,7 @@ export default function BacktestWalkForwardPanel({ walkForward }) {
 
       {rolling && folds.length > 0 && (
         <div className="algo-backtest-table-scroll overflow-x-auto mb-2">
-          <table className="terminal-table algo-backtest-table m-0 text-[0.55rem]">
+          <table className="terminal-table algo-backtest-table m-0 text-xs">
             <thead>
               <tr>
                 <th className="text-center">Fold</th>
@@ -83,7 +83,7 @@ export default function BacktestWalkForwardPanel({ walkForward }) {
       )}
 
       {aggregate.fold_count > 0 && (
-        <div className="algo-backtest-wf__aggregate mb-2 rounded border border-border/50 p-2 text-[0.58rem]">
+        <div className="algo-backtest-wf__aggregate mb-2 rounded border border-border/50 p-2 text-xs">
           <p className="font-semibold mb-1">Aggregate OOS ({aggregate.fold_count} folds)</p>
           <div className="flex flex-wrap gap-x-4 gap-y-1 num-mono">
             <span>

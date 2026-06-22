@@ -53,6 +53,16 @@ const STEPS = [
     action: 'insights',
   },
   {
+    title: 'Deep reasoning & vision',
+    body: 'Expand an Analyst row for deep reasoning (LLM summary + risk notes — signal unchanged). Chart vision describes structure on 1H/4H. Enable AGENT_LLM_ENABLED in backend .env.',
+    target: null,
+  },
+  {
+    title: 'Ambiguous orders',
+    body: 'Live mode: unknown broker outcomes appear in Reconcile tab only. Confirm filled or dismiss — never resend automatically.',
+    target: null,
+  },
+  {
     title: 'Bottom dock',
     body: 'Positions, orders, balances, and active bots live in the bottom dock. Use ⌘B to jump to Algo.',
     target: 'bottom-dock',

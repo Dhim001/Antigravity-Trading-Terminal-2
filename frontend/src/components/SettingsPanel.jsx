@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Accordion,
   AccordionContent,
@@ -459,7 +460,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                         key={key}
                         value={key}
                         size="sm"
-                        className="gap-1 text-[0.68rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
+                        className="gap-1 text-xs font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
                         style={{ '--ind-c': ind.color }}
                       >
                         <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
@@ -478,7 +479,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   <Button
                     variant={settings.syncChartToTheme !== false ? 'secondary' : 'outline'}
                     size="sm"
-                    className="h-7 shrink-0 text-xs"
+                    className="shrink-0 text-xs"
                     onClick={() => {
                       const enabling = settings.syncChartToTheme === false;
                       updateSettings({
@@ -544,16 +545,18 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   ['agentLevels', 'Analyst levels'],
                   ['botMarkers', 'Bot markers'],
                 ].map(([key, label]) => (
-                  <label key={key} className="flex items-center justify-between text-xs">
-                    <span>{label}</span>
-                    <input
-                      type="checkbox"
+                  <div key={key} className="flex items-center justify-between gap-2">
+                    <Label htmlFor={`overlay-${key}`} className="cursor-pointer text-xs font-normal">
+                      {label}
+                    </Label>
+                    <Checkbox
+                      id={`overlay-${key}`}
                       checked={settings.chartLayout?.overlays?.[key] !== false}
-                      onChange={(e) => updateChartLayout({
-                        overlays: { ...settings.chartLayout?.overlays, [key]: e.target.checked },
+                      onCheckedChange={(c) => updateChartLayout({
+                        overlays: { ...settings.chartLayout?.overlays, [key]: c === true },
                       })}
                     />
-                  </label>
+                  </div>
                 ))}
               </SettingsAccordionSection>
             </Accordion>
@@ -599,7 +602,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 title="Workspace presets"
                 hint="Save dock layout, sidebar width, view mode, and chart link mode."
                 badge={settings.workspacePresets.length > 0 ? (
-                  <Badge variant="secondary" className="shrink-0 text-[0.6rem]">
+                  <Badge variant="secondary" className="shrink-0 text-xs">
                     {settings.workspacePresets.length}
                   </Badge>
                 ) : null}
@@ -632,7 +635,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       <div className="flex shrink-0 gap-1">
                         <Button
                           variant="outline"
-                          size="xs"
+                          size="sm"
                           onClick={() => {
                             if (loadWorkspacePreset(p.id)) {
                               toast.success(`Loaded “${p.name}”`);
@@ -644,7 +647,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                         </Button>
                         <Button
                           variant="ghost"
-                          size="xs"
+                          size="sm"
                           className="text-trading-down"
                           onClick={() => {
                             deleteWorkspacePreset(p.id);
@@ -712,7 +715,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 title="Price & signal alerts"
                 hint="Toast notifications when price crosses a level or analyst signal matches."
                 badge={(settings.alerts || []).length > 0 ? (
-                  <Badge variant="secondary" className="shrink-0 text-[0.6rem]">
+                  <Badge variant="secondary" className="shrink-0 text-xs">
                     {(settings.alerts || []).length}
                   </Badge>
                 ) : null}
@@ -720,7 +723,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 p-3">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="col-span-2 sm:col-span-1">
-                    <Label className="text-[0.65rem] text-muted-foreground">Symbol</Label>
+                    <Label className="text-xs text-muted-foreground">Symbol</Label>
                     <Input
                       className="mt-1 h-8 text-xs"
                       value={alertDraft.symbol}
@@ -729,7 +732,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     />
                   </div>
                   <div className="col-span-2 sm:col-span-1">
-                    <Label className="text-[0.65rem] text-muted-foreground">Type</Label>
+                    <Label className="text-xs text-muted-foreground">Type</Label>
                     <Select
                       value={alertDraft.type}
                       onValueChange={(type) => setAlertDraft((d) => ({ ...d, type }))}
@@ -746,7 +749,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   </div>
                   {(alertDraft.type === 'price_above' || alertDraft.type === 'price_below') && (
                     <div className="col-span-2 sm:col-span-1">
-                      <Label className="text-[0.65rem] text-muted-foreground">Threshold</Label>
+                      <Label className="text-xs text-muted-foreground">Threshold</Label>
                       <Input
                         className="mt-1 h-8 text-xs num-mono"
                         type="number"
@@ -759,7 +762,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   )}
                   {alertDraft.type === 'signal_change' && (
                     <div className="col-span-2 sm:col-span-1">
-                      <Label className="text-[0.65rem] text-muted-foreground">Signal</Label>
+                      <Label className="text-xs text-muted-foreground">Signal</Label>
                       <Select
                         value={alertDraft.signal}
                         onValueChange={(signal) => setAlertDraft((d) => ({ ...d, signal }))}
@@ -864,7 +867,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       </button>
                       <Button
                         variant="ghost"
-                        size="xs"
+                        size="sm"
                         className="text-trading-down shrink-0"
                         onClick={() => setAlerts(settings.alerts.filter((x) => x.id !== a.id))}
                       >
@@ -919,7 +922,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </SettingsAccordionSection>
 
               <SettingsAccordionSection value="saved-layout" title="Saved layout">
-                <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                <dl className="settings-defaults-list num-mono text-xs">
                   <div><dt>Link mode</dt><dd>{settings.workspace?.chartLinkMode ?? 'all'}</dd></div>
                   <div><dt>Dock height</dt><dd>{settings.workspace?.dockHeight ?? '—'}px</dd></div>
                   <div><dt>Sidebar</dt><dd>{settings.workspace?.sidebarWidth ?? '—'}px</dd></div>
@@ -940,7 +943,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   <Badge
                     variant="outline"
                     className={cn(
-                      'shrink-0 text-[0.6rem]',
+                      'shrink-0 text-xs',
                       connected ? 'text-trading-up' : 'text-trading-down',
                     )}
                   >
@@ -948,7 +951,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   </Badge>
                 )}
               >
-                <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                <dl className="settings-defaults-list num-mono text-xs">
                   <div>
                     <dt className="flex items-center gap-1"><Wifi aria-hidden data-icon="inline-start" /> Feed</dt>
                     <dd className={cn(
@@ -989,9 +992,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 title="LLM narrator"
                 hint="Rules decide BUY/SELL; the LLM adds narrative only. In sim mode, Ollama is preferred when running locally."
                 badge={agentLlmAvailable ? (
-                  <Badge variant="outline" className="shrink-0 text-[0.6rem] text-trading-up">Ready</Badge>
+                  <Badge variant="outline" className="shrink-0 text-xs text-trading-up">Ready</Badge>
                 ) : (
-                  <Badge variant="outline" className="shrink-0 text-[0.6rem] text-muted-foreground">Off</Badge>
+                  <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">Off</Badge>
                 )}
               >
                 <LlmSettingsSection
@@ -1010,7 +1013,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 title="Operator / environment"
                 hint="Server-controlled, read-only. Set via environment variables on the backend."
               >
-                <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                <dl className="settings-defaults-list num-mono text-xs">
                   <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
                   <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
                   <div>
@@ -1088,14 +1091,14 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
 
               {obsMetrics && (
                 <SettingsAccordionSection value="metrics-snapshot" title="Metrics snapshot">
-                  <dl className="settings-defaults-list num-mono text-[0.68rem]">
+                  <dl className="settings-defaults-list num-mono text-xs">
                     <div><dt>Orders placed</dt><dd>{obsMetrics.orders_place_total ?? 0}</dd></div>
                     <div><dt>Preview allowed</dt><dd>{obsMetrics.orders_preview_allowed_total ?? 0}</dd></div>
                     <div><dt>Preview blocked</dt><dd>{obsMetrics.orders_preview_blocked_total ?? 0}</dd></div>
                     <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? '—'}</dd></div>
                   </dl>
                   <p className="settings-section__hint">
-                    Full Prometheus scrape at <code className="text-[0.62rem]">/metrics</code>
+                    Full Prometheus scrape at <code className="text-xs">/metrics</code>
                   </p>
                 </SettingsAccordionSection>
               )}

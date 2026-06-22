@@ -12,6 +12,7 @@ const ScannerTab = lazy(() => import('./ScannerTab'));
 const AnalystTab = lazy(() => import('./AnalystTab'));
 
 const HUB_WIDTH_KEY = 'terminal_insights_hub_width';
+const HUB_TAB_KEY = 'terminal_insights_hub_tab';
 const HUB_WIDTH_DEFAULT = 896;
 const HUB_WIDTH_MIN = 560;
 const HUB_WIDTH_MAX = 1280;
@@ -24,13 +25,23 @@ function readHubWidth() {
   return HUB_WIDTH_DEFAULT;
 }
 
+function readHubTab() {
+  try {
+    const t = localStorage.getItem(HUB_TAB_KEY);
+    if (t === 'scanner' || t === 'analyst') return t;
+  } catch (_) {}
+  return 'scanner';
+}
+
 function TabFallback() {
   return <WidgetEmpty message="Loading…" />;
 }
 
 export default function InsightsHub({ open = false, onOpenChange }) {
   const [panelWidth, setPanelWidth] = useState(() => readHubWidth());
+  const [hubTab, setHubTab] = useState(() => readHubTab());
   const [resizing, setResizing] = useState(false);
+  const contentRef = useRef(null);
   const isDragging = useRef(false);
   const startX = useRef(0);
   const startW = useRef(0);
@@ -40,12 +51,33 @@ export default function InsightsHub({ open = false, onOpenChange }) {
   }, [panelWidth]);
 
   useEffect(() => {
+    try { localStorage.setItem(HUB_TAB_KEY, hubTab); } catch (_) {}
+  }, [hubTab]);
+
+  useEffect(() => {
     const onOpen = () => {
       requestAnimationFrame(() => onOpenChange?.(true));
     };
     window.addEventListener('insights-hub-open', onOpen);
     return () => window.removeEventListener('insights-hub-open', onOpen);
   }, [onOpenChange]);
+
+  useEffect(() => {
+    const onTab = (e) => {
+      const next = e.detail;
+      if (next === 'scanner' || next === 'analyst') setHubTab(next);
+    };
+    window.addEventListener('insights-hub-tab', onTab);
+    return () => window.removeEventListener('insights-hub-tab', onTab);
+  }, []);
+
+  useEffect(() => {
+    if (open && contentRef.current) {
+      const t = setTimeout(() => contentRef.current?.focus(), 120);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [open, hubTab]);
 
   const onResizeMouseDown = useCallback((e) => {
     e.preventDefault();
@@ -90,12 +122,14 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           resizing && 'insights-hub--resizing',
         )}
         data-tour="insights-hub"
+        aria-label="Insights Hub"
         style={{
           width: panelWidth,
           minWidth: HUB_WIDTH_MIN,
           maxWidth: 'min(96vw, 100%)',
         }}
       >
+        <div ref={contentRef} tabIndex={-1} className="flex min-h-0 flex-1 flex-col outline-none">
         <div
           className={cn('insights-hub__resize', resizing && 'dragging')}
           onMouseDown={onResizeMouseDown}
@@ -119,7 +153,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           </SheetDescription>
         </SheetHeader>
 
-        <Tabs defaultValue="scanner" className="terminal-tabs insights-hub__tabs flex min-h-0 flex-1 flex-col">
+        <Tabs value={hubTab} onValueChange={setHubTab} className="terminal-tabs insights-hub__tabs flex min-h-0 flex-1 flex-col">
           <TabsList className="terminal-tabs__list insights-hub__tablist">
             <TabsTrigger value="scanner" className="insights-hub__tab">
               <Radar data-icon="inline-start" />
@@ -131,23 +165,28 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent
-            value="scanner"
-            className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
-          >
-            <Suspense fallback={<TabFallback />}>
-              <ScannerTab />
-            </Suspense>
-          </TabsContent>
-          <TabsContent
-            value="analyst"
-            className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
-          >
-            <Suspense fallback={<TabFallback />}>
-              <AnalystTab />
-            </Suspense>
-          </TabsContent>
+          <div className="insights-hub__tab-panels">
+            <TabsContent
+              value="scanner"
+              forceMount
+              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+            >
+              <Suspense fallback={<TabFallback />}>
+                <ScannerTab />
+              </Suspense>
+            </TabsContent>
+            <TabsContent
+              value="analyst"
+              forceMount
+              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+            >
+              <Suspense fallback={<TabFallback />}>
+                <AnalystTab />
+              </Suspense>
+            </TabsContent>
+          </div>
         </Tabs>
+        </div>
       </SheetContent>
     </Sheet>
   );

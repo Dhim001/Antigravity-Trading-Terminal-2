@@ -97,7 +97,7 @@ export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 't
   if (!axes || !grid) {
     return (
       <section className="algo-backtest-heatmap mt-3">
-        <p className="algo-backtest-table-scroll__caption m-0 text-[0.55rem] text-muted-foreground">
+        <p className="algo-backtest-table-scroll__caption m-0 text-xs text-muted-foreground">
           Heatmap needs at least two varied parameters — enable more sweep axes or add value ranges.
         </p>
       </section>
@@ -112,7 +112,7 @@ export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 't
         Heatmap — {axes.yLabel} × {axes.xLabel} ({metricLabel})
       </p>
       <div className="algo-backtest-table-scroll overflow-x-auto">
-        <table className="terminal-table algo-backtest-table m-0 text-[0.55rem]">
+        <table className="terminal-table algo-backtest-table m-0 text-xs">
           <thead>
             <tr>
               <th className="text-left">{axes.yLabel} ↓ / {axes.xLabel} →</th>

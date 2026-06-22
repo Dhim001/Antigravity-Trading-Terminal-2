@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Activity, GripVertical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
@@ -133,22 +134,16 @@ export default function BacktestLabSheet() {
           </SheetDescription>
         </SheetHeader>
 
-        <div className="backtest-lab__tabs flex gap-1 px-3 pt-2 pb-1 border-b border-border/50">
-          {LAB_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={cn(
-                'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                labTab === tab.id
-                  ? 'bg-primary/15 text-primary'
-                  : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
-              )}
-              onClick={() => setBacktestLabTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="backtest-lab__tabs border-b border-border/50 px-3 pt-2 pb-2">
+          <Tabs value={labTab} onValueChange={setBacktestLabTab}>
+            <TabsList className="w-full">
+              {LAB_TABS.map((tab) => (
+                <TabsTrigger key={tab.id} value={tab.id}>
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </div>
 
         <div className="terminal-sheet__body backtest-lab__body">

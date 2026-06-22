@@ -336,17 +336,25 @@ body {
 /* dock-tab-bar spacing — layout rules at .bottom-dock .dock-tab-bar */
 
 .dock-group-rail {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   gap: var(--icon-gap-tight);
-  padding: var(--sp-1) var(--sp-2) 0;
+  padding-block: 0;
+  padding-inline: var(--sp-1) 0;
   box-sizing: border-box;
 }
 
-.dock-group-btn {
-  height: var(--btn-h-sm);
-  min-height: var(--btn-h-sm);
-  padding-inline: var(--btn-pad-x-xs);
-  font-size: var(--fs-2xs);
-  box-sizing: border-box;
+.dock-group-toggle {
+  flex-shrink: 0;
+}
+
+/* Vertical rule between the group rail and the tab list — center it
+   regardless of the flex bar's stretch alignment. */
+.dock-tab-bar > [data-slot="separator"][data-orientation="vertical"] {
+  align-self: center;
+  height: 22px;
+  margin-inline: var(--sp-1);
 }
 
 .dock-tab-actions {
@@ -355,21 +363,6 @@ body {
   align-items: center;
   gap: var(--icon-gap);
   padding-inline: var(--sp-1);
-  box-sizing: border-box;
-}
-
-.dock-tab-actions [data-slot="button"] {
-  height: var(--btn-h-xs);
-  min-height: var(--btn-h-xs);
-  padding-inline: var(--btn-pad-x-xs);
-  font-size: var(--fs-2xs);
-  gap: var(--icon-gap-tight);
-}
-
-.dock-collapse-btn {
-  height: var(--btn-h-xs);
-  min-height: var(--btn-h-xs);
-  padding-inline: var(--btn-pad-x-xs);
   box-sizing: border-box;
 }
 
@@ -385,11 +378,6 @@ body {
   flex-flow: row wrap;
   align-items: center;
   gap: var(--sp-2);
-}
-
-.dock-panel-tab__toolbar-actions [data-slot="button"] {
-  height: var(--btn-h-sm);
-  min-height: var(--btn-h-sm);
 }
 
 .widget-toolbar {
@@ -582,7 +570,7 @@ body {
   );
 }
 
-.dashboard-container[data-layout-mode="portfolio"] .bottom-dock[data-dock-group="data"] .dock-group-btn[data-group="data"][data-active] {
+.dashboard-container[data-layout-mode="portfolio"] .bottom-dock[data-dock-group="data"] .dock-group-toggle [data-slot="toggle-group-item"][data-group="data"][data-state="on"] {
   border-color: color-mix(in oklab, var(--color-up) 42%, var(--border-color));
   background: color-mix(in oklab, var(--color-up) 20%, var(--secondary));
   color: var(--foreground);
@@ -912,20 +900,7 @@ body {
   border-left: 1px solid var(--border-subtle);
 }
 
-/* Dock grouping (UX-2) */
-.dock-group-rail {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: var(--icon-gap-tight);
-  padding-right: var(--sp-2);
-  margin-right: var(--sp-1);
-  border-right: 1px solid var(--border-subtle);
-}
-
-.dock-group-btn {
-  font-weight: 600;
-}
+/* Dock grouping (UX-2) — separator between rail and tabs is a shadcn Separator */
 
 .bottom-dock--collapsed {
   min-height: 0;
@@ -1151,7 +1126,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: var(--icon-gap);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text-muted);
   border: 1px solid transparent;
@@ -2236,7 +2211,7 @@ body {
   background: linear-gradient(
     180deg,
     color-mix(in oklab, var(--muted) 12%, transparent) 0%,
-    rgba(255, 255, 255, 0.02) 100%
+    color-mix(in oklab, var(--card) 40%, transparent) 100%
   );
 }
 
@@ -2247,9 +2222,9 @@ body {
   align-items: center;
   padding: 2px;
   border-radius: var(--r-md);
-  border: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
-  background: rgba(0, 0, 0, 0.32);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent);
 }
 
 .dock-tab-bar .scroll-fade-x {
@@ -2293,7 +2268,7 @@ body {
 
 .dock-tab-switch [data-slot="tabs-trigger"]:hover {
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in oklab, var(--muted) 50%, transparent);
 }
 
 .dock-tab-switch [data-slot="tabs-trigger"][data-state="active"],
@@ -2321,6 +2296,84 @@ body {
   flex-direction: column;
   overflow: hidden;
   padding-top: 0;
+}
+
+/* Preserve inactive dock tab DOM + scroll state (content-visibility pattern) */
+.dock-tab-panels {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dock-tab-body--cached[data-state="active"] {
+  position: relative;
+  z-index: 1;
+  content-visibility: visible;
+  pointer-events: auto;
+}
+
+.dock-tab-body--cached[data-state="inactive"] {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  content-visibility: hidden;
+  pointer-events: none;
+  contain-intrinsic-size: auto 320px;
+}
+
+@supports not (content-visibility: hidden) {
+  .dock-tab-body--cached[data-state="inactive"] {
+    display: none;
+  }
+}
+
+.insights-hub__body--cached[data-state="inactive"] {
+  position: absolute;
+  inset: 0;
+  content-visibility: hidden;
+  pointer-events: none;
+}
+
+.insights-hub__body--cached[data-state="active"] {
+  position: relative;
+  content-visibility: visible;
+}
+
+.insights-hub__tab-panels {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-analyst-badge__pulse,
+  .header-mode-badge--live .animate-ping {
+    animation: none !important;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  z-index: 9999;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  left: 0.75rem;
+  top: 0.75rem;
 }
 
 /* ── Dock panel tabs (Positions, Orders, Balances, Equity, Reconcile) ─ */
@@ -2386,7 +2439,7 @@ body {
 
 .dock-panel-tab__toolbar-title,
 .positions-tab__toolbar-title {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -2396,7 +2449,7 @@ body {
 
 .dock-panel-tab__toolbar-subtitle,
 .positions-tab__toolbar-subtitle {
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-muted);
@@ -2444,6 +2497,7 @@ body {
   display: flex;
   min-height: 0;
   flex: 1;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
 }
@@ -2465,7 +2519,7 @@ body {
   overflow-x: auto;
   border-bottom: 1px solid var(--border-subtle);
   padding: var(--sp-2) var(--sp-3);
-  background: rgba(0, 0, 0, 0.06);
+  background: color-mix(in oklab, var(--muted) 25%, transparent);
   scrollbar-width: none;
 }
 
@@ -2506,7 +2560,19 @@ body {
   flex: 1;
   overflow: auto;
   padding: var(--sp-1) var(--sp-2);
-  background: rgba(0, 0, 0, 0.08);
+  background: color-mix(in oklab, var(--muted) 20%, transparent);
+}
+
+/* ScrollArea-based dock panel (DockScrollPanel) — Radix scrolls the inner
+   viewport, so keep the root clipped and move padding/background onto it. */
+.dock-scroll-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dock-scroll-panel [data-slot="scroll-area-viewport"] {
+  padding: var(--sp-1) var(--sp-2);
+  background: color-mix(in oklab, var(--muted) 20%, transparent);
 }
 
 .dock-panel-tab__table thead th,
@@ -4742,6 +4808,36 @@ body {
 .algo-backtest-sweep__row input[type="text"],
 .algo-backtest-sweep__row input[type="number"] {
   font-variant-numeric: tabular-nums;
+}
+
+.algo-backtest-sweep__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+  margin-bottom: 0.35rem;
+}
+
+.algo-backtest-sweep__control {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.algo-backtest-sweep__control-label {
+  flex-shrink: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.algo-backtest-sweep__summary {
+  margin-left: auto;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 

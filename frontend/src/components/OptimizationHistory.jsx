@@ -94,7 +94,7 @@ export default function OptimizationHistory() {
         <p className="text-xs text-muted-foreground">No saved optimizations yet</p>
       ) : (
         <div className="algo-backtest-table-scroll algo-backtest-table-scroll--history">
-          <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
+          <table className="terminal-table algo-backtest-table m-0 text-xs">
             <thead>
               <tr>
                 <th>When</th>
@@ -116,7 +116,7 @@ export default function OptimizationHistory() {
                   <td className="whitespace-nowrap">{run.symbol}</td>
                   <td className="whitespace-nowrap">{run.strategy}</td>
                   <td>
-                    <Badge variant="outline" className="text-[0.52rem] h-4 px-1">
+                    <Badge variant="outline" className="h-4 px-1 text-xs">
                       {OBJECTIVE_LABELS[run.objective] ?? run.objective}
                     </Badge>
                   </td>

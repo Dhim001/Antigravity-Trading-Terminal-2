@@ -8,6 +8,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const GLOSSARY = [
+  { term: 'Deep reasoning', def: 'On-demand LLM enrichment (summary + risk notes). Metadata only — never changes BUY/SELL signal.' },
+  { term: 'Chart vision', def: 'Optional LLM description of chart structure from a captured PNG (1H/4H). Not a trading signal.' },
+  { term: 'Narrative vs deep reasoning', def: 'Narrative is auto-generated on analyze; deep reasoning is manual and adds structured risk critique from sub-reports.' },
   { term: 'Chart Analyst', def: 'Rule-based signal engine on closed bars. Optional LLM adds narrative only — never changes BUY/SELL.' },
   { term: 'sub_reports', def: 'Trend, momentum, and risk breakdown inside each insight (v2 envelope).' },
   { term: 'Scanner', def: 'Batch-ranks your watchlist by analyst score. Filter client-side after one scan.' },
@@ -25,7 +28,8 @@ const GLOSSARY = [
 
 const WORKFLOWS = [
   { title: 'Day trade', steps: ['⌘K pick symbol', 'Read analyst badge', 'Preview order → ticket', 'Submit with pre-trade check'] },
-  { title: 'Scan opportunities', steps: ['⌘I Insights Hub → Scanner', 'Scan watchlist', 'Click row → Analyst sub-tab', 'Preview or deploy bot'] },
+  { title: 'LLM enrichment', steps: ['Expand an Analyst history row', 'Deep reasoning → summary + risk (signal unchanged)', 'Optional chart vision on 1H/4H captures', 'Requires AGENT_LLM_ENABLED + provider in Settings'] },
+  { title: 'Scan opportunities', steps: ['⌘I Insights Hub → Scanner', 'Scan watchlist → click row for Analyst', 'Preview order from Scanner or Analyst row', 'Deploy CHART_AGENT bot from Analyst footer'] },
   { title: 'Bot ops', steps: ['⌘B Algo tab', 'Deploy CHART_AGENT or MACD_RSI', 'Bot logs → Why? links', 'Drawer → Why we entered on trades'] },
   { title: 'Backtest & optimize', steps: ['Algo tab → Run backtest or OPTIMIZE', 'Backtest Lab: Results | Optimizer | Jobs tabs', 'Pick objective + min trades in Optimizer', 'Export CSV/PDF from results'] },
   { title: 'Research (shorts)', steps: ['Algo tab → Sim mode: Research', 'Run backtest — SELL signals open shorts', 'Review equity in Backtest Lab', 'Switch to Live-aligned before deploy'] },

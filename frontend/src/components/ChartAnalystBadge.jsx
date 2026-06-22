@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Bot, ShoppingCart } from 'lucide-react';
+import { RefreshCw, Bot, ShoppingCart, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -12,9 +12,11 @@ import {
 import { cn } from '@/lib/utils';
 import { Action } from '../api/protocol';
 import { sendAction } from '../api/transport';
+import { withLlmModel } from '../api/endpoints';
 import { useStore } from '../store/useStore';
 import LlmNarrativeBlock from './LlmNarrativeBlock';
 import LlmDeepReasoningBlock from './LlmDeepReasoningBlock';
+import LlmFeatureHint from './LlmFeatureHint';
 import { getCandles } from '../services/candleBuffer';
 import { generateSignal } from '../utils/indicators';
 import SubReportCards from './SubReportCards';
@@ -56,9 +58,13 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
   const agentInsights = useStore((state) => state.agentInsights);
   const agentInsight = selectAgentInsight(agentInsights, symbol, timeframe);
   const chartTf = normalizeAnalystTimeframe(timeframe);
+  const agentDeepReasoning = useStore((state) => state.agentDeepReasoning);
+  const agentLlmEnabled = useStore((state) => state.agentLlmEnabled);
+  const agentLlmAvailable = useStore((state) => state.agentLlmAvailable);
   const setOrderPrefill = useStore((state) => state.setOrderPrefill);
   const ticker = useStore((state) => state.tickerData[symbol]);
   const [refreshing, setRefreshing] = useState(false);
+  const [deepReasonLoading, setDeepReasonLoading] = useState(false);
   const [previewDraft, setPreviewDraft] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const lastCandleTime = useStore((state) => {
@@ -111,6 +117,25 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
     }
   }, [symbol, chartTf, timeframe]);
 
+  const handleDeepReason = useCallback(() => {
+    if (!agentInsight?.insight_id) {
+      toast.message('Run analysis first');
+      return;
+    }
+    setDeepReasonLoading(true);
+    sendAction(Action.CHART_DEEP_REASON, withLlmModel({
+      symbol,
+      timeframe: chartTf,
+      insight_id: agentInsight.insight_id,
+    })).finally(() => setDeepReasonLoading(false));
+    toast.message('Deep reasoning requested…');
+  }, [agentInsight, symbol, chartTf]);
+
+  const deepFromStore = agentInsight?.insight_id
+    ? agentDeepReasoning[agentInsight.insight_id]?.deep_reasoning
+    : null;
+  const deepReasoning = display?.deep_reasoning || deepFromStore;
+
   useEffect(() => {
     if (!agentInsight && symbol && lastCandleTime) {
       sendAction(Action.CHART_ANALYZE, { symbol, timeframe: chartTf });
@@ -136,9 +161,10 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
               color: sigStyle.color,
               backgroundColor: sigStyle.bg,
             }}
+            title={`${display.signal} · ${confidencePct}% confidence · ${chartTf} timeframe`}
           >
             <span
-              className={cn('size-1.5 rounded-full', isStrong && 'animate-pulse')}
+              className={cn('chart-analyst-badge__pulse size-1.5 rounded-full', isStrong && 'animate-pulse')}
               style={{
                 background: sigStyle.dot,
                 boxShadow: isStrong ? `0 0 8px ${sigStyle.dot}` : undefined,
@@ -150,7 +176,14 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
             </span>
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-80 max-w-[92vw] p-3" style={{ borderColor: sigStyle.border }}>
+        <PopoverContent
+          align="end"
+          side="bottom"
+          sideOffset={8}
+          collisionPadding={16}
+          className="w-80 max-w-[92vw] p-3"
+          style={{ borderColor: sigStyle.border }}
+        >
           <PopoverHeader className="gap-1">
             <PopoverTitle className="text-[0.62rem] uppercase tracking-wide text-muted-foreground">
               Chart Analyst {display.source === 'backend' ? '· Server' : '· Local'}
@@ -197,15 +230,26 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
             />
           ) : null}
 
-          {display.deep_reasoning ? (
+          {deepReasoning ? (
             <LlmDeepReasoningBlock
-              summary={display.deep_reasoning.reasoning_summary}
-              riskNotes={display.deep_reasoning.risk_notes}
-              provider={display.deep_reasoning.provider}
-              model={display.deep_reasoning.model}
+              summary={deepReasoning.reasoning_summary}
+              riskNotes={deepReasoning.risk_notes}
+              provider={deepReasoning.provider}
+              model={deepReasoning.model}
               className="mb-3"
             />
           ) : null}
+
+          {display.sub_reports && !(agentLlmEnabled && agentLlmAvailable) && (
+            <LlmFeatureHint
+              feature="Deep reasoning"
+              enabled={agentLlmEnabled}
+              available={agentLlmAvailable}
+              envKeys={['AGENT_LLM_ENABLED']}
+              compact
+              className="mb-3"
+            />
+          )}
 
           <div className="flex flex-wrap gap-2">
             <Button
@@ -230,6 +274,19 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
               <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} />
               Refresh
             </Button>
+            {display.sub_reports && agentLlmEnabled && agentLlmAvailable && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 flex-1 gap-1 text-xs"
+                disabled={deepReasonLoading || display.source !== 'backend'}
+                onClick={handleDeepReason}
+              >
+                <Layers className={cn('size-3', deepReasonLoading && 'animate-spin')} />
+                {deepReasonLoading ? 'Reasoning…' : 'Deep reason'}
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"

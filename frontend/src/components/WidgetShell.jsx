@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { cn } from '@/lib/utils';
+import { ScrollArea } from '@/components/ui/scroll-area';
 export { IconLabel } from '@/components/ui/icon-label';
 
 /**
@@ -43,6 +45,27 @@ export function WidgetShell({
       >
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Scroll container for dock tables — shadcn ScrollArea with virtual-scroll hook */
+export function DockScrollPanel({ children, className, onScroll }) {
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!onScroll || !rootRef.current) return;
+    const viewport = rootRef.current.querySelector('[data-slot="scroll-area-viewport"]');
+    if (!viewport) return;
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  }, [onScroll]);
+
+  return (
+    <div ref={rootRef} className={cn('dock-scroll-panel flex-1', className)}>
+      <ScrollArea className="h-full">
+        {children}
+      </ScrollArea>
     </div>
   );
 }

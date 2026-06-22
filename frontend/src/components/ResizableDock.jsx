@@ -55,6 +55,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { Separator } from '@/components/ui/separator';
 import {
   scheduleBacktestClientTimeout,
   clearBacktestClientTimeout,
@@ -178,7 +180,7 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
                 <StrategyBadge strategy={bot.strategy} compact />
                 <span
                   className={cn(
-                    'ml-1 text-[0.58rem] num-mono',
+                    'ml-1 text-xs num-mono',
                     bot._active === false ? 'text-muted-foreground/60' : 'text-muted-foreground',
                   )}
                   title={bot.id}
@@ -578,7 +580,7 @@ export function AlgoTab({ hideToolbar = false }) {
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
-    ambiguousOrders, setAmbiguousOrders,
+    ambiguousOrders,
   } = useStore(useShallow((s) => ({
     activeBots: s.activeBots,
     botStrategy: s.botStrategy,
@@ -619,7 +621,6 @@ export function AlgoTab({ hideToolbar = false }) {
     setBotDetail: s.setBotDetail,
     setBotDrawerOpen: s.setBotDrawerOpen,
     ambiguousOrders: s.ambiguousOrders,
-    setAmbiguousOrders: s.setAmbiguousOrders,
   })));
   const positions = useStore((state) => state.positions);
   const agentInsights = useStore((state) => state.agentInsights);
@@ -864,21 +865,6 @@ export function AlgoTab({ hideToolbar = false }) {
     if (isLive) refreshReconciliation();
   }, [isLive, refreshReconciliation]);
 
-  const handleAutoReconcile = () => {
-    sendAction(Action.ADMIN_RECONCILE, {});
-    setTimeout(refreshReconciliation, 500);
-  };
-
-  const handleDismissAmbiguous = (orderId) => {
-    sendAction(Action.ADMIN_RESOLVE_AMBIGUOUS, { order_id: orderId, resolution: 'dismissed' });
-    setAmbiguousOrders(ambiguousOrders.filter(o => o.id !== orderId));
-  };
-
-  const handleConfirmAmbiguous = (orderId) => {
-    sendAction(Action.ADMIN_RESOLVE_AMBIGUOUS, { order_id: orderId, resolution: 'confirmed_filled' });
-    setAmbiguousOrders(ambiguousOrders.filter(o => o.id !== orderId));
-  };
-
   return (
     <div className={cn('algo-tab', hideToolbar && 'algo-tab--embedded')}>
       {!hideToolbar ? (
@@ -896,16 +882,16 @@ export function AlgoTab({ hideToolbar = false }) {
           </div>
           <div className="algo-tab__toolbar-meta">
             {isLive ? (
-              <Badge variant="live" className="header-mode-badge header-mode-badge--live px-2 py-0.5 text-[0.58rem] font-extrabold tracking-wider">
+              <Badge variant="live" className="header-mode-badge header-mode-badge--live px-2 py-0.5 text-xs font-extrabold tracking-wider">
                 LIVE
               </Badge>
             ) : (
-              <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-[0.58rem] font-bold">
+              <Badge variant="secondary" className="header-mode-badge px-2 py-0.5 text-xs font-bold">
                 SIM
               </Badge>
             )}
             {liveBotsBlocked && (
-              <Badge variant="outline" className="algo-tab__toolbar-warn px-2 py-0.5 text-[0.58rem]">
+              <Badge variant="outline" className="algo-tab__toolbar-warn px-2 py-0.5 text-xs">
                 Exec locked
               </Badge>
             )}
@@ -939,56 +925,23 @@ export function AlgoTab({ hideToolbar = false }) {
       )}
 
       {isLive && ambiguousOrders.length > 0 && (
-        <section className="algo-tab__panel algo-reconcile-panel xl:col-span-3">
-          <header className="algo-tab__panel-header">
-            <div className="algo-tab__panel-title">
-              <AlertTriangle size={13} className="text-trading-warn" aria-hidden />
-              Ambiguous Orders ({ambiguousOrders.length})
-            </div>
-            <div className="flex gap-1">
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={refreshReconciliation}>
-                <RefreshCw data-icon="inline-start" aria-hidden />
-                Refresh
-              </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleAutoReconcile}>
-                Auto-reconcile
-              </Button>
-            </div>
-          </header>
-          <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 max-h-28">
-            <table className="terminal-table text-xs w-full">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th className="text-right">Qty</th>
-                  <th>Message</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {ambiguousOrders.map((o) => (
-                  <tr key={o.id}>
-                    <td>{o.symbol}</td>
-                    <td>{o.side}</td>
-                    <td className="num-mono text-right">{Number(o.quantity).toFixed(4)}</td>
-                    <td className="text-muted-foreground truncate max-w-[180px]" title={o.message}>{o.message}</td>
-                    <td className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => handleConfirmAmbiguous(o.id)}>
-                          Confirm filled
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => handleDismissAmbiguous(o.id)}>
-                          Dismiss
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <Alert className="algo-tab__banner border-trading-warn/40 bg-trading-warn/5 xl:col-span-3">
+          <AlertTriangle className="text-trading-warn" aria-hidden />
+          <AlertDescription className="flex flex-wrap items-center gap-2 text-xs leading-relaxed">
+            <span>
+              <strong>{ambiguousOrders.length} ambiguous order{ambiguousOrders.length === 1 ? '' : 's'}</strong>
+              {' '}need review — confirm filled or dismiss in Reconcile (do not resend).
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'reconcile' }))}
+            >
+              Review in Reconcile
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
       <section className="algo-tab__panel algo-tab__panel--deploy">
@@ -1688,7 +1641,7 @@ export function AlgoTab({ hideToolbar = false }) {
           </div>
           <div className="flex items-center gap-1">
             <Select value={logFilter} onValueChange={setLogFilter}>
-              <SelectTrigger className="h-6 w-[7.5rem] text-[0.58rem]" aria-label="Log filter">
+              <SelectTrigger className="h-7 w-[7.5rem] text-xs" aria-label="Log filter">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent position="popper">
@@ -1751,7 +1704,7 @@ export function AlgoTab({ hideToolbar = false }) {
                       {showInsight && (
                         <button
                           type="button"
-                          className="ml-2 text-[0.58rem] text-primary opacity-70 group-hover:opacity-100"
+                          className="ml-2 text-xs text-primary opacity-70 group-hover:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
                             openInsight();
@@ -2084,31 +2037,40 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         data-dock-group={activeGroup}
         data-compact={dockH < 280 ? '' : undefined}
         style={{ gridArea: 'dock', height: dockH, minHeight: DOCK_MIN }}
+        aria-label="Trading dock"
       >
         <div className="dock-resize-handle" onMouseDown={onMouseDown} />
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="dock-tabs-root gap-0">
           <div className="dock-tab-bar">
             <div className="dock-group-rail">
-              {Object.entries(DOCK_GROUP_CONFIG).map(([groupId, cfg]) => (
-                <Button
-                  key={groupId}
-                  variant={activeGroup === groupId ? 'secondary' : 'ghost'}
-                  size="xs"
-                  className="dock-group-btn"
-                  data-group={groupId}
-                  data-active={activeGroup === groupId ? '' : undefined}
-                  onClick={() => handleGroupChange(groupId)}
-                >
-                  {cfg.label}
-                  {groupBadge(groupId) != null && (
-                    <Badge variant="secondary" className="ml-1 h-4 min-w-4 px-1 text-[0.55rem]">
-                      {groupBadge(groupId)}
-                    </Badge>
-                  )}
-                </Button>
-              ))}
+              <ToggleGroup
+                type="single"
+                value={activeGroup}
+                onValueChange={(v) => { if (v) handleGroupChange(v); }}
+                variant="outline"
+                size="sm"
+                spacing={0}
+                className="dock-group-toggle"
+              >
+                {Object.entries(DOCK_GROUP_CONFIG).map(([groupId, cfg]) => (
+                  <ToggleGroupItem
+                    key={groupId}
+                    value={groupId}
+                    data-group={groupId}
+                    className="text-xs font-semibold"
+                  >
+                    {cfg.label}
+                    {groupBadge(groupId) != null && (
+                      <Badge variant="secondary" className="ml-1 h-4 min-w-4 px-1 text-xs">
+                        {groupBadge(groupId)}
+                      </Badge>
+                    )}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
             </div>
+            <Separator orientation="vertical" className="shrink-0" />
             <div className="dock-tab-bar-inner scroll-fade-x">
               <TabsList variant="line" className="dock-tab-switch scroll-panel-x no-scrollbar min-w-0 flex-1 justify-start rounded-none border-0 bg-transparent">
                 {groupTabs.map(tab => {
@@ -2123,7 +2085,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
                       <Icon data-icon="inline-start" />
                       <span className="header-label">{tab.label}</span>
                       {tab.badge != null && (
-                        <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-bold">
+                        <Badge variant="secondary" className="h-4 min-w-4 px-1 text-xs font-bold">
                           {tab.badge}
                         </Badge>
                       )}
@@ -2139,7 +2101,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
             {activeGroup === 'intelligence' && (
               <Button
                 variant="outline"
-                size="xs"
+                size="sm"
                 title="Open Insights Hub — resizable scanner + analyst workspace (⌘I)"
                 onClick={() => window.dispatchEvent(new CustomEvent('insights-hub-open'))}
               >
@@ -2147,13 +2109,13 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
               </Button>
             )}
             {activeGroup === 'automation' && (
-              <Button variant="outline" size="xs" onClick={() => window.dispatchEvent(new CustomEvent('automation-studio-open'))}>
+              <Button variant="outline" size="sm" onClick={() => window.dispatchEvent(new CustomEvent('automation-studio-open'))}>
                 Studio
               </Button>
             )}
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               className="dock-collapse-btn"
               onClick={() => updateWorkspace({ dockCollapsed: true })}
               title="Collapse dock"
@@ -2175,78 +2137,71 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
             </div>
           </div>
 
-          <TabsContent value="positions" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <div className="dock-tab-panels">
+          <TabsContent value="positions" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Positions">
-              {activeTab === 'positions' && <PositionsTab />}
+              <PositionsTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="orders" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="orders" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Orders">
-              {activeTab === 'orders' && <OrdersTab />}
+              <OrdersTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="balances" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="balances" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Balances">
-              {activeTab === 'balances' && <BalancesTab />}
+              <BalancesTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="algo" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="algo" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Algo Bot">
-              {activeTab === 'algo' && <AlgoTab />}
+              <AlgoTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="scanner" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="scanner" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Scanner">
-              {activeTab === 'scanner' && (
-                <Suspense fallback={<DockTabFallback />}>
-                  <ScannerTab />
-                </Suspense>
-              )}
+              <Suspense fallback={<DockTabFallback />}>
+                <ScannerTab />
+              </Suspense>
             </ErrorBoundary>
           </TabsContent>
-
-          <TabsContent value="analyst" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="analyst" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Chart Analyst">
-              {activeTab === 'analyst' && (
-                <Suspense fallback={<DockTabFallback />}>
-                  <AnalystTab />
-                </Suspense>
-              )}
+              <Suspense fallback={<DockTabFallback />}>
+                <AnalystTab />
+              </Suspense>
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="reconcile" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="reconcile" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Reconciliation">
-              {activeTab === 'reconcile' && <ReconciliationTab />}
+              <ReconciliationTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="bots" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="bots" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Bot History">
-              {activeTab === 'bots' && (
-                <Suspense fallback={<DockTabFallback />}>
-                  <BotHistoryTab />
-                </Suspense>
-              )}
+              <Suspense fallback={<DockTabFallback />}>
+                <BotHistoryTab />
+              </Suspense>
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="ticks" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="ticks" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Ticks">
-              {activeTab === 'ticks' && (
-                <Suspense fallback={<DockTabFallback />}>
-                  <TickViewerTab />
-                </Suspense>
-              )}
+              <Suspense fallback={<DockTabFallback />}>
+                <TickViewerTab />
+              </Suspense>
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="equity" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="equity" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Equity curve">
-              {activeTab === 'equity' && <EquityCurveTab />}
+              <EquityCurveTab />
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="history" className="dock-tab-body mt-0 overflow-hidden data-[state=inactive]:hidden">
+          <TabsContent value="history" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
             <ErrorBoundary name="Trade history">
-              {activeTab === 'history' && !historyFullscreen && <TradeHistoryContent embedded />}
+              {!historyFullscreen && <TradeHistoryContent embedded />}
             </ErrorBoundary>
           </TabsContent>
+          </div>
         </Tabs>
       </div>
 

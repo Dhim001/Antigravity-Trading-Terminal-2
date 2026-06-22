@@ -6,6 +6,10 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Separator } from '@/components/ui/separator';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Select,
   SelectContent,
@@ -308,12 +312,11 @@ export default function BacktestSweepPanel({
     <div className="algo-backtest-sweep">
       <div className="algo-backtest-sweep__header">
         <span className="algo-backtest-table-scroll__caption m-0">Parameter sweep</span>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5">
           <Button
             type="button"
             variant="outline"
-            size="xs"
-            className="h-6 text-[0.62rem]"
+            size="sm"
             disabled={backtestRunning || !sweepGrid}
             onClick={() => runSweep(false)}
           >
@@ -322,8 +325,7 @@ export default function BacktestSweepPanel({
           <Button
             type="button"
             variant="outline"
-            size="xs"
-            className="h-6 text-[0.62rem]"
+            size="sm"
             disabled={backtestRunning || !sweepGrid || walkForwardTooFewBars}
             onClick={() => runSweep(true)}
             title={
@@ -340,8 +342,7 @@ export default function BacktestSweepPanel({
             <Button
               type="button"
               variant="ghost"
-              size="xs"
-              className="h-6 text-[0.62rem]"
+              size="sm"
               onClick={handleExportCsv}
             >
               Export CSV
@@ -350,11 +351,11 @@ export default function BacktestSweepPanel({
         </div>
       </div>
 
-      <div className="algo-backtest-sweep__objective flex flex-wrap items-center gap-3 mb-2">
-        <div className="flex items-center gap-2">
-          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Objective</Label>
+      <div className="algo-backtest-sweep__controls">
+        <div className="algo-backtest-sweep__control">
+          <Label className="algo-backtest-sweep__control-label">Objective</Label>
           <Select value={objective} onValueChange={setObjective}>
-            <SelectTrigger className="h-7 w-[8.5rem] text-[0.62rem]">
+            <SelectTrigger size="sm" className="w-[9rem]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent position="popper">
@@ -366,40 +367,42 @@ export default function BacktestSweepPanel({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Min trades</Label>
+        <div className="algo-backtest-sweep__control">
+          <Label className="algo-backtest-sweep__control-label">Mode</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            value={sweepMode}
+            onValueChange={(v) => {
+              if (!v) return;
+              setSweepMode(v);
+              if (v !== 'grid' && maxCombos > 100) setMaxCombos(100);
+            }}
+          >
+            <ToggleGroupItem value="grid" className="text-xs" title="Full grid, capped at 24 runs">Grid</ToggleGroupItem>
+            <ToggleGroupItem value="random" className="text-xs" title="Random search, up to 100 runs">Random</ToggleGroupItem>
+            <ToggleGroupItem value="lhs" className="text-xs" title="Latin hypercube sampling, up to 100 runs">LHS</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+        <div className="algo-backtest-sweep__control">
+          <Label className="algo-backtest-sweep__control-label">Min trades</Label>
           <Input
             type="number"
             min={0}
             max={999}
-            className="h-7 w-14 text-[0.62rem]"
+            className="h-7 w-16 text-xs"
             value={minTrades}
             onChange={(e) => setMinTrades(Math.max(0, parseInt(e.target.value, 10) || 0))}
           />
         </div>
-        <div className="flex items-center gap-2">
-          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Sweep mode</Label>
-          <Select value={sweepMode} onValueChange={(v) => {
-            setSweepMode(v);
-            if (v !== 'grid' && maxCombos > 100) setMaxCombos(100);
-          }}>
-            <SelectTrigger className="h-7 w-[7.5rem] text-[0.62rem]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent position="popper">
-              <SelectItem value="grid" className="text-xs">Grid (≤24)</SelectItem>
-              <SelectItem value="random" className="text-xs">Random (≤100)</SelectItem>
-              <SelectItem value="lhs" className="text-xs">LHS (≤100)</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center gap-2">
-          <Label className="text-[0.58rem] text-muted-foreground shrink-0">Max combos</Label>
+        <div className="algo-backtest-sweep__control">
+          <Label className="algo-backtest-sweep__control-label">Max combos</Label>
           <Input
             type="number"
             min={1}
             max={sweepMode === 'grid' ? 24 : 100}
-            className="h-7 w-14 text-[0.62rem]"
+            className="h-7 w-16 text-xs"
             value={maxCombos}
             onChange={(e) => {
               const cap = sweepMode === 'grid' ? 24 : 100;
@@ -407,35 +410,41 @@ export default function BacktestSweepPanel({
             }}
           />
         </div>
-        <span className="text-[0.55rem] text-muted-foreground">
+        <span className="algo-backtest-sweep__summary">
           {comboCount} run{comboCount === 1 ? '' : 's'}
           {fullGridSize > 1 && ` · full grid ${fullGridSize}`}
           {comboTruncated && (
-            <span className="text-amber-500/90"> · truncated to {comboCount}</span>
+            <span className="text-trading-warn"> · truncated to {comboCount}</span>
           )}
         </span>
       </div>
 
       {isChartAgent && (
-        <p className="text-[0.55rem] text-muted-foreground mb-2">
-          Chart Agent sweeps replay rules-only signals — LLM analysis is not varied during optimization.
-        </p>
+        <Alert className="py-1.5">
+          <AlertDescription className="text-xs leading-snug">
+            Chart Agent sweeps replay rules-only signals — LLM analysis is not varied during optimization.
+          </AlertDescription>
+        </Alert>
       )}
 
-      <div className="algo-backtest-sweep__grid space-y-2">
+      <Separator className="my-1" />
+
+      <div className="algo-backtest-sweep__grid flex flex-col gap-2">
         {paramDefs.map((def) => (
-          <div key={def.key} className="algo-backtest-sweep__row flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1.5 text-[0.58rem] min-w-[7rem] cursor-pointer">
-              <input
-                type="checkbox"
-                className="size-3 accent-primary"
-                checked={Boolean(enabled[def.key])}
-                onChange={(e) => setEnabled((prev) => ({ ...prev, [def.key]: e.target.checked }))}
-              />
+          <div key={def.key} className="algo-backtest-sweep__row flex items-center gap-2">
+            <Checkbox
+              id={`sweep-${def.key}`}
+              checked={Boolean(enabled[def.key])}
+              onCheckedChange={(c) => setEnabled((prev) => ({ ...prev, [def.key]: c === true }))}
+            />
+            <Label
+              htmlFor={`sweep-${def.key}`}
+              className="w-28 shrink-0 cursor-pointer text-xs font-normal text-muted-foreground"
+            >
               {def.label}
-            </label>
+            </Label>
             <Input
-              className="h-7 flex-1 min-w-[8rem] text-[0.62rem]"
+              className="h-8 min-w-[8rem] flex-1 text-xs"
               placeholder={def.placeholder}
               value={valuesByKey[def.key] ?? ''}
               disabled={!enabled[def.key]}
@@ -444,40 +453,44 @@ export default function BacktestSweepPanel({
           </div>
         ))}
         {enabled.trailing_stop_percent && enabled.stop_loss_percent && (
-          <p className="text-[0.55rem] text-trading-warn">
-            Stop loss is only used as a fallback when trailing stop is 0 — sweeping both may produce
-            duplicate-behaving configs.
-          </p>
+          <Alert className="border-trading-warn/40 bg-trading-warn/10 py-1.5">
+            <AlertDescription className="text-xs leading-snug text-trading-warn">
+              Stop loss is only used as a fallback when trailing stop is 0 — sweeping both may produce
+              duplicate-behaving configs.
+            </AlertDescription>
+          </Alert>
         )}
         {agentLlmAvailable && (
-          <label className="flex items-center gap-2 text-[0.62rem] cursor-pointer">
-            <input
-              type="checkbox"
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="sweep-reasoning"
               checked={reasoning}
-              onChange={(e) => setReasoning(e.target.checked)}
-              className="rounded border-border"
+              onCheckedChange={(c) => setReasoning(c === true)}
             />
-            Generate trade explanations after backtest (local LLM, post-hoc only)
-          </label>
+            <Label htmlFor="sweep-reasoning" className="cursor-pointer text-xs font-normal text-muted-foreground">
+              Generate trade explanations after backtest (local LLM, post-hoc only)
+            </Label>
+          </div>
         )}
-        <div className="flex flex-wrap items-center gap-3 text-[0.58rem]">
-          <label className="flex items-center gap-2 cursor-pointer text-muted-foreground">
-            <input
-              type="checkbox"
-              className="size-3 accent-primary"
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="sweep-rolling"
               checked={rollingWf}
-              onChange={(e) => setRollingWf(e.target.checked)}
+              onCheckedChange={(c) => setRollingWf(c === true)}
             />
-            Rolling walk-forward
-          </label>
+            <Label htmlFor="sweep-rolling" className="cursor-pointer text-xs font-normal text-muted-foreground">
+              Rolling walk-forward
+            </Label>
+          </div>
           {rollingWf && (
             <div className="flex items-center gap-2">
-              <Label className="text-muted-foreground shrink-0">Folds</Label>
+              <Label className="shrink-0 text-xs text-muted-foreground">Folds</Label>
               <Select
                 value={String(rollingFolds)}
                 onValueChange={(v) => setRollingFolds(parseInt(v, 10) || 3)}
               >
-                <SelectTrigger className="h-7 w-[4.5rem] text-[0.62rem]">
+                <SelectTrigger size="sm" className="w-[4.5rem]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper">
@@ -488,7 +501,7 @@ export default function BacktestSweepPanel({
               </Select>
             </div>
           )}
-          <span className="text-[0.55rem] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {rollingWf
               ? 'Sequential IS/OOS slices across the range; best config by mean OOS performance'
               : 'Walk-forward uses a single 70/30 split when rolling is off'}
@@ -497,12 +510,11 @@ export default function BacktestSweepPanel({
       </div>
 
       {bestConfig && (
-        <div className="flex flex-wrap gap-1 mt-2">
+        <div className="flex flex-wrap gap-1.5 mt-2">
           <Button
             type="button"
             variant="ghost"
-            size="xs"
-            className="h-6 text-[0.62rem]"
+            size="sm"
             onClick={() => applyConfig(bestConfig)}
           >
             Apply best config to deploy
@@ -510,8 +522,7 @@ export default function BacktestSweepPanel({
           <Button
             type="button"
             variant="outline"
-            size="xs"
-            className="h-6 text-[0.62rem]"
+            size="sm"
             onClick={deployOptimized}
           >
             Deploy with optimized params
@@ -523,60 +534,62 @@ export default function BacktestSweepPanel({
 
       {sweep?.results?.length > 0 && (
         <>
-          <table className="terminal-table algo-backtest-table m-0 mt-2 text-[0.58rem]">
-            <thead>
-              <tr>
-                <th>Config</th>
-                <th className="text-right">{metricHeader(activeObjective)}</th>
-                <th className="text-right">Trades</th>
-                <th className="text-right">Filters</th>
-                <th className="text-right">Win%</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {sweep.results.map((row, i) => {
-                const isBest = i === 0;
-                const summary = row.summary ?? {};
-                return (
-                  <tr key={row.label ?? i} className={cn(isBest && 'bg-primary/5')}>
-                    <td className="max-w-[9rem] truncate" title={row.label}>{row.label}</td>
-                    <td className={cn(
-                      'num-mono text-right whitespace-nowrap',
-                      activeObjective === 'total_pnl' && (row.total_pnl ?? 0) >= 0 && 'text-trading-up',
-                      activeObjective === 'total_pnl' && (row.total_pnl ?? 0) < 0 && 'text-trading-down',
-                    )}>
-                      {formatMetric(row, activeObjective)}
-                    </td>
-                    <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
-                    <td className="num-mono text-right text-muted-foreground" title={
-                      row.filter_rejects
-                        ? Object.entries(row.filter_rejects).filter(([, n]) => n > 0).map(([k, n]) => `${k}:${n}`).join(', ')
-                        : undefined
-                    }>
-                      {row.filter_rejects_total ?? summary.filter_rejects_total ?? '—'}
-                    </td>
-                    <td className="num-mono text-right">
-                      {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
-                    </td>
-                    <td className="text-right">
-                      {isBest && row.config && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="xs"
-                          className="h-5 text-[0.55rem] px-1"
-                          onClick={() => applyConfig(row.config)}
-                        >
-                          Apply
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <Separator className="my-1" />
+          <div className="algo-backtest-table-scroll">
+            <table className="terminal-table algo-backtest-table m-0 text-xs">
+              <thead>
+                <tr>
+                  <th>Config</th>
+                  <th className="text-right">{metricHeader(activeObjective)}</th>
+                  <th className="text-right">Trades</th>
+                  <th className="text-right">Filters</th>
+                  <th className="text-right">Win%</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {sweep.results.map((row, i) => {
+                  const isBest = i === 0;
+                  const summary = row.summary ?? {};
+                  return (
+                    <tr key={row.label ?? i} className={cn(isBest && 'bg-primary/5')}>
+                      <td className="max-w-[9rem] truncate" title={row.label}>{row.label}</td>
+                      <td className={cn(
+                        'num-mono text-right whitespace-nowrap',
+                        activeObjective === 'total_pnl' && (row.total_pnl ?? 0) >= 0 && 'text-trading-up',
+                        activeObjective === 'total_pnl' && (row.total_pnl ?? 0) < 0 && 'text-trading-down',
+                      )}>
+                        {formatMetric(row, activeObjective)}
+                      </td>
+                      <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
+                      <td className="num-mono text-right text-muted-foreground" title={
+                        row.filter_rejects
+                          ? Object.entries(row.filter_rejects).filter(([, n]) => n > 0).map(([k, n]) => `${k}:${n}`).join(', ')
+                          : undefined
+                      }>
+                        {row.filter_rejects_total ?? summary.filter_rejects_total ?? '—'}
+                      </td>
+                      <td className="num-mono text-right">
+                        {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
+                      </td>
+                      <td className="text-right">
+                        {isBest && row.config && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => applyConfig(row.config)}
+                          >
+                            Apply
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           <OptimizerHeatmap sweep={sweep} paramDefs={paramDefs} objective={activeObjective} />
         </>
       )}

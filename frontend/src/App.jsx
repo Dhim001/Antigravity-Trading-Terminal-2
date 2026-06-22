@@ -304,6 +304,12 @@ export default function App() {
         '--panel-w': !panelEnabled ? '0px' : panelCollapsed ? '44px' : undefined,
       }}
     >
+      <a href="#main-chart" className="skip-link">
+        Skip to chart
+      </a>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {connectionTitle}
+      </div>
       <SettingsBootstrap />
       <Suspense fallback={null}>
         <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />
@@ -571,7 +577,7 @@ export default function App() {
         <ResizableWatchlistSidebar onLayoutChange={handleSidebarLayout} />
       </ErrorBoundary>
 
-      <main className="workspace-main workspace-main--with-context">
+      <main id="main-chart" tabIndex={-1} className="workspace-main workspace-main--with-context">
         {viewMode === 'single' ? (
           <ErrorBoundary name="Chart">
             <Suspense fallback={<PanelFallback label="Loading chart…" />}>

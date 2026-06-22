@@ -23,10 +23,19 @@ import {
 import SubReportCards from './SubReportCards';
 import LlmNarrativeBlock from './LlmNarrativeBlock';
 import LlmDeepReasoningBlock from './LlmDeepReasoningBlock';
+import LlmFeatureHint from './LlmFeatureHint';
 import LlmAttribution from './LlmAttribution';
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
-import { WidgetEmpty } from './WidgetShell';
+import { DockScrollPanel } from './WidgetShell';
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
 
 function displayLabel(insight) {
@@ -97,6 +106,37 @@ export default function AnalystTab() {
   useEffect(() => {
     setSymbol(activeSymbol);
   }, [activeSymbol]);
+
+  useEffect(() => {
+    const onFocus = (e) => {
+      const { symbol: sym, expandLatest, preview } = e.detail || {};
+      if (sym) {
+        setSymbol(sym);
+        setActiveSymbol(sym);
+      }
+      if (expandLatest) {
+        const history = useStore.getState().agentInsightHistory[sym || symbol] ?? [];
+        const first = history[0];
+        if (first) {
+          setExpandedId(first.insight_id || `${first.symbol}:${first.bar_time}`);
+        }
+      }
+      if (preview && sym) {
+        const row = (useStore.getState().agentInsightHistory[sym] ?? [])[0];
+        if (row && (row.signal === 'BUY' || row.signal === 'SELL')) {
+          const draft = buildOrderDraftFromInsight(row, {
+            tickerPrice: useStore.getState().tickerData[sym]?.price,
+          });
+          if (draft) {
+            setPreviewDraft(draft);
+            setPreviewOpen(true);
+          }
+        }
+      }
+    };
+    window.addEventListener('analyst-focus', onFocus);
+    return () => window.removeEventListener('analyst-focus', onFocus);
+  }, [setActiveSymbol, symbol]);
 
   useEffect(() => {
     if (compareSymbol === symbol) {
@@ -268,6 +308,16 @@ export default function AnalystTab() {
           >
             {visionLoading ? 'Capturing…' : `Describe ${visionLabel}`}
           </Button>
+          {(!agentVisionEnabled || !agentLlmEnabled || !agentLlmAvailable) && (
+            <LlmFeatureHint
+              feature="Chart vision"
+              enabled={agentVisionEnabled && agentLlmEnabled}
+              available={agentLlmAvailable}
+              envKeys={['AGENT_VISION_ENABLED', 'AGENT_LLM_ENABLED']}
+              compact
+              className="max-w-xs"
+            />
+          )}
         </div>
       </header>
 
@@ -284,7 +334,7 @@ export default function AnalystTab() {
                 <div className="mb-1 flex items-center justify-between">
                   <span className="font-bold">{sym}</span>
                   {insight ? (
-                    <Badge variant={signalVariant(insight)} className="h-5 text-[0.58rem]">
+                    <Badge variant={signalVariant(insight)} className="h-5 text-xs">
                       {displayLabel(insight)}
                     </Badge>
                   ) : (
@@ -317,7 +367,7 @@ export default function AnalystTab() {
       {latest && !compareMode && (
         <div className="border-b border-border/50 bg-muted/20 px-3 py-2 text-xs">
           <span className="text-muted-foreground">Latest · </span>
-          <Badge variant={signalVariant(latest)} className="mr-2 h-5 px-1.5 text-[0.58rem]">
+          <Badge variant={signalVariant(latest)} className="mr-2 h-5 px-1.5 text-xs">
             {displayLabel(latest)}
           </Badge>
           <span className="num-mono text-muted-foreground">
@@ -336,7 +386,7 @@ export default function AnalystTab() {
           )}
           {visionReport && (
             <div className="mt-2 rounded border border-border/50 bg-background/40 p-2">
-              <p className="text-[0.58rem] font-semibold uppercase text-muted-foreground">
+              <p className="text-xs font-semibold uppercase text-muted-foreground">
                 Structure notes ({visionLabel} · not a signal)
               </p>
               <p className="mt-1 text-xs">{visionReport.structure}</p>
@@ -352,28 +402,42 @@ export default function AnalystTab() {
 
       {rows.length === 0 ? (
         <div className="dock-panel-tab__empty">
-          <WidgetEmpty
-            icon={Brain}
-            message={`No analyst insights for ${symbol} yet. Run Analyze on the chart badge or click Analyze above.`}
-          />
-          <div className="flex justify-center pb-4">
-            <Button size="sm" className="h-7 text-xs" onClick={runAnalyze}>
-              Analyze {symbol}
-            </Button>
-          </div>
+          <Empty className="border-none bg-transparent py-6">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Brain />
+              </EmptyMedia>
+              <EmptyTitle>
+                {loading ? 'Loading insights…' : 'No insights yet'}
+              </EmptyTitle>
+              <EmptyDescription>
+                {loading
+                  ? `Fetching ${chartTf} insight history for ${symbol}.`
+                  : `No ${chartTf} insights for ${symbol} yet. Run Analyze or wait for the next closed bar.`}
+              </EmptyDescription>
+            </EmptyHeader>
+            {!loading && (
+              <EmptyContent>
+                <Button size="sm" onClick={runAnalyze}>
+                  Analyze {symbol}
+                </Button>
+              </EmptyContent>
+            )}
+          </Empty>
         </div>
       ) : (
         <>
-          <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0" onScroll={onScroll}>
+          <DockScrollPanel onScroll={onScroll}>
             <table className="terminal-table dock-panel-tab__table min-w-[720px] text-[0.62rem]">
+              <caption className="sr-only">Chart analyst insight history for {symbol} at {chartTf}</caption>
               <thead>
                 <tr>
-                  <th>Bar time</th>
-                  <th>Signal</th>
-                  <th className="text-right">Score</th>
-                  <th className="text-right">Conf</th>
-                  <th>Reasons</th>
-                  <th>LLM</th>
+                  <th scope="col">Bar time</th>
+                  <th scope="col">Signal</th>
+                  <th scope="col" className="text-right">Score</th>
+                  <th scope="col" className="text-right">Conf</th>
+                  <th scope="col">Reasons</th>
+                  <th scope="col">LLM</th>
                 </tr>
               </thead>
               <tbody>
@@ -459,19 +523,30 @@ export default function AnalystTab() {
                                 }
                               />
                             )}
-                            {agentLlmEnabled && agentLlmAvailable && row.sub_reports && (
-                              <Button
-                                variant="ghost"
-                                size="xs"
-                                className="mt-2 h-6 text-[0.62rem]"
-                                disabled={deepReasonLoading === id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  runDeepReason(row);
-                                }}
-                              >
-                                {deepReasonLoading === id ? 'Reasoning…' : 'Deep reasoning'}
-                              </Button>
+                            {row.sub_reports && (
+                              agentLlmEnabled && agentLlmAvailable ? (
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className="mt-2 h-6 text-[0.62rem]"
+                                  disabled={deepReasonLoading === id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    runDeepReason(row);
+                                  }}
+                                >
+                                  {deepReasonLoading === id ? 'Reasoning…' : 'Deep reasoning'}
+                                </Button>
+                              ) : (
+                                <LlmFeatureHint
+                                  feature="Deep reasoning"
+                                  enabled={agentLlmEnabled}
+                                  available={agentLlmAvailable}
+                                  envKeys={['AGENT_LLM_ENABLED']}
+                                  compact
+                                  className="mt-2"
+                                />
+                              )
                             )}
                             {row.levels?.stop_loss_distance != null && (
                               <p className="mt-2 num-mono text-[0.58rem] text-muted-foreground">
@@ -511,7 +586,7 @@ export default function AnalystTab() {
                 )}
               </tbody>
             </table>
-          </div>
+          </DockScrollPanel>
           <footer className="dock-panel-tab__footer">
             <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setActiveSymbol(symbol)}>
               View {symbol} chart

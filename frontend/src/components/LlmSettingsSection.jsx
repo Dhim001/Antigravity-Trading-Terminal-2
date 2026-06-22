@@ -157,7 +157,7 @@ export default function LlmSettingsSection({
           Refresh
         </Button>
       </div>
-      <dl className="settings-defaults-list num-mono text-[0.68rem]">
+      <dl className="settings-defaults-list num-mono text-xs">
         <div>
           <dt>Server enabled</dt>
           <dd className={agentLlmEnabled ? 'text-trading-up' : 'text-muted-foreground'}>
@@ -213,7 +213,7 @@ export default function LlmSettingsSection({
             </SelectTrigger>
             <SelectContent position="popper" className="z-[100] max-h-72">
               <SelectGroup>
-                <SelectLabel className="text-[0.65rem]">Installed models</SelectLabel>
+                <SelectLabel className="text-xs">Installed models</SelectLabel>
                 {sortedModels.map((m) => {
                   const meta = metaById.get(m);
                   const suffix = [
@@ -231,16 +231,16 @@ export default function LlmSettingsSection({
             </SelectContent>
           </Select>
           {selectedValue && metaById.get(selectedValue)?.notes && (
-            <p className="text-[0.62rem] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {modelLabel(metaById.get(selectedValue), selectedValue)} — {metaById.get(selectedValue).notes}
             </p>
           )}
         </div>
       ) : refreshing ? (
-        <p className="text-[0.68rem] text-muted-foreground">Loading models…</p>
+        <p className="text-xs text-muted-foreground">Loading models…</p>
       ) : (
-        <p className="text-[0.68rem] text-muted-foreground">
-          No models detected — start Ollama (<code className="text-[0.62rem]">ollama serve</code>) or set OPENROUTER_API_KEY.
+        <p className="text-xs text-muted-foreground">
+          No models detected — start Ollama (<code className="text-xs">ollama serve</code>) or set OPENROUTER_API_KEY.
         </p>
       )}
 
@@ -271,7 +271,7 @@ export default function LlmSettingsSection({
             </Button>
           </div>
           {recommendedMissing.length > 0 && (
-            <ul className="m-0 list-none space-y-1 p-0 text-[0.62rem] text-muted-foreground">
+            <ul className="m-0 list-none space-y-1 p-0 text-xs text-muted-foreground">
               {recommendedMissing.map(({ name, model }) => (
                 <li key={name} className="flex flex-wrap items-center gap-1">
                   <span>Tier {name} not installed:</span>
