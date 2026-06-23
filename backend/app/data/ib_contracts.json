@@ -1,0 +1,107 @@
+{
+  "AAPL": {
+    "conId": 265598,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "AAPL"
+  },
+  "AMD": {
+    "conId": 4391,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "AMD"
+  },
+  "AMZN": {
+    "conId": 3691937,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "AMZN"
+  },
+  "COIN": {
+    "conId": 481691285,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "COIN"
+  },
+  "DIS": {
+    "conId": 6459,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NYSE",
+    "symbol": "DIS"
+  },
+  "GOOGL": {
+    "conId": 208813719,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "GOOGL"
+  },
+  "JPM": {
+    "conId": 1520593,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NYSE",
+    "symbol": "JPM"
+  },
+  "META": {
+    "conId": 107113386,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "META"
+  },
+  "MSFT": {
+    "conId": 272093,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "MSFT"
+  },
+  "NFLX": {
+    "conId": 15124833,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "NFLX"
+  },
+  "NVDA": {
+    "conId": 4815747,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "NVDA"
+  },
+  "QQQ": {
+    "conId": 320227571,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "QQQ"
+  },
+  "SPY": {
+    "conId": 756733,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "ARCA",
+    "symbol": "SPY"
+  },
+  "TSLA": {
+    "conId": 76792991,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NASDAQ",
+    "symbol": "TSLA"
+  },
+  "V": {
+    "conId": 49462172,
+    "currency": "USD",
+    "exchange": "SMART",
+    "primaryExchange": "NYSE",
+    "symbol": "V"
+  }
+}

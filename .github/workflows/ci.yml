@@ -128,7 +128,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Worker bar-close handler smoke
-        run: python -m pytest tests/test_worker_bar_close.py -q
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: python -m pytest tests/test_worker_bar_close.py tests/test_distributed_integration.py -q
 
       - name: Worker heartbeat smoke
         env:

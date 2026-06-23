@@ -612,6 +612,19 @@ class CalibrationStore:
         else:
             self._entries.clear()
 
+    def warm(self, bot_id: str) -> None:
+        """Force rebuild of the calibration index for one bot."""
+        if bot_id:
+            self._get_entry(str(bot_id))
+
+    def warm_all(self, bot_ids: list[str]) -> int:
+        warmed = 0
+        for bot_id in bot_ids:
+            if bot_id:
+                self.warm(str(bot_id))
+                warmed += 1
+        return warmed
+
     def lookup(self, bot_id: str, key: tuple) -> dict[str, Any] | None:
         if not bot_id:
             return None
@@ -668,6 +681,38 @@ def get_calibration_store() -> CalibrationStore:
 
         _store = CalibrationStore(ttl_sec=CALIBRATION_CACHE_TTL_SEC)
     return _store
+
+
+def list_active_bot_ids_for_calibration() -> list[str]:
+    """Bot IDs eligible for background calibration refresh."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id FROM bots
+        WHERE status IN ('RUNNING', 'PAUSED', 'ERROR')
+        ORDER BY id
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    out: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append(str(row.get("id")))
+        else:
+            out.append(str(row[0]))
+    return [bid for bid in out if bid]
+
+
+def refresh_calibration_cache(*, invalidate_first: bool = True) -> dict[str, int]:
+    """Rebuild meta-label calibration indexes for active bots."""
+    store = get_calibration_store()
+    if invalidate_first:
+        store.invalidate()
+    bot_ids = list_active_bot_ids_for_calibration()
+    warmed = store.warm_all(bot_ids)
+    return {"bots": len(bot_ids), "warmed": warmed}
 
 
 def check_meta_label_gate(

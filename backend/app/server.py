@@ -26,6 +26,7 @@ from app.config import (
     AGENT_ENABLED,
     SCANNER_ENABLED,
     SIM_SBBS_WARM_ON_STARTUP,
+    LOG_JSON,
 )
 from app.database import init_db
 from app.api.http_server import run_http_server
@@ -47,6 +48,7 @@ from app.services.bots.runtime import (
     bot_market_loop,
     bot_snapshot_loop,
     bot_reconcile_loop,
+    calibration_refresh_loop,
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
@@ -54,6 +56,14 @@ from app.services.archive.runtime import archive_capture_loop, archive_rollup_lo
 from app.services.events import channels, publish as event_publish
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+if LOG_JSON:
+    from app.observability.json_log import JsonFormatter
+
+    _root = logging.getLogger()
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(JsonFormatter())
+    _root.handlers = [_handler]
+    _root.setLevel(logging.INFO)
 logging.getLogger("websockets.server").setLevel(logging.WARNING)
 
 if TERMINAL_ROLE == "worker":
@@ -308,6 +318,7 @@ async def main():
             if not state.bot_engine_uses_bar_hooks:
                 tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
             tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
+            tasks.append(asyncio.create_task(calibration_refresh_loop()))
             if TERMINAL_MODE != "SIMULATED":
                 tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
         elif runs_bar_publisher():

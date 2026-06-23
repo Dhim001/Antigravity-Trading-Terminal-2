@@ -261,6 +261,7 @@ class BacktesterService:
                 if not insight:
                     return {"signal": "NONE"}
                 insight_dict = insight.to_dict()
+                insight_dict.setdefault("timeframe", normalize_timeframe(cfg.get("timeframe") or "1m"))
                 confirm_insight = None
                 if htf_df is not None:
                     bar_time_val = df.iloc[i].get("time")
@@ -269,10 +270,14 @@ class BacktesterService:
                         confirm = score_at_index(htf_df, htf_idx, symbol)
                         if confirm:
                             confirm_insight = confirm.to_dict()
+                backtest_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
                 return build_signal_from_insight(
                     insight_dict,
                     chart_cfg,
                     confirm_insight=confirm_insight,
+                    bot_id=backtest_bot_id,
+                    symbol=symbol,
+                    timeframe=normalize_timeframe(cfg.get("timeframe") or "1m"),
                 )
         else:
             _chart_agent_signal = None

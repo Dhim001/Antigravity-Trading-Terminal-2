@@ -54,7 +54,20 @@ class TestHttpBindings(unittest.TestCase):
     def test_health(self):
         resp = self.client.get("/health")
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(resp.json()["ok"])
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("allow_live_bots", body)
+        self.assertIn("allow_custom_strategies", body)
+        self.assertIn("archive_parquet_enabled", body)
+        self.assertIn("archive_backend", body)
+
+    def test_session_operator_env_fields(self):
+        resp = self.client.get("/api/v1/session")
+        self.assertEqual(resp.status_code, 200)
+        terminal = resp.json()["session"]["terminal"]
+        self.assertIn("allow_custom_strategies", terminal)
+        self.assertIn("archive_parquet_enabled", terminal)
+        self.assertIn("archive_backend", terminal)
 
     def test_health_live(self):
         resp = self.client.get("/health/live")

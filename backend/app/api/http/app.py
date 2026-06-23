@@ -127,6 +127,33 @@ async def health(request: Request) -> JSONResponse:
         except Exception as exc:
             body["worker"] = {"alive": False, "error": str(exc)}
 
+    try:
+        from app.observability.metrics import observability_snapshot
+
+        snap = observability_snapshot()
+        body["observability"] = {
+            k: (round(v, 4) if isinstance(v, float) else v)
+            for k, v in snap.items()
+            if v is not None
+        }
+    except Exception:
+        pass
+
+    feed = getattr(state, "feed", None)
+    if feed is not None and hasattr(feed, "feed_lag_sec"):
+        try:
+            lag = feed.feed_lag_sec()
+            if lag is not None:
+                body["feed_lag_sec"] = round(float(lag), 2)
+        except Exception:
+            pass
+
+    if TERMINAL_MODE == "LIVE_IB" and feed is not None and hasattr(feed, "ib_status"):
+        try:
+            body["ib"] = feed.ib_status
+        except Exception:
+            pass
+
     return JSONResponse(body)
 
 

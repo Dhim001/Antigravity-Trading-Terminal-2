@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from app.db.connection import get_connection
-from app.services.market.timeframes import normalize_timeframe
+from app.services.market.timeframes import normalize_timeframe, timeframe_to_secs
 
 
 def _parse_payload(raw: Any) -> dict | None:
@@ -39,9 +39,9 @@ def _find_insight(
         for row in rows:
             if row.get("bar_time") == bar_time:
                 return row
-        for row in rows:
-            if normalize_timeframe(row.get("timeframe", "1m")) == tf:
-                return row
+        nearest = _nearest_insight_row(rows, bar_time, tf)
+        if nearest:
+            return nearest
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -62,7 +62,97 @@ def _find_insight(
             continue
         if normalize_timeframe(payload.get("timeframe", "1m")) == tf:
             return payload
+
+    # Nearest-bar fallback within one bar period (handles resample alignment drift).
+    try:
+        period = timeframe_to_secs(tf)
+    except ValueError:
+        period = 60
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT payload, bar_time FROM agent_insights
+        WHERE symbol = ? AND bar_time BETWEEN ? AND ?
+        ORDER BY ABS(bar_time - ?) ASC
+        LIMIT 10
+        """,
+        (sym, bar_time - period, bar_time + period, bar_time),
+    )
+    near_rows = cursor.fetchall()
+    conn.close()
+    for row in near_rows:
+        payload = _parse_payload(row[0] if not isinstance(row, dict) else row.get("payload"))
+        if not payload:
+            continue
+        if normalize_timeframe(payload.get("timeframe", "1m")) == tf:
+            return payload
+
+    if chart_analyst is not None:
+        rows = chart_analyst.list_insights(sym, limit=30, timeframe=tf)
+        return _nearest_insight_row(rows, bar_time, tf)
     return None
+
+
+def _nearest_insight_row(rows: list[dict], bar_time: int, tf: str) -> dict | None:
+    try:
+        period = timeframe_to_secs(tf)
+    except ValueError:
+        period = 60
+    best: dict | None = None
+    best_delta = period + 1
+    for row in rows or []:
+        if normalize_timeframe(row.get("timeframe", "1m")) != tf:
+            continue
+        bt = row.get("bar_time")
+        if bt is None:
+            continue
+        delta = abs(int(bt) - int(bar_time))
+        if delta <= period and delta < best_delta:
+            best = row
+            best_delta = delta
+    return best
+
+
+def _fetch_entry_for_exit(bot_id: str, exit_trade: dict) -> dict | None:
+    """Find the opening fill that this exit likely closes."""
+    sym = (exit_trade.get("symbol") or "").upper()
+    exit_ts = exit_trade.get("timestamp")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT side, price, quantity, timestamp, signal_bar_time, insight_snapshot, is_exit
+        FROM bot_trades
+        WHERE bot_id = ? AND symbol = ? AND is_exit = 0
+        ORDER BY timestamp DESC
+        LIMIT 20
+        """,
+        (bot_id, sym),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    candidates: list[dict] = []
+    for row in rows:
+        if isinstance(row, dict):
+            candidates.append(dict(row))
+        else:
+            candidates.append({
+                "side": row[0],
+                "price": row[1],
+                "quantity": row[2],
+                "timestamp": row[3],
+                "signal_bar_time": row[4],
+                "insight_snapshot": row[5],
+                "is_exit": row[6],
+            })
+    if not candidates:
+        return None
+    if exit_ts:
+        for entry in candidates:
+            if entry.get("timestamp") and entry["timestamp"] <= exit_ts:
+                return entry
+    return candidates[0]
 
 
 def _fetch_trade(bot_id: str, trade_id: str) -> dict | None:
@@ -266,7 +356,18 @@ def _fetch_related_trades(bot_id: str, symbol: str, *, limit: int = 5) -> list[d
 def _template_summary(trade: dict, insight: dict | None, bot: dict) -> str:
     side = trade.get("side", "?")
     sym = trade.get("symbol", "?")
+    tf = (insight or {}).get("timeframe") or bot.get("timeframe") or "1m"
     if trade.get("is_exit"):
+        if insight:
+            signal = insight.get("signal", "NONE")
+            conf = insight.get("confidence")
+            conf_pct = f"{round(conf * 100)}%" if conf is not None else "—"
+            reasons = insight.get("reasons") or []
+            top = reasons[0] if reasons else "prior entry context"
+            return (
+                f"Exit {side} on {sym} ({tf}) — closed position opened on "
+                f"{signal} setup ({conf_pct} conf): {top}."
+            )
         return f"Exit {side} on {sym} — position close."
     if not insight:
         return f"Entry {side} on {sym} — no matching analyst insight for bar {trade.get('signal_bar_time')}."
@@ -275,7 +376,6 @@ def _template_summary(trade: dict, insight: dict | None, bot: dict) -> str:
     conf_pct = f"{round(conf * 100)}%" if conf is not None else "—"
     reasons = insight.get("reasons") or []
     top = reasons[0] if reasons else "rule engine signal"
-    tf = insight.get("timeframe") or bot.get("timeframe") or "1m"
     return (
         f"Entry {side} on {sym} ({tf}): analyst {signal} at {conf_pct} confidence — {top}."
     )
@@ -302,7 +402,18 @@ async def explain_trade(
     symbol = trade.get("symbol") or bot.get("symbol") or ""
 
     insight = None
-    if not trade.get("is_exit"):
+    if trade.get("is_exit"):
+        entry = _fetch_entry_for_exit(bot_id, trade)
+        if entry:
+            insight = _parse_payload(entry.get("insight_snapshot"))
+            if not insight and entry.get("signal_bar_time") is not None:
+                insight = _find_insight(
+                    symbol,
+                    entry.get("signal_bar_time"),
+                    timeframe,
+                    chart_analyst=chart_analyst,
+                )
+    elif not trade.get("is_exit"):
         insight = _parse_payload(trade.get("insight_snapshot"))
         if not insight:
             insight = _find_insight(

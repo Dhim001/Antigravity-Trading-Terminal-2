@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
+from app.observability.metrics import inc
+from app.observability.json_log import log_event
 from app.services.bots.indicators import prepare_strategy_df, config_cache_key, merge_strategy_config
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.take_profit import format_tp_summary, merge_tp_config, resolve_take_profit
@@ -21,6 +23,35 @@ from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
 
 ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
+
+logger = logging.getLogger(__name__)
+
+
+def _block_reason_bucket(reason: str) -> str:
+    text = (reason or "").lower()
+    if "daily loss" in text:
+        return "daily_loss"
+    if "portfolio" in text:
+        return "portfolio"
+    if "quantity" in text or "too small" in text:
+        return "quantity"
+    if "stop loss distance" in text:
+        return "sizing"
+    return "risk"
+
+
+def _record_order_blocked(bot: dict, reason: str) -> None:
+    bucket = _block_reason_bucket(reason)
+    strat = normalize_strategy_name(bot.get("strategy", ""))
+    inc("bot_orders_blocked_total", labels={"strategy": strat, "reason": bucket})
+    log_event(
+        logger,
+        "bot_order_blocked",
+        bot_id=bot.get("id"),
+        symbol=bot.get("symbol"),
+        action="bot_order",
+        event="bot_order_blocked",
+    )
 
 
 def _coerce_bar_time(bar_time) -> int | None:
@@ -532,6 +563,7 @@ class BotManagerService:
                 if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
                     reject = signal_data.get("reject_reason")
                     if reject:
+                        inc("bot_orders_blocked_total", labels={"strategy": "CHART_AGENT", "reason": "filter"})
                         await self.log_bot_event(
                             bot_id,
                             "WARN",
@@ -650,6 +682,9 @@ class BotManagerService:
         if not signal_ledger.claim_signal(signal_id, bot_id, bar_time, signal_kind):
             return
 
+        strat_key = normalize_strategy_name(bot.get("strategy", ""))
+        inc("bot_signals_total", labels={"strategy": strat_key, "signal": signal_kind})
+
         if not is_exit:
             account_balance = self.get_account_balance()
             risk_amount = account_balance * 0.01
@@ -665,6 +700,7 @@ class BotManagerService:
             if price_diff <= 0:
                 signal_ledger.release_signal(signal_id)
                 await self.log_bot_event(bot_id, "ERROR", "Stop loss distance is 0. Aborting trade.")
+                _record_order_blocked(bot, "Stop loss distance is 0")
                 return
 
             quantity = risk_amount / price_diff
@@ -688,6 +724,7 @@ class BotManagerService:
         if not decision.allowed:
             signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "WARN", f"Risk blocked: {decision.reason}")
+            _record_order_blocked(bot, decision.reason)
             if "Daily loss limit" in decision.reason:
                 await self._halt_bot(bot_id, decision.reason)
             return
@@ -708,6 +745,7 @@ class BotManagerService:
             if not port_decision.allowed:
                 signal_ledger.release_signal(signal_id)
                 await self.log_bot_event(bot_id, "WARN", f"Portfolio risk blocked: {port_decision.reason}")
+                _record_order_blocked(bot, f"Portfolio risk blocked: {port_decision.reason}")
                 return
             if port_decision.quantity is not None and port_decision.quantity < quantity:
                 quantity = port_decision.quantity
@@ -716,11 +754,13 @@ class BotManagerService:
 
         if quantity <= 0:
             signal_ledger.release_signal(signal_id)
+            _record_order_blocked(bot, "quantity too small")
             return
 
         if quantity < 0.001:
             signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "INFO", "Signal ignored: quantity too small.")
+            _record_order_blocked(bot, "quantity too small")
             return
 
         action = "Exit" if is_exit else "Entry"
@@ -859,10 +899,20 @@ class BotManagerService:
                     await publish_bot_detail(self.broadcast_cb, detail)
                 signal_ledger.mark_signal_filled(signal_id)
                 self._risk_gate.invalidate_portfolio_cache()
+                log_event(
+                    logger,
+                    "bot_order_filled",
+                    bot_id=bot_id,
+                    symbol=symbol,
+                    action="bot_order",
+                    event="bot_order_filled",
+                    insight_id=signal_data.get("insight_id"),
+                )
             else:
                 signal_ledger.release_signal(signal_id)
                 msg = result.get("message", "Unknown error")
                 status = result.get("status", "error")
+                _record_order_blocked(bot, msg)
                 if status == "ambiguous":
                     await self.log_bot_event(
                         bot_id,

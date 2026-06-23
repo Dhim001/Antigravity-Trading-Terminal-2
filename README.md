@@ -116,6 +116,7 @@ Set `TERMINAL_MODE` in `.env` to switch backends:
 | `LIVE_ALPACA` | Alpaca WebSocket | US equities & ETFs | Paper or live via `ALPACA_BASE_URL` |
 | `LIVE_BINANCE` | Binance streams | Crypto USDT pairs | Requires API keys |
 | `LIVE_ETORO` | REST poll (`/market-data/instruments/rates`) | Equities + crypto | Bearer **or** API-key pair (never both); demo/real env auto-probe |
+| `LIVE_IB` | IB Gateway / TWS (`ib_async`, 1m `keepUpToDate`) | US equities & ETFs | **Feed-only** — orders use simulated OMS; requires Gateway + market data subs |
 
 ---
 
@@ -281,7 +282,7 @@ npm run preview
 Create a `.env` file in the **repo root** (loaded by `backend/app/config.py`):
 
 ```env
-# Terminal mode: SIMULATED | LIVE_ALPACA | LIVE_BINANCE | LIVE_ETORO
+# Terminal mode: SIMULATED | LIVE_ALPACA | LIVE_BINANCE | LIVE_ETORO | LIVE_IB
 TERMINAL_MODE=SIMULATED
 
 # Alpaca (LIVE_ALPACA)
@@ -300,6 +301,12 @@ ETORO_USER_KEY=
 ETORO_ENV=auto          # demo | real | auto
 ETORO_POLL_INTERVAL=1.0
 ETORO_EXEC_MIN_INTERVAL=3.0
+
+# Interactive Brokers (LIVE_IB — feed-only; SimulatedOMSService for orders)
+# IB_HOST=127.0.0.1
+# IB_PORT=4002
+# IB_CLIENT_ID=7
+# IB_MARKET_DATA_TYPE=1
 
 # Bot engine (optional)
 ALLOW_LIVE_BOTS=false

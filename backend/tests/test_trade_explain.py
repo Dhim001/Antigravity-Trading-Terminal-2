@@ -38,7 +38,7 @@ class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
             INSERT INTO agent_insights (insight_id, symbol, bar_time, payload, created_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
-            ("BTCUSDT:5m:1700", "BTCUSDT", 1700, payload),
+            ("BTCUSDT:5m:1700-nearest", "BTCUSDT", 1700, payload),
         )
         conn.commit()
         conn.close()
@@ -111,6 +111,81 @@ class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(ranked)
         self.assertIn("signal", ranked[0].lower())
+
+    async def test_find_insight_nearest_bar_within_period(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM agent_insights WHERE insight_id = 'BTCUSDT:5m:1700-nearest'")
+        payload = json.dumps({
+            "symbol": "BTCUSDT",
+            "bar_time": 1700,
+            "timeframe": "5m",
+            "signal": "BUY",
+            "confidence": 0.7,
+        })
+        cursor.execute(
+            """
+            INSERT INTO agent_insights (insight_id, symbol, bar_time, payload, created_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            ("BTCUSDT:5m:1700-nearest", "BTCUSDT", 1700, payload),
+        )
+        conn.commit()
+        conn.close()
+
+        hit = _find_insight("BTCUSDT", 1704, "5m")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["bar_time"], 1700)
+
+    async def test_explain_exit_links_entry_insight(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bot_trades WHERE bot_id = 'bot-exit-1'")
+        cursor.execute("DELETE FROM bots WHERE id = 'bot-exit-1'")
+        cursor.execute(
+            """
+            INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config, execution_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("bot-exit-1", "CHART_AGENT", "BTCUSDT", "5m", "STOPPED", 1000, "{}", "BAR_CLOSE"),
+        )
+        entry_snapshot = {
+            "signal": "BUY",
+            "confidence": 0.8,
+            "reasons": ["Entry reason"],
+            "timeframe": "5m",
+        }
+        cursor.execute(
+            """
+            INSERT INTO bot_trades
+            (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit, insight_snapshot, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bot-exit-1", "o-entry", "BTCUSDT", "BUY", 0.1, 100.0, None,
+                "bot-exit-1:1700:BUY", 1700, 0, json.dumps(entry_snapshot), "2026-01-01T10:00:00Z",
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO bot_trades
+            (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit, insight_snapshot, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bot-exit-1", "o-exit", "BTCUSDT", "SELL", 0.1, 101.0, 0.1,
+                "bot-exit-1:1800:SELL", 1800, 1, None, "2026-01-01T11:00:00Z",
+            ),
+        )
+        conn.commit()
+        cursor.execute("SELECT id FROM bot_trades WHERE order_id = 'o-exit'")
+        trade_id = str(cursor.fetchone()[0])
+        conn.close()
+
+        result = await explain_trade("bot-exit-1", trade_id)
+        self.assertTrue(result["trade"]["is_exit"])
+        self.assertEqual(result["insight"]["signal"], "BUY")
+        self.assertIn("Entry reason", result["summary"])
 
 
 if __name__ == "__main__":

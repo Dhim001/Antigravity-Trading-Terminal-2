@@ -28,11 +28,12 @@
       ]
     },
     {
-      "title": "Market scan duration",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "title": "Bot signals / blocked",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
       "targets": [
-        { "expr": "market_scan_duration_seconds_count", "legendFormat": "scans" }
+        { "expr": "bot_signals_total", "legendFormat": "signals" },
+        { "expr": "bot_orders_blocked_total", "legendFormat": "blocked" }
       ]
     }
   ]

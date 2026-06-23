@@ -67,6 +67,13 @@ async def place_order(ctx: RequestContext) -> None:
         take_profit_percent = float(take_profit_percent)
 
     inc("orders_place_total", labels={"side": str(side).upper()})
+    log_event(
+        logger,
+        "order_place",
+        symbol=symbol,
+        action="place_order",
+        event="order_place",
+    )
     result = await ctx.oms.place_order({
         "symbol": symbol,
         "type": order_type,

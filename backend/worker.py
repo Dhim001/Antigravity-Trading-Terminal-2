@@ -37,6 +37,12 @@ async def main():
 
         feed = CandleFeedStub()
         oms = SimulatedOMSService(feed)
+    elif TERMINAL_MODE == "LIVE_IB":
+        from app.services.sim_oms import SimulatedOMSService
+
+        feed = CandleFeedStub()
+        oms = SimulatedOMSService(feed)
+        logger.info("LIVE_IB worker: using candle stub (IB connection runs on server role only).")
     else:
         feed, oms = create_feed_and_oms()
 

@@ -269,6 +269,20 @@ class SimulatedFeedService(BaseFeedService):
     def get_candles(self, symbol: str) -> List[dict]:
         return self.candles.get(symbol, [])
 
+    def feed_lag_sec(self) -> float | None:
+        """Seconds since the latest simulated 1m bar close across watched symbols."""
+        latest: int | None = None
+        for sym in self.symbols:
+            candles = self.candles.get(sym) or []
+            if not candles:
+                continue
+            bar_time = int(candles[-1].get("time") or 0)
+            if bar_time and (latest is None or bar_time > latest):
+                latest = bar_time
+        if latest is None:
+            return None
+        return max(0.0, time.time() - float(latest))
+
     @staticmethod
     def _normalize_candles(candles: List[dict]) -> List[dict]:
         """Align bar times to minute boundaries and merge duplicates."""

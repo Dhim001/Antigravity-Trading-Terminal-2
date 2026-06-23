@@ -15,7 +15,7 @@ if os.path.exists(env_path):
                 os.environ[key.strip()] = val.strip()
 
 # Features & Integration Flags
-# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO"
+# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB"
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
 USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
@@ -26,6 +26,10 @@ BOT_MIN_CANDLES = int(os.environ.get("BOT_MIN_CANDLES", "200"))
 MARKET_CANDLE_SNAPSHOT_LIMIT = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_LIMIT", "600"))
 MARKET_CANDLE_SNAPSHOT_MAX = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_MAX", "10080"))
 CALIBRATION_CACHE_TTL_SEC = int(os.environ.get("CALIBRATION_CACHE_TTL_SEC", "300"))
+# Background recomputation interval for meta-label calibration index (0 = disabled).
+CALIBRATION_REFRESH_SEC = int(os.environ.get("CALIBRATION_REFRESH_SEC", "600"))
+# Emit JSON logs on trade/agent paths when true (default off in dev).
+LOG_JSON = os.environ.get("LOG_JSON", "false").lower() in ("1", "true", "yes")
 # Simulated feed — lightweight startup (defer yfinance SBBS until after listen)
 SIM_INITIAL_CANDLE_BARS = int(os.environ.get("SIM_INITIAL_CANDLE_BARS", "600"))
 SIM_SBBS_WARM_ON_STARTUP = os.environ.get("SIM_SBBS_WARM_ON_STARTUP", "true").lower() in (
@@ -182,6 +186,15 @@ ETORO_ENV = os.environ.get("ETORO_ENV", "auto")
 # Minimum spacing between trade-execution POSTs (eToro: 20 req/min shared limit).
 ETORO_EXEC_MIN_INTERVAL = float(os.environ.get("ETORO_EXEC_MIN_INTERVAL", "3.0"))
 
+# Interactive Brokers (LIVE_IB) — feed-only via TWS / IB Gateway + ib_async
+IB_HOST = os.environ.get("IB_HOST", "127.0.0.1")
+IB_PORT = int(os.environ.get("IB_PORT", "4002"))  # Gateway paper; 4001 live; TWS 7497/7496
+IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", "7"))
+IB_USE_RTH = os.environ.get("IB_USE_RTH", "true").lower() in ("1", "true", "yes")
+IB_MARKET_DATA_TYPE = int(os.environ.get("IB_MARKET_DATA_TYPE", "1"))  # 1=live, 3=delayed
+IB_HIST_DURATION = os.environ.get("IB_HIST_DURATION", "5 D")
+IB_STREAM_STAGGER_SEC = float(os.environ.get("IB_STREAM_STAGGER_SEC", "2.0"))
+
 # Detailed symbol catalog lists
 EQUITY_SYMBOLS = {
     "AAPL": {"price": 182.50, "volatility": 0.0001, "decimals": 2, "asset": "AAPL", "quote": "USD"},
@@ -216,6 +229,8 @@ CRYPTO_SYMBOLS = {
 
 # Supported Trading Symbols & Properties based on mode
 if TERMINAL_MODE == "LIVE_ALPACA":
+    SYMBOLS = EQUITY_SYMBOLS
+elif TERMINAL_MODE == "LIVE_IB":
     SYMBOLS = EQUITY_SYMBOLS
 elif TERMINAL_MODE == "LIVE_BINANCE":
     SYMBOLS = CRYPTO_SYMBOLS

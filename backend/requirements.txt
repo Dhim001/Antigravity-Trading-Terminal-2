@@ -25,3 +25,5 @@ pyarrow>=18.0.0
 # Optional scale-out (Phase 6): Redis pub/sub + PostgreSQL
 redis>=5.0.0
 psycopg[binary,pool]>=3.1.0
+# Interactive Brokers market data (LIVE_IB feed-only)
+ib_async>=2.0.0

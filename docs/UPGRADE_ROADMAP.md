@@ -32,7 +32,7 @@ This document prioritizes three implementation tracks plus a broader backlog. Ea
 |------|-----|
 | **Explainability** | Analyst reasons exist but aren't wired through order/bot flows |
 | **Workspace** | Theme/chart settings persist; dock layout and multi-chart state do not |
-| **Broker mode** | Live vs sim toggled via server env only — no in-app mode switch |
+| **Broker mode** | Read-only mode badge + Settings → Operator / environment (no in-app switch) |
 | **Performance** | ~1.8MB JS bundle; monolithic `ChartWidget` / `useStore`; no list virtualization |
 | **Observability** | Logging + `/health` only; no metrics/tracing dashboard |
 | **Depth chart** | Basic book visualization; needs polish (aggregation, flash updates) |
@@ -366,7 +366,22 @@ gantt
 
 ## Next step
 
-CHART_AGENT non-1m timeframe alignment, RAG explain hardening, full distributed integration test in CI.
+OpenTelemetry spans (bar-close → analyze → OMS) remain optional. Remaining polish: full distributed E2E with live bot order placement in CI, Docker remote WS manual validation per [`docs/grafana/IMPORT_CHECKLIST.md`](grafana/IMPORT_CHECKLIST.md).
+
+### Delivered 2026-06-22 (roadmap follow-up)
+
+| Area | Delivered |
+|------|-----------|
+| Bot metrics | `bot_signals_total`, `bot_orders_blocked_total` on manager hot path |
+| C3 logging | `LOG_JSON` + structured events on order preview/place, bot orders, trade explain |
+| C4 health UI | `/health` observability block + feed lag; Settings metrics snapshot |
+| RAG explain | Nearest-bar insight fallback; exit trades join entry insight snapshot |
+| Distributed CI | Redis bar-close integration test in worker-smoke job |
+| CHART_AGENT TF | Regression tests for 5m/15m/4h signal + resample alignment |
+| Calibration | Scheduled background refresh (`CALIBRATION_REFRESH_SEC`) |
+| Backtest gate | Meta-label calibration gate replay in backtester |
+| Pipeline | Deploy dedupe by `scanner_insight_id`; single retry on create failure |
+| C5 ops | Grafana import checklist + bot panels in dashboard JSON |
 
 ---
 

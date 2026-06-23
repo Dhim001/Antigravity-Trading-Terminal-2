@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from app.api.context import RequestContext
 from app.api.rate_limit import rate_limit_allow
 from app.api.outbound import agent_insight, error
@@ -10,6 +12,9 @@ from app.api.responses import send_to
 from app.api.router import route
 from app.config import AGENT_ENABLED, AGENT_LLM_ENABLED, TERMINAL_MODE
 from app.services.agent.llm.router import is_llm_available, summarize_with_critique
+from app.observability.json_log import log_event
+
+logger = logging.getLogger(__name__)
 
 ANALYZE_MIN_INTERVAL_SEC = 10.0
 DEEP_REASON_MIN_INTERVAL_SEC = 30.0
@@ -184,6 +189,14 @@ async def explain_trade_handler(ctx: RequestContext) -> None:
         await send_to(ctx, error(str(exc)))
         return
 
+    log_event(
+        logger,
+        "trade_explain",
+        bot_id=bot_id,
+        action="explain_trade",
+        event="trade_explain",
+        insight_id=(result.get("insight") or {}).get("insight_id"),
+    )
     await send_to(ctx, {"type": "trade_explain", "data": result})
 
 

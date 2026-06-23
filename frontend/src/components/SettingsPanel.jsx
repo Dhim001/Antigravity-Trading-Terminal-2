@@ -981,6 +981,12 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       </dd>
                     </div>
                   )}
+                  {obsHealth?.feed_lag_sec != null && (
+                    <div><dt>Feed lag</dt><dd>{obsHealth.feed_lag_sec}s</dd></div>
+                  )}
+                  {obsHealth?.observability?.agent_analyze_p99_sec != null && (
+                    <div><dt>Analyze p99</dt><dd>{obsHealth.observability.agent_analyze_p99_sec}s</dd></div>
+                  )}
                   {obsHealth?.ws_clients != null && (
                     <div><dt>WS clients</dt><dd>{obsHealth.ws_clients}</dd></div>
                   )}
@@ -1095,7 +1101,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     <div><dt>Orders placed</dt><dd>{obsMetrics.orders_place_total ?? 0}</dd></div>
                     <div><dt>Preview allowed</dt><dd>{obsMetrics.orders_preview_allowed_total ?? 0}</dd></div>
                     <div><dt>Preview blocked</dt><dd>{obsMetrics.orders_preview_blocked_total ?? 0}</dd></div>
-                    <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? '—'}</dd></div>
+                    <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? obsHealth?.observability?.agent_analyze_p99_sec ?? '—'}</dd></div>
+                    <div><dt>Bot signals</dt><dd>{obsMetrics.bot_signals_total ?? obsHealth?.observability?.bot_signals_total ?? 0}</dd></div>
+                    <div><dt>Orders blocked</dt><dd>{obsMetrics.bot_orders_blocked_total ?? obsHealth?.observability?.bot_orders_blocked_total ?? 0}</dd></div>
                   </dl>
                   <p className="settings-section__hint">
                     Full Prometheus scrape at <code className="text-xs">/metrics</code>

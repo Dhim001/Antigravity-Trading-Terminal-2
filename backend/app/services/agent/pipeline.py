@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from app.services.bots.strategies import normalize_strategy_name
@@ -37,6 +39,17 @@ def active_bot_symbols(
         if sym:
             out.add(sym)
     return out
+
+
+def pipeline_insight_deployed(bot_manager, insight_id: str) -> bool:
+    """True when a bot was already deployed for this scanner insight id."""
+    if not insight_id:
+        return False
+    for bot in bot_manager.active_bots.values():
+        cfg = bot.get("config") or {}
+        if cfg.get("scanner_insight_id") == insight_id:
+            return True
+    return False
 
 
 def rank_scan_rows(
@@ -146,23 +159,36 @@ async def deploy_from_scan(
         if sym in existing:
             skipped.append({"symbol": sym, "reason": "bot already active for symbol/timeframe"})
             continue
+        insight_id = row.get("insight_id")
+        if insight_id and pipeline_insight_deployed(bot_manager, str(insight_id)):
+            skipped.append({"symbol": sym, "reason": "pipeline insight already deployed"})
+            continue
         deploy_cfg = build_scan_deploy_config(row, base_config, regime_routing=regime_routing)
         if dry_run:
             deployed.append({"symbol": sym, "dry_run": True, "config": deploy_cfg})
             existing.add(sym)
             continue
-        try:
-            bot_id = await bot_manager.create_bot(
-                strategy,
-                sym,
-                timeframe,
-                float(allocation),
-                deploy_cfg,
-            )
+        bot_id = None
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                bot_id = await bot_manager.create_bot(
+                    strategy,
+                    sym,
+                    timeframe,
+                    float(allocation),
+                    deploy_cfg,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+        if bot_id:
             deployed.append({"bot_id": bot_id, "symbol": sym, "signal": row.get("signal")})
             existing.add(sym)
-        except Exception as exc:
-            skipped.append({"symbol": sym, "reason": str(exc)})
+        else:
+            skipped.append({"symbol": sym, "reason": str(last_exc) if last_exc else "deploy failed"})
 
     return {
         "scanned_at": scan.get("scanned_at"),

@@ -34,6 +34,15 @@ def create_feed_and_oms():
 
         feed = EtoroFeedService()
         oms = EtoroOMSService(feed)
+    elif TERMINAL_MODE == "LIVE_IB":
+        from app.services.ib_feed import IbFeedService
+        from app.services.sim_oms import SimulatedOMSService
+
+        feed = IbFeedService()
+        oms = SimulatedOMSService(feed)
+        logger.info(
+            "LIVE_IB: market data from IB Gateway; order execution uses simulated OMS (feed-only mode)."
+        )
     else:
         from app.services.sim_feed import SimulatedFeedService
         from app.services.sim_oms import SimulatedOMSService
@@ -185,4 +194,30 @@ async def bot_reconcile_loop(bot_manager: BotManagerService, interval: float = 1
                 logger.info("Reconciled %d pending bot fill(s).", confirmed)
         except Exception as exc:
             logger.error("Error in bot reconcile loop: %s", exc)
+        await asyncio.sleep(interval)
+
+
+async def calibration_refresh_loop(interval_sec: float | None = None):
+    """Periodically rebuild meta-label calibration indexes for active bots."""
+    from app.config import CALIBRATION_REFRESH_SEC
+    from app.services.bots.calibration import refresh_calibration_cache
+
+    interval = float(interval_sec if interval_sec is not None else CALIBRATION_REFRESH_SEC)
+    if interval <= 0:
+        logger.info("Calibration refresh loop disabled (CALIBRATION_REFRESH_SEC=%s)", interval)
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    logger.info("Starting calibration refresh loop (interval=%.0fs)...", interval)
+    while True:
+        try:
+            stats = await asyncio.to_thread(refresh_calibration_cache, invalidate_first=True)
+            if stats.get("warmed"):
+                logger.debug(
+                    "Calibration cache refreshed for %d bot(s).",
+                    stats.get("warmed"),
+                )
+        except Exception as exc:
+            logger.error("Error in calibration refresh loop: %s", exc)
         await asyncio.sleep(interval)
