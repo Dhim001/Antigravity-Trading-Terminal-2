@@ -14,6 +14,7 @@ const BROKER_LABELS = Object.freeze({
   LIVE_BINANCE: 'Binance',
   LIVE_ETORO: 'eToro',
   LIVE_IB: 'IB',
+  LIVE_MASSIVE: 'Massive',
 });
 
 /** Short, human-readable broker name for a TERMINAL_MODE value. */

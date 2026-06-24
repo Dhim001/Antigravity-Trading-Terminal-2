@@ -35,13 +35,33 @@ def create_feed_and_oms():
         feed = EtoroFeedService()
         oms = EtoroOMSService(feed)
     elif TERMINAL_MODE == "LIVE_IB":
+        from app.config import IB_OMS_CLIENT_ID, IB_OMS_ENABLED
         from app.services.ib_feed import IbFeedService
-        from app.services.sim_oms import SimulatedOMSService
 
         feed = IbFeedService()
+        if IB_OMS_ENABLED:
+            from app.services.ib_oms import IbOMSService
+
+            oms = IbOMSService(feed)
+            logger.info(
+                "LIVE_IB: market data from IB Gateway; order execution via IB OMS (clientId=%s).",
+                IB_OMS_CLIENT_ID,
+            )
+        else:
+            from app.services.sim_oms import SimulatedOMSService
+
+            oms = SimulatedOMSService(feed)
+            logger.info(
+                "LIVE_IB: market data from IB Gateway; order execution uses simulated OMS (feed-only mode)."
+            )
+    elif TERMINAL_MODE == "LIVE_MASSIVE":
+        from app.services.massive_feed import MassiveFeedService
+        from app.services.sim_oms import SimulatedOMSService
+
+        feed = MassiveFeedService()
         oms = SimulatedOMSService(feed)
         logger.info(
-            "LIVE_IB: market data from IB Gateway; order execution uses simulated OMS (feed-only mode)."
+            "LIVE_MASSIVE: stocks + crypto from Massive WebSocket; order execution uses simulated OMS (paper fills)."
         )
     else:
         from app.services.sim_feed import SimulatedFeedService

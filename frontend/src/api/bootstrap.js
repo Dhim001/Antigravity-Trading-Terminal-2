@@ -11,10 +11,24 @@ import {
   fetchHealth,
   fetchSession,
 } from './endpoints';
+import { isLiveMassiveMode } from '../lib/massiveMarket';
 
 let lastBootstrapAt = 0;
 let bootstrapInFlight = null;
 const LIGHT_BOOTSTRAP_COOLDOWN_MS = 45000;
+const DEFAULT_PREFETCH_CAP = 12;
+
+function prefetchSymbolCap() {
+  const { terminalMode, symbolsList } = useStore.getState();
+  if (isLiveMassiveMode(terminalMode)) {
+    return Math.max(symbolsList?.length ?? 0, DEFAULT_PREFETCH_CAP);
+  }
+  return DEFAULT_PREFETCH_CAP;
+}
+
+function prefetchStaggerMs() {
+  return isLiveMassiveMode(useStore.getState().terminalMode) ? 100 : 80;
+}
 
 /**
  * HTTP snapshot hydration — used on mount and after WebSocket reconnect.
@@ -59,6 +73,10 @@ export async function runBootstrap(opts = {}) {
       console.warn('[bootstrap] All HTTP snapshot requests failed — waiting for WebSocket.');
     }
 
+    if (!skipCandles && isLiveMassiveMode(useStore.getState().terminalMode)) {
+      subscribeChartSymbols(useStore.getState().symbolsList ?? [], storeActions);
+    }
+
     return { succeeded, total: tasks.length };
   };
 
@@ -72,7 +90,8 @@ export async function runBootstrap(opts = {}) {
 export function resubscribeMarketSymbols() {
   const { activeSymbol, symbolsList } = useStore.getState();
   const storeActions = getStoreActions();
-  const symbols = [...new Set([activeSymbol, ...(symbolsList || [])].filter(Boolean))].slice(0, 12);
+  const cap = prefetchSymbolCap();
+  const symbols = [...new Set([activeSymbol, ...(symbolsList || [])].filter(Boolean))].slice(0, cap);
   subscribeChartSymbols(symbols, storeActions);
 }
 
@@ -82,12 +101,13 @@ export function resubscribeMarketSymbols() {
  */
 export function subscribeChartSymbols(symbols, storeActions) {
   const unique = [...new Set((symbols || []).filter(Boolean))];
+  const stagger = prefetchStaggerMs();
   unique.forEach((sym, i) => {
     setTimeout(() => {
       sendAction(Action.SUBSCRIBE_SYMBOL, { symbol: sym, limit: CHART_SNAPSHOT_BARS });
       if (!hasChartReadyHistory(sym)) {
         fetchCandles(sym, storeActions);
       }
-    }, i * 80);
+    }, i * stagger);
   });
 }

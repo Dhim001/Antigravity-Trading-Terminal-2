@@ -981,6 +981,44 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       </dd>
                     </div>
                   )}
+                  {obsHealth?.ib && (
+                    <>
+                      <div><dt>IB connected</dt><dd>{obsHealth.ib.connected ? 'yes' : 'no'}</dd></div>
+                      <div><dt>IB streams</dt><dd>{obsHealth.ib.streams_active ?? '—'}</dd></div>
+                      {obsHealth.ib.market_data_delayed && (
+                        <div><dt>IB data</dt><dd className="text-trading-warn">Delayed quotes</dd></div>
+                      )}
+                    </>
+                  )}
+                  {obsHealth?.massive && (
+                    <>
+                      <div><dt>Massive WS</dt><dd>{obsHealth.massive.connected ? 'yes' : 'no'}</dd></div>
+                      <div><dt>Stocks mode</dt><dd>{obsHealth.massive.stocks_mode ?? '—'}</dd></div>
+                      <div><dt>Crypto mode</dt><dd>{obsHealth.massive.crypto_mode ?? '—'}</dd></div>
+                      <div><dt>NBBO quotes</dt><dd>{obsHealth.massive.real_quote_symbols ?? 0} symbols</dd></div>
+                      {obsHealth.massive.poll_fallback && (
+                        <div><dt>Massive feed</dt><dd className="text-trading-warn">REST poll fallback</dd></div>
+                      )}
+                      {obsHealth.massive.last_error && (
+                        <div><dt>Massive error</dt><dd className="text-trading-warn">{obsHealth.massive.last_error}</dd></div>
+                      )}
+                      {obsHealth.massive.seeded_symbols != null && (
+                        <div>
+                          <dt>Seeded</dt>
+                          <dd>
+                            {obsHealth.massive.seeded_symbols}/
+                            {(obsHealth.massive.equity_symbols ?? 0) + (obsHealth.massive.crypto_symbols ?? 0)}
+                          </dd>
+                        </div>
+                      )}
+                      {obsHealth.massive.stocks_lag_sec != null && (
+                        <div><dt>Stocks lag</dt><dd>{obsHealth.massive.stocks_lag_sec}s</dd></div>
+                      )}
+                      {obsHealth.massive.crypto_lag_sec != null && (
+                        <div><dt>Crypto lag</dt><dd>{obsHealth.massive.crypto_lag_sec}s</dd></div>
+                      )}
+                    </>
+                  )}
                   {obsHealth?.feed_lag_sec != null && (
                     <div><dt>Feed lag</dt><dd>{obsHealth.feed_lag_sec}s</dd></div>
                   )}
@@ -1021,6 +1059,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               >
                 <dl className="settings-defaults-list num-mono text-xs">
                   <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
+                  {terminalMode === 'LIVE_MASSIVE' && (
+                    <div><dt>Paper bots</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Sim OMS fills' : 'Disabled'}</dd></div>
+                  )}
                   <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
                   <div>
                     <dt>Live bots</dt>
@@ -1104,6 +1145,14 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     <div><dt>Analyze p99 (s)</dt><dd>{obsMetrics.agent_analyze_p99 ?? obsHealth?.observability?.agent_analyze_p99_sec ?? '—'}</dd></div>
                     <div><dt>Bot signals</dt><dd>{obsMetrics.bot_signals_total ?? obsHealth?.observability?.bot_signals_total ?? 0}</dd></div>
                     <div><dt>Orders blocked</dt><dd>{obsMetrics.bot_orders_blocked_total ?? obsHealth?.observability?.bot_orders_blocked_total ?? 0}</dd></div>
+                    {(obsMetrics.massive_bars_received_total != null || obsHealth?.observability?.massive_bars_received_total != null) && (
+                      <>
+                        <div><dt>Massive bars</dt><dd>{obsMetrics.massive_bars_received_total ?? obsHealth?.observability?.massive_bars_received_total ?? 0}</dd></div>
+                        <div><dt>Massive trades</dt><dd>{obsMetrics.massive_trades_received_total ?? obsHealth?.observability?.massive_trades_received_total ?? 0}</dd></div>
+                        <div><dt>Massive quotes</dt><dd>{obsMetrics.massive_quotes_received_total ?? obsHealth?.observability?.massive_quotes_received_total ?? 0}</dd></div>
+                        <div><dt>Massive poll updates</dt><dd>{obsMetrics.massive_poll_updates_total ?? obsHealth?.observability?.massive_poll_updates_total ?? 0}</dd></div>
+                      </>
+                    )}
                   </dl>
                   <p className="settings-section__hint">
                     Full Prometheus scrape at <code className="text-xs">/metrics</code>

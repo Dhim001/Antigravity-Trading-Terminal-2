@@ -93,6 +93,16 @@ def observability_snapshot() -> dict[str, float | None]:
         "orders_place_total": counter_sum("orders_place_total"),
         "orders_preview_allowed_total": counter_sum("orders_preview_allowed_total"),
         "orders_preview_blocked_total": counter_sum("orders_preview_blocked_total"),
+        "ib_bars_received_total": counter_sum("ib_bars_received_total"),
+        "ib_reconnects_total": counter_sum("ib_reconnects_total"),
+        "ib_stream_errors_total": counter_sum("ib_stream_errors_total"),
+        "ib_l1_ticks_total": counter_sum("ib_l1_ticks_total"),
+        "massive_bars_received_total": counter_sum("massive_bars_received_total"),
+        "massive_trades_received_total": counter_sum("massive_trades_received_total"),
+        "massive_quotes_received_total": counter_sum("massive_quotes_received_total"),
+        "massive_reconnects_total": counter_sum("massive_reconnects_total"),
+        "massive_stream_errors_total": counter_sum("massive_stream_errors_total"),
+        "massive_poll_updates_total": counter_sum("massive_poll_updates_total"),
     }
 
 

@@ -2,20 +2,36 @@ import os
 
 # Base Directory & Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "trading.db")
+_REPO_ROOT = os.path.dirname(BASE_DIR)
 
-# Helper to load .env manually if python-dotenv is not installed
-env_path = os.path.join(os.path.dirname(BASE_DIR), ".env")
-if os.path.exists(env_path):
-    with open(env_path, "r") as f:
+
+def _load_env_file(path: str) -> None:
+    """Load KEY=VALUE pairs into os.environ (manual dotenv; no external deps)."""
+    if not path or not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
 
+
+# Base secrets/overrides, then optional dual-instance profile (profile wins on conflict).
+_load_env_file(os.path.join(_REPO_ROOT, ".env"))
+_terminal_profile = os.environ.get("TERMINAL_PROFILE", "").strip().lower()
+if _terminal_profile:
+    _load_env_file(os.path.join(_REPO_ROOT, "env.profiles", f"{_terminal_profile}.env"))
+
+_sqlite_db = os.environ.get("SQLITE_DB_PATH", "").strip()
+DB_PATH = (
+    os.path.join(BASE_DIR, _sqlite_db)
+    if _sqlite_db
+    else os.path.join(BASE_DIR, "trading.db")
+)
+
 # Features & Integration Flags
-# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB"
+# Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB", "LIVE_MASSIVE"
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
 USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
@@ -194,6 +210,52 @@ IB_USE_RTH = os.environ.get("IB_USE_RTH", "true").lower() in ("1", "true", "yes"
 IB_MARKET_DATA_TYPE = int(os.environ.get("IB_MARKET_DATA_TYPE", "1"))  # 1=live, 3=delayed
 IB_HIST_DURATION = os.environ.get("IB_HIST_DURATION", "5 D")
 IB_STREAM_STAGGER_SEC = float(os.environ.get("IB_STREAM_STAGGER_SEC", "2.0"))
+# Pause new historical subscriptions after IB pacing violation (error 162).
+IB_PACING_PAUSE_SEC = float(os.environ.get("IB_PACING_PAUSE_SEC", "600"))
+# When live quotes are denied, fall back to delayed frozen (type 3).
+IB_AUTO_DELAYED_FALLBACK = os.environ.get("IB_AUTO_DELAYED_FALLBACK", "true").lower() in (
+    "1", "true", "yes"
+)
+# Stream L1 ticks via reqMktData for snappier UI between 1m bar closes.
+IB_L1_TICKS_ENABLED = os.environ.get("IB_L1_TICKS_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+# Real IB order routing (paper Gateway default). Off = simulated OMS (feed-only).
+IB_OMS_ENABLED = os.environ.get("IB_OMS_ENABLED", "false").lower() in ("1", "true", "yes")
+IB_OMS_CLIENT_ID = int(os.environ.get("IB_OMS_CLIENT_ID", str(IB_CLIENT_ID + 50)))
+IB_READ_ONLY_API = os.environ.get("IB_READ_ONLY_API", "false").lower() in ("1", "true", "yes")
+# Smoke/integration tests use a dedicated client id so they don't collide with a running feed.
+IB_SMOKE_CLIENT_ID = int(os.environ.get("IB_SMOKE_CLIENT_ID", str(IB_CLIENT_ID + 900)))
+# How often the LIVE_IB server pushes in-memory quotes to WebSocket clients.
+IB_BROADCAST_INTERVAL_SEC = float(os.environ.get("IB_BROADCAST_INTERVAL_SEC", "1.5"))
+
+# Massive.com (formerly Polygon.io) — stocks + crypto WebSocket + REST seed (LIVE_MASSIVE)
+MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
+_feed = os.environ.get("MASSIVE_FEED", "realtime").strip().lower()
+_default_ws = (
+    "wss://delayed.polygon.io/stocks"
+    if _feed == "delayed"
+    else "wss://socket.polygon.io/stocks"
+)
+_default_crypto_ws = (
+    "wss://delayed.polygon.io/crypto"
+    if _feed == "delayed"
+    else "wss://socket.polygon.io/crypto"
+)
+MASSIVE_WS_URL = os.environ.get("MASSIVE_WS_URL", _default_ws)
+MASSIVE_CRYPTO_WS_URL = os.environ.get("MASSIVE_CRYPTO_WS_URL", _default_crypto_ws)
+MASSIVE_REST_URL = os.environ.get("MASSIVE_REST_URL", "https://api.polygon.io")
+MASSIVE_HIST_DAYS = int(os.environ.get("MASSIVE_HIST_DAYS", "5"))
+MASSIVE_BROADCAST_INTERVAL_SEC = float(os.environ.get("MASSIVE_BROADCAST_INTERVAL_SEC", "1.5"))
+MASSIVE_WS_RECONNECT_SEC = float(os.environ.get("MASSIVE_WS_RECONNECT_SEC", "5"))
+MASSIVE_WS_ENABLED = os.environ.get("MASSIVE_WS_ENABLED", "true").lower() in ("1", "true", "yes")
+# When WS auth fails or MASSIVE_WS_ENABLED=false, poll REST for bars/quotes.
+MASSIVE_POLL_FALLBACK = os.environ.get("MASSIVE_POLL_FALLBACK", "true").lower() in ("1", "true", "yes")
+MASSIVE_POLL_INTERVAL_SEC = float(os.environ.get("MASSIVE_POLL_INTERVAL_SEC", "15"))
+# Parallel REST history seed (concurrent symbol fetches at startup).
+MASSIVE_SEED_CONCURRENCY = int(os.environ.get("MASSIVE_SEED_CONCURRENCY", "4"))
+# NBBO: stocks Q.*, crypto XQ.* (plan permitting; falls back to synthetic book on trade/agg).
+MASSIVE_QUOTES_ENABLED = os.environ.get("MASSIVE_QUOTES_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # Detailed symbol catalog lists
 EQUITY_SYMBOLS = {
@@ -232,6 +294,8 @@ if TERMINAL_MODE == "LIVE_ALPACA":
     SYMBOLS = EQUITY_SYMBOLS
 elif TERMINAL_MODE == "LIVE_IB":
     SYMBOLS = EQUITY_SYMBOLS
+elif TERMINAL_MODE == "LIVE_MASSIVE":
+    SYMBOLS = {**EQUITY_SYMBOLS, **CRYPTO_SYMBOLS}
 elif TERMINAL_MODE == "LIVE_BINANCE":
     SYMBOLS = CRYPTO_SYMBOLS
 elif TERMINAL_MODE == "LIVE_ETORO":

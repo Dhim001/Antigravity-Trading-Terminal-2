@@ -18,7 +18,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.config import IB_CLIENT_ID, IB_HOST, IB_PORT, IB_USE_RTH
+from app.config import IB_HOST, IB_PORT, IB_SMOKE_CLIENT_ID, IB_USE_RTH
 from app.services.ib_bars import bar_to_candle
 from app.services.ib_contracts import stock_contract
 
@@ -32,12 +32,12 @@ async def main() -> int:
 
     ib = IB()
     try:
-        await ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=15)
+        await ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_SMOKE_CLIENT_ID, timeout=15)
     except Exception as exc:
         print(f"SKIP: could not connect to IB at {IB_HOST}:{IB_PORT} — {exc}")
         return 0
 
-    print(f"OK: connected to IB ({IB_HOST}:{IB_PORT}, clientId={IB_CLIENT_ID})")
+    print(f"OK: connected to IB ({IB_HOST}:{IB_PORT}, clientId={IB_SMOKE_CLIENT_ID})")
 
     contract = stock_contract("AAPL")
     qualified = await ib.qualifyContractsAsync(contract)

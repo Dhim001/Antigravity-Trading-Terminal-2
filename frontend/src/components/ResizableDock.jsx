@@ -917,6 +917,7 @@ export function AlgoTab({ hideToolbar = false }) {
           <Activity aria-hidden />
           <AlertDescription className="text-xs leading-relaxed">
             <strong>Live bots enabled</strong> on {terminalMode}
+            {terminalMode === 'LIVE_MASSIVE' ? ' (paper fills via simulated OMS — no broker routing)' : ''}
             {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
             Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
             Signals fire on closed {formatBarTimeframeLabel(botTimeframe)} bars — do not resend ambiguous orders.

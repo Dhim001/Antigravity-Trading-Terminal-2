@@ -51,6 +51,7 @@ const FUTURE_PADDING = 15;
 /** Wait for bulk history before first paint (avoids 1-bar → full-history jump). */
 const CHART_HISTORY_MIN_BARS = 3;
 const CHART_HISTORY_CACHED_BARS = 20;
+const MASSIVE_CHART_MIN_BARS = 50;
 const CHART_HISTORY_GATE_MS = 4000;
 const LOAD_OLDER_MIN_INTERVAL_MS = 2000;
 const CONFIGURE_DEBOUNCE_MS = 80;
@@ -73,7 +74,13 @@ const SERIES_ANIM_OFF = {
   animationDurationUpdate: 0,
 };
 
-function isChartHistoryReady(barCount, historyRev, gateForced) {
+function isChartHistoryReady(barCount, historyRev, gateForced, terminalMode) {
+  if (terminalMode === 'LIVE_MASSIVE') {
+    if (barCount <= 0) return false;
+    if (barCount >= MASSIVE_CHART_MIN_BARS) return true;
+    if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
+    return false;
+  }
   if (barCount <= 0) return false;
   if (gateForced) return true;
   if (barCount >= CHART_HISTORY_CACHED_BARS) return true;
@@ -725,6 +732,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   const [timeframe, setTimeframe] = useState(() => settings.chartLayout?.timeframe || '1m');
 
   const activeSymbol = useStore(state => state.activeSymbol);
+  const terminalMode = useStore(state => state.terminalMode);
   const historyRev = useStore(state => state.candleHistoryRevision[activeSymbol] || 0);
   const candleRev = useStore(state => state.candleRevision[activeSymbol] || 0);
   const lastCandleTime = useMemo(() => {
@@ -974,8 +982,8 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   }, [timeframe, activeSymbol, historyRev, displayBarLimit]);
 
   const chartHistoryReady = useMemo(
-    () => isChartHistoryReady(aggregatedCandles.length, historyRev, historyGateForced),
-    [aggregatedCandles.length, historyRev, historyGateForced],
+    () => isChartHistoryReady(aggregatedCandles.length, historyRev, historyGateForced, terminalMode),
+    [aggregatedCandles.length, historyRev, historyGateForced, terminalMode],
   );
 
   chartHistoryReadyRef.current = chartHistoryReady;
@@ -1788,6 +1796,11 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       } else {
         updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme);
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
+        if (terminalMode === 'LIVE_MASSIVE' && timeframe === '1m') {
+          const indicatorPatches = buildIndicatorSeriesPatches(bars, active, indicatorTheme)
+            .filter((p) => p.id !== 'main' && p.id !== 'volume');
+          patch.series = [...patch.series, ...indicatorPatches];
+        }
       }
 
       // Merge by series id only — never replaceMerge (drops indicator series not in patch)
@@ -1804,7 +1817,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, indicatorTheme]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, indicatorTheme, terminalMode]);
 
   const pumpLiveCandleUpdate = useCallback(() => {
     const now = performance.now();
@@ -2004,7 +2017,11 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
         <div ref={containerRef} className="h-full w-full" data-chart-root="main" />
         {!chartHistoryReady && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center bg-background/40">
-            <span className="text-xs text-muted-foreground">Loading chart history…</span>
+            <span className="text-xs text-muted-foreground">
+              {terminalMode === 'LIVE_MASSIVE'
+                ? 'Loading Massive chart history…'
+                : 'Loading chart history…'}
+            </span>
           </div>
         )}
       </div>

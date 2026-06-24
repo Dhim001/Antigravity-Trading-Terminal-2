@@ -1,10 +1,11 @@
 /**
  * Session-scoped market snapshot — survives refresh & HMR within the same tab.
- * Stale-while-revalidate: restore immediately, reconcile when WS/HTTP arrives.
+ * Profile-scoped key so sim / ib / massive instances do not cross-contaminate.
  */
 import { getCandles, setCandleHistory } from './candleBuffer';
 
-const KEY = 'terminal_market_snapshot';
+const PROFILE = import.meta.env.VITE_TERMINAL_PROFILE || 'default';
+const KEY = `terminal_market_snapshot_${PROFILE}`;
 const MAX_CANDLES_PER_SYMBOL = 300;
 const SAVE_DEBOUNCE_MS = 2000;
 

@@ -69,6 +69,13 @@ env/
 backend/trading.db
 backend/trading.db-*
 
+# Per-profile SQLite (sim / IB / Massive — see env.profiles/)
+backend/trading-sim.db
+backend/trading-ib.db
+backend/trading-massive.db
+backend/trading-*.db
+backend/trading-*.db-*
+
 # Generated / cached market data (yfinance seeds, eToro id cache)
 backend/data/*.parquet
 backend/data/*.json
@@ -90,10 +97,19 @@ lerna-debug.log*
 .env
 .env.*
 !.env.example
+!**/.env.example
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Terminal profile overrides (templates in env.profiles/ and frontend/env.profiles/ are committed)
+*.local.env
+env.profiles/*.local.env
+env.profiles/local/
+frontend/env.profiles/*.local.env
+frontend/env.profiles/local/
+
 *credentials*.json
 *secrets*.json
 *keys*.json

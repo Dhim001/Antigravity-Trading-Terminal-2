@@ -154,6 +154,12 @@ async def health(request: Request) -> JSONResponse:
         except Exception:
             pass
 
+    if TERMINAL_MODE == "LIVE_MASSIVE" and feed is not None and hasattr(feed, "massive_status"):
+        try:
+            body["massive"] = feed.massive_status
+        except Exception:
+            pass
+
     return JSONResponse(body)
 
 

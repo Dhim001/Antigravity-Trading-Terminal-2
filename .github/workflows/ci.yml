@@ -171,3 +171,190 @@ jobs:
           ETORO_USER_KEY: ${{ secrets.ETORO_USER_KEY }}
           ETORO_ACCESS_TOKEN: ${{ secrets.ETORO_ACCESS_TOKEN }}
         run: python scripts/etoro_smoke_test.py
+
+  ib-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: IB Gateway smoke (skipped when Gateway unreachable)
+        env:
+          IB_HOST: 127.0.0.1
+          IB_PORT: 4002
+        run: python scripts/ib_smoke_test.py
+
+  massive-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Massive smoke (skipped without API key)
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: python scripts/massive_smoke_test.py
+
+  ib-e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: [frontend]
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Install frontend + Playwright
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: IB Gateway E2E (skipped when Gateway unreachable)
+        env:
+          IB_HOST: 127.0.0.1
+          IB_PORT: 4002
+        run: |
+          python - <<'PY'
+          import socket, subprocess, sys, time, os
+          host, port = os.environ["IB_HOST"], int(os.environ["IB_PORT"])
+          try:
+              with socket.create_connection((host, port), timeout=2):
+                  pass
+          except OSError:
+              print(f"SKIP: IB Gateway not reachable at {host}:{port}")
+              sys.exit(0)
+          subprocess.check_call([sys.executable, "scripts/ib_smoke_test.py"], cwd="../backend")
+          proc = subprocess.Popen(
+              [sys.executable, "main.py"],
+              cwd="../backend",
+              env={**os.environ, "TERMINAL_PROFILE": "ib", "TERMINAL_MODE": "LIVE_IB", "HTTP_PORT": "8776", "WS_PORT": "8775"},
+          )
+          try:
+              for _ in range(45):
+                  try:
+                      import urllib.request
+                      urllib.request.urlopen("http://127.0.0.1:8776/health", timeout=2)
+                      break
+                  except Exception:
+                      time.sleep(2)
+              else:
+                  raise RuntimeError("IB backend health check timed out")
+              subprocess.check_call(
+                  ["npx", "playwright", "test", "e2e/ib-gateway.spec.js"],
+                  env={**os.environ, "E2E_IB_API_URL": "http://127.0.0.1:8776"},
+              )
+          finally:
+              proc.terminate()
+              proc.wait(timeout=10)
+          PY
+
+  massive-e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: [frontend]
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Install frontend + Playwright
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Massive E2E (skipped without API key)
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys, time, urllib.request
+          if not os.environ.get("MASSIVE_API_KEY"):
+              print("SKIP: MASSIVE_API_KEY not set")
+              sys.exit(0)
+          subprocess.check_call([sys.executable, "scripts/massive_smoke_test.py"], cwd="../backend")
+          proc = subprocess.Popen(
+              [sys.executable, "main.py"],
+              cwd="../backend",
+              env={
+                  **os.environ,
+                  "TERMINAL_PROFILE": "massive",
+                  "TERMINAL_MODE": "LIVE_MASSIVE",
+                  "HTTP_PORT": "8786",
+                  "WS_PORT": "8785",
+              },
+          )
+          try:
+              for _ in range(45):
+                  try:
+                      urllib.request.urlopen("http://127.0.0.1:8786/health", timeout=2)
+                      break
+                  except Exception:
+                      time.sleep(2)
+              else:
+                  raise RuntimeError("Massive backend health check timed out")
+              subprocess.check_call(
+                  ["npx", "playwright", "test", "e2e/massive-gateway.spec.js"],
+                  env={**os.environ, "E2E_MASSIVE_API_URL": "http://127.0.0.1:8786"},
+              )
+          finally:
+              proc.terminate()
+              proc.wait(timeout=10)
+          PY

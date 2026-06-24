@@ -3,6 +3,8 @@
  */
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useStore } from '../store/useStore';
+import { fetchHealth } from '../api/endpoints';
+import { massiveWatchlistBadge } from '../lib/massiveMarket';
 import { WidgetShell, WidgetToolbar, WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -44,7 +46,7 @@ function MiniSparkline({ points, isUp }) {
   );
 }
 
-const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
+const WatchlistRow = React.memo(function WatchlistRow({ symbol, terminalMode, massiveHealth }) {
   const info = useStore(state => state.tickerData[symbol]);
   const direction = useStore(state => state.priceDirections[symbol]);
   const activeSymbol = useStore(state => state.activeSymbol);
@@ -76,6 +78,7 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
   const dec = info ? getPriceDecimals(symbol, info.price) : 2;
   const shortSym = symbol.replace('USDT', '');
   const flashCls = flashState ? (flashState.dir === 'up' ? 'flash-up' : 'flash-down') : '';
+  const rowBadge = massiveWatchlistBadge(symbol, terminalMode, massiveHealth);
 
   return (
     <tr
@@ -99,6 +102,16 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
           <span className={cn('text-xs tracking-wide', isActive ? 'font-bold text-foreground' : 'font-semibold text-foreground/90')}>
             {shortSym}
           </span>
+          {rowBadge === 'closed' && (
+            <Badge variant="outline" className="h-4 px-1 text-[0.55rem] font-normal text-muted-foreground">
+              Closed
+            </Badge>
+          )}
+          {rowBadge === 'poll' && (
+            <Badge variant="outline" className="h-4 px-1 text-[0.55rem] font-normal text-trading-warn">
+              Poll
+            </Badge>
+          )}
         </div>
       </td>
       <td className="watchlist-col-spark px-0.5 py-1.5">
@@ -128,9 +141,27 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol }) {
 
 export default function WatchlistWidget() {
   const symbolsList = useStore(state => state.symbolsList);
+  const terminalMode = useStore(state => state.terminalMode);
+  const [massiveHealth, setMassiveHealth] = useState(null);
   const [cat, setCat] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'symbol', dir: 'asc' });
+
+  useEffect(() => {
+    if (terminalMode !== 'LIVE_MASSIVE') {
+      setMassiveHealth(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = () => {
+      fetchHealth(null)
+        .then((body) => { if (!cancelled) setMassiveHealth(body?.massive ?? null); })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 20_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [terminalMode]);
 
   const tickerData = useStore(state => sort.field === 'symbol' ? null : state.tickerData);
 
@@ -228,11 +259,12 @@ export default function WatchlistWidget() {
               { field: 'symbol', label: 'Symbol', align: 'left', col: 'watchlist-col-symbol' },
               { field: null, label: '', align: 'left', col: 'watchlist-col-spark' },
               { field: 'price', label: 'Price', align: 'right', col: 'watchlist-col-price' },
-              { field: 'change_24h', label: '24h%', align: 'right', col: 'watchlist-col-chg' },
+              { field: 'change_24h', label: terminalMode === 'LIVE_MASSIVE' ? 'Chg%' : '24h%', align: 'right', col: 'watchlist-col-chg', title: terminalMode === 'LIVE_MASSIVE' ? 'Rolling 24h change' : undefined },
               { field: 'volume_24h', label: 'Vol', align: 'right', col: 'watchlist-col-vol' },
-            ].map(({ field, label, align, col }) => (
+            ].map(({ field, label, align, col, title }) => (
               <th
                 key={label || 'spark'}
+                title={title}
                 onClick={field ? () => handleSort(field) : undefined}
                 className={cn(
                   col,
@@ -252,7 +284,12 @@ export default function WatchlistWidget() {
         </thead>
         <tbody>
           {displaySymbols.map(symbol => (
-            <WatchlistRow key={symbol} symbol={symbol} />
+            <WatchlistRow
+              key={symbol}
+              symbol={symbol}
+              terminalMode={terminalMode}
+              massiveHealth={massiveHealth}
+            />
           ))}
         </tbody>
         </table>
