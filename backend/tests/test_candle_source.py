@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 _TEST_DIR = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = ""
@@ -87,6 +88,41 @@ class BotCandleSourceTests(unittest.TestCase):
     def test_normalize_strategy_aliases(self):
         self.assertEqual(normalize_strategy_name("supertrend"), "SUPERTREND_ADX")
         self.assertEqual(normalize_strategy_name("MACD_RSI"), "MACD_RSI")
+
+    def test_native_ht_for_massive_bots(self):
+        ht_bars = [
+            {"time": 3600 * i, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10}
+            for i in range(250)
+        ]
+
+        class _MassiveFeed(_StubFeed):
+            def fetch_ht_candles(self, symbol, timeframe, limit=None, purpose="chart"):
+                self.last_fetch = (symbol, timeframe, limit, purpose)
+                return ht_bars
+
+        feed = _MassiveFeed({"AAPL": []})
+        with patch("app.services.bots.candle_source.TERMINAL_MODE", "LIVE_MASSIVE"):
+            out = get_bot_candles("AAPL", feed, timeframe="1h", min_bars=200)
+        self.assertEqual(len(out), 250)
+        self.assertEqual(feed.last_fetch[0], "AAPL")
+        self.assertEqual(feed.last_fetch[1], "1h")
+        self.assertEqual(feed.last_fetch[3], "analysis")
+
+    def test_native_ht_falls_back_when_short(self):
+        short_ht = [
+            {"time": 3600, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
+        ]
+        live = [{"time": 1000 + i * 60, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10} for i in range(250)]
+
+        class _MassiveFeed(_StubFeed):
+            def fetch_ht_candles(self, symbol, timeframe, limit=None, purpose="chart"):
+                return short_ht
+
+        feed = _MassiveFeed({"AAPL": live})
+        with patch("app.services.bots.candle_source.TERMINAL_MODE", "LIVE_MASSIVE"):
+            out = get_bot_candles("AAPL", feed, timeframe="1h", min_bars=200)
+        self.assertLess(len(out), 200)
+        self.assertGreater(len(out), 1)
 
 
 if __name__ == "__main__":

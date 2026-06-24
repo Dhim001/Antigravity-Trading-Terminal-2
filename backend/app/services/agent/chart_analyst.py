@@ -266,6 +266,15 @@ class ChartAnalystService:
         if candles is None:
             candles = await get_agent_candles(sym, self.feed, timeframe=tf)
 
+        if not candles or len(candles) < 50:
+            logger.info(
+                "Chart analyst skipped %s %s: only %s bars (need >= 50)",
+                sym,
+                tf,
+                len(candles or []),
+            )
+            return None
+
         df = await asyncio.to_thread(self.feature_builder.build, sym, candles)
         insight = score_dataframe(df, sym, timeframe=tf)
         if insight is None:

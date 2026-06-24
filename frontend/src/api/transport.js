@@ -16,6 +16,8 @@ export const HTTP_ROUTES = Object.freeze({
     path: (p) => {
       const qs = new URLSearchParams();
       if (p.limit != null && p.limit !== '') qs.set('limit', String(p.limit));
+      if (p.interval) qs.set('interval', String(p.interval));
+      if (p.timeframe && !p.interval) qs.set('interval', String(p.timeframe));
       const q = qs.toString();
       return `/api/v1/market/${encodeURIComponent(p.symbol)}/candles${q ? `?${q}` : ''}`;
     },

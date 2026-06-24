@@ -13,16 +13,21 @@ from app.config import (
     TERMINAL_MODE,
 )
 from app.services.market.timeframes import normalize_timeframe
+from app.services.massive_ht_limits import massive_ht_limit
 
 
-def _parse_candle_snapshot_limit(message: dict) -> int | None:
+def _parse_candle_snapshot_limit(message: dict, interval: str = "1m") -> int | None:
     """Return max bars to send; None means full in-memory buffer (limit=0)."""
     raw = message.get("limit")
     if raw is None or raw == "":
+        if TERMINAL_MODE == "LIVE_MASSIVE" and interval != "1m":
+            return massive_ht_limit(interval, purpose="chart")
         return MARKET_CANDLE_SNAPSHOT_LIMIT
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
+        if TERMINAL_MODE == "LIVE_MASSIVE" and interval != "1m":
+            return massive_ht_limit(interval, purpose="chart")
         return MARKET_CANDLE_SNAPSHOT_LIMIT
     if parsed <= 0:
         return None
@@ -83,7 +88,7 @@ async def subscribe_symbol(ctx: RequestContext) -> None:
         await send_error(ctx, "Market feed unavailable")
         return
     interval = _parse_chart_interval(ctx.message)
-    limit = _parse_candle_snapshot_limit(ctx.message)
+    limit = _parse_candle_snapshot_limit(ctx.message, interval)
     candles = await _resolve_candles(feed, symbol, interval, limit)
     snapshot = _tail_candles(candles, limit)
     meta = {"interval": interval, "symbol": symbol, "count": len(snapshot)}

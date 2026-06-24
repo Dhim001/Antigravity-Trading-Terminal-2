@@ -70,9 +70,12 @@ def http_status_and_body(messages: list[dict]) -> tuple[int, dict]:
                 return 400, {"ok": False, "error": data.get("message", "Request failed"), "messages": messages}
 
     primary = _pick_primary_message(messages)
-    return 200, {
+    body: dict = {
         "ok": True,
         "type": primary.get("type"),
         "data": primary.get("data"),
         "messages": messages,
     }
+    if primary.get("meta") is not None:
+        body["meta"] = primary.get("meta")
+    return 200, body

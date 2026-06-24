@@ -159,6 +159,12 @@ async def health(request: Request) -> JSONResponse:
             body["massive"] = feed.massive_status
         except Exception:
             pass
+        try:
+            from app.services.massive_ht_limits import massive_ht_limits_summary
+
+            body["massive_ht_limits"] = massive_ht_limits_summary()
+        except Exception:
+            pass
 
     return JSONResponse(body)
 

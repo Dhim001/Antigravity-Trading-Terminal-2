@@ -81,7 +81,11 @@ async def chart_analyze(ctx: RequestContext) -> None:
         broadcast=True,
     )
     if insight is None:
-        await send_to(ctx, error("Not enough candle data for analysis"))
+        from app.services.agent.candle_source import get_agent_candles
+
+        bars = await get_agent_candles(symbol, analyst.feed, timeframe=timeframe)
+        detail = f" ({len(bars)} bars at {timeframe})" if bars is not None else ""
+        await send_to(ctx, error(f"Not enough candle data for analysis{detail}"))
         return
 
     await send_to(ctx, agent_insight(insight.to_dict()))

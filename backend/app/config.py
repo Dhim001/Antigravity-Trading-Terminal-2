@@ -38,6 +38,8 @@ USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 # Bot engine on live brokers is opt-in (paper/live safety gate).
 ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
 BOT_MIN_CANDLES = int(os.environ.get("BOT_MIN_CANDLES", "200"))
+# Chart analyst / agent scoring (MACD/RSI warm-up); lower than bot backtest minimum.
+AGENT_MIN_CANDLES = int(os.environ.get("AGENT_MIN_CANDLES", "50"))
 # Default tail size for chart subscribe / candles API (full feed buffer may be larger).
 MARKET_CANDLE_SNAPSHOT_LIMIT = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_LIMIT", "600"))
 MARKET_CANDLE_SNAPSHOT_MAX = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_MAX", "10080"))

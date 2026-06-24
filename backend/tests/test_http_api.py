@@ -1,7 +1,7 @@
 """Tests for HTTP bindings, OpenAPI, and middleware."""
 
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
 from starlette.testclient import TestClient
@@ -157,6 +157,23 @@ class TestHttpBindings(unittest.TestCase):
         self.assertEqual(body["type"], "history_update")
         self.assertIn("AAPL", body["data"])
         self.assertEqual(len(body["data"]["AAPL"]), 1)
+
+    def test_market_candles_ht_interval_includes_meta(self):
+        state = _make_state()
+        state.oms.feed = SimpleNamespace(
+            get_candles=lambda symbol: [],
+            fetch_ht_candles=lambda symbol, interval, limit=None, purpose="chart": [
+                {"time": 3600, "open": 2, "high": 3, "low": 1, "close": 2.5, "volume": 10},
+            ],
+            get_market_data=lambda symbol: {},
+        )
+        client = TestClient(create_http_app(state))
+        with patch("app.api.handlers.market.TERMINAL_MODE", "LIVE_MASSIVE"):
+            resp = client.get("/api/v1/market/AAPL/candles?interval=1h&limit=600")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body.get("meta", {}).get("interval"), "1h")
+        self.assertEqual(body["data"]["AAPL"][0]["time"], 3600)
 
     def test_market_candles_route_tail_limit(self):
         state = _make_state()

@@ -11,7 +11,7 @@ from app.services.massive_bars import (
     rest_agg_to_candle_native,
     timeframe_to_massive_range,
 )
-from app.services.massive_feed import MassiveFeedService, HT_MAX_BARS
+from app.services.massive_feed import MassiveFeedService
 
 
 class TestMassiveHtBars(unittest.TestCase):
@@ -61,6 +61,28 @@ class TestMassiveFeedHtFetch(unittest.TestCase):
 
         self.assertEqual(len(first), 1)
         self.assertEqual(first, second)
+        mock_client_cls.return_value.__enter__.return_value.get.assert_called_once()
+
+    @patch("app.services.massive_feed.MASSIVE_API_KEY", "test-key")
+    @patch("app.services.massive_feed.httpx.Client")
+    def test_fetch_ht_chart_warm_serves_deeper_analysis(self, mock_client_cls) -> None:
+        """Chart fetch stores analysis depth so bots reuse cache without a second REST call."""
+        feed = self._feed()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "results": [
+                {"s": 1_704_105_600_000 + i * 3_600_000, "o": 100, "h": 101, "l": 99, "c": 100.5, "v": 1000}
+                for i in range(1500)
+            ],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
+
+        chart = feed.fetch_ht_candles("AAPL", "1h", limit=600, purpose="chart")
+        deep = feed.fetch_ht_candles("AAPL", "1h", limit=1500, purpose="analysis")
+
+        self.assertEqual(len(chart), 600)
+        self.assertEqual(len(deep), 1500)
         mock_client_cls.return_value.__enter__.return_value.get.assert_called_once()
 
     @patch("app.services.massive_feed.MASSIVE_API_KEY", "test-key")

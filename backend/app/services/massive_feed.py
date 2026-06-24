@@ -33,6 +33,10 @@ from app.services.base_feed import BaseFeedService
 from app.services.feeds.bar_close import BarCloseEmitter
 from app.services.massive_bars import agg_to_candle, aggs_to_candles, aggs_to_candles_native, crypto_agg_to_candle, rest_agg_to_candle
 from app.services.massive_bars import timeframe_to_massive_range
+from app.services.massive_ht_limits import (
+    massive_ht_limit,
+    massive_ht_store_cap,
+)
 from app.services.market.timeframes import normalize_timeframe, timeframe_to_secs
 from app.services.massive_symbols import (
     build_pair_to_terminal,
@@ -45,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 MAX_CANDLES = 1500  # ~25h of 1m bars — enough for rolling 24h watchlist stats
 HT_CACHE_TTL_SEC = 300.0
-HT_MAX_BARS = 600
 ROLLING_24H_SEC = 86400
 MarketKind = Literal["stocks", "crypto"]
 FeedMode = Literal["websocket", "poll", "off"]
@@ -173,6 +176,8 @@ class MassiveFeedService(BaseFeedService):
         symbol: str,
         timeframe: str,
         limit: int | None = None,
+        *,
+        purpose: str = "chart",
     ) -> list[dict]:
         """Fetch native higher-timeframe OHLCV from Massive REST (cached briefly)."""
         if symbol not in self._symbols:
@@ -184,17 +189,24 @@ class MassiveFeedService(BaseFeedService):
         if tf == "1m":
             return self.get_candles(symbol)
 
-        cap = min(int(limit or HT_MAX_BARS), HT_MAX_BARS)
+        purpose_key = purpose if purpose in ("chart", "analysis") else "chart"
+        cap = massive_ht_limit(tf, purpose=purpose_key, explicit=limit)
+        store_cap = massive_ht_store_cap(tf)
         cache_key = (symbol, tf)
         now = time.time()
         cached = self._ht_cache.get(cache_key)
         if cached and cached[0] > now:
             bars = cached[1]
-            return bars[-cap:] if len(bars) > cap else bars
+            fetched_for = cached[2] if len(cached) > 2 else len(bars)
+            if len(bars) >= cap:
+                return bars[-cap:] if len(bars) > cap else bars
+            if fetched_for >= cap:
+                return bars
 
         multiplier, timespan = timeframe_to_massive_range(tf)
         bar_secs = timeframe_to_secs(tf)
-        lookback_days = self._ht_lookback_days(symbol, bar_secs, cap)
+        fetch_cap = max(cap, store_cap)
+        lookback_days = self._ht_lookback_days(symbol, bar_secs, fetch_cap)
         to_d = date.today()
         from_d = to_d - timedelta(days=lookback_days)
 
@@ -221,9 +233,9 @@ class MassiveFeedService(BaseFeedService):
         results = payload.get("results") or []
         candles = aggs_to_candles_native(results if isinstance(results, list) else [])
         candles.reverse()
-        if len(candles) > HT_MAX_BARS:
-            candles = candles[-HT_MAX_BARS:]
-        self._ht_cache[cache_key] = (now + HT_CACHE_TTL_SEC, candles)
+        if len(candles) > store_cap:
+            candles = candles[-store_cap:]
+        self._ht_cache[cache_key] = (now + HT_CACHE_TTL_SEC, candles, fetch_cap)
         return candles[-cap:] if len(candles) > cap else candles
 
     def sync_bar(self, symbol: str, candles: list) -> None:

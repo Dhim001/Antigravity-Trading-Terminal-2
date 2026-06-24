@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import time
 
-from app.config import ARCHIVE_ENABLED, BOT_MIN_CANDLES
+from app.config import ARCHIVE_ENABLED, BOT_MIN_CANDLES, TERMINAL_MODE
 from app.services.archive.query import query_market_history
 from app.services.archive.resolve import merge_candle_series
 from app.services.market.resample import resample_candles_for_timeframe
 from app.services.market.timeframes import normalize_timeframe, timeframe_to_secs
+from app.services.massive_ht_limits import massive_ht_limit
 
 _BASE_INTERVAL_SECS = 60
 
@@ -75,20 +76,36 @@ def get_bot_candles(
     """
     Return OHLCV series for bot evaluation at the requested timeframe.
 
-    Always sources 1m bars from the feed buffer and archive, then resamples when
-    timeframe is coarser than 1m.
+    LIVE_MASSIVE: native HT REST for timeframes > 1m (deep analysis limits).
+    Otherwise: 1m feed buffer + archive, resampled to the bot timeframe.
     """
     min_bars = max(50, int(min_bars if min_bars is not None else BOT_MIN_CANDLES))
     key = normalize_timeframe(timeframe)
+    tail_cap = min_bars + 100
+
+    if (
+        key != "1m"
+        and TERMINAL_MODE == "LIVE_MASSIVE"
+        and feed is not None
+        and hasattr(feed, "fetch_ht_candles")
+    ):
+        fetch_limit = max(tail_cap, massive_ht_limit(key, purpose="analysis"))
+        native = feed.fetch_ht_candles(symbol, key, limit=fetch_limit, purpose="analysis")
+        if len(native) >= min_bars:
+            return native[-tail_cap:] if len(native) > tail_cap else native
+        # Prefer partial native HT over resampling a shallow 1m buffer.
+        if len(native) >= 50:
+            return native
+
     min_1m = _min_1m_bars_for_timeframe(key, min_bars)
     raw = _fetch_raw_1m(symbol, feed, min_bars=min_1m)
 
     if key == "1m":
-        if len(raw) > min_bars + 100:
-            raw = raw[-(min_bars + 100) :]
+        if len(raw) > tail_cap:
+            raw = raw[-tail_cap:]
         return raw
 
     resampled = resample_candles_for_timeframe(raw, key)
-    if len(resampled) > min_bars + 100:
-        resampled = resampled[-(min_bars + 100) :]
+    if len(resampled) > tail_cap:
+        resampled = resampled[-tail_cap:]
     return resampled
