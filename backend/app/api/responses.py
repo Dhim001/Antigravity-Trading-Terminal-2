@@ -60,8 +60,9 @@ async def broadcast_bots_update(ctx: RequestContext) -> None:
     await broadcast(ctx, bots_update(ctx.bot_manager.list_bots_public()))
 
 
-async def send_history_update(ctx: RequestContext, data: dict) -> None:
-    await send_to(ctx, history_update(data))
+async def send_history_update(ctx: RequestContext, data: dict, meta: dict | None = None) -> None:
+    payload = history_update(data, meta=meta)
+    await send_to(ctx, payload)
 
 
 async def send_bot_detail(ctx: RequestContext, data: dict) -> None:

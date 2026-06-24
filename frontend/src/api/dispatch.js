@@ -54,7 +54,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.setTerminalConfig(data);
       break;
     case MessageType.HISTORY_UPDATE:
-      storeActions.updateHistory(data);
+      storeActions.updateHistory(data, meta);
       break;
     case MessageType.ACCOUNT_UPDATE:
       storeActions.updateAccount(data);

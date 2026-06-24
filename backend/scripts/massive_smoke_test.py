@@ -199,8 +199,8 @@ async def main() -> int:
 
     stocks_result = await _ws_probe(
         MASSIVE_WS_URL,
-        "AM.AAPL,T.AAPL",
-        ("AM", "T"),
+        "AM.AAPL",
+        ("AM", "A"),
         "stocks",
     )
     crypto_result = await _ws_probe(

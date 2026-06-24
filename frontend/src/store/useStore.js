@@ -3,7 +3,8 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import { Action } from '../api/protocol';
 import {
   setCandleHistory, applyLiveCandle, hasCandleHistory, mergeCandleHistory,
-  prependCandleHistory, CHART_SNAPSHOT_BARS,
+  prependCandleHistory, CHART_SNAPSHOT_BARS, candleBufferKey, chartTimeframeSecs,
+  resolveHistoryTimeframe,
 } from '../services/candleBuffer';
 import {
   hydrateFromSnapshot, scheduleMarketSnapshotSave, forceMarketSnapshotSave,
@@ -156,19 +157,22 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     set({ viewMode: mode });
   },
 
-  updateHistory: (historyData) => {
+  updateHistory: (historyData, meta) => {
     set((state) => {
       let candleRevision = state.candleRevision;
       let candleHistoryRevision = state.candleHistoryRevision;
       let anyChange = false;
+      const tf = resolveHistoryTimeframe(meta);
+      const intervalSecs = chartTimeframeSecs(tf);
 
       for (const [symbol, candles] of Object.entries(historyData)) {
-        const { changed, fullRebuild } = mergeCandleHistory(symbol, candles);
+        const key = candleBufferKey(symbol, tf);
+        const { changed, fullRebuild } = mergeCandleHistory(symbol, candles, tf, intervalSecs);
         if (!changed) continue;
         anyChange = true;
-        candleRevision = bumpRevision(candleRevision, symbol);
+        candleRevision = bumpRevision(candleRevision, key);
         if (fullRebuild) {
-          candleHistoryRevision = bumpRevision(candleHistoryRevision, symbol);
+          candleHistoryRevision = bumpRevision(candleHistoryRevision, key);
         }
       }
 

@@ -27,7 +27,10 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { BACKTEST_OVERLAY_EVENT, symbolsMatch } from '@/lib/backtestDisplay';
-import { getCandles, getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
+import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
+import { fetchCandles } from '../api/endpoints';
+import { getStoreActions } from '../api/dispatch';
+import { isLiveMassiveMode } from '../lib/massiveMarket';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
@@ -74,14 +77,18 @@ const SERIES_ANIM_OFF = {
   animationDurationUpdate: 0,
 };
 
-function isChartHistoryReady(barCount, historyRev, gateForced, terminalMode) {
+function isChartHistoryReady(barCount, historyRev, gateForced, terminalMode, useNativeHt = false) {
+  if (barCount <= 0) return false;
+  if (terminalMode === 'LIVE_MASSIVE' && useNativeHt) {
+    if (barCount >= CHART_READY_MIN_BARS) return true;
+    if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
+    return false;
+  }
   if (terminalMode === 'LIVE_MASSIVE') {
-    if (barCount <= 0) return false;
     if (barCount >= MASSIVE_CHART_MIN_BARS) return true;
     if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
     return false;
   }
-  if (barCount <= 0) return false;
   if (gateForced) return true;
   if (barCount >= CHART_HISTORY_CACHED_BARS) return true;
   return historyRev > 0 && barCount >= CHART_HISTORY_MIN_BARS;
@@ -724,6 +731,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   const dataZoomHandlerLastMsRef = useRef(0);
   const lastConfigureRevisionRef = useRef('');
   const chartHistoryReadyRef = useRef(false);
+  const htFetchRef = useRef(null);
 
   const [displayBarLimit, setDisplayBarLimit] = useState(CHART_DISPLAY_BARS);
   const [historyGateForced, setHistoryGateForced] = useState(false);
@@ -733,12 +741,16 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
 
   const activeSymbol = useStore(state => state.activeSymbol);
   const terminalMode = useStore(state => state.terminalMode);
-  const historyRev = useStore(state => state.candleHistoryRevision[activeSymbol] || 0);
-  const candleRev = useStore(state => state.candleRevision[activeSymbol] || 0);
+  const useNativeHt = isLiveMassiveMode(terminalMode) && isHigherTimeframe(timeframe);
+  const chartBufKey = useNativeHt ? candleBufferKey(activeSymbol, timeframe) : activeSymbol;
+  const historyRev = useStore(state => state.candleHistoryRevision[chartBufKey] || 0);
+  const candleRev = useStore(state => state.candleRevision[chartBufKey] || 0);
+  const oneMinRev = useStore(state => state.candleRevision[activeSymbol] || 0);
   const lastCandleTime = useMemo(() => {
-    const candles = getCandles(activeSymbol);
+    const intervalSecs = chartTimeframeSecs(timeframe);
+    const candles = getCandles(activeSymbol, useNativeHt ? timeframe : '1m', intervalSecs);
     return candles.length > 0 ? candles[candles.length - 1].time : 0;
-  }, [activeSymbol, candleRev]);
+  }, [activeSymbol, candleRev, oneMinRev, timeframe, useNativeHt]);
   const symbolPosition = useStore(state => state.positions[activeSymbol]);
   const positionOverlayKey = useStore(state => {
     const p = state.positions[activeSymbol];
@@ -860,6 +872,27 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
 
 
   useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
+
+  // LIVE_MASSIVE: lazy-fetch native HT history from Massive REST on TF switch
+  useEffect(() => {
+    if (!useNativeHt || !activeSymbol) return;
+    if (hasChartReadyHistory(activeSymbol, CHART_READY_MIN_BARS, timeframe)) return;
+
+    const fetchKey = `${activeSymbol}|${timeframe}`;
+    if (htFetchRef.current === fetchKey) return;
+    htFetchRef.current = fetchKey;
+
+    fetchCandles(activeSymbol, getStoreActions(), {
+      limit: CHART_SNAPSHOT_BARS,
+      interval: timeframe,
+      timeoutMs: 25000,
+    }).catch((err) => {
+      console.warn('[ChartWidget] HT candle fetch failed:', err?.message || err);
+    }).finally(() => {
+      if (htFetchRef.current === fetchKey) htFetchRef.current = null;
+    });
+  }, [activeSymbol, timeframe, useNativeHt, historyRev]);
+
   useEffect(() => { try { localStorage.setItem('terminal_chart_type', chartType); } catch {} }, [chartType]);
   useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
 
@@ -971,19 +1004,41 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
 
   // Aggregate candles based on timeframe; chart renders a rolling window only
   const aggregatedCandles = useMemo(() => {
-    const raw = getCandles(activeSymbol);
+    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+    const limit = displayBarLimit;
+
+    if (useNativeHt) {
+      const native = getCandles(activeSymbol, timeframe, cfg.secs);
+      if (native.length > 0) {
+        return native.length > limit ? native.slice(-limit) : native;
+      }
+      // Stale-while-revalidate: show bucketed 1m until native HT REST returns
+      const raw = getCandles(activeSymbol, '1m', 60);
+      if (!raw.length) return [];
+      const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
+      const fallback = bucketCandles(rawSlice, cfg.secs);
+      return fallback.length > limit ? fallback.slice(-limit) : fallback;
+    }
+
+    const raw = getCandles(activeSymbol, '1m', 60);
     if (!raw.length) return [];
 
-    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    const rawSlice = sliceRawForTimeframe(raw, cfg.secs, displayBarLimit);
+    const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
     const series = bucketCandles(rawSlice, cfg.secs);
-    const limit = displayBarLimit;
     return series.length > limit ? series.slice(-limit) : series;
-  }, [timeframe, activeSymbol, historyRev, displayBarLimit]);
+  }, [timeframe, activeSymbol, historyRev, candleRev, oneMinRev, displayBarLimit, useNativeHt]);
+
+  const nativeHtLoaded = useNativeHt && hasCandleHistory(activeSymbol, timeframe);
 
   const chartHistoryReady = useMemo(
-    () => isChartHistoryReady(aggregatedCandles.length, historyRev, historyGateForced, terminalMode),
-    [aggregatedCandles.length, historyRev, historyGateForced, terminalMode],
+    () => isChartHistoryReady(
+      aggregatedCandles.length,
+      historyRev,
+      historyGateForced,
+      terminalMode,
+      useNativeHt,
+    ),
+    [aggregatedCandles.length, historyRev, historyGateForced, terminalMode, useNativeHt],
   );
 
   chartHistoryReadyRef.current = chartHistoryReady;
@@ -1536,11 +1591,11 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   const loadOlderHistory = useCallback(async () => {
     if (loadingOlderRef.current || olderExhaustedRef.current[activeSymbol]) return;
 
-    const oldest = getOldestBarTime(activeSymbol);
-    if (oldest == null) return;
-
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
     const barSecs = cfg.secs <= 60 ? 60 : cfg.secs;
+    const oldest = getOldestBarTime(activeSymbol, useNativeHt ? timeframe : '1m', barSecs);
+    if (oldest == null) return;
+
     const nowSec = Math.floor(Date.now() / 1000);
     let interval = cfg.secs >= 3600 ? '1h' : '1m';
     if (oldest < nowSec - ARCHIVE_1M_RETENTION_SEC) {
@@ -1563,7 +1618,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     } finally {
       loadingOlderRef.current = false;
     }
-  }, [activeSymbol, timeframe]);
+  }, [activeSymbol, timeframe, useNativeHt]);
 
   loadOlderRef.current = loadOlderHistory;
 
@@ -1751,9 +1806,18 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
 
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
-    const raw = getCandles(activeSymbol);
-    const aggregatedLive = aggregateBucket(raw, cfg);
-    if (!aggregatedLive) return;
+    let aggregatedLive;
+
+    if (useNativeHt) {
+      if (!patchHtFormingBar(activeSymbol, timeframe, cfg.secs)) return;
+      const htSeries = getCandles(activeSymbol, timeframe, cfg.secs);
+      aggregatedLive = htSeries[htSeries.length - 1];
+      if (!aggregatedLive) return;
+    } else {
+      const raw = getCandles(activeSymbol, '1m', 60);
+      aggregatedLive = aggregateBucket(raw, cfg);
+      if (!aggregatedLive) return;
+    }
 
     const bars = displayBarsRef.current;
     if (!bars.length) return;
@@ -1796,7 +1860,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       } else {
         updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme);
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
-        if (terminalMode === 'LIVE_MASSIVE' && timeframe === '1m') {
+        if (isLiveMassiveMode(terminalMode) && (timeframe === '1m' || useNativeHt)) {
           const indicatorPatches = buildIndicatorSeriesPatches(bars, active, indicatorTheme)
             .filter((p) => p.id !== 'main' && p.id !== 'volume');
           patch.series = [...patch.series, ...indicatorPatches];
@@ -1817,7 +1881,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     } catch (err) {
       console.warn('[ChartWidget] live candle update failed:', err);
     }
-  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, indicatorTheme, terminalMode]);
+  }, [activeSymbol, timeframe, chartType, updateLegendDOM, active, displayBarLimit, indicatorTheme, terminalMode, useNativeHt]);
 
   const pumpLiveCandleUpdate = useCallback(() => {
     const now = performance.now();
@@ -1836,8 +1900,9 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
 
   useEffect(() => {
     const symbol = activeSymbol;
+    const bufKey = chartBufKey;
     const unsubscribe = useStore.subscribe(
-      (state) => state.candleRevision[symbol] || 0,
+      (state) => `${state.candleRevision[symbol] || 0}:${state.candleRevision[bufKey] || 0}`,
       () => {
         if (liveRafRef.current != null) return;
         liveRafRef.current = requestAnimationFrame(() => {
@@ -1853,7 +1918,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
         liveRafRef.current = null;
       }
     };
-  }, [activeSymbol, pumpLiveCandleUpdate]);
+  }, [activeSymbol, chartBufKey, pumpLiveCandleUpdate]);
 
   // Handle ESC key to cancel interaction mode
   useEffect(() => {
@@ -2015,13 +2080,18 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
         </div>
 
         <div ref={containerRef} className="h-full w-full" data-chart-root="main" />
-        {!chartHistoryReady && (
+        {!chartHistoryReady && aggregatedCandles.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center bg-background/40">
             <span className="text-xs text-muted-foreground">
               {terminalMode === 'LIVE_MASSIVE'
                 ? 'Loading Massive chart history…'
                 : 'Loading chart history…'}
             </span>
+          </div>
+        )}
+        {useNativeHt && !nativeHtLoaded && aggregatedCandles.length > 0 && (
+          <div className="pointer-events-none absolute right-2 top-2 z-[5] rounded bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground">
+            Syncing {timeframe}…
           </div>
         )}
       </div>

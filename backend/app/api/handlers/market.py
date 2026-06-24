@@ -1,3 +1,5 @@
+import asyncio
+
 from app.api.context import RequestContext
 from app.api.protocol import Action
 from app.api.responses import send_error, send_history_update, send_to
@@ -8,7 +10,9 @@ from app.config import (
     ARCHIVE_RETENTION_1M_DAYS,
     MARKET_CANDLE_SNAPSHOT_LIMIT,
     MARKET_CANDLE_SNAPSHOT_MAX,
+    TERMINAL_MODE,
 )
+from app.services.market.timeframes import normalize_timeframe
 
 
 def _parse_candle_snapshot_limit(message: dict) -> int | None:
@@ -48,6 +52,25 @@ async def _send_orderbook_snapshot(ctx: RequestContext, symbol: str) -> None:
         await send_to(ctx, orderbook_update({symbol: ob}))
 
 
+def _parse_chart_interval(message: dict) -> str:
+    raw = message.get("interval") or message.get("timeframe") or "1m"
+    try:
+        return normalize_timeframe(str(raw))
+    except ValueError:
+        return "1m"
+
+
+async def _resolve_candles(feed, symbol: str, interval: str, limit: int | None) -> list:
+    """1m from in-memory feed; LIVE_MASSIVE HT from Massive REST proxy (non-blocking)."""
+    if (
+        TERMINAL_MODE == "LIVE_MASSIVE"
+        and interval != "1m"
+        and hasattr(feed, "fetch_ht_candles")
+    ):
+        return await asyncio.to_thread(feed.fetch_ht_candles, symbol, interval, limit=limit)
+    return feed.get_candles(symbol) or []
+
+
 @route(Action.SUBSCRIBE_SYMBOL, tags=["market"])
 async def subscribe_symbol(ctx: RequestContext) -> None:
     symbol = ctx.message.get("symbol")
@@ -59,10 +82,12 @@ async def subscribe_symbol(ctx: RequestContext) -> None:
     if not feed:
         await send_error(ctx, "Market feed unavailable")
         return
-    candles = feed.get_candles(symbol) or []
+    interval = _parse_chart_interval(ctx.message)
     limit = _parse_candle_snapshot_limit(ctx.message)
+    candles = await _resolve_candles(feed, symbol, interval, limit)
     snapshot = _tail_candles(candles, limit)
-    await send_history_update(ctx, {symbol: snapshot})
+    meta = {"interval": interval, "symbol": symbol, "count": len(snapshot)}
+    await send_history_update(ctx, {symbol: snapshot}, meta=meta)
     await _send_orderbook_snapshot(ctx, symbol)
 
 

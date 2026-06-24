@@ -233,14 +233,14 @@ IB_BROADCAST_INTERVAL_SEC = float(os.environ.get("IB_BROADCAST_INTERVAL_SEC", "1
 MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 _feed = os.environ.get("MASSIVE_FEED", "realtime").strip().lower()
 _default_ws = (
-    "wss://delayed.polygon.io/stocks"
+    "wss://delayed.massive.com/stocks"
     if _feed == "delayed"
-    else "wss://socket.polygon.io/stocks"
+    else "wss://socket.massive.com/stocks"
 )
 _default_crypto_ws = (
-    "wss://delayed.polygon.io/crypto"
+    "wss://delayed.massive.com/crypto"
     if _feed == "delayed"
-    else "wss://socket.polygon.io/crypto"
+    else "wss://socket.massive.com/crypto"
 )
 MASSIVE_WS_URL = os.environ.get("MASSIVE_WS_URL", _default_ws)
 MASSIVE_CRYPTO_WS_URL = os.environ.get("MASSIVE_CRYPTO_WS_URL", _default_crypto_ws)

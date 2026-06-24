@@ -31,7 +31,9 @@ from app.config import (
 from app.observability.metrics import inc
 from app.services.base_feed import BaseFeedService
 from app.services.feeds.bar_close import BarCloseEmitter
-from app.services.massive_bars import agg_to_candle, aggs_to_candles, crypto_agg_to_candle, rest_agg_to_candle
+from app.services.massive_bars import agg_to_candle, aggs_to_candles, aggs_to_candles_native, crypto_agg_to_candle, rest_agg_to_candle
+from app.services.massive_bars import timeframe_to_massive_range
+from app.services.market.timeframes import normalize_timeframe, timeframe_to_secs
 from app.services.massive_symbols import (
     build_pair_to_terminal,
     is_crypto_terminal_symbol,
@@ -42,6 +44,8 @@ from app.services.massive_symbols import (
 logger = logging.getLogger(__name__)
 
 MAX_CANDLES = 1500  # ~25h of 1m bars — enough for rolling 24h watchlist stats
+HT_CACHE_TTL_SEC = 300.0
+HT_MAX_BARS = 600
 ROLLING_24H_SEC = 86400
 MarketKind = Literal["stocks", "crypto"]
 FeedMode = Literal["websocket", "poll", "off"]
@@ -106,6 +110,7 @@ class MassiveFeedService(BaseFeedService):
         self._stocks_mode: FeedMode = "off"
         self._crypto_mode: FeedMode = "off"
         self._real_quotes: set[str] = set()
+        self._ht_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 
         for sym, info in self._symbols.items():
             self.order_books[sym] = self._synthetic_book(sym, info["price"])
@@ -153,6 +158,73 @@ class MassiveFeedService(BaseFeedService):
 
     def get_candles(self, symbol: str) -> List[dict]:
         return list(self.candles.get(symbol, []))
+
+    @staticmethod
+    def _ht_lookback_days(symbol: str, bar_secs: int, cap: int) -> int:
+        """Calendar days to request so sort=desc&limit=cap covers enough trading bars."""
+        if is_crypto_terminal_symbol(symbol):
+            return max(2, int((cap * bar_secs) / 86400) + 3)
+        trading_day_secs = 6.5 * 3600
+        trading_days_needed = (cap * bar_secs) / trading_day_secs
+        return max(5, int(trading_days_needed * 1.5) + 5)
+
+    def fetch_ht_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Fetch native higher-timeframe OHLCV from Massive REST (cached briefly)."""
+        if symbol not in self._symbols:
+            return []
+        if not MASSIVE_API_KEY:
+            return []
+
+        tf = normalize_timeframe(timeframe)
+        if tf == "1m":
+            return self.get_candles(symbol)
+
+        cap = min(int(limit or HT_MAX_BARS), HT_MAX_BARS)
+        cache_key = (symbol, tf)
+        now = time.time()
+        cached = self._ht_cache.get(cache_key)
+        if cached and cached[0] > now:
+            bars = cached[1]
+            return bars[-cap:] if len(bars) > cap else bars
+
+        multiplier, timespan = timeframe_to_massive_range(tf)
+        bar_secs = timeframe_to_secs(tf)
+        lookback_days = self._ht_lookback_days(symbol, bar_secs, cap)
+        to_d = date.today()
+        from_d = to_d - timedelta(days=lookback_days)
+
+        ticker = terminal_to_massive_rest_ticker(symbol, self._symbols.get(symbol))
+        url = (
+            f"{MASSIVE_REST_URL.rstrip('/')}/v2/aggs/ticker/{ticker}/range/"
+            f"{multiplier}/{timespan}/{from_d.isoformat()}/{to_d.isoformat()}"
+        )
+        params = {
+            "adjusted": "true",
+            "sort": "desc",
+            "limit": 50000,
+            "apiKey": MASSIVE_API_KEY,
+        }
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                resp = client.get(url, params=params)
+                resp.raise_for_status()
+                payload = resp.json()
+        except Exception as exc:
+            logger.warning("Massive HT fetch failed for %s %s: %s", symbol, tf, exc)
+            return []
+
+        results = payload.get("results") or []
+        candles = aggs_to_candles_native(results if isinstance(results, list) else [])
+        candles.reverse()
+        if len(candles) > HT_MAX_BARS:
+            candles = candles[-HT_MAX_BARS:]
+        self._ht_cache[cache_key] = (now + HT_CACHE_TTL_SEC, candles)
+        return candles[-cap:] if len(candles) > cap else candles
 
     def sync_bar(self, symbol: str, candles: list) -> None:
         if not candles:
@@ -397,22 +469,34 @@ class MassiveFeedService(BaseFeedService):
                 await publish_market_update(self.broadcast_callback, updates)
             await asyncio.sleep(max(5.0, MASSIVE_POLL_INTERVAL_SEC))
 
-    def _subscription_params(self, market: MarketKind) -> str:
-        parts: list[str] = []
-        if market == "stocks":
-            for sym in self._equity_symbols:
-                parts.append(f"AM.{sym}")
-                parts.append(f"T.{sym}")
-                if MASSIVE_QUOTES_ENABLED:
-                    parts.append(f"Q.{sym}")
-        else:
+    def _subscription_tiers(self, market: MarketKind) -> list[tuple[str, str]]:
+        """Subscribe tiers separately — bundling AM+T+Q fails when T/Q are not on plan."""
+        if market == "crypto":
+            parts: list[str] = []
             for sym in self._crypto_symbols:
                 pair = terminal_to_massive_ws_pair(sym, self._symbols[sym])
                 parts.append(f"XA.{pair}")
                 parts.append(f"XT.{pair}")
                 if MASSIVE_QUOTES_ENABLED:
                     parts.append(f"XQ.{pair}")
-        return ",".join(parts)
+            return [("all", ",".join(parts))]
+
+        tiers: list[tuple[str, str]] = []
+        bar_parts = [f"AM.{sym}" for sym in self._equity_symbols]
+        if bar_parts:
+            tiers.append(("bars", ",".join(bar_parts)))
+        trade_parts = [f"T.{sym}" for sym in self._equity_symbols]
+        if trade_parts:
+            tiers.append(("trades", ",".join(trade_parts)))
+        if MASSIVE_QUOTES_ENABLED:
+            quote_parts = [f"Q.{sym}" for sym in self._equity_symbols]
+            if quote_parts:
+                tiers.append(("quotes", ",".join(quote_parts)))
+        return tiers
+
+    def _subscription_params(self, market: MarketKind) -> str:
+        """Legacy single-string params (crypto / tests). Stocks use _subscription_tiers."""
+        return ",".join(params for _, params in self._subscription_tiers(market))
 
     async def _ws_loop(self, market: MarketKind, ws_url: str) -> None:
         give_up_attr = f"_{market}_ws_give_up"
@@ -476,10 +560,32 @@ class MassiveFeedService(BaseFeedService):
         self._last_error = reason
         inc("massive_stream_errors_total", labels={"code": "auth_failed", "market": market})
 
+    async def _send_subscription_tiers(self, ws, market: MarketKind) -> int:
+        tiers = self._subscription_tiers(market)
+        channels = 0
+        for tier_name, params in tiers:
+            if not params:
+                continue
+            await ws.send(json.dumps({"action": "subscribe", "params": params}))
+            sym_count = (
+                len(self._equity_symbols) if market == "stocks" else len(self._crypto_symbols)
+            )
+            if tier_name == "all":
+                channels += sym_count * self._channels_per_symbol(market)
+            elif tier_name == "bars":
+                channels += sym_count
+            elif tier_name in ("trades", "quotes"):
+                channels += sym_count
+            if market == "stocks" and tier_name == "bars":
+                await asyncio.sleep(0.05)
+        return channels
+
     async def _connect_and_stream(self, market: MarketKind, ws_url: str) -> None:
         async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
             authed = False
             subscribed = False
+            bars_subscribed = False
+            optional_denied_logged: set[str] = set()
 
             while self.active:
                 try:
@@ -511,16 +617,10 @@ class MassiveFeedService(BaseFeedService):
                                 self._stocks_connected = True
                             else:
                                 self._crypto_connected = True
-                            params = self._subscription_params(market)
-                            await ws.send(json.dumps({"action": "subscribe", "params": params}))
-                            sym_count = (
-                                len(self._equity_symbols)
-                                if market == "stocks"
-                                else len(self._crypto_symbols)
-                            )
-                            sub_count = sym_count * self._channels_per_symbol(market)
+                            sub_count = await self._send_subscription_tiers(ws, market)
                             if market == "stocks":
                                 self._stocks_subscriptions = sub_count
+                                bars_subscribed = True
                             else:
                                 self._crypto_subscriptions = sub_count
                             subscribed = True
@@ -532,6 +632,29 @@ class MassiveFeedService(BaseFeedService):
                             )
                         elif status in ("auth_failed", "error"):
                             reason = msg.get("message") or status
+                            if status == "auth_failed" or not authed:
+                                if MASSIVE_POLL_FALLBACK:
+                                    self._activate_poll_fallback(market, f"{market}: {reason}")
+                                    raise RuntimeError(f"{market}: {reason}")
+                                inc(
+                                    "massive_stream_errors_total",
+                                    labels={"code": status or "auth", "market": market},
+                                )
+                                raise RuntimeError(f"{market}: {reason}")
+                            if authed and subscribed and bars_subscribed:
+                                deny_key = f"{market}:{reason}"
+                                if deny_key not in optional_denied_logged:
+                                    optional_denied_logged.add(deny_key)
+                                    logger.warning(
+                                        "Massive %s WS optional channel denied (continuing): %s",
+                                        market,
+                                        reason,
+                                    )
+                                inc(
+                                    "massive_stream_errors_total",
+                                    labels={"code": "sub_denied", "market": market},
+                                )
+                                continue
                             if MASSIVE_POLL_FALLBACK:
                                 self._activate_poll_fallback(market, f"{market}: {reason}")
                                 raise RuntimeError(f"{market}: {reason}")

@@ -105,6 +105,17 @@ class TestMassiveFeedHandlers(unittest.TestCase):
         self.assertFalse(feed._stocks_connected)
         mock_inc.assert_called()
 
+    def test_subscription_tiers_splits_stocks_channels(self) -> None:
+        feed = _minimal_feed()
+        with patch("app.services.massive_feed.MASSIVE_QUOTES_ENABLED", True):
+            tiers = feed._subscription_tiers("stocks")
+        self.assertEqual(len(tiers), 3)
+        self.assertEqual(tiers[0][0], "bars")
+        self.assertIn("AM.AAPL", tiers[0][1])
+        self.assertNotIn("T.AAPL", tiers[0][1])
+        self.assertIn("T.AAPL", tiers[1][1])
+        self.assertIn("Q.AAPL", tiers[2][1])
+
     def test_subscription_params_includes_quotes(self) -> None:
         feed = _minimal_feed()
         with patch("app.services.massive_feed.MASSIVE_QUOTES_ENABLED", True):

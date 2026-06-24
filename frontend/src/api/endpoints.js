@@ -440,10 +440,15 @@ export async function fetchBots(storeActions) {
   return body;
 }
 
-export async function fetchCandles(symbol, storeActions, { limit = CHART_SNAPSHOT_BARS } = {}) {
+export async function fetchCandles(symbol, storeActions, { limit = CHART_SNAPSHOT_BARS, interval, timeoutMs } = {}) {
   const encoded = encodeURIComponent(symbol);
-  const qs = limit != null && limit > 0 ? `?limit=${limit}` : '';
-  const body = await apiAction(`/api/v1/market/${encoded}/candles${qs}`);
+  const params = new URLSearchParams();
+  if (limit != null && limit > 0) params.set('limit', String(limit));
+  if (interval && interval !== '1m') params.set('interval', interval);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const body = await apiAction(`/api/v1/market/${encoded}/candles${qs}`, {
+    timeoutMs: timeoutMs ?? (interval && interval !== '1m' ? 25000 : undefined),
+  });
   applyHttpEnvelope(body, storeActions);
   return body;
 }

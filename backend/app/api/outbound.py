@@ -45,8 +45,11 @@ def order_result(data: dict) -> dict:
     return frame(MessageType.ORDER_RESULT, data)
 
 
-def history_update(data: dict) -> dict:
-    return frame(MessageType.HISTORY_UPDATE, data)
+def history_update(data: dict, *, meta: dict | None = None) -> dict:
+    payload = frame(MessageType.HISTORY_UPDATE, data)
+    if meta:
+        payload["meta"] = meta
+    return payload
 
 
 def system_stats(data: dict) -> dict:
