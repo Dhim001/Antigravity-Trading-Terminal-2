@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
+from app.services.bots.execution_mode import is_live_massive, uses_paper_oms
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
 from app.observability.metrics import inc
@@ -416,6 +417,9 @@ class BotManagerService:
         for timeframe in sorted(timeframes):
             if feed is not None:
                 ohlcv = get_bot_candles(symbol, feed, timeframe=timeframe)
+            elif is_live_massive():
+                # Massive HT/1m must come from feed REST/WS — never resample a 1m tail.
+                continue
             elif ohlcv_1m:
                 ohlcv = candles_for_timeframe(ohlcv_1m, timeframe)
             else:
@@ -424,6 +428,40 @@ class BotManagerService:
             if not ohlcv or not self._bar_tracker.check(symbol, ohlcv, timeframe=timeframe):
                 continue
 
+            await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
+
+    async def process_massive_ht_bar_close(
+        self,
+        symbol: str,
+        feed,
+        timeframes: set[str] | None = None,
+    ) -> None:
+        """LIVE_MASSIVE: evaluate HT BAR_CLOSE bots from native REST/cache only."""
+        if not is_live_massive() or not ALLOW_LIVE_BOTS or feed is None:
+            return
+        if not self.active_bots:
+            return
+
+        tfs = timeframes or {
+            _bot_bar_timeframe(bot)
+            for bot in self.active_bots.values()
+            if bot["symbol"] == symbol
+            and bot.get("status") == "RUNNING"
+            and bot.get("execution_mode", "BAR_CLOSE") != "TICK"
+            and _bot_bar_timeframe(bot) != "1m"
+        }
+        if not tfs:
+            return
+
+        for timeframe in sorted(tfs):
+            if timeframe == "1m":
+                continue
+            ohlcv = get_bot_candles(symbol, feed, timeframe=timeframe)
+            if not ohlcv or len(ohlcv) < 2:
+                continue
+            if not self._bar_tracker.check(symbol, ohlcv, timeframe=timeframe):
+                continue
+            await self._warm_chart_agent_caches(symbol, None, feed=feed)
             await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
 
     async def _warm_chart_agent_caches(
@@ -839,7 +877,7 @@ class BotManagerService:
                 order_id = result.get("order_id")
                 fill_price = float(result.get("average_fill_price") or current_price)
                 filled_qty = float(result.get("filled_quantity") or quantity or 0)
-                live_submitted = TERMINAL_MODE != "SIMULATED" and result.get("average_fill_price") is None
+                live_submitted = not uses_paper_oms() and result.get("average_fill_price") is None
 
                 if live_submitted:
                     bot_analytics.record_pending_fill(
@@ -930,7 +968,7 @@ class BotManagerService:
         except Exception as e:
             signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
-            if TERMINAL_MODE != "SIMULATED":
+            if not uses_paper_oms():
                 await self.log_bot_event(
                     bot_id,
                     "WARN",
@@ -1166,6 +1204,8 @@ class BotManagerService:
 
     async def reconcile_pending_fills(self) -> int:
         """Confirm live bot orders against broker trade history before recording analytics."""
+        if uses_paper_oms():
+            return 0
         pending = bot_analytics.list_pending_fills()
         if not pending:
             return 0

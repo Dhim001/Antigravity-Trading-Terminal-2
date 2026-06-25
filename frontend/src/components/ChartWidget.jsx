@@ -3,7 +3,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
-import { useStore } from '../store/useStore';
+import { useStore, bumpRevision } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme, hexToRgba } from '../settings/applySettings';
 import {
@@ -27,7 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { BACKTEST_OVERLAY_EVENT, symbolsMatch } from '@/lib/backtestDisplay';
-import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
+import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, patchHtFormingBarFromPrice, applyLivePrice, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
 import { fetchCandles } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import { isLiveMassiveMode } from '../lib/massiveMarket';
@@ -379,14 +379,21 @@ function updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme, {
 
   const idx = barCount - 1;
   const bar = bars[idx];
+  const nextMain = cache.main.slice();
   if (chartType === 'line') {
-    cache.main[idx] = bar.close;
+    nextMain[idx] = bar.close;
   } else {
-    cache.main[idx] = [bar.open, bar.close, bar.low, bar.high];
+    nextMain[idx] = [bar.open, bar.close, bar.low, bar.high];
   }
+  cache.main = nextMain;
   if (active.volume) {
-    if (!cache.volume) cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
-    else cache.volume[idx] = volumeSeriesEntry(bar, indicatorTheme);
+    if (!cache.volume) {
+      cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
+    } else {
+      const nextVol = cache.volume.slice();
+      nextVol[idx] = volumeSeriesEntry(bar, indicatorTheme);
+      cache.volume = nextVol;
+    }
   }
 }
 
@@ -891,6 +898,14 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     }).finally(() => {
       if (htFetchRef.current === fetchKey) htFetchRef.current = null;
     });
+
+    if (!hasChartReadyHistory(activeSymbol, CHART_READY_MIN_BARS, '1m')) {
+      fetchCandles(activeSymbol, getStoreActions(), {
+        limit: 120,
+        interval: '1m',
+        timeoutMs: 15000,
+      }).catch(() => {});
+    }
   }, [activeSymbol, timeframe, useNativeHt, historyRev]);
 
   useEffect(() => { try { localStorage.setItem('terminal_chart_type', chartType); } catch {} }, [chartType]);
@@ -1059,9 +1074,16 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
   ]);
 
   useEffect(() => {
+    const prev = displayBarsRef.current;
     displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
     candlesRef.current = displayBarsRef.current;
-    liveSeriesCacheRef.current = { main: null, volume: null, barCount: 0, chartType: null };
+    const next = displayBarsRef.current;
+    const barCountChanged = prev.length !== next.length;
+    const lastTimeChanged = prev.length > 0 && next.length > 0
+      && prev[prev.length - 1].time !== next[next.length - 1].time;
+    if (barCountChanged || lastTimeChanged || !liveSeriesCacheRef.current.main) {
+      liveSeriesCacheRef.current = { main: null, volume: null, barCount: 0, chartType: null };
+    }
   }, [aggregatedCandles]);
 
   // Direct DOM Legend update
@@ -1809,13 +1831,21 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     let aggregatedLive;
 
     if (useNativeHt) {
-      if (!patchHtFormingBar(activeSymbol, timeframe, cfg.secs)) return;
+      if (!patchHtFormingBar(activeSymbol, timeframe, cfg.secs)) {
+        const px = useStore.getState().tickerData[activeSymbol]?.price;
+        if (px != null) {
+          patchHtFormingBarFromPrice(activeSymbol, timeframe, cfg.secs, px);
+        }
+      }
       const htSeries = getCandles(activeSymbol, timeframe, cfg.secs);
       aggregatedLive = htSeries[htSeries.length - 1];
       if (!aggregatedLive) return;
     } else {
       const raw = getCandles(activeSymbol, '1m', 60);
-      aggregatedLive = aggregateBucket(raw, cfg);
+      if (!raw.length) return;
+      aggregatedLive = timeframe === '1m'
+        ? raw[raw.length - 1]
+        : aggregateBucket(raw, cfg);
       if (!aggregatedLive) return;
     }
 
@@ -1825,7 +1855,6 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     const last = bars[bars.length - 1];
     let isNewBar = false;
     if (last && last.time === aggregatedLive.time) {
-      if (barMatches(last, aggregatedLive)) return;
       bars[bars.length - 1] = aggregatedLive;
     } else if (!last || aggregatedLive.time > last.time) {
       isNewBar = true;
@@ -1860,15 +1889,10 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       } else {
         updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme);
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
-        if (isLiveMassiveMode(terminalMode) && (timeframe === '1m' || useNativeHt)) {
-          const indicatorPatches = buildIndicatorSeriesPatches(bars, active, indicatorTheme)
-            .filter((p) => p.id !== 'main' && p.id !== 'volume');
-          patch.series = [...patch.series, ...indicatorPatches];
-        }
       }
 
       // Merge by series id only — never replaceMerge (drops indicator series not in patch)
-      chart.setOption(patch, { lazyUpdate: true });
+      chart.setOption(patch, { lazyUpdate: false });
       if (isNewBar && suppressDataZoomEventsRef.current > 0) {
         requestAnimationFrame(() => {
           suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
@@ -1898,6 +1922,16 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     applyLiveCandleUpdate();
   }, [applyLiveCandleUpdate]);
 
+  // Repaint ECharts when buffer-derived series changes (displayBarsRef alone is not enough).
+  useEffect(() => {
+    if (!chartReadyRef.current || chartConfiguringRef.current || aggregatedCandles.length === 0) return;
+    if (liveRafRef.current != null) return;
+    liveRafRef.current = requestAnimationFrame(() => {
+      liveRafRef.current = null;
+      pumpLiveCandleUpdate();
+    });
+  }, [aggregatedCandles, candleRev, oneMinRev, pumpLiveCandleUpdate]);
+
   useEffect(() => {
     const symbol = activeSymbol;
     const bufKey = chartBufKey;
@@ -1919,6 +1953,35 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       }
     };
   }, [activeSymbol, chartBufKey, pumpLiveCandleUpdate]);
+
+  // Repaint when ticker moves even if candle payload was deduped upstream
+  useEffect(() => {
+    const symbol = activeSymbol;
+    let lastPrice;
+    return useStore.subscribe(
+      (state) => state.tickerData[symbol]?.price,
+      (price) => {
+        if (price == null || price === lastPrice) return;
+        lastPrice = price;
+        const keys = applyLivePrice(symbol, price);
+        if (keys.length) {
+          useStore.setState((state) => {
+            let candleRevision = state.candleRevision;
+            for (const key of keys) {
+              candleRevision = bumpRevision(candleRevision, key);
+            }
+            return { candleRevision };
+          });
+        }
+        if (liveRafRef.current == null) {
+          liveRafRef.current = requestAnimationFrame(() => {
+            liveRafRef.current = null;
+            pumpLiveCandleUpdate();
+          });
+        }
+      },
+    );
+  }, [activeSymbol, pumpLiveCandleUpdate]);
 
   // Handle ESC key to cancel interaction mode
   useEffect(() => {

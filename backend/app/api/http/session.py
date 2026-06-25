@@ -25,6 +25,7 @@ from app.config import (
 from app.database import get_db_stats
 from app.services.bots.backtest_job_store import get_active_backtest_job
 from app.services.bots.strategy_catalog import list_strategy_catalog
+from app.services.bots.execution_mode import execution_mode_label
 
 
 async def session_handler(request: Request) -> JSONResponse:
@@ -51,6 +52,7 @@ async def session_handler(request: Request) -> JSONResponse:
             "terminal": {
                 "terminal_mode": TERMINAL_MODE,
                 "terminal_role": TERMINAL_ROLE,
+                "execution_mode": execution_mode_label(),
                 "allow_live_bots": ALLOW_LIVE_BOTS,
                 "allow_custom_strategies": ALLOW_CUSTOM_STRATEGIES,
                 "archive_parquet_enabled": ARCHIVE_PARQUET_ENABLED,

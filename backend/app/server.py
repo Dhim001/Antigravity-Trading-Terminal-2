@@ -52,6 +52,9 @@ from app.services.bots.runtime import (
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
+from app.services.bots.paper_oms import run_paper_oms_tick
+from app.services.bots.massive_scheduler import run_massive_bot_tick
+from app.services.bots.execution_mode import execution_mode_label, uses_paper_oms
 from app.services.archive.runtime import archive_capture_loop, archive_rollup_loop, archive_startup_backfill
 from app.services.events import channels, publish as event_publish
 
@@ -113,18 +116,7 @@ async def simulated_market_loop():
                         channels.TICK_PRICE,
                         {"symbol": symbol, "price": market_data["price"], "time_ms": now_ms},
                     )
-            fills = oms.match_pending_orders()
-            sl_tp_fills, sl_tp_logs, bot_exits = oms.check_sl_tp_triggers()
-
-            if sl_tp_logs:
-                for log_msg in sl_tp_logs:
-                    logging.info(log_msg)
-                    await publish_bot_log(manager.broadcast, "system", "INFO", log_msg)
-
-            if bot_exits:
-                await bot_manager.handle_sl_tp_exits(bot_exits)
-
-            total_fills = fills + sl_tp_fills
+            await run_paper_oms_tick(oms, bot_manager, manager)
             slim_data = _slim_market_payload(data)
             await publish_market_update(manager.broadcast, slim_data)
 
@@ -135,14 +127,6 @@ async def simulated_market_loop():
                         client,
                         orderbook_update({sym: data[sym]["orderbook"]}),
                     )
-
-            if total_fills:
-                logging.info("Orders matched/filled: %s", total_fills)
-                await publish_post_trade_bundle(
-                    manager.broadcast,
-                    oms.get_account_data(),
-                    oms.get_trade_history(),
-                )
 
             tick_count += 1
             if tick_count % 120 == 0 and hasattr(feed, "persist_state"):
@@ -220,7 +204,7 @@ async def live_ib_market_broadcast_loop():
 
 
 async def live_massive_market_broadcast_loop():
-    """Push in-memory Massive feed state to clients on a fixed interval (LIVE_MASSIVE only)."""
+    """Push in-memory Massive feed state to clients; paper OMS + bot scheduler on each tick."""
     from app.config import MASSIVE_BROADCAST_INTERVAL_SEC, MASSIVE_POLL_INTERVAL_SEC
 
     logging.info(
@@ -229,7 +213,10 @@ async def live_massive_market_broadcast_loop():
     )
     feed = state.feed
     manager = state.manager
+    bot_manager = state.bot_manager
+    oms = state.oms
     last_sent: dict[str, dict] = {}
+    last_prices: dict[str, float] = {}
     while True:
         interval = MASSIVE_BROADCAST_INTERVAL_SEC
         try:
@@ -241,11 +228,19 @@ async def live_massive_market_broadcast_loop():
                         float(MASSIVE_POLL_INTERVAL_SEC),
                     )
             data = {symbol: feed.get_market_data(symbol) for symbol in feed.symbols}
+            subscribed = {
+                manager.client_symbols.get(client)
+                for client in manager.connected_clients
+            }
+            subscribed.discard(None)
+            last_prices = await run_massive_bot_tick(
+                bot_manager, feed, manager, oms, last_prices=last_prices,
+            )
             changed: dict[str, dict] = {}
             if data:
                 for symbol, md in data.items():
                     slim = _slim_market_payload({symbol: md})[symbol]
-                    if _market_snapshot_changed(last_sent.get(symbol), slim):
+                    if symbol in subscribed or _market_snapshot_changed(last_sent.get(symbol), slim):
                         changed[symbol] = slim
                         last_sent[symbol] = slim
             if changed:
@@ -303,6 +298,7 @@ async def websocket_handler(websocket):
     await manager.send_to(websocket, terminal_config({
         "terminalMode": TERMINAL_MODE,
         "terminalRole": TERMINAL_ROLE,
+        "executionMode": execution_mode_label(),
         "symbols": list(state.feed.symbols),
         "allowLiveBots": ALLOW_LIVE_BOTS,
         "allowCustomStrategies": ALLOW_CUSTOM_STRATEGIES,
@@ -413,7 +409,7 @@ async def main():
                 tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
             tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
             tasks.append(asyncio.create_task(calibration_refresh_loop()))
-            if TERMINAL_MODE != "SIMULATED":
+            if not uses_paper_oms():
                 tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
         elif runs_bar_publisher():
             tasks.append(asyncio.create_task(bar_publish_loop(state.feed, state.event_bus)))

@@ -65,6 +65,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
@@ -578,6 +579,7 @@ export function AlgoTab({ hideToolbar = false }) {
     openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
     setChartInteractionMode,
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
+    executionMode,
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
     ambiguousOrders,
@@ -615,6 +617,7 @@ export function AlgoTab({ hideToolbar = false }) {
     terminalRole: s.terminalRole,
     distributed: s.distributed,
     botMinCandles: s.botMinCandles,
+    executionMode: s.executionMode,
     setActiveSymbol: s.setActiveSymbol,
     selectedBotId: s.selectedBotId,
     setSelectedBotId: s.setSelectedBotId,
@@ -627,6 +630,8 @@ export function AlgoTab({ hideToolbar = false }) {
   const tickerPrice = useStore((state) => state.tickerData[state.activeSymbol]?.price);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
+  const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
+  const massiveLive = isLiveMassiveMode(terminalMode);
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [stopAllOpen, setStopAllOpen] = useState(false);
@@ -916,16 +921,27 @@ export function AlgoTab({ hideToolbar = false }) {
         <Alert className="algo-tab__banner border-trading-up/30 bg-trading-up/5 xl:col-span-3">
           <Activity aria-hidden />
           <AlertDescription className="text-xs leading-relaxed">
-            <strong>Live bots enabled</strong> on {terminalMode}
-            {terminalMode === 'LIVE_MASSIVE' ? ' (paper fills via simulated OMS — no broker routing)' : ''}
+            <strong>{massiveLive ? 'Paper execution on Massive data' : 'Live bots enabled'}</strong>
+            {massiveLive
+              ? ' — instant fills at live prices (no broker routing). 1m BAR_CLOSE via feed bar hooks; higher timeframes via native REST; TICK bots on price updates.'
+              : ` on ${terminalMode}`}
             {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
-            Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
-            Signals fire on closed {formatBarTimeframeLabel(botTimeframe)} bars — do not resend ambiguous orders.
+            {!massiveLive && (
+              <>
+                {' '}Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
+                Signals fire on closed {formatBarTimeframeLabel(botTimeframe)} bars — do not resend ambiguous orders.
+              </>
+            )}
+            {massiveLive && (
+              <>
+                {' '}Indicator warm-up uses Massive REST when the chart buffer is shallow.
+              </>
+            )}
           </AlertDescription>
         </Alert>
       )}
 
-      {isLive && ambiguousOrders.length > 0 && (
+      {isLive && !paperExecution && ambiguousOrders.length > 0 && (
         <Alert className="algo-tab__banner border-trading-warn/40 bg-trading-warn/5 xl:col-span-3">
           <AlertTriangle className="text-trading-warn" aria-hidden />
           <AlertDescription className="flex flex-wrap items-center gap-2 text-xs leading-relaxed">
@@ -1239,7 +1255,9 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                Shared with deploy timeframe — resampled from archived 1m data.
+                {massiveLive
+                  ? 'Shared with deploy timeframe — backtest uses archive; live Massive bots use native HT REST where available.'
+                  : 'Shared with deploy timeframe — resampled from archived 1m data.'}
               </span>
             </div>
 
@@ -1825,7 +1843,10 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
   const pendingOrders = useStore((s) => s.orders.filter((o) => o.status === 'PENDING').length);
   const tradeHistoryCount = useStore((s) => s.tradeHistory.length);
   const botHistoryCount = useStore((s) => s.botHistory.length);
-  const ambiguousCount = useStore((s) => (s.isLive ? s.ambiguousOrders.length : 0));
+  const ambiguousCount = useStore((s) => (
+    s.isLive && !isPaperExecutionMode(s.terminalMode, s.executionMode) ? s.ambiguousOrders.length : 0
+  ));
+  const paperExecution = useStore((s) => isPaperExecutionMode(s.terminalMode, s.executionMode));
   const isBotRunning = useStore((s) => s.isBotRunning);
   const isLive = useStore((s) => s.isLive);
   const analystBadge = useStore((s) => (s.agentInsightHistory[s.activeSymbol] ?? []).length || null);
@@ -1898,12 +1919,19 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
 
   const handleTabChange = useCallback((tab) => {
     if (!tab) return;
-    const next = normalizeDockTab(tab);
+    let next = normalizeDockTab(tab);
+    if (paperExecution && next === 'reconcile') next = 'algo';
     const group = dockGroupForTab(next);
     setActiveTab(next);
     setActiveGroup(group);
     updateWorkspace({ dockActiveTab: next, dockGroup: group, dockCollapsed: false });
-  }, [updateWorkspace]);
+  }, [updateWorkspace, paperExecution]);
+
+  useEffect(() => {
+    if (paperExecution && activeTab === 'reconcile') {
+      handleTabChange('algo');
+    }
+  }, [paperExecution, activeTab, handleTabChange]);
 
   const handleGroupChange = useCallback((group) => {
     if (!group || !DOCK_GROUP_CONFIG[group]) return;
@@ -1948,19 +1976,22 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     return rows.filter((r) => r.signal && r.signal !== 'NONE').length || null;
   });
 
-  const TABS = [
-    { id: 'positions', label: 'Positions', icon: Briefcase, badge: posCount || null, group: 'portfolio' },
-    { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null, group: 'portfolio' },
-    { id: 'balances',  label: 'Balances',  icon: Landmark, group: 'portfolio' },
-    { id: 'algo',      label: 'Algo Bot',  icon: Cpu,      group: 'automation' },
-    { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full scanner workspace' },
-    { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full analyst history' },
-    { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: ambiguousCount || null, group: 'automation' },
-    { id: 'bots',      label: 'Bot History', icon: History, badge: botHistoryCount || null, group: 'automation' },
-    { id: 'ticks',     label: 'Ticks',     icon: Zap,      group: 'data' },
-    { id: 'history',   label: 'History',   icon: Activity, badge: tradeHistoryCount || null, group: 'data' },
-    { id: 'equity',    label: 'Equity Curve', icon: TrendingUp, group: 'data' },
-  ];
+  const TABS = useMemo(() => {
+    const tabs = [
+      { id: 'positions', label: 'Positions', icon: Briefcase, badge: posCount || null, group: 'portfolio' },
+      { id: 'orders',    label: 'Orders',    icon: List,     badge: pendingOrders || null, group: 'portfolio' },
+      { id: 'balances',  label: 'Balances',  icon: Landmark, group: 'portfolio' },
+      { id: 'algo',      label: 'Algo Bot',  icon: Cpu,      group: 'automation' },
+      { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full scanner workspace' },
+      { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full analyst history' },
+      { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: ambiguousCount || null, group: 'automation' },
+      { id: 'bots',      label: 'Bot History', icon: History, badge: botHistoryCount || null, group: 'automation' },
+      { id: 'ticks',     label: 'Ticks',     icon: Zap,      group: 'data' },
+      { id: 'history',   label: 'History',   icon: Activity, badge: tradeHistoryCount || null, group: 'data' },
+      { id: 'equity',    label: 'Equity Curve', icon: TrendingUp, group: 'data' },
+    ];
+    return paperExecution ? tabs.filter((t) => t.id !== 'reconcile') : tabs;
+  }, [posCount, pendingOrders, scanBadge, analystBadge, ambiguousCount, botHistoryCount, tradeHistoryCount, paperExecution]);
 
   const groupTabs = TABS.filter((t) => t.group === activeGroup);
   const groupBadge = (groupId) => {

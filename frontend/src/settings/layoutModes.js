@@ -69,7 +69,7 @@ export const LAYOUT_MODE_CONFIG = {
   },
   automate: {
     label: 'Automate',
-    description: 'Bot deployment & reconciliation',
+    description: 'Bot deployment & history',
     dockHeight: 300,
     dockTab: 'algo',
     dockGroup: 'automation',

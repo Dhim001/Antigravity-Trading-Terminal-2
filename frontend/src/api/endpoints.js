@@ -29,6 +29,7 @@ export function applySessionToStore(session, storeActions) {
   storeActions.setTerminalConfig({
     terminalMode: t.terminal_mode,
     terminalRole: t.terminal_role,
+    executionMode: t.execution_mode,
     allowLiveBots: t.allow_live_bots,
     allowCustomStrategies: t.allow_custom_strategies,
     archiveParquetEnabled: t.archive_parquet_enabled,
@@ -67,6 +68,7 @@ export async function fetchHealth(storeActions) {
     storeActions.setTerminalConfig({
       terminalMode: body.terminal_mode,
       terminalRole: body.terminal_role,
+      executionMode: body.execution_mode,
       allowLiveBots: body.allow_live_bots,
       allowCustomStrategies: body.allow_custom_strategies,
       archiveParquetEnabled: body.archive_parquet_enabled,

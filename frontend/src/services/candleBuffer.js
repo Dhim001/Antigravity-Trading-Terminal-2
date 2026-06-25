@@ -340,6 +340,90 @@ function applyLiveHtCandle(symbol, incoming, timeframe, intervalSecs) {
 }
 
 /**
+ * Patch the forming 1m bar from a live price when candle payload is stale/unchanged.
+ * @returns {boolean} true if buffer changed
+ */
+export function patchFormingBarFromPrice(symbol, price) {
+  if (!symbol || price == null || !Number.isFinite(Number(price))) return false;
+
+  const buf = buffers.get(symbol);
+  if (!buf?.length) return false;
+
+  const live = Number(price);
+  const last = buf[buf.length - 1];
+  const updated = {
+    ...last,
+    close: live,
+    high: Math.max(last.high, live),
+    low: Math.min(last.low, live),
+  };
+  if (
+    last.close === updated.close
+    && last.high === updated.high
+    && last.low === updated.low
+  ) {
+    return false;
+  }
+  buf[buf.length - 1] = updated;
+  return true;
+}
+
+/**
+ * Patch native HT forming bar directly from live price (when 1m buffer is shallow).
+ * @returns {boolean} true if HT buffer changed
+ */
+export function patchHtFormingBarFromPrice(symbol, timeframe, intervalSecs, price) {
+  if (!symbol || !timeframe || timeframe === '1m' || intervalSecs <= 60) return false;
+  if (price == null || !Number.isFinite(Number(price))) return false;
+
+  const htKey = candleBufferKey(symbol, timeframe);
+  const htBuf = htBuffers.get(htKey);
+  if (!htBuf?.length) return false;
+
+  const live = Number(price);
+  const last = htBuf[htBuf.length - 1];
+  const updated = {
+    ...last,
+    close: live,
+    high: Math.max(last.high, live),
+    low: Math.min(last.low, live),
+  };
+  if (
+    last.close === updated.close
+    && last.high === updated.high
+    && last.low === updated.low
+  ) {
+    return false;
+  }
+  htBuf[htBuf.length - 1] = updated;
+  return true;
+}
+
+/**
+ * Apply a live price to forming 1m + any loaded HT buffers.
+ * @returns {string[]} buffer keys that changed (symbol or symbol|tf)
+ */
+export function applyLivePrice(symbol, price) {
+  if (!symbol || price == null || !Number.isFinite(Number(price))) return [];
+
+  const changed = [];
+  if (patchFormingBarFromPrice(symbol, price)) {
+    changed.push(symbol);
+  }
+
+  for (const key of htBuffers.keys()) {
+    if (!key.startsWith(`${symbol}|`)) continue;
+    const timeframe = key.slice(symbol.length + 1);
+    const secs = chartTimeframeSecs(timeframe);
+    if (patchHtFormingBarFromPrice(symbol, timeframe, secs, price)) {
+      changed.push(key);
+    }
+  }
+
+  return changed;
+}
+
+/**
  * Aggregate recent 1m bars into the current HT bucket and patch the HT buffer (LIVE_MASSIVE).
  * @returns {boolean} true if HT buffer changed
  */

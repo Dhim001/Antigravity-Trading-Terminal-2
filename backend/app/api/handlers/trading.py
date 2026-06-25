@@ -72,7 +72,6 @@ async def place_order(ctx: RequestContext) -> None:
         "order_place",
         symbol=symbol,
         action="place_order",
-        event="order_place",
     )
     result = await ctx.oms.place_order({
         "symbol": symbol,

@@ -7,6 +7,7 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { Bell, Bot, AlertTriangle, WifiOff } from 'lucide-react';
+import { isPaperExecutionMode } from '@/lib/massiveMarket';
 import { cn } from '@/lib/utils';
 
 function timeLabel(ts) {
@@ -17,7 +18,10 @@ function timeLabel(ts) {
 export default function ActivityCenter({ open, onOpenChange }) {
   const connectionStatus = useStore((s) => s.connectionStatus);
   const apiStatus = useStore((s) => s.apiStatus);
+  const terminalMode = useStore((s) => s.terminalMode);
+  const executionMode = useStore((s) => s.executionMode);
   const ambiguousOrders = useStore((s) => s.ambiguousOrders);
+  const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
   const activeBots = useStore((s) => s.activeBots);
   const botLogs = useStore((s) => s.botLogs);
   const alerts = useSettingsStore((s) => s.settings.alerts || []);
@@ -34,21 +38,23 @@ export default function ActivityCenter({ open, onOpenChange }) {
         ts: Date.now(),
       });
     }
-    for (const o of ambiguousOrders.slice(0, 5)) {
-      list.push({
-        id: `ambig-${o.id}`,
-        kind: 'warn',
-        icon: AlertTriangle,
-        title: `Ambiguous order ${o.symbol}`,
-        detail: o.message || 'Needs reconciliation — click to open Reconcile tab',
-        ts: Date.now(),
-        clickable: true,
-        onClick: () => {
-          onOpenChange?.(false);
-          window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'reconcile' }));
-          window.dispatchEvent(new CustomEvent('dock-group', { detail: 'automation' }));
-        },
-      });
+    if (!paperExecution) {
+      for (const o of ambiguousOrders.slice(0, 5)) {
+        list.push({
+          id: `ambig-${o.id}`,
+          kind: 'warn',
+          icon: AlertTriangle,
+          title: `Ambiguous order ${o.symbol}`,
+          detail: o.message || 'Needs reconciliation — click to open Reconcile tab',
+          ts: Date.now(),
+          clickable: true,
+          onClick: () => {
+            onOpenChange?.(false);
+            window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'reconcile' }));
+            window.dispatchEvent(new CustomEvent('dock-group', { detail: 'automation' }));
+          },
+        });
+      }
     }
     for (const b of activeBots.filter((x) => x.status === 'RUNNING').slice(0, 5)) {
       list.push({
@@ -82,7 +88,7 @@ export default function ActivityCenter({ open, onOpenChange }) {
       });
     }
     return list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  }, [connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts, onOpenChange]);
+  }, [connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts, onOpenChange, paperExecution]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

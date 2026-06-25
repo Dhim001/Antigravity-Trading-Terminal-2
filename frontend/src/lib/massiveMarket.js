@@ -25,6 +25,12 @@ export function isLiveMassiveMode(terminalMode) {
   return terminalMode === 'LIVE_MASSIVE';
 }
 
+/** Paper ledger (Sim or Massive) — no broker reconcile workflow. */
+export function isPaperExecutionMode(terminalMode, executionMode) {
+  if (executionMode === 'paper' || executionMode === 'simulated') return true;
+  return terminalMode === 'SIMULATED' || terminalMode === 'LIVE_MASSIVE';
+}
+
 /** Row badge: closed | poll | null */
 export function massiveWatchlistBadge(symbol, terminalMode, massiveHealth) {
   if (!isLiveMassiveMode(terminalMode) || !massiveHealth) return null;
