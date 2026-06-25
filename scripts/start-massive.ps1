@@ -1,5 +1,13 @@
 # Start Massive live-data terminal (backend + frontend in separate windows).
 # Massive:  WS 8785, HTTP 8786, UI http://127.0.0.1:5175
+#
+# Usage:
+#   .\scripts\start-massive.ps1           # skip if ports already in use
+#   .\scripts\start-massive.ps1 -Restart  # stop existing listeners, then start fresh
+
+param(
+    [switch]$Restart
+)
 
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -12,6 +20,10 @@ $http = [int]$ports.Http
 
 & (Join-Path $here 'preflight-massive.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($Restart) {
+    Stop-TerminalProfileListeners -ProfileKey 'massive'
+}
 
 Write-Host @"
 === Massive terminal (feed-only) ===

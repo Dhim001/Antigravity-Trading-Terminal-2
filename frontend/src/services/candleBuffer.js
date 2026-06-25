@@ -1,17 +1,109 @@
 /** In-memory OHLCV buffers — mutated in place; persisted across Vite HMR. */
 
-const MAX_BARS = 10080;
-const HT_MAX_BARS = 600;
+import {
+  CANDLE_BUFFER_MAX_BARS,
+  CANDLE_ARCHIVE_MAX_BARS,
+  CANDLE_LRU_MAX_SYMBOLS,
+  HT_BUFFER_MAX_BARS,
+} from './memoryBudget';
+
+const MAX_BARS = CANDLE_BUFFER_MAX_BARS;
+const HT_MAX_BARS = HT_BUFFER_MAX_BARS;
 /** Bars requested on subscribe / REST candles (matches backend MARKET_CANDLE_SNAPSHOT_LIMIT). */
 export const CHART_SNAPSHOT_BARS = 600;
 /** Skip duplicate HTTP fetch when buffer already has enough for chart first paint. */
 export const CHART_READY_MIN_BARS = 20;
-/** Larger cap when prepending archived history (supports ~5y of 1h bars). */
-const MAX_ARCHIVE_BARS = 50000;
+const MAX_ARCHIVE_BARS = CANDLE_ARCHIVE_MAX_BARS;
 const DEFAULT_BAR_SECS = 60;
 const buffers = new Map();
 /** LIVE_MASSIVE native HT buffers: key `${symbol}|${timeframeLabel}` */
 const htBuffers = new Map();
+
+/** LRU: most recently used symbol at end; pinned active symbol is never evicted. */
+let pinnedSymbol = null;
+const symbolAccessOrder = [];
+/** @type {Set<(symbol: string) => void>} */
+const evictListeners = new Set();
+
+/** Register callback when a symbol's 1m + HT buffers are LRU-evicted. */
+export function onCandleBufferEvict(listener) {
+  if (typeof listener === 'function') evictListeners.add(listener);
+  return () => evictListeners.delete(listener);
+}
+
+function notifyEvicted(symbol) {
+  for (const fn of evictListeners) {
+    try {
+      fn(symbol);
+    } catch (_) {
+      /* ignore listener errors */
+    }
+  }
+}
+
+function symbolFromHtKey(key) {
+  const pipe = key.indexOf('|');
+  return pipe >= 0 ? key.slice(0, pipe) : key;
+}
+
+function removeSymbolFromAccessOrder(symbol) {
+  const idx = symbolAccessOrder.indexOf(symbol);
+  if (idx >= 0) symbolAccessOrder.splice(idx, 1);
+}
+
+function touchSymbol(symbol) {
+  if (!symbol) return;
+  removeSymbolFromAccessOrder(symbol);
+  symbolAccessOrder.push(symbol);
+  pruneSymbolCache();
+}
+
+function evictSymbolBuffers(symbol) {
+  if (!symbol) return;
+  buffers.delete(symbol);
+  for (const key of [...htBuffers.keys()]) {
+    if (key === symbol || key.startsWith(`${symbol}|`)) {
+      htBuffers.delete(key);
+    }
+  }
+  removeSymbolFromAccessOrder(symbol);
+  notifyEvicted(symbol);
+}
+
+/** Drop least-recent 1m symbols until at most CANDLE_LRU_MAX_SYMBOLS remain. */
+export function pruneSymbolCache() {
+  while (symbolAccessOrder.length > CANDLE_LRU_MAX_SYMBOLS) {
+    const victim = symbolAccessOrder.find((s) => s !== pinnedSymbol);
+    if (!victim) break;
+    evictSymbolBuffers(victim);
+  }
+}
+
+/** Pin the active chart symbol (never LRU-evicted). */
+export function setPinnedCandleSymbol(symbol) {
+  pinnedSymbol = symbol || null;
+  if (symbol) touchSymbol(symbol);
+}
+
+/** After session hydrate — pin active symbol and trim excess buffers. */
+export function initCandleBufferCache(activeSymbol) {
+  pinnedSymbol = activeSymbol || null;
+  for (const sym of buffers.keys()) {
+    removeSymbolFromAccessOrder(sym);
+    symbolAccessOrder.push(sym);
+  }
+  if (activeSymbol && !symbolAccessOrder.includes(activeSymbol)) {
+    symbolAccessOrder.push(activeSymbol);
+  }
+  pruneSymbolCache();
+}
+
+export {
+  CANDLE_BUFFER_MAX_BARS,
+  CANDLE_ARCHIVE_MAX_BARS,
+  CANDLE_LRU_MAX_SYMBOLS,
+  HT_BUFFER_MAX_BARS,
+} from './memoryBudget';
 
 /** Coerce ms or s timestamps to unix seconds. */
 export function toUnixSeconds(t) {
@@ -80,6 +172,7 @@ function storeBars(symbol, candles, intervalSecs = DEFAULT_BAR_SECS, maxBars = M
     deduped.splice(0, deduped.length - maxBars);
   }
   buffers.set(symbol, deduped);
+  touchSymbol(symbol);
   return deduped;
 }
 
@@ -89,6 +182,7 @@ function storeHtBars(key, candles, intervalSecs) {
     deduped.splice(0, deduped.length - HT_MAX_BARS);
   }
   htBuffers.set(key, deduped);
+  touchSymbol(symbolFromHtKey(key));
   return deduped;
 }
 
@@ -105,6 +199,13 @@ function restoreBuffersFromHmr() {
       if (Array.isArray(bars) && bars.length) htBuffers.set(key, bars);
     }
   }
+  if (import.meta.hot.data.pinnedCandleSymbol) {
+    pinnedSymbol = import.meta.hot.data.pinnedCandleSymbol;
+  }
+  if (Array.isArray(import.meta.hot.data.symbolAccessOrder)) {
+    symbolAccessOrder.length = 0;
+    symbolAccessOrder.push(...import.meta.hot.data.symbolAccessOrder);
+  }
 }
 
 restoreBuffersFromHmr();
@@ -114,6 +215,8 @@ if (import.meta.hot) {
   import.meta.hot.dispose((data) => {
     data.candleBuffers = new Map(buffers);
     data.htCandleBuffers = new Map(htBuffers);
+    data.pinnedCandleSymbol = pinnedSymbol;
+    data.symbolAccessOrder = [...symbolAccessOrder];
   });
 }
 
@@ -170,6 +273,7 @@ export function mergeCandleHistory(symbol, incoming, timeframe = '1m', intervalS
     || lastMerged?.close !== existing[existing.length - 1]?.close;
 
   buffers.set(symbol, merged);
+  touchSymbol(symbol);
 
   const fullRebuild =
     Math.abs(merged.length - existing.length) > 5
@@ -211,6 +315,7 @@ function mergeHtCandleHistory(symbol, incoming, timeframe, intervalSecs) {
     || lastMerged?.close !== existing[existing.length - 1]?.close;
 
   htBuffers.set(key, merged);
+  touchSymbol(symbol);
   const fullRebuild = Math.abs(merged.length - existing.length) > 3;
   return { changed, fullRebuild };
 }
@@ -292,6 +397,7 @@ export function applyLiveCandle(symbol, incoming, timeframe = '1m', intervalSecs
       return false;
     }
     buf[buf.length - 1] = updated;
+    touchSymbol(symbol);
     return true;
   }
 
@@ -299,6 +405,7 @@ export function applyLiveCandle(symbol, incoming, timeframe = '1m', intervalSecs
 
   buf.push(bar);
   if (buf.length > MAX_BARS) buf.shift();
+  touchSymbol(symbol);
   return true;
 }
 
@@ -330,12 +437,14 @@ function applyLiveHtCandle(symbol, incoming, timeframe, intervalSecs) {
       return false;
     }
     buf[buf.length - 1] = updated;
+    touchSymbol(symbol);
     return true;
   }
 
   if (bar.time < lastBucket) return false;
   buf.push(bar);
   if (buf.length > HT_MAX_BARS) buf.shift();
+  touchSymbol(symbol);
   return true;
 }
 
@@ -365,6 +474,7 @@ export function patchFormingBarFromPrice(symbol, price) {
     return false;
   }
   buf[buf.length - 1] = updated;
+  touchSymbol(symbol);
   return true;
 }
 
@@ -396,6 +506,7 @@ export function patchHtFormingBarFromPrice(symbol, timeframe, intervalSecs, pric
     return false;
   }
   htBuf[htBuf.length - 1] = updated;
+  touchSymbol(symbol);
   return true;
 }
 
@@ -452,12 +563,14 @@ export function patchHtFormingBar(symbol, timeframe, intervalSecs) {
       return false;
     }
     htBuf[htBuf.length - 1] = aggregated;
+    touchSymbol(symbol);
     return true;
   }
 
   if (aggregated.time > last.time) {
     htBuf.push(aggregated);
     if (htBuf.length > HT_MAX_BARS) htBuf.shift();
+    touchSymbol(symbol);
     return true;
   }
 
@@ -533,6 +646,7 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
     const merged = dedupeCandles([...olderOnly, ...existing], intervalSecs);
     if (merged.length > HT_MAX_BARS) merged.splice(0, merged.length - HT_MAX_BARS);
     htBuffers.set(key, merged);
+    touchSymbol(symbol);
     return { changed: true, added: olderOnly.length };
   }
 
@@ -555,6 +669,7 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
     merged.splice(0, merged.length - cap);
   }
   buffers.set(symbol, merged);
+  touchSymbol(symbol);
   return { changed: true, added: olderOnly.length };
 }
 
@@ -592,5 +707,37 @@ export function clearCandleBuffer(symbol, timeframe = '1m') {
     htBuffers.delete(candleBufferKey(symbol, timeframe));
     return;
   }
-  buffers.delete(symbol);
+  evictSymbolBuffers(symbol);
+}
+
+/** @internal Test-only reset of module buffers and LRU state. */
+export function resetCandleBufferStateForTests() {
+  buffers.clear();
+  htBuffers.clear();
+  pinnedSymbol = null;
+  symbolAccessOrder.length = 0;
+}
+
+export function getBufferedSymbolCountForTests() {
+  return buffers.size;
+}
+
+/** Lightweight stats for dev memory badge. */
+export function getCandleBufferStats() {
+  let bars1m = 0;
+  for (const buf of buffers.values()) bars1m += buf.length;
+  let htKeys = 0;
+  let htBars = 0;
+  for (const [key, buf] of htBuffers) {
+    htKeys += 1;
+    htBars += buf.length;
+  }
+  return {
+    symbols1m: buffers.size,
+    bars1m,
+    htKeys,
+    htBars,
+    pinnedSymbol,
+    lruOrder: [...symbolAccessOrder],
+  };
 }

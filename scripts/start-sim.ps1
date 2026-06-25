@@ -1,5 +1,13 @@
 # Start simulated terminal (backend + frontend in separate windows).
 # Sim:  WS 8765, HTTP 8766, UI http://127.0.0.1:5173
+#
+# Usage:
+#   .\scripts\start-sim.ps1           # skip if ports already in use
+#   .\scripts\start-sim.ps1 -Restart  # stop existing listeners, then start fresh
+
+param(
+    [switch]$Restart
+)
 
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -9,6 +17,10 @@ $simPorts = Get-ProfilePorts -ProfileKey 'sim'
 $simDev = [int]$simPorts.Dev
 $simWs = [int]$simPorts.Ws
 $simHttp = [int]$simPorts.Http
+
+if ($Restart) {
+    Stop-TerminalProfileListeners -ProfileKey 'sim'
+}
 
 Write-Host @"
 === Simulated terminal ===

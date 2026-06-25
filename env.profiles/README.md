@@ -9,6 +9,16 @@ Use these when running **simulated**, **IB**, and **Massive** terminals side by 
 
 Launch scripts set `TERMINAL_PROFILE` for you. Your existing repo-root `.env` is not overwritten.
 
+**Restart stuck dev servers** (kills processes on that profile's WS/HTTP/UI ports, then opens fresh windows):
+
+```powershell
+.\scripts\start-massive.ps1 -Restart
+.\scripts\start-sim.ps1 -Restart
+.\scripts\start-ib.ps1 -Restart
+```
+
+See [docs/MEMORY_16GB.md](../docs/MEMORY_16GB.md) for browser memory caps and 16 GB workstation guidance.
+
 ## Files
 
 | File | Purpose |

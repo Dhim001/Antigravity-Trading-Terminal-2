@@ -1,5 +1,13 @@
 # Start IB feed terminal (backend + frontend in separate windows).
 # IB:  WS 8775, HTTP 8776, UI http://127.0.0.1:5174
+#
+# Usage:
+#   .\scripts\start-ib.ps1           # skip if ports already in use
+#   .\scripts\start-ib.ps1 -Restart  # stop existing listeners, then start fresh
+
+param(
+    [switch]$Restart
+)
 
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -12,6 +20,10 @@ $ibHttp = [int]$ibPorts.Http
 
 & (Join-Path $here 'preflight-ib.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($Restart) {
+    Stop-TerminalProfileListeners -ProfileKey 'ib'
+}
 
 Write-Host @"
 === IB terminal (feed-only) ===

@@ -3,6 +3,7 @@ import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
+import { queueMarketUpdate } from '../services/marketUpdateBatch';
 
 /** Snapshot of Zustand actions for WS / HTTP message dispatch. */
 export function getStoreActions() {
@@ -60,7 +61,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.updateAccount(data);
       break;
     case MessageType.MARKET_UPDATE:
-      storeActions.updateMarketData(data);
+      queueMarketUpdate(data, storeActions.updateMarketData);
       break;
     case MessageType.ORDERBOOK_UPDATE:
       storeActions.updateOrderBooks(data);

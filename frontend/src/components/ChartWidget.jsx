@@ -3,7 +3,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
-import { useStore, bumpRevision } from '../store/useStore';
+import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme, hexToRgba } from '../settings/applySettings';
 import {
@@ -31,10 +31,15 @@ import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFo
 import { fetchCandles } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import { isLiveMassiveMode } from '../lib/massiveMarket';
+import { onLivePrice } from '../services/livePriceChannel';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
 import { parseTradeTimestamp, parseSignalBarTime } from '@/lib/botAttribution';
+import {
+  CHART_DISPLAY_BARS_DEFAULT,
+  CHART_DISPLAY_MAX_BARS,
+} from '../services/memoryBudget';
 
 const TF_CONFIGS = [
   { label: '1m',  secs: 60    },
@@ -46,8 +51,8 @@ const TF_CONFIGS = [
 ];
 
 /** Default visible bars; grows when user scrolls into archived history */
-const CHART_DISPLAY_BARS = 600;
-const CHART_DISPLAY_MAX = 15000;
+const CHART_DISPLAY_BARS = CHART_DISPLAY_BARS_DEFAULT;
+const CHART_DISPLAY_MAX = CHART_DISPLAY_MAX_BARS;
 const ARCHIVE_LOAD_CHUNK = 1000;
 const ARCHIVE_1M_RETENTION_SEC = 90 * 86400;
 const FUTURE_PADDING = 15;
@@ -721,7 +726,7 @@ export default function ChartWidget() {
   const liveRafRef = useRef(null);
   const liveLastPaintMs = useRef(0);
   const LIVE_MIN_INTERVAL_MS = 250;
-const DATAZOOM_HANDLER_MIN_MS = 400;
+  const DATAZOOM_HANDLER_MIN_MS = 400;
   const configureChartRef = useRef(() => {});
   const applyOverlayPatchRef = useRef(() => {});
   const chartReadyRef = useRef(false);
@@ -1041,7 +1046,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
     const series = bucketCandles(rawSlice, cfg.secs);
     return series.length > limit ? series.slice(-limit) : series;
-  }, [timeframe, activeSymbol, historyRev, candleRev, oneMinRev, displayBarLimit, useNativeHt]);
+  }, [timeframe, activeSymbol, historyRev, displayBarLimit, useNativeHt]);
 
   const nativeHtLoaded = useNativeHt && hasCandleHistory(activeSymbol, timeframe);
 
@@ -1073,6 +1078,28 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     activeIndicatorKeys, backtestOverlayKey, resolvedTheme,
   ]);
 
+  const displayBarsSyncKey = useMemo(() => {
+    const last = aggregatedCandles[aggregatedCandles.length - 1];
+    return [
+      activeSymbol,
+      timeframe,
+      historyRev,
+      displayBarLimit,
+      useNativeHt ? 1 : 0,
+      aggregatedCandles.length,
+      last?.time ?? 0,
+    ].join('|');
+  }, [
+    activeSymbol,
+    timeframe,
+    historyRev,
+    displayBarLimit,
+    useNativeHt,
+    aggregatedCandles.length,
+    aggregatedCandles[aggregatedCandles.length - 1]?.time,
+  ]);
+
+  // Sync display buffer on structural changes only — live OHLC patches use applyLiveCandleUpdate.
   useEffect(() => {
     const prev = displayBarsRef.current;
     displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
@@ -1084,7 +1111,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     if (barCountChanged || lastTimeChanged || !liveSeriesCacheRef.current.main) {
       liveSeriesCacheRef.current = { main: null, volume: null, barCount: 0, chartType: null };
     }
-  }, [aggregatedCandles]);
+  }, [displayBarsSyncKey, aggregatedCandles]);
 
   // Direct DOM Legend update
   const updateLegendDOM = useCallback((bar) => {
@@ -1922,15 +1949,18 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     applyLiveCandleUpdate();
   }, [applyLiveCandleUpdate]);
 
-  // Repaint ECharts when buffer-derived series changes (displayBarsRef alone is not enough).
+  // Immediate forming-bar paint on every WS price (Massive) — does not wait for React ticker flush.
   useEffect(() => {
-    if (!chartReadyRef.current || chartConfiguringRef.current || aggregatedCandles.length === 0) return;
-    if (liveRafRef.current != null) return;
-    liveRafRef.current = requestAnimationFrame(() => {
-      liveRafRef.current = null;
-      pumpLiveCandleUpdate();
+    const symbol = activeSymbol;
+    return onLivePrice((sym, _price) => {
+      if (sym !== symbol) return;
+      if (liveRafRef.current != null) return;
+      liveRafRef.current = requestAnimationFrame(() => {
+        liveRafRef.current = null;
+        pumpLiveCandleUpdate();
+      });
     });
-  }, [aggregatedCandles, candleRev, oneMinRev, pumpLiveCandleUpdate]);
+  }, [activeSymbol, pumpLiveCandleUpdate]);
 
   useEffect(() => {
     const symbol = activeSymbol;
@@ -1954,7 +1984,7 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
     };
   }, [activeSymbol, chartBufKey, pumpLiveCandleUpdate]);
 
-  // Repaint when ticker moves even if candle payload was deduped upstream
+  // Ticker state flush (~60 Hz batched) — keeps header/watchlist in sync.
   useEffect(() => {
     const symbol = activeSymbol;
     let lastPrice;
@@ -1963,22 +1993,11 @@ const DATAZOOM_HANDLER_MIN_MS = 400;
       (price) => {
         if (price == null || price === lastPrice) return;
         lastPrice = price;
-        const keys = applyLivePrice(symbol, price);
-        if (keys.length) {
-          useStore.setState((state) => {
-            let candleRevision = state.candleRevision;
-            for (const key of keys) {
-              candleRevision = bumpRevision(candleRevision, key);
-            }
-            return { candleRevision };
-          });
-        }
-        if (liveRafRef.current == null) {
-          liveRafRef.current = requestAnimationFrame(() => {
-            liveRafRef.current = null;
-            pumpLiveCandleUpdate();
-          });
-        }
+        if (liveRafRef.current != null) return;
+        liveRafRef.current = requestAnimationFrame(() => {
+          liveRafRef.current = null;
+          pumpLiveCandleUpdate();
+        });
       },
     );
   }, [activeSymbol, pumpLiveCandleUpdate]);

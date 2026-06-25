@@ -60,6 +60,11 @@ import { getIndicatorTheme, getIndicatorToolbarMeta } from '../settings/indicato
 import { DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import { fetchHealth, parseMetricsSummary, fetchLlmModels } from '../api/endpoints';
 import LlmSettingsSection from './LlmSettingsSection';
+import {
+  useMemoryObservability,
+  MemoryObservabilityBadge,
+  MemoryObservabilityBody,
+} from './MemoryObservabilitySection';
 import { HTTP_BASE_URL } from '../api/config';
 
 const PRESET_SWATCHES = {
@@ -186,6 +191,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const [activeTab, setActiveTab] = React.useState(panelTab);
   const [presetName, setPresetName] = React.useState('');
   const [obsHealth, setObsHealth] = useState(null);
+  const memoryObs = useMemoryObservability();
   const [obsMetrics, setObsMetrics] = useState(null);
   const [alertDraft, setAlertDraft] = useState({
     symbol: activeSymbol,
@@ -935,7 +941,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
           </TabsContent>
 
           <TabsContent value="system" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <Accordion type="multiple" defaultValue={['terminal-status', 'llm-narrator']} className="settings-accordion">
+            <Accordion type="multiple" defaultValue={['terminal-status', 'memory-observability', 'llm-narrator']} className="settings-accordion">
               <SettingsAccordionSection
                 value="terminal-status"
                 title="Terminal status"
@@ -1029,6 +1035,15 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     <div><dt>WS clients</dt><dd>{obsHealth.ws_clients}</dd></div>
                   )}
                 </dl>
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="memory-observability"
+                title="Memory & buffers"
+                hint="Browser candle cache and backend feed health — useful on 16 GB machines."
+                badge={<MemoryObservabilityBadge level={memoryObs.level} />}
+              >
+                <MemoryObservabilityBody client={memoryObs.client} health={memoryObs.health} />
               </SettingsAccordionSection>
 
               <SettingsAccordionSection

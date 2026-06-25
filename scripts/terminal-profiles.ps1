@@ -76,3 +76,31 @@ function Get-ProfilePorts {
     }
     return @{ Http = 8786; Ws = 8785; Dev = 5175; Label = 'Massive (LIVE_MASSIVE)' }
 }
+
+function Stop-ListenerOnPort {
+    param([int]$Port)
+    $pids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        Where-Object { $_ -and $_ -gt 0 })
+    foreach ($procId in $pids) {
+        try {
+            $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+            if ($proc) {
+                Write-Host "  Stopping $($proc.ProcessName) (PID $procId) on port $Port" -ForegroundColor DarkYellow
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # best-effort
+        }
+    }
+}
+
+function Stop-TerminalProfileListeners {
+    param([ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey)
+    $ports = Get-ProfilePorts -ProfileKey $ProfileKey
+    Write-Host "Stopping $($ports.Label) listeners (WS :$($ports.Ws), HTTP :$($ports.Http), UI :$($ports.Dev))..." -ForegroundColor Yellow
+    Stop-ListenerOnPort -Port ([int]$ports.Ws)
+    Stop-ListenerOnPort -Port ([int]$ports.Http)
+    Stop-ListenerOnPort -Port ([int]$ports.Dev)
+    Start-Sleep -Seconds 1
+}

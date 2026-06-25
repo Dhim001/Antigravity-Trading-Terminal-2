@@ -160,6 +160,9 @@ async def health(request: Request) -> JSONResponse:
     if TERMINAL_MODE == "LIVE_MASSIVE" and feed is not None and hasattr(feed, "massive_status"):
         try:
             body["massive"] = feed.massive_status
+            ht_cache = getattr(feed, "_ht_cache", None)
+            if isinstance(ht_cache, dict):
+                body["massive"]["ht_cache_entries"] = len(ht_cache)
         except Exception:
             pass
         try:

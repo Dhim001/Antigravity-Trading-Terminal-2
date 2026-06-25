@@ -19,6 +19,7 @@ import SignalInsightDrawer   from './components/SignalInsightDrawer';
 import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
+import MemoryDevBadge from './components/MemoryDevBadge';
 
 const ChartWidget = lazy(() => import('./components/ChartWidget'));
 const MultiChartGrid = lazy(() => import('./components/MultiChartGrid'));
@@ -610,6 +611,7 @@ export default function App() {
           </Suspense>
         </ErrorBoundary>
       )}
+      <MemoryDevBadge />
     </div>
   );
 }
