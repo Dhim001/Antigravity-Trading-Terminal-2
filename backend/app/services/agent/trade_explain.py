@@ -353,7 +353,14 @@ def _fetch_related_trades(bot_id: str, symbol: str, *, limit: int = 5) -> list[d
     return out
 
 
-def _template_summary(trade: dict, insight: dict | None, bot: dict) -> str:
+def _fetch_vision_report(symbol: str, bar_time: int | None) -> dict | None:
+    """Lookup persisted vision (SQLite) near trade signal bar."""
+    from app.services.agent.vision_store import lookup_vision_near_bar
+
+    return lookup_vision_near_bar(symbol, bar_time)
+
+
+def _template_summary(trade: dict, insight: dict | None, bot: dict, vision: dict | None = None) -> str:
     side = trade.get("side", "?")
     sym = trade.get("symbol", "?")
     tf = (insight or {}).get("timeframe") or bot.get("timeframe") or "1m"
@@ -376,8 +383,11 @@ def _template_summary(trade: dict, insight: dict | None, bot: dict) -> str:
     conf_pct = f"{round(conf * 100)}%" if conf is not None else "—"
     reasons = insight.get("reasons") or []
     top = reasons[0] if reasons else "rule engine signal"
+    vision_bit = ""
+    if vision and vision.get("structure"):
+        vision_bit = f" Structure ({vision.get('timeframe', '4h')}): {str(vision['structure'])[:120]}."
     return (
-        f"Entry {side} on {sym} ({tf}): analyst {signal} at {conf_pct} confidence — {top}."
+        f"Entry {side} on {sym} ({tf}): analyst {signal} at {conf_pct} confidence — {top}.{vision_bit}"
     )
 
 
@@ -426,7 +436,21 @@ async def explain_trade(
     logs = _fetch_trade_relevant_logs(trade, bot_id)
     related_insights = _fetch_related_insights(symbol, timeframe, limit=5)
     related_trades = _fetch_related_trades(bot_id, symbol, limit=5)
-    summary = _template_summary(trade, insight, bot)
+    bar_for_vision = trade.get("signal_bar_time")
+    if trade.get("is_exit") and not bar_for_vision:
+        entry = _fetch_entry_for_exit(bot_id, trade)
+        bar_for_vision = entry.get("signal_bar_time") if entry else None
+    vision_report = _fetch_vision_report(symbol, bar_for_vision)
+    if not vision_report and insight:
+        from app.services.agent.vision_store import search_vision_semantic, slim_vision_payload
+
+        reasons = " ".join(insight.get("reasons") or [])
+        query = f"{symbol} {insight.get('signal', '')} {reasons}".strip()
+        if query:
+            related = search_vision_semantic(symbol, query, limit=1)
+            if related:
+                vision_report = slim_vision_payload(related[0])
+    summary = _template_summary(trade, insight, bot, vision_report)
 
     narrative = None
     llm_provider = None
@@ -451,6 +475,7 @@ async def explain_trade(
                 "recent_logs": logs[:8],
                 "related_insights": related_insights,
                 "related_trades": related_trades,
+                "vision_report": vision_report,
             }
             narrative, _model, llm_provider = await summarize_trade_explain(bundle, model=llm_model)
         except Exception:
@@ -473,6 +498,7 @@ async def explain_trade(
         "recent_logs": logs,
         "related_insights": related_insights,
         "related_trades": related_trades,
+        "vision_report": vision_report,
         "narrative": narrative,
         "llm_provider": llm_provider,
         "sources": [
@@ -482,6 +508,7 @@ async def explain_trade(
                 ("bot_logs", bool(logs)),
                 ("related_insights", bool(related_insights)),
                 ("related_trades", bool(related_trades)),
+                ("vision_report", bool(vision_report)),
             ] if ok
         ],
     }

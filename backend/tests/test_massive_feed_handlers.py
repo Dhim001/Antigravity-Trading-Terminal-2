@@ -60,6 +60,8 @@ class TestMassiveFeedHandlers(unittest.TestCase):
         self.assertEqual(status["stocks_mode"], "websocket")
         self.assertEqual(status["quotes_received"], 3)
         self.assertEqual(status["real_quote_symbols"], 1)
+        self.assertEqual(status["feed_plan"], "realtime")
+        self.assertIn("AAPL", status["real_quote_symbol_list"])
 
     def test_massive_status_includes_per_market_lag(self) -> None:
         feed = _minimal_feed()

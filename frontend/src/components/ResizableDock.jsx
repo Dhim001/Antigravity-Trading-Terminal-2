@@ -28,6 +28,14 @@ import BacktestProgressBar from './BacktestProgressBar';
 import ReconciliationTab from './ReconciliationTab';
 import ErrorBoundary from './ErrorBoundary';
 import StrategyTemplateCard from './StrategyTemplateCard';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+} from './DataTableShell';
 import StrategyBadge from './StrategyBadge';
 import { WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { useVirtualRows } from './VirtualTableBody';
@@ -171,8 +179,8 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
   const isActive = sym === activeSymbol;
 
   return (
-    <tr className={cn('data-table-row-deferred', isActive && 'row-active')}>
-      <td>
+    <DataTableRow rowVariant="dock" deferred className={cn(isActive && 'row-active')}>
+      <DataTableCell>
         <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
         {ownerBots.length > 0 && (
           <div className="mt-0.5 flex flex-wrap gap-1">
@@ -208,31 +216,31 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
             )}
           </div>
         )}
-      </td>
-      <td>
+      </DataTableCell>
+      <DataTableCell>
         <Badge variant={isLong ? 'buy' : 'sell'}>{isLong ? 'LONG' : 'SHORT'}</Badge>
-      </td>
-      <td className="num-mono text-right">
+      </DataTableCell>
+      <DataTableCell numeric align="right">
         {Math.abs(pos.size).toLocaleString(undefined, { minimumFractionDigits: 4 })}
-      </td>
-      <td className="num-mono text-right">
+      </DataTableCell>
+      <DataTableCell numeric align="right">
         {pos.avg_price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-      </td>
-      <td className="num-mono text-right">
+      </DataTableCell>
+      <DataTableCell numeric align="right">
         {mark.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-      </td>
-      <td className={cn('num-mono text-right font-bold', uPnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+      </DataTableCell>
+      <DataTableCell numeric align="right" className={cn('font-bold', uPnl >= 0 ? 'text-trading-up' : 'text-trading-down')}>
         {uPnl >= 0 ? '+' : ''}{fmtP(uPnl)}
-      </td>
-      <td className={cn('num-mono text-right font-semibold', pct >= 0 ? 'text-trading-up' : 'text-trading-down')}>
+      </DataTableCell>
+      <DataTableCell numeric align="right" className={cn('font-semibold', pct >= 0 ? 'text-trading-up' : 'text-trading-down')}>
         {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
-      </td>
-      <td className="text-center">
+      </DataTableCell>
+      <DataTableCell align="center">
         <Button variant="destructive" size="xs" onClick={handleClose} title={`Close ${sym} position`}>
           CLOSE
         </Button>
-      </td>
-    </tr>
+      </DataTableCell>
+    </DataTableRow>
   );
 });
 
@@ -286,20 +294,20 @@ function PositionsTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table dock-panel-tab__table min-w-[880px]">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th className="text-right">Size</th>
-                  <th className="text-right">Avg Entry</th>
-                  <th className="text-right">Mark Price</th>
-                  <th className="text-right">Unrealized P&L</th>
-                  <th className="text-right">% Return</th>
-                  <th className="text-center">Close</th>
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[880px]">
+              <DataTableHeader>
+                <tr className="border-b border-border hover:bg-transparent">
+                  <DataTableHead>Symbol</DataTableHead>
+                  <DataTableHead>Side</DataTableHead>
+                  <DataTableHead align="right">Size</DataTableHead>
+                  <DataTableHead align="right">Avg Entry</DataTableHead>
+                  <DataTableHead align="right">Mark Price</DataTableHead>
+                  <DataTableHead align="right">Unrealized P&L</DataTableHead>
+                  <DataTableHead align="right">% Return</DataTableHead>
+                  <DataTableHead align="center">Close</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {entries.map(([sym, pos]) => (
                   <PositionRow
                     key={sym}
@@ -308,8 +316,8 @@ function PositionsTab() {
                     ownerBots={getPositionBots(sym, pos, botCtx)}
                   />
                 ))}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </div>
 
           <footer className="dock-panel-tab__footer">
@@ -387,47 +395,49 @@ function OrdersTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table dock-panel-tab__table min-w-[640px]">
-              <thead>
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[640px]">
+              <DataTableHeader>
                 <tr>
-                  <th>Symbol</th>
-                  <th>Source</th>
-                  <th>Type</th>
-                  <th>Side</th>
-                  <th className="text-right">Price</th>
-                  <th className="text-right">Qty</th>
-                  <th className="text-right">Value</th>
-                  <th className="text-center">Cancel</th>
+                  <DataTableHead>Symbol</DataTableHead>
+                  <DataTableHead>Source</DataTableHead>
+                  <DataTableHead>Type</DataTableHead>
+                  <DataTableHead>Side</DataTableHead>
+                  <DataTableHead align="right">Price</DataTableHead>
+                  <DataTableHead align="right">Qty</DataTableHead>
+                  <DataTableHead align="right">Value</DataTableHead>
+                  <DataTableHead align="center">Cancel</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {active.map(ord => {
                   const dec = priceDecimals(ord.symbol, ord.price);
                   const isBuy = ord.side === 'BUY';
                   const value = (ord.price || 0) * ord.quantity;
                   const bot = ord.bot_id ? byId[ord.bot_id] : null;
                   return (
-                    <tr key={ord.id}>
-                      <td className="font-bold">{ord.symbol}</td>
-                      <td className="text-xs">
+                    <DataTableRow key={ord.id} rowVariant="dock" deferred>
+                      <DataTableCell className="font-bold">{ord.symbol}</DataTableCell>
+                      <DataTableCell className="text-xs">
                         {bot ? (
                           <StrategyBadge strategy={bot.strategy} compact />
                         ) : (
                           <span className="text-muted-foreground">Manual</span>
                         )}
-                      </td>
-                      <td className="text-xs text-secondary-foreground">{ord.type}</td>
-                      <td><Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge></td>
-                      <td className="num-mono text-right">
+                      </DataTableCell>
+                      <DataTableCell className="text-xs text-secondary-foreground">{ord.type}</DataTableCell>
+                      <DataTableCell>
+                        <Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge>
+                      </DataTableCell>
+                      <DataTableCell numeric align="right">
                         {ord.price ? ord.price.toFixed(dec) : 'MKT'}
-                      </td>
-                      <td className="num-mono text-right">
+                      </DataTableCell>
+                      <DataTableCell numeric align="right">
                         {ord.quantity.toLocaleString(undefined, { minimumFractionDigits: 4 })}
-                      </td>
-                      <td className="num-mono text-right text-secondary-foreground">
+                      </DataTableCell>
+                      <DataTableCell numeric align="right" className="text-secondary-foreground">
                         ${fmtP(value)}
-                      </td>
-                      <td className="text-center">
+                      </DataTableCell>
+                      <DataTableCell align="center">
                         <Button
                           variant="ghost"
                           size="icon-sm"
@@ -437,12 +447,12 @@ function OrdersTab() {
                         >
                           <XSquare />
                         </Button>
-                      </td>
-                    </tr>
+                      </DataTableCell>
+                    </DataTableRow>
                   );
                 })}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </div>
 
           <footer className="dock-panel-tab__footer">
@@ -510,39 +520,43 @@ function BalancesTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table dock-panel-tab__table min-w-[560px]">
-              <thead>
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[560px]">
+              <DataTableHeader>
                 <tr>
-                  <th>Asset</th>
-                  <th className="text-right">Total Balance</th>
-                  <th className="text-right">Locked</th>
-                  <th className="text-right">Available</th>
-                  <th className="text-right">USD Value</th>
+                  <DataTableHead>Asset</DataTableHead>
+                  <DataTableHead align="right">Total Balance</DataTableHead>
+                  <DataTableHead align="right">Locked</DataTableHead>
+                  <DataTableHead align="right">Available</DataTableHead>
+                  <DataTableHead align="right">USD Value</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {rows.map(({ asset, bal, avail, usdValue, isQuote }) => {
                   const dec = isQuote ? 2 : 6;
                   return (
-                    <tr key={asset}>
-                      <td className="font-bold">{asset}</td>
-                      <td className="num-mono text-right">
+                    <DataTableRow key={asset} rowVariant="dock" deferred>
+                      <DataTableCell className="font-bold">{asset}</DataTableCell>
+                      <DataTableCell numeric align="right">
                         {bal.balance.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-                      </td>
-                      <td className="num-mono text-right text-muted-foreground">
+                      </DataTableCell>
+                      <DataTableCell numeric align="right" className="text-muted-foreground">
                         {bal.locked.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-                      </td>
-                      <td className={cn('num-mono text-right font-bold', avail > 0 ? 'text-foreground' : 'text-muted-foreground')}>
+                      </DataTableCell>
+                      <DataTableCell
+                        numeric
+                        align="right"
+                        className={cn('font-bold', avail > 0 ? 'text-foreground' : 'text-muted-foreground')}
+                      >
                         {avail.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-                      </td>
-                      <td className="num-mono text-right text-secondary-foreground">
+                      </DataTableCell>
+                      <DataTableCell numeric align="right" className="text-secondary-foreground">
                         {usdValue != null ? `$${fmtP(usdValue)}` : '—'}
-                      </td>
-                    </tr>
+                      </DataTableCell>
+                    </DataTableRow>
                   );
                 })}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </div>
 
           <footer className="dock-panel-tab__footer">
@@ -1528,48 +1542,50 @@ export function AlgoTab({ hideToolbar = false }) {
           </div>
         </header>
         <ScrollTablePanel horizontal className="algo-tab__scroll">
-          <table className="terminal-table algo-bots-table m-0">
-            <thead>
+          <DataTableRoot variant="dock" className="algo-bots-table m-0">
+            <DataTableHeader>
               <tr>
-                <th>Symbol</th>
-                <th>Strategy</th>
-                <th className="text-center">TF</th>
-                <th className="text-center">Position</th>
-                <th className="text-right">Alloc</th>
-                <th className="text-right">Today PnL</th>
-                <th>Last signal</th>
-                <th className="text-center">Status</th>
-                <th className="text-center">Actions</th>
+                <DataTableHead>Symbol</DataTableHead>
+                <DataTableHead>Strategy</DataTableHead>
+                <DataTableHead align="center">TF</DataTableHead>
+                <DataTableHead align="center">Position</DataTableHead>
+                <DataTableHead align="right">Alloc</DataTableHead>
+                <DataTableHead align="right">Today PnL</DataTableHead>
+                <DataTableHead>Last signal</DataTableHead>
+                <DataTableHead align="center">Status</DataTableHead>
+                <DataTableHead align="center">Actions</DataTableHead>
               </tr>
-            </thead>
-            <tbody>
+            </DataTableHeader>
+            <DataTableBody>
               {activeBots.length === 0 ? (
-                <tr>
-                  <td colSpan="9" className="algo-table-empty">
+                <DataTableRow rowVariant="dock">
+                  <DataTableCell colSpan={9} className="algo-table-empty">
                     No active bots. Pick a template and deploy.
-                  </td>
-                </tr>
+                  </DataTableCell>
+                </DataTableRow>
               ) : (
                 activeBots.map(bot => {
                   const pos = positions[bot.symbol];
                   const inPosition = pos && Math.abs(pos.size) > 0;
                   return (
-                  <tr
+                  <DataTableRow
                     key={bot.id}
-                    className={cn('algo-bot-row data-table-row-deferred', selectedBotId === bot.id && 'row-active')}
+                    rowVariant="dock"
+                    deferred
+                    className={cn('algo-bot-row cursor-pointer', selectedBotId === bot.id && 'row-active')}
                     onClick={() => selectBot(bot.id)}
                   >
-                    <td className="font-bold">{bot.symbol}</td>
-                    <td className="text-xs">
+                    <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
+                    <DataTableCell className="text-xs">
                       <StrategyBadge strategy={bot.strategy} compact />
                       {bot.execution_mode === 'TICK' && (
                         <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.65rem]">TICK</Badge>
                       )}
-                    </td>
-                    <td className="text-center text-xs num-mono text-muted-foreground">
+                    </DataTableCell>
+                    <DataTableCell align="center" className="text-xs num-mono text-muted-foreground">
                       {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
-                    </td>
-                    <td className="text-center">
+                    </DataTableCell>
+                    <DataTableCell align="center">
                       {inPosition ? (
                         <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
                           {pos.size > 0 ? 'LONG' : 'SHORT'}
@@ -1577,15 +1593,19 @@ export function AlgoTab({ hideToolbar = false }) {
                       ) : (
                         <span className="text-secondary-foreground text-xs">FLAT</span>
                       )}
-                    </td>
-                    <td className="num-mono text-right">${bot.allocation.toLocaleString()}</td>
-                    <td className={cn(
-                      'num-mono text-right font-semibold',
-                      (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                    )}>
+                    </DataTableCell>
+                    <DataTableCell numeric align="right">${bot.allocation.toLocaleString()}</DataTableCell>
+                    <DataTableCell
+                      numeric
+                      align="right"
+                      className={cn(
+                        'font-semibold',
+                        (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                      )}
+                    >
                       {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
-                    </td>
-                    <td className="algo-last-signal">
+                    </DataTableCell>
+                    <DataTableCell className="algo-last-signal">
                       <span title={bot.last_signal_at || undefined}>{formatLastSignal(bot.last_signal_at)}</span>
                       {bot.strategy === 'CHART_AGENT' && (() => {
                         const insight = selectAgentInsight(
@@ -1599,11 +1619,11 @@ export function AlgoTab({ hideToolbar = false }) {
                           </span>
                         ) : null;
                       })()}
-                    </td>
-                    <td className="text-center">
+                    </DataTableCell>
+                    <DataTableCell align="center">
                       <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
-                    </td>
-                    <td className="text-center" onClick={e => e.stopPropagation()}>
+                    </DataTableCell>
+                    <DataTableCell align="center" onClick={e => e.stopPropagation()}>
                       <div className="algo-bot-actions">
                         {bot.status === 'RUNNING' && (
                           <Button variant="outline" size="xs" onClick={() => handlePauseBot(bot.id)} title="Pause bot">
@@ -1641,13 +1661,13 @@ export function AlgoTab({ hideToolbar = false }) {
                           </Button>
                         )}
                       </div>
-                    </td>
-                  </tr>
+                    </DataTableCell>
+                  </DataTableRow>
                   );
                 })
               )}
-            </tbody>
-          </table>
+            </DataTableBody>
+          </DataTableRoot>
         </ScrollTablePanel>
       </section>
 

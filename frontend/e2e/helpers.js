@@ -79,10 +79,34 @@ export async function gotoDashboard(page, { dismissOnboarding = true, settings =
   }
 }
 
-/** Open Algo Bot dock tab via keyboard shortcut. */
+/** Expand collapsed dock if needed. */
+export async function ensureDockExpanded(page) {
+  const collapsed = page.locator('.bottom-dock--collapsed');
+  if (await collapsed.isVisible().catch(() => false)) {
+    await collapsed.click();
+    await expect(page.locator('.bottom-dock:not(.bottom-dock--collapsed)')).toBeVisible({ timeout: 10_000 });
+  }
+}
+
+/** Open Algo Bot dock tab via keyboard shortcut (⌘/Ctrl+B). */
 export async function openAlgoTab(page) {
+  await ensureDockExpanded(page);
+  const dock = page.locator('.bottom-dock');
   await page.keyboard.press('Control+b');
+  await expect(dock.getByRole('button', { name: 'Automation' })).toBeVisible({ timeout: 10_000 });
+  await expect(dock.getByRole('tab', { name: /Algo Bot/i })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('Deploy Bot', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.algo-tab__panel--deploy')).toBeVisible({ timeout: 10_000 });
+}
+
+/** Switch dock to a tab (handles grouped dock rails). */
+export async function openDockTab(page, tabName, groupName) {
+  await ensureDockExpanded(page);
+  const dock = page.locator('.bottom-dock');
+  if (groupName) {
+    await dock.getByRole('button', { name: groupName }).click();
+  }
+  await dock.getByRole('tab', { name: tabName }).click();
 }
 
 /** Insights Hub sheet (dialog role — avoids matching hidden dock analyst tab). */
@@ -122,15 +146,6 @@ export const STRATEGY_TEMPLATE_NAMES = [
   'VWAP Pullback',
   'Chart Analyst Agent',
 ];
-
-/** Switch dock to a tab (handles grouped dock rails). */
-export async function openDockTab(page, tabName, groupName) {
-  const dock = page.locator('.bottom-dock');
-  if (groupName) {
-    await dock.getByRole('button', { name: groupName }).click();
-  }
-  await dock.getByRole('tab', { name: tabName }).click();
-}
 
 /** Wait until REST bootstrap completes (connection badge leaves loading state). */
 export async function waitForBootstrap(page) {

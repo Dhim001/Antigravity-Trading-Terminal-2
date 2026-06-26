@@ -7,6 +7,14 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { WidgetEmpty } from './WidgetShell';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+} from './DataTableShell';
 
 export default function ReconciliationTab() {
   const isLive = useStore(state => state.isLive);
@@ -113,37 +121,37 @@ export default function ReconciliationTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table dock-panel-tab__table min-w-[720px]">
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[720px]">
               <caption className="sr-only">Ambiguous orders pending reconciliation</caption>
-              <thead>
+              <DataTableHeader>
                 <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Side</th>
-                  <th scope="col" className="text-right">Qty</th>
-                  <th scope="col">Bot</th>
-                  <th scope="col">Message</th>
-                  <th scope="col" className="text-center">Actions</th>
+                  <DataTableHead>Time</DataTableHead>
+                  <DataTableHead>Symbol</DataTableHead>
+                  <DataTableHead>Side</DataTableHead>
+                  <DataTableHead align="right">Qty</DataTableHead>
+                  <DataTableHead>Bot</DataTableHead>
+                  <DataTableHead>Message</DataTableHead>
+                  <DataTableHead align="center">Actions</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {ambiguousOrders.map(row => (
-                  <tr key={row.id}>
-                    <td className="whitespace-nowrap font-mono text-[0.68rem] text-muted-foreground">
+                  <DataTableRow key={row.id} rowVariant="dock" deferred>
+                    <DataTableCell className="whitespace-nowrap font-mono text-[0.68rem] text-muted-foreground">
                       {row.created_at?.slice(0, 19) || '—'}
-                    </td>
-                    <td className="font-bold">{row.symbol}</td>
-                    <td>
+                    </DataTableCell>
+                    <DataTableCell className="font-bold">{row.symbol}</DataTableCell>
+                    <DataTableCell>
                       <Badge variant={row.side === 'BUY' ? 'buy' : 'sell'}>{row.side}</Badge>
-                    </td>
-                    <td className="num-mono text-right">{row.quantity}</td>
-                    <td className="max-w-[80px] truncate font-mono text-[0.65rem] text-muted-foreground">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right">{row.quantity}</DataTableCell>
+                    <DataTableCell className="max-w-[80px] truncate font-mono text-[0.65rem] text-muted-foreground">
                       {row.bot_id?.slice(0, 8) || '—'}
-                    </td>
-                    <td className="max-w-[200px] truncate text-muted-foreground" title={row.message}>
+                    </DataTableCell>
+                    <DataTableCell className="max-w-[200px] truncate text-muted-foreground" title={row.message}>
                       {row.message}
-                    </td>
-                    <td className="text-center">
+                    </DataTableCell>
+                    <DataTableCell align="center">
                       <div className="flex justify-center gap-1">
                         <Button
                           variant="outline"
@@ -163,11 +171,11 @@ export default function ReconciliationTab() {
                           Dismiss
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </DataTableCell>
+                  </DataTableRow>
                 ))}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </div>
 
           <footer className="dock-panel-tab__footer">

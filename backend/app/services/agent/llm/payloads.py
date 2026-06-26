@@ -109,6 +109,13 @@ def slim_trade_explain_payload(bundle: dict[str, Any]) -> dict[str, Any]:
     related_trades = bundle.get("related_trades")
     if isinstance(related_trades, list) and related_trades:
         out["related_trades"] = related_trades[:5]
+    vision = bundle.get("vision_report")
+    if isinstance(vision, dict) and vision.get("structure"):
+        out["vision_report"] = {
+            k: vision[k]
+            for k in ("timeframe", "structure", "patterns", "notes", "rag_text", "report_id", "bar_time")
+            if vision.get(k) is not None
+        }
     return out
 
 

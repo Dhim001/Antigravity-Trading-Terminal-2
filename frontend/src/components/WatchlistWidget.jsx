@@ -5,7 +5,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
-import { fetchHealth } from '../api/endpoints';
+import { useMassiveHealth } from '../hooks/useMassiveHealth';
 import { massiveWatchlistBadge } from '../lib/massiveMarket';
 import { getCandles } from '../services/candleBuffer';
 import {
@@ -336,7 +336,7 @@ export default function WatchlistWidget() {
     });
   }, [rawWatchlistColumns, updateWorkspace, customPresets]);
 
-  const [massiveHealth, setMassiveHealth] = useState(null);
+  const massiveHealth = useMassiveHealth();
   const [cat, setCat] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'symbol', dir: 'asc' });
@@ -350,22 +350,6 @@ export default function WatchlistWidget() {
     () => watchlistColumnPrefAttrs(watchlistColumns),
     [watchlistColumns],
   );
-
-  useEffect(() => {
-    if (terminalMode !== 'LIVE_MASSIVE') {
-      setMassiveHealth(null);
-      return undefined;
-    }
-    let cancelled = false;
-    const poll = () => {
-      fetchHealth(null)
-        .then((body) => { if (!cancelled) setMassiveHealth(body?.massive ?? null); })
-        .catch(() => {});
-    };
-    poll();
-    const id = setInterval(poll, 20_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [terminalMode]);
 
   const tickerData = useStore((state) => (sort.field === 'symbol' ? null : state.tickerData));
 

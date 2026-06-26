@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import time
+from collections import OrderedDict
 from datetime import date, timedelta
 from typing import Awaitable, Callable, List, Literal
 
@@ -17,7 +18,10 @@ from app.api.outbound import publish_market_update
 from app.config import (
     MASSIVE_API_KEY,
     MASSIVE_CRYPTO_WS_URL,
+    MASSIVE_FEED,
     MASSIVE_HIST_DAYS,
+    MASSIVE_HT_CACHE_MAX_ENTRIES,
+    MASSIVE_HT_CACHE_TTL_SEC,
     MASSIVE_POLL_FALLBACK,
     MASSIVE_POLL_INTERVAL_SEC,
     MASSIVE_QUOTES_ENABLED,
@@ -48,7 +52,6 @@ from app.services.massive_symbols import (
 logger = logging.getLogger(__name__)
 
 MAX_CANDLES = 1500  # ~25h of 1m bars — enough for rolling 24h watchlist stats
-HT_CACHE_TTL_SEC = 300.0
 ROLLING_24H_SEC = 86400
 MarketKind = Literal["stocks", "crypto"]
 FeedMode = Literal["websocket", "poll", "off"]
@@ -113,7 +116,7 @@ class MassiveFeedService(BaseFeedService):
         self._stocks_mode: FeedMode = "off"
         self._crypto_mode: FeedMode = "off"
         self._real_quotes: set[str] = set()
-        self._ht_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+        self._ht_cache: OrderedDict[tuple[str, str], tuple[float, list[dict], int]] = OrderedDict()
 
         for sym, info in self._symbols.items():
             self.order_books[sym] = self._synthetic_book(sym, info["price"])
@@ -122,12 +125,29 @@ class MassiveFeedService(BaseFeedService):
     def symbols(self) -> List[str]:
         return list(self._symbols.keys())
 
+    def _ht_cache_touch(self, cache_key: tuple[str, str]) -> None:
+        cache = getattr(self, "_ht_cache", None)
+        if cache is not None and hasattr(cache, "move_to_end"):
+            cache.move_to_end(cache_key)
+
+    def _ht_cache_evict_if_needed(self) -> None:
+        cache = getattr(self, "_ht_cache", None)
+        if cache is None:
+            return
+        while len(cache) > MASSIVE_HT_CACHE_MAX_ENTRIES:
+            if isinstance(cache, OrderedDict):
+                cache.popitem(last=False)
+            else:
+                oldest_key = min(cache, key=lambda key: cache[key][0])
+                del cache[oldest_key]
+
     @property
     def massive_status(self) -> dict:
         stocks_lag = self._feed_lag_for_symbols(self._equity_symbols)
         crypto_lag = self._feed_lag_for_symbols(self._crypto_symbols)
         return {
             "connected": self._stocks_connected or self._crypto_connected,
+            "feed_plan": MASSIVE_FEED,
             "stocks_connected": self._stocks_connected,
             "crypto_connected": self._crypto_connected,
             "stocks_mode": self._stocks_mode,
@@ -137,6 +157,7 @@ class MassiveFeedService(BaseFeedService):
             ),
             "quotes_enabled": MASSIVE_QUOTES_ENABLED,
             "real_quote_symbols": len(self._real_quotes),
+            "real_quote_symbol_list": sorted(self._real_quotes),
             "subscriptions": self._stocks_subscriptions + self._crypto_subscriptions,
             "stocks_subscriptions": self._stocks_subscriptions,
             "crypto_subscriptions": self._crypto_subscriptions,
@@ -151,6 +172,9 @@ class MassiveFeedService(BaseFeedService):
             "seeded_symbols": len(self._seeded),
             "stocks_lag_sec": round(stocks_lag, 2) if stocks_lag is not None else None,
             "crypto_lag_sec": round(crypto_lag, 2) if crypto_lag is not None else None,
+            "ht_cache_entries": len(getattr(self, "_ht_cache", {})),
+            "ht_cache_max_entries": MASSIVE_HT_CACHE_MAX_ENTRIES,
+            "ht_cache_ttl_sec": MASSIVE_HT_CACHE_TTL_SEC,
         }
 
     def register_broadcast_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
@@ -196,12 +220,16 @@ class MassiveFeedService(BaseFeedService):
         now = time.time()
         cached = self._ht_cache.get(cache_key)
         if cached and cached[0] > now:
+            inc("massive_ht_cache_hit_total")
+            self._ht_cache_touch(cache_key)
             bars = cached[1]
             fetched_for = cached[2] if len(cached) > 2 else len(bars)
             if len(bars) >= cap:
                 return bars[-cap:] if len(bars) > cap else bars
             if fetched_for >= cap:
                 return bars
+
+        inc("massive_ht_cache_miss_total")
 
         multiplier, timespan = timeframe_to_massive_range(tf)
         bar_secs = timeframe_to_secs(tf)
@@ -235,7 +263,9 @@ class MassiveFeedService(BaseFeedService):
         candles.reverse()
         if len(candles) > store_cap:
             candles = candles[-store_cap:]
-        self._ht_cache[cache_key] = (now + HT_CACHE_TTL_SEC, candles, fetch_cap)
+        self._ht_cache[cache_key] = (now + MASSIVE_HT_CACHE_TTL_SEC, candles, fetch_cap)
+        self._ht_cache_touch(cache_key)
+        self._ht_cache_evict_if_needed()
         return candles[-cap:] if len(candles) > cap else candles
 
     def sync_bar(self, symbol: str, candles: list) -> None:

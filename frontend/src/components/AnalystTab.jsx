@@ -29,6 +29,14 @@ import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 import { DockScrollPanel } from './WidgetShell';
 import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+} from './DataTableShell';
+import {
   Empty,
   EmptyHeader,
   EmptyMedia,
@@ -428,19 +436,19 @@ export default function AnalystTab() {
       ) : (
         <>
           <DockScrollPanel onScroll={onScroll}>
-            <table className="terminal-table dock-panel-tab__table min-w-[720px] text-[0.62rem]">
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[720px] text-[0.62rem]">
               <caption className="sr-only">Chart analyst insight history for {symbol} at {chartTf}</caption>
-              <thead>
+              <DataTableHeader>
                 <tr>
-                  <th scope="col">Bar time</th>
-                  <th scope="col">Signal</th>
-                  <th scope="col" className="text-right">Score</th>
-                  <th scope="col" className="text-right">Conf</th>
-                  <th scope="col">Reasons</th>
-                  <th scope="col">LLM</th>
+                  <DataTableHead>Bar time</DataTableHead>
+                  <DataTableHead>Signal</DataTableHead>
+                  <DataTableHead align="right">Score</DataTableHead>
+                  <DataTableHead align="right">Conf</DataTableHead>
+                  <DataTableHead>Reasons</DataTableHead>
+                  <DataTableHead>LLM</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {rowWindow.topPad > 0 && (
                   <tr aria-hidden><td colSpan={6} style={{ height: rowWindow.topPad, padding: 0, border: 0 }} /></tr>
                 )}
@@ -450,39 +458,38 @@ export default function AnalystTab() {
                   const isLatest = latest?.insight_id === row.insight_id;
                   return (
                     <Fragment key={id}>
-                      <tr
-                        className={cn(
-                          'cursor-pointer hover:bg-muted/30',
-                          isLatest && 'bg-primary/5',
-                        )}
+                      <DataTableRow
+                        rowVariant="dock"
+                        deferred
+                        className={cn('cursor-pointer', isLatest && 'row-active')}
                         onClick={() => setExpandedId(isExpanded ? null : id)}
                       >
-                        <td className="num-mono whitespace-nowrap">{formatBarTime(row.bar_time)}</td>
-                        <td>
+                        <DataTableCell className="num-mono whitespace-nowrap">{formatBarTime(row.bar_time)}</DataTableCell>
+                        <DataTableCell>
                           <Badge variant={signalVariant(row)} className="h-5 px-1.5 text-[0.55rem]">
                             {displayLabel(row)}
                           </Badge>
-                        </td>
-                        <td className="num-mono text-right">
+                        </DataTableCell>
+                        <DataTableCell numeric align="right">
                           {row.score > 0 ? '+' : ''}{row.score ?? 0}
-                        </td>
-                        <td className="num-mono text-right">
+                        </DataTableCell>
+                        <DataTableCell numeric align="right">
                           {Math.round((row.confidence ?? 0) * 100)}%
-                        </td>
-                        <td className="max-w-[200px] truncate text-muted-foreground" title={row.reasons?.join(' · ')}>
+                        </DataTableCell>
+                        <DataTableCell className="max-w-[200px] truncate text-muted-foreground" title={row.reasons?.join(' · ')}>
                           {reasonPreview(row.reasons)}
-                        </td>
-                        <td>
+                        </DataTableCell>
+                        <DataTableCell>
                           {row.narrative ? (
                             <LlmAttribution model={row.model} variant="chip" />
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
-                        </td>
-                      </tr>
+                        </DataTableCell>
+                      </DataTableRow>
                       {isExpanded && (
-                        <tr className="bg-muted/15">
-                          <td colSpan={6} className="px-3 py-2 text-xs">
+                        <DataTableRow rowVariant="dock" className="bg-muted/15 hover:bg-muted/15">
+                          <DataTableCell colSpan={6} className="px-3 py-2 text-xs">
                             {row.sub_reports ? (
                               <div className="mb-2">
                                 <SubReportCards subReports={row.sub_reports} />
@@ -575,8 +582,8 @@ export default function AnalystTab() {
                                 Preview order
                               </Button>
                             ) : null}
-                          </td>
-                        </tr>
+                          </DataTableCell>
+                        </DataTableRow>
                       )}
                     </Fragment>
                   );
@@ -584,8 +591,8 @@ export default function AnalystTab() {
                 {rowWindow.bottomPad > 0 && (
                   <tr aria-hidden><td colSpan={6} style={{ height: rowWindow.bottomPad, padding: 0, border: 0 }} /></tr>
                 )}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </DockScrollPanel>
           <footer className="dock-panel-tab__footer">
             <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setActiveSymbol(symbol)}>

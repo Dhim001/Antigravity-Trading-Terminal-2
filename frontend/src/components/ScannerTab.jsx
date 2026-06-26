@@ -31,6 +31,14 @@ import { cn } from '@/lib/utils';
 import { focusAnalyst, openScannerHub } from '../lib/intelligenceEvents';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+} from './DataTableShell';
 
 function signalClass(signal) {
   if (signal === 'BUY') return 'text-trading-up';
@@ -322,47 +330,49 @@ export default function ScannerTab() {
       ) : (
         <>
           <DockScrollPanel onScroll={onScanScroll}>
-            <table className="terminal-table dock-panel-tab__table min-w-[640px] w-full text-xs">
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[640px] w-full text-xs">
               <caption className="sr-only">Market scanner ranked by analyst score</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Symbol</th>
-                  <th scope="col">Signal</th>
-                  <th scope="col" className="text-right">Score</th>
-                  <th scope="col" className="text-right">Conf.</th>
-                  <th scope="col" className="text-right">RSI</th>
-                  <th scope="col">MACD</th>
-                  <th scope="col">ATR</th>
-                  <th scope="col"><span className="sr-only">Actions</span></th>
+              <DataTableHeader>
+                <tr className="border-b border-border hover:bg-transparent">
+                  <DataTableHead scope="col">Symbol</DataTableHead>
+                  <DataTableHead scope="col">Signal</DataTableHead>
+                  <DataTableHead scope="col" align="right">Score</DataTableHead>
+                  <DataTableHead scope="col" align="right">Conf.</DataTableHead>
+                  <DataTableHead scope="col" align="right">RSI</DataTableHead>
+                  <DataTableHead scope="col">MACD</DataTableHead>
+                  <DataTableHead scope="col">ATR</DataTableHead>
+                  <DataTableHead scope="col" align="right"><span className="sr-only">Actions</span></DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 <VirtualTablePadding height={scanWindow.topPad} colSpan={8} />
                 {scanWindow.slice.map((row) => (
-                  <tr
+                  <DataTableRow
                     key={row.insight_id || row.symbol}
-                    className="cursor-pointer hover:bg-muted/40"
+                    rowVariant="dock"
+                    deferred
+                    className="cursor-pointer"
                     onClick={() => onRowClick(row)}
                   >
-                    <td className="font-semibold">{row.symbol.replace('USDT', '')}</td>
-                    <td>
+                    <DataTableCell className="font-semibold">{row.symbol.replace('USDT', '')}</DataTableCell>
+                    <DataTableCell>
                       <Badge
                         variant={row.signal === 'BUY' ? 'buy' : row.signal === 'SELL' ? 'sell' : 'secondary'}
                         className="h-5 text-[0.62rem] font-bold"
                       >
                         {row.signal}
                       </Badge>
-                    </td>
-                    <td className={cn('num-mono text-right font-semibold', signalClass(row.signal))}>
+                    </DataTableCell>
+                    <DataTableCell numeric align="right" className={cn('font-semibold', signalClass(row.signal))}>
                       {row.score > 0 ? '+' : ''}{row.score}
-                    </td>
-                    <td className="num-mono text-right text-muted-foreground">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right" className="text-muted-foreground">
                       {row.confidence != null ? `${Math.round(row.confidence * 100)}%` : '—'}
-                    </td>
-                    <td className="num-mono text-right">{row.rsi ?? '—'}</td>
-                    <td className="capitalize text-muted-foreground">{row.macd_cross ?? '—'}</td>
-                    <td className="capitalize text-muted-foreground">{row.atr_regime ?? '—'}</td>
-                    <td className="text-right whitespace-nowrap">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right">{row.rsi ?? '—'}</DataTableCell>
+                    <DataTableCell className="capitalize text-muted-foreground">{row.macd_cross ?? '—'}</DataTableCell>
+                    <DataTableCell className="capitalize text-muted-foreground">{row.atr_regime ?? '—'}</DataTableCell>
+                    <DataTableCell align="right" className="whitespace-nowrap">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -426,12 +436,12 @@ export default function ScannerTab() {
                           Bot
                         </Button>
                       )}
-                    </td>
-                  </tr>
+                    </DataTableCell>
+                  </DataTableRow>
                 ))}
                 <VirtualTablePadding height={scanWindow.bottomPad} colSpan={8} />
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </DockScrollPanel>
 
           <footer className="dock-panel-tab__footer">

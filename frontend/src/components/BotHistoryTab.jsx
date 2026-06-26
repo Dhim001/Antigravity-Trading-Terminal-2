@@ -10,6 +10,14 @@ import { Badge } from '@/components/ui/badge';
 import StrategyBadge from './StrategyBadge';
 import TradeExplainCard from './TradeExplainCard';
 import { WidgetEmpty } from './WidgetShell';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+} from './DataTableShell';
 import { RefreshCw, History, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { shortBotId, parseTradeTimestamp } from '@/lib/botAttribution';
@@ -143,28 +151,32 @@ export default function BotHistoryTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <table className="terminal-table dock-panel-tab__table min-w-[640px] text-[0.62rem]">
-              <thead>
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[640px] text-[0.62rem]">
+              <DataTableHeader>
                 <tr>
-                  <th className="w-8" />
-                  <th>Symbol</th>
-                  <th>Strategy</th>
-                  <th>Status</th>
-                  <th className="text-right">PnL</th>
-                  <th className="text-right">Win%</th>
-                  <th className="text-right">Trades</th>
-                  <th className="text-center">Detail</th>
+                  <DataTableHead className="w-8" />
+                  <DataTableHead>Symbol</DataTableHead>
+                  <DataTableHead>Strategy</DataTableHead>
+                  <DataTableHead>Status</DataTableHead>
+                  <DataTableHead align="right">PnL</DataTableHead>
+                  <DataTableHead align="right">Win%</DataTableHead>
+                  <DataTableHead align="right">Trades</DataTableHead>
+                  <DataTableHead align="center">Detail</DataTableHead>
                 </tr>
-              </thead>
-              <tbody>
+              </DataTableHeader>
+              <DataTableBody>
                 {sorted.map(bot => {
                   const expanded = expandedBotId === bot.id;
                   const detail = detailCache[bot.id];
                   const trades = (detail?.trades ?? []).slice(0, 5);
                   return (
                     <React.Fragment key={bot.id}>
-                      <tr className={cn(bot.status === 'STOPPED' && 'opacity-75')}>
-                        <td className="text-center">
+                      <DataTableRow
+                        rowVariant="dock"
+                        deferred
+                        className={cn(bot.status === 'STOPPED' && 'opacity-75')}
+                      >
+                        <DataTableCell align="center">
                           <Button
                             variant="ghost"
                             size="icon-sm"
@@ -174,21 +186,22 @@ export default function BotHistoryTab() {
                           >
                             {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                           </Button>
-                        </td>
-                        <td className="font-semibold">{bot.symbol}</td>
-                        <td><StrategyBadge strategy={bot.strategy} compact /></td>
-                        <td><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></td>
-                        <td className={cn(
-                          'num-mono text-right',
-                          (bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                        )}>
+                        </DataTableCell>
+                        <DataTableCell className="font-semibold">{bot.symbol}</DataTableCell>
+                        <DataTableCell><StrategyBadge strategy={bot.strategy} compact /></DataTableCell>
+                        <DataTableCell><Badge variant={statusVariant(bot.status)}>{bot.status}</Badge></DataTableCell>
+                        <DataTableCell
+                          numeric
+                          align="right"
+                          className={(bot.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down'}
+                        >
                           ${Number(bot.total_pnl ?? 0).toFixed(2)}
-                        </td>
-                        <td className="num-mono text-right">
+                        </DataTableCell>
+                        <DataTableCell numeric align="right">
                           {bot.win_rate != null ? `${bot.win_rate}%` : '—'}
-                        </td>
-                        <td className="num-mono text-right">{bot.trade_count ?? 0}</td>
-                        <td className="text-center">
+                        </DataTableCell>
+                        <DataTableCell numeric align="right">{bot.trade_count ?? 0}</DataTableCell>
+                        <DataTableCell align="center">
                           <Button
                             variant="ghost"
                             size="icon-sm"
@@ -197,11 +210,11 @@ export default function BotHistoryTab() {
                           >
                             <ExternalLink />
                           </Button>
-                        </td>
-                      </tr>
+                        </DataTableCell>
+                      </DataTableRow>
                       {expanded && (
-                        <tr className="bot-history-expand-row">
-                          <td colSpan={8} className="p-0">
+                        <DataTableRow rowVariant="dock" className="bot-history-expand-row hover:bg-transparent">
+                          <DataTableCell colSpan={8} className="p-0">
                             <div className="bot-history-expand px-3 py-2">
                               {!detail ? (
                                 <p className="text-xs text-muted-foreground py-2">Loading fills…</p>
@@ -241,14 +254,14 @@ export default function BotHistoryTab() {
                                 </div>
                               )}
                             </div>
-                          </td>
-                        </tr>
+                          </DataTableCell>
+                        </DataTableRow>
                       )}
                     </React.Fragment>
                   );
                 })}
-              </tbody>
-            </table>
+              </DataTableBody>
+            </DataTableRoot>
           </div>
 
           <footer className="dock-panel-tab__footer">

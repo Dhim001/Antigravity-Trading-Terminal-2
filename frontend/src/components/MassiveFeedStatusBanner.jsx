@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { fetchHealth } from '../api/endpoints';
+import { useMassiveHealth } from '../hooks/useMassiveHealth';
+import { massiveFeedPlanLabel } from '../lib/massiveMarket';
 
 /**
  * LIVE_MASSIVE only — explains WS disconnect, REST poll fallback, and partial feeds.
@@ -8,29 +8,13 @@ import { fetchHealth } from '../api/endpoints';
 export default function MassiveFeedStatusBanner() {
   const terminalMode = useStore((s) => s.terminalMode);
   const symbolsList = useStore((s) => s.symbolsList);
-  const [health, setHealth] = useState(null);
+  const health = useMassiveHealth(12_000);
 
-  useEffect(() => {
-    if (terminalMode !== 'LIVE_MASSIVE') return undefined;
-    let cancelled = false;
-    const poll = () => {
-      fetchHealth(null)
-        .then((body) => {
-          if (!cancelled) setHealth(body);
-        })
-        .catch(() => {});
-    };
-    poll();
-    const id = setInterval(poll, 12_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [terminalMode]);
+  if (terminalMode !== 'LIVE_MASSIVE' || !health) return null;
 
-  if (terminalMode !== 'LIVE_MASSIVE' || !health?.massive) return null;
-
-  const m = health.massive;
+  const m = health;
+  const feedPlan = massiveFeedPlanLabel(m);
+  const planSuffix = feedPlan === 'Delayed' ? ' (delayed plan)' : '';
   const stocksLagMin = m.stocks_lag_sec != null ? Math.round(m.stocks_lag_sec / 60) : null;
   const cryptoLagMin = m.crypto_lag_sec != null ? Math.round(m.crypto_lag_sec / 60) : null;
   const symbolCount = symbolsList?.length ?? 26;
@@ -49,6 +33,7 @@ export default function MassiveFeedStatusBanner() {
         role="status"
       >
         Massive feed not connected — check MASSIVE_API_KEY and restart the Massive backend.
+        {feedPlan ? ` Plan: ${feedPlan}.` : ''}
         {lastErr ? ` (${lastErr})` : ''}
       </div>
     );
@@ -60,7 +45,7 @@ export default function MassiveFeedStatusBanner() {
         className="terminal-feed-banner terminal-feed-banner--warn"
         role="status"
       >
-        Massive WebSocket unavailable — REST poll fallback active
+        Massive WebSocket unavailable — REST poll fallback active{planSuffix}
         {lastErr ? `: ${lastErr}` : ''}. Prices refresh every ~15s; upgrade plan for live WS.
       </div>
     );
@@ -86,7 +71,7 @@ export default function MassiveFeedStatusBanner() {
         className="terminal-feed-banner terminal-feed-banner--warn"
         role="status"
       >
-        Massive stocks lag ~{stocksLagMin} min — US equities may be stale (market hours or delayed plan).
+        Massive stocks lag ~{stocksLagMin} min — US equities may be stale{planSuffix}.
       </div>
     );
   }

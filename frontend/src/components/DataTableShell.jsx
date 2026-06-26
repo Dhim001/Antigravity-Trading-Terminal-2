@@ -40,6 +40,7 @@ export function DataTableRow({ deferred = false, rowVariant, className, ...props
       className={cn(
         deferred && 'data-table-row-deferred',
         rowVariant === 'watchlist' && 'data-table-row--watchlist border-0 hover:bg-transparent',
+        rowVariant === 'dock' && 'data-table-row--dock border-0 hover:bg-transparent',
         className,
       )}
       {...props}

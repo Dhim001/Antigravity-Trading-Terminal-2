@@ -325,6 +325,26 @@ def init_db():
         "ON agent_insights (symbol, bar_time DESC)"
     )
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vision_reports (
+            report_id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            bar_time INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            rag_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vision_reports_symbol_time "
+        "ON vision_reports (symbol, bar_time DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vision_reports_symbol_tf_time "
+        "ON vision_reports (symbol, timeframe, bar_time DESC)"
+    )
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     if is_postgres():

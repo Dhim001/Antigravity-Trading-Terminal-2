@@ -15,6 +15,7 @@ from app.config import AGENT_VISION_CACHE_SEC, AGENT_VISION_ENABLED, REDIS_URL
 from app.observability.metrics import inc
 from app.services.agent.models import VisionReport
 from app.services.agent.vision_client import describe_chart
+from app.services.agent.vision_store import get_vision_exact, persist_vision_report
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,15 @@ if REDIS_URL:
 
 def _cache_key(symbol: str, timeframe: str, bar_time: int) -> str:
     return f"vision:{symbol.upper()}:{timeframe.lower()}:{bar_time}"
+
+
+def _warm_redis(cache_key: str, payload: dict) -> None:
+    if not _redis:
+        return
+    try:
+        _redis.setex(cache_key, AGENT_VISION_CACHE_SEC, json.dumps(payload))
+    except Exception:
+        pass
 
 
 @route(Action.CHART_VISION, tags=["agent"])
@@ -62,6 +72,15 @@ async def chart_vision(ctx: RequestContext) -> None:
         return
 
     cache_key = _cache_key(symbol, timeframe, bar_time)
+
+    stored = get_vision_exact(symbol, timeframe, bar_time)
+    if stored:
+        stored["cached"] = True
+        inc("agent_vision_sqlite_hit_total")
+        _warm_redis(cache_key, stored)
+        await send_to(ctx, {"type": MessageType.VISION_REPORT, "data": stored})
+        return
+
     if _redis:
         try:
             raw = _redis.get(cache_key)
@@ -69,6 +88,10 @@ async def chart_vision(ctx: RequestContext) -> None:
                 data = json.loads(raw)
                 data["cached"] = True
                 inc("agent_vision_cache_hit_total")
+                try:
+                    persist_vision_report(VisionReport.from_dict({**data, "cached": False}))
+                except Exception:
+                    logger.debug("vision sqlite backfill failed", exc_info=True)
                 await send_to(ctx, {"type": MessageType.VISION_REPORT, "data": data})
                 return
         except Exception:
@@ -93,10 +116,12 @@ async def chart_vision(ctx: RequestContext) -> None:
         cached=False,
     )
     payload = report.to_dict()
-    if _redis:
-        try:
-            _redis.setex(cache_key, AGENT_VISION_CACHE_SEC, json.dumps(payload))
-        except Exception:
-            pass
+    try:
+        persist_vision_report(report)
+        inc("agent_vision_sqlite_write_total")
+    except Exception:
+        logger.warning("Failed to persist vision report %s", report.report_id, exc_info=True)
+
+    _warm_redis(cache_key, payload)
 
     await send_to(ctx, {"type": MessageType.VISION_REPORT, "data": payload})

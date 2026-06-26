@@ -4,11 +4,16 @@ import { WidgetShell, WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AlignLeft } from 'lucide-react';
+import { useOrderBookDepth } from '../hooks/useOrderBookDepth';
+import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
+import { useMassiveHealth } from '../hooks/useMassiveHealth';
+import { massiveBookBadge } from '../lib/massiveMarket';
+import { Badge } from '@/components/ui/badge';
 
-function DepthRow({ side, price, qty, cumulative, pct, priceDecimals, qtyDecimals }) {
+function DepthRow({ side, price, qty, cumulative, pct, priceDecimals, qtyDecimals, flashCls = '' }) {
   const isAsk = side === 'ask';
   return (
-    <div className="relative grid grid-cols-3 px-3 py-1 text-xs">
+    <div className={cn('relative grid grid-cols-3 px-3 py-1 text-xs', flashCls)}>
       <div
         className={cn('absolute inset-y-0 right-0', isAsk ? 'bg-trading-down/10' : 'bg-trading-up/10')}
         style={{ width: `${pct}%` }}
@@ -29,10 +34,15 @@ function DepthRow({ side, price, qty, cumulative, pct, priceDecimals, qtyDecimal
 
 export default function OrderBookWidget() {
   const activeSymbol = useStore(state => state.activeSymbol);
-  const ob = useStore(state => state.orderBooks[activeSymbol]);
+  const terminalMode = useStore(state => state.terminalMode);
+  const massiveHealth = useMassiveHealth();
   const ticker = useStore(state => state.tickerData[activeSymbol]);
+  const ob = useStore(state => state.orderBooks[activeSymbol]);
+  const flash = useOrderBookFlash(activeSymbol);
+  const depth = useOrderBookDepth(activeSymbol);
+  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, massiveHealth);
 
-  if (!ob || !ob.bids || !ob.asks) {
+  if (!ob || !ob.bids || !ob.asks || !depth) {
     return (
       <WidgetShell icon={AlignLeft} title="Level 2 Order Book" className="h-full">
         <WidgetEmpty message="Loading order book…" />
@@ -40,42 +50,19 @@ export default function OrderBookWidget() {
     );
   }
 
-  const bids = ob.bids;
-  const asks = ob.asks;
-
-  let cumAsk = 0;
-  const processedAsks = asks.map(([price, qty]) => {
-    cumAsk += qty;
-    return { price, qty, cumulative: cumAsk };
-  });
-
-  let cumBid = 0;
-  const processedBids = bids.map(([price, qty]) => {
-    cumBid += qty;
-    return { price, qty, cumulative: cumBid };
-  });
-
-  const maxCumulative = Math.max(cumAsk, cumBid) || 1.0;
-  const priceDecimals = (
-    activeSymbol.includes('XRP') ||
-    activeSymbol.includes('ADA') ||
-    activeSymbol.includes('DOGE') ||
-    (ticker && ticker.price < 2.0)
-  ) ? 4 : 2;
-  const qtyDecimals = activeSymbol.includes('USDT') ? 4 : 2;
-
-  const bestBid = bids[0] ? bids[0][0] : 0;
-  const bestAsk = asks[0] ? asks[0][0] : 0;
-  const spread = bestAsk - bestBid;
-  const spreadPct = bestAsk > 0 ? (spread / bestAsk) * 100 : 0;
-
-  const bidVol = processedBids.reduce((s, r) => s + r.qty, 0);
-  const askVol = processedAsks.reduce((s, r) => s + r.qty, 0);
-  const totalVol = bidVol + askVol || 1;
-  const bidPct = (bidVol / totalVol) * 100;
-  const askPct = 100 - bidPct;
-  const skew = bidPct - 50;
-  const displayAsks = [...processedAsks].reverse();
+  const {
+    asks,
+    bids,
+    maxCumulative,
+    spread,
+    spreadPct,
+    bidPct,
+    askPct,
+    skew,
+    priceDecimals,
+    qtyDecimals,
+  } = depth;
+  const displayAsks = [...asks].reverse();
 
   const imbalanceToolbar = (
     <WidgetToolbar compact className="depth-imbalance-toolbar">
@@ -131,10 +118,17 @@ export default function OrderBookWidget() {
       icon={AlignLeft}
       title="Level 2"
       headerRight={
-        <span className="text-[0.62rem] text-muted-foreground">
-          Spread:{' '}
-          <span className="num-mono font-semibold text-foreground">{spread.toFixed(priceDecimals)}</span>
-        </span>
+        <div className="flex items-center gap-2">
+          {bookBadge && (
+            <Badge variant="outline" className="h-4 px-1 text-[0.55rem] uppercase tracking-wide">
+              {bookBadge}
+            </Badge>
+          )}
+          <span className="text-[0.62rem] text-muted-foreground">
+            Spread:{' '}
+            <span className="num-mono font-semibold text-foreground">{spread.toFixed(priceDecimals)}</span>
+          </span>
+        </div>
       }
       toolbar={imbalanceToolbar}
       contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
@@ -150,7 +144,7 @@ export default function OrderBookWidget() {
           <div className="flex min-h-full flex-col justify-end">
             {displayAsks.map((ask, idx) => (
               <DepthRow
-                key={`ask-${idx}`}
+                key={`ask-${ask.price}-${idx}`}
                 side="ask"
                 price={ask.price}
                 qty={ask.qty}
@@ -158,12 +152,18 @@ export default function OrderBookWidget() {
                 pct={(ask.cumulative / maxCumulative) * 100}
                 priceDecimals={priceDecimals}
                 qtyDecimals={qtyDecimals}
+                flashCls={idx === 0 ? flashClass(flash.ask) : ''}
               />
             ))}
           </div>
         </ScrollArea>
 
-        <div className="sticky z-[2] flex shrink-0 items-center justify-between border-y border-border bg-muted/30 px-3 py-1.5 backdrop-blur-sm">
+        <div
+          className={cn(
+            'sticky z-[2] flex shrink-0 items-center justify-between border-y border-border bg-muted/30 px-3 py-1.5 backdrop-blur-sm',
+            flash.bid || flash.ask ? flashClass(flash.bid || flash.ask) : '',
+          )}
+        >
           <div className={cn(
             'num-mono text-lg font-extrabold tracking-tight',
             ticker?.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down',
@@ -176,9 +176,9 @@ export default function OrderBookWidget() {
         </div>
 
         <ScrollArea className="min-h-0 flex-1">
-          {processedBids.map((bid, idx) => (
+          {bids.map((bid, idx) => (
             <DepthRow
-              key={`bid-${idx}`}
+              key={`bid-${bid.price}-${idx}`}
               side="bid"
               price={bid.price}
               qty={bid.qty}
@@ -186,6 +186,7 @@ export default function OrderBookWidget() {
               pct={(bid.cumulative / maxCumulative) * 100}
               priceDecimals={priceDecimals}
               qtyDecimals={qtyDecimals}
+              flashCls={idx === 0 ? flashClass(flash.bid) : ''}
             />
           ))}
         </ScrollArea>

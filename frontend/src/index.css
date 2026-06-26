@@ -2805,9 +2805,26 @@ body {
   transition: background 0.12s ease;
 }
 
-.dock-panel-tab__table tbody tr:hover,
-.positions-tab__table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.025);
+.dock-panel-tab__table tbody tr.data-table-row--dock:hover td,
+.positions-tab__table tbody tr.data-table-row--dock:hover td,
+.data-table--dock tbody tr.data-table-row--dock:hover td {
+  background: var(--surface-hover);
+}
+
+.data-table--dock tbody tr.row-active td {
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+}
+
+.data-table--dock tbody tr.row-active:hover td {
+  background: color-mix(in oklab, var(--primary) 10%, var(--muted) 40%);
+}
+
+.dock-panel-tab__table thead .data-table__th,
+.dock-panel-tab__table thead th,
+.data-table--dock thead .data-table__th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .dock-panel-tab__footer,
@@ -5500,7 +5517,8 @@ body {
   background: transparent;
 }
 
-.terminal-table.algo-bots-table {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table {
   width: max-content;
   min-width: 100%;
   font-size: var(--fs-xs);
@@ -5508,7 +5526,8 @@ body {
   border-spacing: 0;
 }
 
-.terminal-table.algo-bots-table th {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -5522,7 +5541,8 @@ body {
   box-shadow: 0 1px 0 var(--border-color);
 }
 
-.terminal-table.algo-bots-table td {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td {
   padding: 9px 12px;
   vertical-align: middle;
   font-size: var(--fs-xs);
@@ -5530,13 +5550,17 @@ body {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.terminal-table.algo-bots-table td:nth-child(1),
-.terminal-table.algo-bots-table td:nth-child(9) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(1),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(9) {
   background: var(--surface-1);
 }
 
-.terminal-table.algo-bots-table th:nth-child(1),
-.terminal-table.algo-bots-table td:nth-child(1) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(1),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(1) {
   position: sticky;
   left: 0;
   z-index: 2;
@@ -5545,12 +5569,15 @@ body {
   box-shadow: 1px 0 0 var(--border-subtle);
 }
 
-.terminal-table.algo-bots-table thead th:nth-child(1) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table thead th:nth-child(1) {
   z-index: 5;
 }
 
-.terminal-table.algo-bots-table th:nth-child(2),
-.terminal-table.algo-bots-table td:nth-child(2) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(2),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(2) {
   min-width: 7.5rem;
   max-width: 9rem;
   overflow: hidden;
@@ -5558,38 +5585,52 @@ body {
   white-space: nowrap;
 }
 
-.terminal-table.algo-bots-table th:nth-child(3),
-.terminal-table.algo-bots-table td:nth-child(3) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(3),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(3) {
   min-width: 3rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(4),
-.terminal-table.algo-bots-table td:nth-child(4) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(4),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(4) {
   min-width: 4.75rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(5),
-.terminal-table.algo-bots-table td:nth-child(5) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(5),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(5) {
   min-width: 5.5rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(6),
-.terminal-table.algo-bots-table td:nth-child(6) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(6),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(6) {
   min-width: 5.25rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(7),
-.terminal-table.algo-bots-table td:nth-child(7) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(7),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(7) {
   min-width: 6.5rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(8),
-.terminal-table.algo-bots-table td:nth-child(8) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(8),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(8) {
   min-width: 4.75rem;
 }
 
-.terminal-table.algo-bots-table th:nth-child(9),
-.terminal-table.algo-bots-table td:nth-child(9) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(9),
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(9) {
   position: sticky;
   right: 0;
   z-index: 2;
@@ -5598,7 +5639,8 @@ body {
   box-shadow: -1px 0 0 var(--border-subtle);
 }
 
-.terminal-table.algo-bots-table thead th:nth-child(9) {
+.terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table thead th:nth-child(9) {
   z-index: 5;
 }
 
@@ -6772,7 +6814,8 @@ body {
   padding-inline: var(--sp-1);
 }
 
-.data-table:not(.data-table--watchlist) tbody tr:hover td {
+.data-table:not(.data-table--watchlist) tbody tr:hover td,
+.data-table--dock tbody tr.data-table-row--dock:hover td {
   background: var(--surface-hover);
 }
 
@@ -6834,7 +6877,8 @@ body {
   font-size: var(--fs-xs);
 }
 
-.bottom-dock .terminal-table tbody tr.data-table-row-deferred {
+.bottom-dock .terminal-table tbody tr.data-table-row-deferred,
+.bottom-dock .data-table--dock tbody tr.data-table-row-deferred {
   content-visibility: auto;
   contain-intrinsic-size: auto 32px;
 }
@@ -6896,17 +6940,19 @@ body {
   font-size: var(--fs-xs);
 }
 
-.bottom-dock[data-compact] .terminal-table.algo-bots-table th:nth-child(9),
-.bottom-dock[data-compact] .terminal-table.algo-bots-table td:nth-child(9) {
+.bottom-dock[data-compact] .terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(9),
+.bottom-dock[data-compact] .terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(9) {
   padding-inline: var(--sp-1);
 }
 
 .terminal-table tr:hover > td {
-  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  background: var(--surface-hover);
 }
 
 .terminal-table tr.row-active > td {
-  background: rgba(37, 99, 235, 0.05);
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
 }
 
 .terminal-table th.text-right,

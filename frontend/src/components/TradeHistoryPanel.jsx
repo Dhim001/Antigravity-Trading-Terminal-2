@@ -8,7 +8,7 @@ import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { cn } from '@/lib/utils';
 import {
-  X, Download, RefreshCw, ChevronUp, ChevronDown, ChevronsUpDown,
+  X, Download, RefreshCw,
   TrendingUp, TrendingDown, BarChart2, Award, Target, Activity,
   CheckCircle2, XCircle, Clock, Filter,
 } from 'lucide-react';
@@ -23,6 +23,15 @@ import { WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
 import { buildBotLookup, parseTradeTimestamp, tradeSourceLabel } from '@/lib/botAttribution';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableHead,
+  DataTableCell,
+  SortableDataTableHead,
+} from './DataTableShell';
 
 const fmt = (n, dec = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -50,22 +59,6 @@ const DATE_RANGES = [
   { label: '30D', days: 30 },
   { label: 'All', days: Infinity },
 ];
-
-function SortTh({ children, field, sort, onSort, className }) {
-  const active = sort.field === field;
-  const Icon = active ? (sort.dir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown;
-  return (
-    <th
-      onClick={() => onSort(field)}
-      className={cn('cursor-pointer select-none', active && 'text-primary', className)}
-    >
-      <div className="flex items-center gap-0.5">
-        {children}
-        <Icon size={10} className={cn('shrink-0', active ? 'opacity-100' : 'opacity-35')} />
-      </div>
-    </th>
-  );
-}
 
 export function TradeHistoryContent({ embedded = true, onClose }) {
   const tradeHistory = useStore((state) => state.tradeHistory);
@@ -397,22 +390,22 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         ) : filtered.length === 0 ? (
           <WidgetEmpty icon={Activity} message="No transactions match your filters" />
         ) : (
-          <table className="terminal-table text-xs">
-            <thead>
-              <tr>
-                <SortTh field="timestamp" sort={sort} onSort={handleSort}>Time</SortTh>
-                <SortTh field="symbol" sort={sort} onSort={handleSort}>Symbol</SortTh>
-                <th>Source</th>
-                <SortTh field="side" sort={sort} onSort={handleSort}>Side</SortTh>
-                <SortTh field="type" sort={sort} onSort={handleSort}>Type</SortTh>
-                <SortTh field="status" sort={sort} onSort={handleSort}>Status</SortTh>
-                <SortTh field="filled_quantity" sort={sort} onSort={handleSort} className="text-right">Qty</SortTh>
-                <SortTh field="average_fill_price" sort={sort} onSort={handleSort} className="text-right">Fill Price</SortTh>
-                <SortTh field="trade_value" sort={sort} onSort={handleSort} className="text-right">Value</SortTh>
-                <SortTh field="realized_pnl" sort={sort} onSort={handleSort} className="text-right">Realized P&L</SortTh>
+          <DataTableRoot variant="dock" className="text-xs">
+            <DataTableHeader>
+              <tr className="border-b border-border hover:bg-transparent">
+                <SortableDataTableHead field="timestamp" sort={sort} onSort={handleSort} label="Time" />
+                <SortableDataTableHead field="symbol" sort={sort} onSort={handleSort} label="Symbol" />
+                <DataTableHead>Source</DataTableHead>
+                <SortableDataTableHead field="side" sort={sort} onSort={handleSort} label="Side" />
+                <SortableDataTableHead field="type" sort={sort} onSort={handleSort} label="Type" />
+                <SortableDataTableHead field="status" sort={sort} onSort={handleSort} label="Status" />
+                <SortableDataTableHead field="filled_quantity" sort={sort} onSort={handleSort} label="Qty" align="right" />
+                <SortableDataTableHead field="average_fill_price" sort={sort} onSort={handleSort} label="Fill Price" align="right" />
+                <SortableDataTableHead field="trade_value" sort={sort} onSort={handleSort} label="Value" align="right" />
+                <SortableDataTableHead field="realized_pnl" sort={sort} onSort={handleSort} label="Realized P&L" align="right" />
               </tr>
-            </thead>
-            <tbody>
+            </DataTableHeader>
+            <DataTableBody>
               <VirtualTablePadding height={rowWindow.topPad} colSpan={10} />
               {rowWindow.slice.map(trade => {
                 const meta = STATUS_META[trade.status] || STATUS_META.PENDING;
@@ -428,9 +421,9 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
                 ) ? 4 : 2;
 
                 return (
-                  <tr key={trade.id}>
-                    <td>
-                      <span className="num-mono text-[0.62rem] text-muted-foreground">
+                  <DataTableRow key={trade.id} rowVariant="dock" deferred>
+                    <DataTableCell>
+                      <span className="text-[0.62rem] text-muted-foreground">
                         {(() => {
                           const d = parseTradeTimestamp(trade.timestamp);
                           return d ? d.toLocaleString('en-GB', {
@@ -439,41 +432,41 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
                           }) : '—';
                         })()}
                       </span>
-                    </td>
-                    <td><span className="font-bold">{trade.symbol}</span></td>
-                    <td>
+                    </DataTableCell>
+                    <DataTableCell><span className="font-bold">{trade.symbol}</span></DataTableCell>
+                    <DataTableCell>
                       <Badge variant={src.kind === 'bot' ? 'secondary' : 'outline'} className="text-[0.58rem]">
                         {src.label}
                       </Badge>
-                    </td>
-                    <td>
+                    </DataTableCell>
+                    <DataTableCell>
                       <Badge variant={trade.side === 'BUY' ? 'buy' : 'sell'}>{trade.side}</Badge>
-                    </td>
-                    <td className="text-secondary-foreground">{trade.type}</td>
-                    <td>
+                    </DataTableCell>
+                    <DataTableCell className="text-secondary-foreground">{trade.type}</DataTableCell>
+                    <DataTableCell>
                       <Badge variant={meta.variant} className={meta.className}>
                         <StatusIcon data-icon="inline-start" />
                         {trade.status}
                       </Badge>
-                    </td>
-                    <td className="num-mono text-right">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right">
                       {qty != null ? qty.toFixed(qty < 1 ? 6 : 4) : '—'}
-                    </td>
-                    <td className="num-mono text-right font-semibold">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right" className="font-semibold">
                       {fp ? `$${fmt(fp, pdec)}` : '—'}
-                    </td>
-                    <td className="num-mono text-right text-secondary-foreground">
+                    </DataTableCell>
+                    <DataTableCell numeric align="right" className="text-secondary-foreground">
                       {trade.trade_value ? `$${fmt(trade.trade_value)}` : '—'}
-                    </td>
-                    <td className="text-right">
+                    </DataTableCell>
+                    <DataTableCell align="right">
                       <FmtPnl value={trade.realized_pnl} />
-                    </td>
-                  </tr>
+                    </DataTableCell>
+                  </DataTableRow>
                 );
               })}
               <VirtualTablePadding height={rowWindow.bottomPad} colSpan={10} />
-            </tbody>
-          </table>
+            </DataTableBody>
+          </DataTableRoot>
         )}
       </div>
 

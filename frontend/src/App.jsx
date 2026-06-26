@@ -264,6 +264,7 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
+        window.dispatchEvent(new CustomEvent('dock-group', { detail: 'automation' }));
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
         e.preventDefault();

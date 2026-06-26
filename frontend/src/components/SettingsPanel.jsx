@@ -1151,6 +1151,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   {obsHealth?.massive && (
                     <>
                       <div><dt>Massive WS</dt><dd>{obsHealth.massive.connected ? 'yes' : 'no'}</dd></div>
+                      <div><dt>Feed plan</dt><dd>{obsHealth.massive.feed_plan ?? '—'}</dd></div>
                       <div><dt>Stocks mode</dt><dd>{obsHealth.massive.stocks_mode ?? '—'}</dd></div>
                       <div><dt>Crypto mode</dt><dd>{obsHealth.massive.crypto_mode ?? '—'}</dd></div>
                       <div><dt>NBBO quotes</dt><dd>{obsHealth.massive.real_quote_symbols ?? 0} symbols</dd></div>
@@ -1174,6 +1175,15 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       )}
                       {obsHealth.massive.crypto_lag_sec != null && (
                         <div><dt>Crypto lag</dt><dd>{obsHealth.massive.crypto_lag_sec}s</dd></div>
+                      )}
+                      {obsHealth.massive.ht_cache_entries != null && (
+                        <div>
+                          <dt>HT cache</dt>
+                          <dd>
+                            {obsHealth.massive.ht_cache_entries}
+                            /{obsHealth.massive.ht_cache_max_entries ?? '—'}
+                          </dd>
+                        </div>
                       )}
                     </>
                   )}
@@ -1318,6 +1328,8 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                         <div><dt>Massive trades</dt><dd>{obsMetrics.massive_trades_received_total ?? obsHealth?.observability?.massive_trades_received_total ?? 0}</dd></div>
                         <div><dt>Massive quotes</dt><dd>{obsMetrics.massive_quotes_received_total ?? obsHealth?.observability?.massive_quotes_received_total ?? 0}</dd></div>
                         <div><dt>Massive poll updates</dt><dd>{obsMetrics.massive_poll_updates_total ?? obsHealth?.observability?.massive_poll_updates_total ?? 0}</dd></div>
+                        <div><dt>HT cache hits</dt><dd>{obsMetrics.massive_ht_cache_hit_total ?? 0}</dd></div>
+                        <div><dt>HT cache misses</dt><dd>{obsMetrics.massive_ht_cache_miss_total ?? 0}</dd></div>
                       </>
                     )}
                   </dl>

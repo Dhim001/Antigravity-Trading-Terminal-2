@@ -61,7 +61,19 @@ Running **all three** can exceed 16 GB under load. Prefer **one profile** for li
 
 ## Massive HT server cache
 
-Higher-timeframe REST bars are cached server-side (`massive_feed._ht_cache`). Health exposes `massive.ht_cache_entries`. Limits are configured via `MASSIVE_HT_LIMIT_*` env vars (see `env.profiles/massive.env` and `backend/app/services/massive_ht_limits.py`).
+Higher-timeframe REST bars are cached server-side (`massive_feed._ht_cache`). Health exposes `massive.ht_cache_entries`, `ht_cache_max_entries`, and `ht_cache_ttl_sec`. Limits are configured via `MASSIVE_HT_LIMIT_*` env vars (see `env.profiles/massive.env` and `backend/app/services/massive_ht_limits.py`).
+
+### Phase 3 tuning (optional)
+
+When running bots + multi-chart + analyst HT fetches on 16 GB:
+
+| Env | Default | Role |
+|-----|---------|------|
+| `MASSIVE_HT_CACHE_TTL_SEC` | 300 | How long REST HT responses stay warm |
+| `MASSIVE_HT_CACHE_MAX_ENTRIES` | 48 | LRU cap on symbol×TF pairs (~26 symbols × few TFs) |
+| `MASSIVE_HT_LIMIT_ANALYSIS` | 2000 | Lower to 1200 if server RSS climbs |
+
+Prometheus counters: `massive_ht_cache_hit_total`, `massive_ht_cache_miss_total`. Watch hit ratio in Settings → System → Metrics when switching symbols aggressively.
 
 ## Automated soak (optional)
 

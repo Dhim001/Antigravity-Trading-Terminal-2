@@ -258,6 +258,10 @@ MASSIVE_POLL_INTERVAL_SEC = float(os.environ.get("MASSIVE_POLL_INTERVAL_SEC", "1
 MASSIVE_SEED_CONCURRENCY = int(os.environ.get("MASSIVE_SEED_CONCURRENCY", "4"))
 # NBBO: stocks Q.*, crypto XQ.* (plan permitting; falls back to synthetic book on trade/agg).
 MASSIVE_QUOTES_ENABLED = os.environ.get("MASSIVE_QUOTES_ENABLED", "true").lower() in ("1", "true", "yes")
+MASSIVE_FEED = _feed if _feed in ("realtime", "delayed") else "realtime"
+# Server-side HT REST cache (Phase 3 memory tuning)
+MASSIVE_HT_CACHE_TTL_SEC = float(os.environ.get("MASSIVE_HT_CACHE_TTL_SEC", "300"))
+MASSIVE_HT_CACHE_MAX_ENTRIES = int(os.environ.get("MASSIVE_HT_CACHE_MAX_ENTRIES", "48"))
 
 # Detailed symbol catalog lists
 EQUITY_SYMBOLS = {

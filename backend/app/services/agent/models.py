@@ -78,6 +78,30 @@ class VisionReport:
     notes: str = ""
     model: str | None = None
     cached: bool = False
+    report_id: str = ""
+    created_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.report_id and self.symbol and self.bar_time:
+            tf = (self.timeframe or "4h").lower()
+            self.report_id = f"{self.symbol.upper()}:{tf}:{self.bar_time}"
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> VisionReport:
+        return cls(
+            symbol=data["symbol"],
+            timeframe=data.get("timeframe", "4h"),
+            bar_time=int(data["bar_time"]),
+            structure=data.get("structure") or "",
+            patterns=list(data.get("patterns") or []),
+            notes=data.get("notes") or "",
+            model=data.get("model"),
+            cached=bool(data.get("cached")),
+            report_id=data.get("report_id", ""),
+            created_at=data.get("created_at", ""),
+        )

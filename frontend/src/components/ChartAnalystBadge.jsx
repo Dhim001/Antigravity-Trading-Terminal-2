@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Bot, ShoppingCart, Layers } from 'lucide-react';
+import { RefreshCw, Bot, ShoppingCart, Layers, ScanEye } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,6 +23,7 @@ import SubReportCards from './SubReportCards';
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
 import { normalizeAnalystTimeframe, selectAgentInsight } from '../lib/agentInsights';
+import { useChartVision } from '../hooks/useChartVision';
 
 const SIGNAL_STYLES = {
   'STRONG BUY': { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e' },
@@ -61,12 +62,21 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
   const agentDeepReasoning = useStore((state) => state.agentDeepReasoning);
   const agentLlmEnabled = useStore((state) => state.agentLlmEnabled);
   const agentLlmAvailable = useStore((state) => state.agentLlmAvailable);
+  const agentVisionEnabled = useStore((state) => state.agentVisionEnabled);
+  const visionReports = useStore((state) => state.visionReports);
   const setOrderPrefill = useStore((state) => state.setOrderPrefill);
   const ticker = useStore((state) => state.tickerData[symbol]);
   const [refreshing, setRefreshing] = useState(false);
   const [deepReasonLoading, setDeepReasonLoading] = useState(false);
   const [previewDraft, setPreviewDraft] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const visionTf = chartTf === '1h' ? '1h' : '4h';
+  const visionKey = `${symbol}:${visionTf}`;
+  const visionReport = visionReports[visionKey];
+  const { requestVision, loading: visionLoading } = useChartVision(symbol, {
+    visionTf,
+    barTime: agentInsight?.bar_time,
+  });
   const lastCandleTime = useStore((state) => {
     const rev = state.candleRevision[symbol];
     if (!rev) return 0;
@@ -240,6 +250,18 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
             />
           ) : null}
 
+          {visionReport && (
+            <div className="mb-3 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-xs">
+              <div className="text-[0.58rem] font-semibold uppercase tracking-wide text-muted-foreground">
+                Structure notes ({visionTf.toUpperCase()} · not a signal)
+              </div>
+              <p className="mt-1">{visionReport.structure}</p>
+              {visionReport.patterns?.length > 0 && (
+                <p className="mt-1 text-muted-foreground">{visionReport.patterns.join(' · ')}</p>
+              )}
+            </div>
+          )}
+
           {display.sub_reports && !(agentLlmEnabled && agentLlmAvailable) && (
             <LlmFeatureHint
               feature="Deep reasoning"
@@ -286,6 +308,29 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
                 <Layers className={cn('size-3', deepReasonLoading && 'animate-spin')} />
                 {deepReasonLoading ? 'Reasoning…' : 'Deep reason'}
               </Button>
+            )}
+            {agentVisionEnabled ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 flex-1 gap-1 text-xs"
+                disabled={visionLoading}
+                onClick={requestVision}
+                title="Describe chart structure (on-demand; not a signal)"
+              >
+                <ScanEye className={cn('size-3', visionLoading && 'animate-spin')} />
+                {visionLoading ? 'Capturing…' : 'Structure'}
+              </Button>
+            ) : (
+              <LlmFeatureHint
+                feature="Chart vision"
+                enabled={agentVisionEnabled}
+                available
+                envKeys={['AGENT_VISION_ENABLED']}
+                compact
+                className="flex-1"
+              />
             )}
             <Button
               type="button"

@@ -42,3 +42,23 @@ export function massiveWatchlistBadge(symbol, terminalMode, massiveHealth) {
   if (!isCryptoSym && !usEquitySessionOpen()) return 'closed';
   return null;
 }
+
+/** Book/depth header badge: NBBO | Synth | null */
+export function massiveBookBadge(symbol, terminalMode, massiveHealth) {
+  if (!isLiveMassiveMode(terminalMode) || !massiveHealth) return null;
+  if (!massiveHealth.quotes_enabled) return 'Synth';
+  const list = massiveHealth.real_quote_symbol_list;
+  if (Array.isArray(list)) {
+    return list.includes(symbol) ? 'NBBO' : 'Synth';
+  }
+  if ((massiveHealth.real_quote_symbols ?? 0) === 0) return 'Synth';
+  return null;
+}
+
+/** Feed plan label for ops banners. */
+export function massiveFeedPlanLabel(massiveHealth) {
+  const plan = massiveHealth?.feed_plan;
+  if (plan === 'delayed') return 'Delayed';
+  if (plan === 'realtime') return 'Realtime';
+  return null;
+}

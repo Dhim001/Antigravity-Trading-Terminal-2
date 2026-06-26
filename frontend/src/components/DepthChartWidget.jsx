@@ -1,78 +1,61 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 import { WidgetShell, WidgetEmpty } from './WidgetShell';
 import { cn } from '@/lib/utils';
 import { LineChart } from 'lucide-react';
+import {
+  autoAggStep,
+  useOrderBookDepth,
+} from '../hooks/useOrderBookDepth';
+import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
+import { useMassiveHealth } from '../hooks/useMassiveHealth';
+import { massiveBookBadge } from '../lib/massiveMarket';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
 
 const DEPTH_LEVELS = 24;
-
-function priceDecimalsFor(symbol, ticker) {
-  if (
-    symbol.includes('XRP') ||
-    symbol.includes('ADA') ||
-    symbol.includes('DOGE') ||
-    (ticker && ticker.price < 2.0)
-  ) {
-    return 4;
-  }
-  return 2;
-}
-
-function qtyDecimalsFor(symbol) {
-  return symbol.includes('USDT') ? 4 : 2;
-}
-
-/** @param {[number, number][]} levels */
-function processSide(levels) {
-  let cumulative = 0;
-  return levels.map(([price, qty]) => {
-    cumulative += qty;
-    return { price, qty, cumulative };
-  });
-}
+const AGG_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: '0.001', label: '0.001' },
+  { value: '0.01', label: '0.01' },
+  { value: '0.1', label: '0.1' },
+  { value: '1', label: '1' },
+  { value: '10', label: '10' },
+];
 
 export default function DepthChartWidget() {
   const activeSymbol = useStore((state) => state.activeSymbol);
+  const terminalMode = useStore((state) => state.terminalMode);
+  const massiveHealth = useMassiveHealth();
   const ob = useStore((state) => state.orderBooks[activeSymbol]);
-  const ticker = useStore((state) => state.tickerData[activeSymbol]);
+  const [aggMode, setAggMode] = useState('auto');
+  const flash = useOrderBookFlash(activeSymbol);
 
-  const priceDecimals = priceDecimalsFor(activeSymbol, ticker);
-  const qtyDecimals = qtyDecimalsFor(activeSymbol);
+  const probeMid = useStore((state) => {
+    const ticker = state.tickerData[activeSymbol];
+    const book = state.orderBooks[activeSymbol];
+    const bid = book?.bids?.[0]?.[0];
+    const ask = book?.asks?.[0]?.[0];
+    if (bid && ask) return (bid + ask) / 2;
+    return ticker?.price ?? bid ?? ask ?? 0;
+  });
 
-  const depth = useMemo(() => {
-    if (!ob?.bids?.length && !ob?.asks?.length) return null;
+  const aggStep = useMemo(() => {
+    if (aggMode === 'auto') {
+      const dec = probeMid >= 1 && probeMid < 10 ? 4 : probeMid < 2 ? 4 : 2;
+      return autoAggStep(probeMid, dec);
+    }
+    return Number(aggMode);
+  }, [aggMode, probeMid]);
 
-    const bids = processSide(ob.bids || []);
-    const asks = processSide(ob.asks || []);
-    if (!bids.length && !asks.length) return null;
-
-    const bidSlice = bids.slice(0, DEPTH_LEVELS);
-    const askSlice = asks.slice(0, DEPTH_LEVELS);
-    const maxCumulative = Math.max(
-      bidSlice[bidSlice.length - 1]?.cumulative ?? 0,
-      askSlice[askSlice.length - 1]?.cumulative ?? 0,
-      1,
-    );
-
-    const bestBid = bids[0]?.price ?? 0;
-    const bestAsk = asks[0]?.price ?? 0;
-    const mid = bestBid && bestAsk
-      ? (bestBid + bestAsk) / 2
-      : (ticker?.price ?? bestBid ?? bestAsk);
-
-    const askRows = [...askSlice].reverse();
-    const bidRows = bidSlice;
-
-    return {
-      askRows,
-      bidRows,
-      maxCumulative,
-      bestBid,
-      bestAsk,
-      mid,
-      spread: bestAsk && bestBid ? bestAsk - bestBid : 0,
-    };
-  }, [ob, ticker?.price]);
+  const depth = useOrderBookDepth(activeSymbol, { maxLevels: DEPTH_LEVELS, aggStep });
+  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, massiveHealth);
 
   if (!ob) {
     return (
@@ -90,7 +73,7 @@ export default function DepthChartWidget() {
     );
   }
 
-  const { askRows, bidRows, maxCumulative, bestBid, bestAsk, mid, spread } = depth;
+  const { askRows, bidRows, maxCumulative, bestBid, bestAsk, mid, spread, priceDecimals, qtyDecimals } = depth;
 
   return (
     <WidgetShell
@@ -98,12 +81,31 @@ export default function DepthChartWidget() {
       icon={LineChart}
       title="Market Depth"
       headerRight={
-        <span className="text-[0.62rem] text-muted-foreground">
-          Spread{' '}
-          <span className="num-mono font-semibold text-foreground">
-            {spread > 0 ? spread.toFixed(priceDecimals) : '—'}
+        <div className="flex items-center gap-2">
+          {bookBadge && (
+            <Badge variant="outline" className="h-4 px-1 text-[0.55rem] uppercase tracking-wide">
+              {bookBadge}
+            </Badge>
+          )}
+          <Select value={aggMode} onValueChange={setAggMode}>
+            <SelectTrigger className="h-6 w-[4.5rem] text-[0.62rem]" aria-label="Price aggregation">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {AGG_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-[0.62rem] text-muted-foreground">
+            Spread{' '}
+            <span className="num-mono font-semibold text-foreground">
+              {spread > 0 ? spread.toFixed(priceDecimals) : '—'}
+            </span>
           </span>
-        </span>
+        </div>
       }
       contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
     >
@@ -117,7 +119,7 @@ export default function DepthChartWidget() {
         <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto">
           {askRows.map((row, idx) => (
             <DepthLadderRow
-              key={`ask-${idx}`}
+              key={`ask-${row.price}-${idx}`}
               side="ask"
               price={row.price}
               qty={row.qty}
@@ -125,20 +127,21 @@ export default function DepthChartWidget() {
               maxCumulative={maxCumulative}
               priceDecimals={priceDecimals}
               qtyDecimals={qtyDecimals}
+              flashCls={idx === askRows.length - 1 ? flashClass(flash.ask) : ''}
             />
           ))}
         </div>
 
-        <div className="sticky z-[2] shrink-0 border-y border-border bg-muted/30 px-3 py-1.5 text-center backdrop-blur-sm">
+        <div
+          className={cn(
+            'sticky z-[2] shrink-0 border-y border-border bg-muted/30 px-3 py-1.5 text-center backdrop-blur-sm',
+            flash.bid || flash.ask ? flashClass(flash.bid || flash.ask) : '',
+          )}
+        >
           <div className="text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">
             Mid
           </div>
-          <div
-            className={cn(
-              'num-mono text-lg font-extrabold tracking-tight',
-              ticker?.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down',
-            )}
-          >
+          <div className="num-mono text-lg font-extrabold tracking-tight text-foreground">
             {mid ? mid.toFixed(priceDecimals) : '—'}
           </div>
           <div className="num-mono text-[0.62rem] text-muted-foreground">
@@ -151,7 +154,7 @@ export default function DepthChartWidget() {
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           {bidRows.map((row, idx) => (
             <DepthLadderRow
-              key={`bid-${idx}`}
+              key={`bid-${row.price}-${idx}`}
               side="bid"
               price={row.price}
               qty={row.qty}
@@ -159,6 +162,7 @@ export default function DepthChartWidget() {
               maxCumulative={maxCumulative}
               priceDecimals={priceDecimals}
               qtyDecimals={qtyDecimals}
+              flashCls={idx === 0 ? flashClass(flash.bid) : ''}
             />
           ))}
         </div>
@@ -175,12 +179,13 @@ function DepthLadderRow({
   maxCumulative,
   priceDecimals,
   qtyDecimals,
+  flashCls = '',
 }) {
   const isAsk = side === 'ask';
   const pct = (cumulative / maxCumulative) * 100;
 
   return (
-    <div className="grid grid-cols-[1fr_auto_1fr] items-center px-2 py-0.5 text-xs">
+    <div className={cn('grid grid-cols-[1fr_auto_1fr] items-center px-2 py-0.5 text-xs', flashCls)}>
       <div className="relative flex h-5 items-center justify-end pr-1">
         {!isAsk && (
           <>
