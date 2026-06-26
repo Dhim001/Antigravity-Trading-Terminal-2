@@ -37,7 +37,7 @@ export default function IbFeedStatusBanner() {
   if (!ib.connected) {
     return (
       <div
-        className="border-b border-trading-down/40 bg-trading-down/10 px-3 py-1.5 text-center text-xs text-trading-down"
+        className="terminal-feed-banner terminal-feed-banner--down"
         role="status"
       >
         IB Gateway not connected — check Gateway on port 4002 and restart the IB backend.
@@ -49,7 +49,7 @@ export default function IbFeedStatusBanner() {
     const lagText = lagMin != null && lagMin > 0 ? ` (~${lagMin} min behind)` : '';
     return (
       <div
-        className="border-b border-trading-warn/30 bg-trading-warn/10 px-3 py-1.5 text-center text-xs text-trading-warn"
+        className="terminal-feed-banner terminal-feed-banner--warn"
         role="status"
       >
         IB delayed market data{lagText}. Enable live US equity subscriptions in IB Account Management
@@ -61,7 +61,7 @@ export default function IbFeedStatusBanner() {
   if ((ib.streams_active ?? 0) < symbolCount - 1) {
     return (
       <div
-        className="border-b border-trading-warn/30 bg-trading-warn/10 px-3 py-1.5 text-center text-xs text-trading-warn"
+        className="terminal-feed-banner terminal-feed-banner--warn"
         role="status"
       >
         IB feed partial — {ib.streams_active ?? 0}/{symbolCount} symbol streams active

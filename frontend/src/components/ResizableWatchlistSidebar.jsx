@@ -12,7 +12,7 @@ import WatchlistWidget from './WatchlistWidget';
 const STORAGE_WIDTH = 'terminal_sidebar_width';
 const STORAGE_COLLAPSED = 'terminal_sidebar_collapsed';
 
-export const SIDEBAR_DEFAULT = 260;
+export const SIDEBAR_DEFAULT = 320;
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 420;
 const SIDEBAR_COLLAPSED_W = 36;

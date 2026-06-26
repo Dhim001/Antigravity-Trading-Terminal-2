@@ -19,7 +19,7 @@ export default function StaleDataBanner({ inline = false }) {
   if (inline) {
     return (
       <span
-        className="stale-data-banner stale-data-banner--inline rounded border border-trading-warn/40 bg-trading-warn/10 px-2 py-0.5 text-[0.58rem] text-trading-warn"
+        className="terminal-warn-chip stale-data-banner stale-data-banner--inline"
         role="status"
         title={message}
       >
@@ -30,7 +30,7 @@ export default function StaleDataBanner({ inline = false }) {
 
   return (
     <div
-      className="stale-data-banner border-b border-trading-warn/30 bg-trading-warn/10 px-3 py-1.5 text-center text-xs text-trading-warn"
+      className="terminal-feed-banner stale-data-banner"
       role="status"
     >
       {message}

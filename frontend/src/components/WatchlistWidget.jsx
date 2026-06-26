@@ -1,69 +1,177 @@
 /**
- * WatchlistWidget.jsx
+ * WatchlistWidget.jsx — Phase C: DataTableShell, column presets, asset sections.
  */
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 import { fetchHealth } from '../api/endpoints';
 import { massiveWatchlistBadge } from '../lib/massiveMarket';
+import { getCandles } from '../services/candleBuffer';
+import {
+  formatChangeAbs,
+  formatChangePct,
+  formatPrice,
+  formatVolCompact,
+  absoluteChangeFromPct,
+} from '../lib/formatPrice';
+import {
+  normalizeWatchlistColumns,
+  watchlistColumnsEqual,
+  watchlistColumnDefs,
+  visibleWatchlistColumns,
+  watchlistColumnPrefAttrs,
+} from '../settings/watchlistColumns';
+import {
+  BUILTIN_WATCHLIST_COLUMN_PRESETS,
+  resolveWatchlistColumnPresetId,
+} from '../settings/watchlistColumnPresets';
+import {
+  DataTableRoot,
+  DataTableHeader,
+  DataTableBody,
+  DataTableRow,
+  DataTableCell,
+  DataTableSectionRow,
+  SortableDataTableHead,
+} from './DataTableShell';
 import { WidgetShell, WidgetToolbar, WidgetEmpty, ScrollTablePanel } from './WidgetShell';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
-import { Search, Activity } from 'lucide-react';
+import { Search, Activity, Columns3 } from 'lucide-react';
+
+const ROLLING_24H_SEC = 86400;
+
+const WATCHLIST_SECTIONS = [
+  { key: 'CRYPTO', label: 'Crypto' },
+  { key: 'EQUITY', label: 'Equities' },
+  { key: 'ETF', label: 'ETFs' },
+];
 
 const isCrypto = (sym) => sym.includes('USDT');
-const isETF    = (sym) => ['SPY', 'QQQ'].includes(sym);
-const getCategory = (sym) => isCrypto(sym) ? 'CRYPTO' : isETF(sym) ? 'ETF' : 'EQUITY';
+const isETF = (sym) => ['SPY', 'QQQ'].includes(sym);
+const getCategory = (sym) => (isCrypto(sym) ? 'CRYPTO' : isETF(sym) ? 'ETF' : 'EQUITY');
 
-const getPriceDecimals = (sym, price) => {
-  if (sym.includes('XRP') || sym.includes('ADA') || sym.includes('DOGE') || (price != null && price < 2.0)) return 4;
-  return 2;
-};
-
-const fmtVol = (v) => {
-  if (!v) return '—';
-  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return v.toFixed(0);
-};
-
-function MiniSparkline({ points, isUp }) {
-  if (!points || points.length < 2) return <span className="inline-block w-11" />;
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
-  const w = 44, h = 22;
-  const xs = points.map((_, i) => (i / (points.length - 1)) * w);
-  const ys = points.map(v => h - ((v - min) / range) * h * 0.85 - h * 0.075);
-  const d = xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ');
-  const color = isUp ? 'var(--color-up)' : 'var(--color-down)';
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="block shrink-0">
-      <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
-    </svg>
-  );
+function avgBarVolume(symbol, volume24h) {
+  const candles = getCandles(symbol, '1m');
+  if (candles?.length) {
+    const cutoff = Math.floor(Date.now() / 1000) - ROLLING_24H_SEC;
+    let window = candles.filter((c) => c.time >= cutoff);
+    if (!window.length) window = candles.slice(-1440);
+    if (!window.length) return null;
+    const total = window.reduce((s, c) => s + (c.volume || 0), 0);
+    return total / window.length;
+  }
+  if (volume24h > 0) return volume24h / 1440;
+  return null;
 }
 
-const WatchlistRow = React.memo(function WatchlistRow({ symbol, terminalMode, massiveHealth }) {
-  const info = useStore(state => state.tickerData[symbol]);
-  const direction = useStore(state => state.priceDirections[symbol]);
-  const activeSymbol = useStore(state => state.activeSymbol);
-  const setActiveSymbol = useStore(state => state.setActiveSymbol);
+const OPTIONAL_COLUMN_LABELS = {
+  change_abs: 'Change ($)',
+  change_24h: 'Change (%)',
+  volume_24h: 'Volume (24h)',
+  avg_volume: 'Avg 1m volume',
+};
+
+const WatchlistColumnPicker = React.memo(function WatchlistColumnPicker({
+  columns,
+  activePresetId,
+  presets,
+  onChange,
+  onApplyPreset,
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="shrink-0 text-muted-foreground"
+          title="Choose watchlist columns"
+          aria-label="Choose watchlist columns"
+        >
+          <Columns3 aria-hidden />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-60">
+        <PopoverHeader>
+          <PopoverTitle className="text-xs">Watchlist columns</PopoverTitle>
+        </PopoverHeader>
+
+        <div className="flex flex-col gap-1 pt-1">
+          <span className="text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">
+            Presets
+          </span>
+          {presets.map((preset) => (
+            <Button
+              key={preset.id}
+              type="button"
+              variant={activePresetId === preset.id ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 justify-start text-xs font-normal"
+              title={preset.description}
+              onClick={() => onApplyPreset(preset)}
+            >
+              {preset.name}
+            </Button>
+          ))}
+          {activePresetId === 'custom' && (
+            <span className="px-2 py-0.5 text-[0.62rem] text-muted-foreground">Custom layout</span>
+          )}
+        </div>
+
+        <Separator className="my-2" />
+
+        <div className="flex flex-col gap-2">
+          {Object.entries(OPTIONAL_COLUMN_LABELS).map(([key, label]) => (
+            <div key={key} className="flex items-center gap-2">
+              <Checkbox
+                id={`wl-col-${key}`}
+                checked={columns[key] !== false}
+                onCheckedChange={(checked) => {
+                  const next = { ...columns, [key]: checked === true };
+                  if (watchlistColumnsEqual(next, columns)) return;
+                  onChange(next);
+                }}
+              />
+              <Label htmlFor={`wl-col-${key}`} className="text-xs font-normal">
+                {label}
+              </Label>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+});
+
+const WatchlistRow = React.memo(function WatchlistRow({
+  symbol,
+  terminalMode,
+  massiveHealth,
+  visibleCols,
+  onActivate,
+  deferred = true,
+}) {
+  const info = useStore((state) => state.tickerData[symbol]);
+  const direction = useStore((state) => state.priceDirections[symbol]);
+  const candleRev = useStore((state) => state.candleRevision[symbol] || 0);
+  const activeSymbol = useStore((state) => state.activeSymbol);
 
   const [flashState, setFlashState] = useState(null);
-  const sparkRef = useRef([]);
-
-  useEffect(() => {
-    if (info?.price) {
-      const arr = sparkRef.current;
-      if (arr.length === 0 || arr[arr.length - 1] !== info.price) {
-        arr.push(info.price);
-        if (arr.length > 24) arr.shift();
-      }
-    }
-  }, [info?.price]);
 
   useEffect(() => {
     if (direction && direction !== 'flat') {
@@ -73,22 +181,27 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol, terminalMode, ma
 
   const cat = getCategory(symbol);
   const isActive = symbol === activeSymbol;
-  const sparkData = sparkRef.current;
   const isUp = info?.change_24h >= 0;
-  const dec = info ? getPriceDecimals(symbol, info.price) : 2;
   const shortSym = symbol.replace('USDT', '');
   const flashCls = flashState ? (flashState.dir === 'up' ? 'flash-up' : 'flash-down') : '';
   const rowBadge = massiveWatchlistBadge(symbol, terminalMode, massiveHealth);
+  const changeTone = isUp ? 'text-trading-up' : 'text-trading-down';
 
-  return (
-    <tr
-      onClick={() => setActiveSymbol(symbol)}
-      className={cn(
-        'cursor-pointer border-l-[3px] transition-colors hover:bg-muted/30',
-        isActive ? 'border-l-primary bg-primary/10' : 'border-l-transparent',
-      )}
-    >
-      <td className="watchlist-col-symbol py-1.5 pl-2 pr-1">
+  const avgVol = useMemo(
+    () => avgBarVolume(symbol, info?.volume_24h),
+    [symbol, info?.volume_24h, candleRev],
+  );
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onActivate(symbol);
+    }
+  };
+
+  const cells = {
+    symbol: (
+      <DataTableCell key="symbol" className="watchlist-col-symbol pl-2 pr-1">
         <div className="icon-label-tight">
           <span
             className={cn(
@@ -113,39 +226,130 @@ const WatchlistRow = React.memo(function WatchlistRow({ symbol, terminalMode, ma
             </Badge>
           )}
         </div>
-      </td>
-      <td className="watchlist-col-spark px-0.5 py-1.5">
-        <MiniSparkline points={sparkData} isUp={isUp} />
-      </td>
-      <td
-        key={flashState?.key}
+      </DataTableCell>
+    ),
+    price: (
+      <DataTableCell
+        key={flashState?.key ?? 'price'}
+        numeric
+        align="right"
         className={cn(
-          'watchlist-col-price num-mono px-1 py-1.5 text-right text-xs font-semibold',
+          'watchlist-col-price text-xs font-semibold',
           flashCls,
           flashState
             ? flashState.dir === 'up' ? 'text-trading-up' : 'text-trading-down'
-            : 'text-foreground'
+            : 'text-foreground',
         )}
       >
-        {info ? info.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }) : '…'}
-      </td>
-      <td className={cn('watchlist-col-chg num-mono px-1 py-1.5 text-right text-[0.62rem] font-semibold', isUp ? 'text-trading-up' : 'text-trading-down')}>
-        {info ? `${isUp ? '+' : ''}${Number(info.change_24h).toFixed(2)}%` : '—'}
-      </td>
-      <td className="watchlist-col-vol num-mono py-1.5 pl-1 pr-2 text-right text-[0.62rem] text-muted-foreground">
-        {info ? fmtVol(info.volume_24h) : '—'}
-      </td>
-    </tr>
+        {info ? formatPrice(symbol, info.price) : '…'}
+      </DataTableCell>
+    ),
+    change_abs: (
+      <DataTableCell key="change_abs" numeric align="right" className={cn('watchlist-col-chg watchlist-cell font-semibold', changeTone)}>
+        {info ? formatChangeAbs(symbol, info.price, info.change_24h) : '—'}
+      </DataTableCell>
+    ),
+    change_24h: (
+      <DataTableCell key="change_24h" numeric align="right" className={cn('watchlist-col-chgpct watchlist-cell font-semibold', changeTone)}>
+        {info ? formatChangePct(info.change_24h) : '—'}
+      </DataTableCell>
+    ),
+    volume_24h: (
+      <DataTableCell key="volume_24h" numeric align="right" className="watchlist-col-vol watchlist-cell text-muted-foreground">
+        {info ? formatVolCompact(info.volume_24h) : '—'}
+      </DataTableCell>
+    ),
+    avg_volume: (
+      <DataTableCell key="avg_volume" numeric align="right" className="watchlist-col-avgvol watchlist-cell text-muted-foreground">
+        {formatVolCompact(avgVol)}
+      </DataTableCell>
+    ),
+  };
+
+  return (
+    <DataTableRow
+      deferred={deferred}
+      rowVariant="watchlist"
+      tabIndex={0}
+      role="row"
+      aria-selected={isActive}
+      onClick={() => onActivate(symbol)}
+      onKeyDown={handleKeyDown}
+      className={cn(
+        'cursor-pointer border-l-[3px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        isActive ? 'border-l-primary' : 'border-l-transparent',
+      )}
+    >
+      {visibleCols.map((col) => cells[col.id])}
+    </DataTableRow>
   );
 });
 
+function groupSymbolsBySection(symbols) {
+  const buckets = { CRYPTO: [], EQUITY: [], ETF: [] };
+  for (const sym of symbols) {
+    buckets[getCategory(sym)].push(sym);
+  }
+  return WATCHLIST_SECTIONS
+    .filter(({ key }) => buckets[key].length > 0)
+    .map(({ key, label }) => ({ key, label, symbols: buckets[key] }));
+}
+
 export default function WatchlistWidget() {
-  const symbolsList = useStore(state => state.symbolsList);
-  const terminalMode = useStore(state => state.terminalMode);
+  const symbolsList = useStore((state) => state.symbolsList);
+  const terminalMode = useStore((state) => state.terminalMode);
+  const setActiveSymbol = useStore((state) => state.setActiveSymbol);
+
+  const rawWatchlistColumns = useSettingsStore((s) => s.settings.workspace?.watchlistColumns);
+  const watchlistColumns = useSettingsStore(
+    useShallow((s) => normalizeWatchlistColumns(s.settings.workspace?.watchlistColumns)),
+  );
+  const watchlistSections = useSettingsStore((s) => s.settings.workspace?.watchlistSections !== false);
+  const activePresetId = useSettingsStore(
+    (s) => s.settings.workspace?.watchlistColumnPresetId ?? resolveWatchlistColumnPresetId(
+      s.settings.workspace?.watchlistColumns,
+      s.settings.watchlistColumnPresets,
+    ),
+  );
+  const customPresets = useSettingsStore((s) => s.settings.watchlistColumnPresets ?? []);
+  const updateWorkspace = useSettingsStore((s) => s.updateWorkspace);
+
+  const columnPresets = useMemo(
+    () => [...BUILTIN_WATCHLIST_COLUMN_PRESETS, ...customPresets],
+    [customPresets],
+  );
+
+  const handleApplyPreset = useCallback((preset) => {
+    const normalized = normalizeWatchlistColumns(preset.columns);
+    updateWorkspace({
+      watchlistColumns: normalized,
+      watchlistColumnPresetId: preset.id,
+    });
+  }, [updateWorkspace]);
+
+  const handleWatchlistColumnsChange = useCallback((next) => {
+    const normalized = normalizeWatchlistColumns(next);
+    if (watchlistColumnsEqual(normalized, rawWatchlistColumns)) return;
+    updateWorkspace({
+      watchlistColumns: normalized,
+      watchlistColumnPresetId: resolveWatchlistColumnPresetId(normalized, customPresets),
+    });
+  }, [rawWatchlistColumns, updateWorkspace, customPresets]);
+
   const [massiveHealth, setMassiveHealth] = useState(null);
   const [cat, setCat] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'symbol', dir: 'asc' });
+
+  const columnDefs = useMemo(() => watchlistColumnDefs(terminalMode), [terminalMode]);
+  const visibleCols = useMemo(
+    () => visibleWatchlistColumns(watchlistColumns, columnDefs),
+    [watchlistColumns, columnDefs],
+  );
+  const columnPrefAttrs = useMemo(
+    () => watchlistColumnPrefAttrs(watchlistColumns),
+    [watchlistColumns],
+  );
 
   useEffect(() => {
     if (terminalMode !== 'LIVE_MASSIVE') {
@@ -163,136 +367,170 @@ export default function WatchlistWidget() {
     return () => { cancelled = true; clearInterval(id); };
   }, [terminalMode]);
 
-  const tickerData = useStore(state => sort.field === 'symbol' ? null : state.tickerData);
+  const tickerData = useStore((state) => (sort.field === 'symbol' ? null : state.tickerData));
 
-  const handleSort = (field) => {
-    setSort(prev => ({ field, dir: prev.field === field ? (prev.dir === 'asc' ? 'desc' : 'asc') : 'asc' }));
-  };
+  const handleSort = useCallback((field) => {
+    setSort((prev) => {
+      if (prev.field === field) {
+        if (prev.dir === 'asc') return { field, dir: 'desc' };
+        return { field: 'symbol', dir: 'asc' };
+      }
+      return { field, dir: 'asc' };
+    });
+  }, []);
+
+  const sortValue = useCallback((sym, field) => {
+    const info = tickerData?.[sym];
+    if (!info) return 0;
+    if (field === 'change_abs') {
+      return absoluteChangeFromPct(info.price, info.change_24h) ?? 0;
+    }
+    if (field === 'avg_volume') {
+      return avgBarVolume(sym, info.volume_24h) ?? 0;
+    }
+    return info[field] ?? 0;
+  }, [tickerData]);
 
   const displaySymbols = useMemo(() => {
     let list = symbolsList;
-    if (cat !== 'ALL') list = list.filter(s => getCategory(s) === cat);
+    if (cat !== 'ALL') list = list.filter((s) => getCategory(s) === cat);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      list = list.filter(s => s.toLowerCase().includes(q));
+      list = list.filter((s) => s.toLowerCase().includes(q));
     }
     return [...list].sort((a, b) => {
       if (sort.field === 'symbol') {
         return sort.dir === 'asc' ? a.localeCompare(b) : b.localeCompare(a);
       }
-      const ia = tickerData?.[a], ib = tickerData?.[b];
-      const va = ia?.[sort.field] ?? 0;
-      const vb = ib?.[sort.field] ?? 0;
+      const va = sortValue(a, sort.field);
+      const vb = sortValue(b, sort.field);
       return sort.dir === 'asc' ? va - vb : vb - va;
     });
-  }, [symbolsList, cat, search, sort, tickerData]);
+  }, [symbolsList, cat, search, sort, sortValue]);
+
+  const showSections = cat === 'ALL' && watchlistSections && !search.trim() && sort.field === 'symbol';
+  const sectionGroups = useMemo(
+    () => (showSections ? groupSymbolsBySection(displaySymbols) : []),
+    [showSections, displaySymbols],
+  );
 
   const counts = useMemo(() => ({
     ALL: symbolsList.length,
     CRYPTO: symbolsList.filter(isCrypto).length,
-    EQUITY: symbolsList.filter(s => !isCrypto(s) && !isETF(s)).length,
+    EQUITY: symbolsList.filter((s) => !isCrypto(s) && !isETF(s)).length,
     ETF: symbolsList.filter(isETF).length,
   }), [symbolsList]);
 
+  const filterSummary = search.trim()
+    ? `${displaySymbols.length} match${displaySymbols.length === 1 ? '' : 'es'}`
+    : `${symbolsList.length} symbols`;
+
+  const renderRows = (symbols) => symbols.map((symbol) => (
+    <WatchlistRow
+      key={symbol}
+      symbol={symbol}
+      terminalMode={terminalMode}
+      massiveHealth={massiveHealth}
+      visibleCols={visibleCols}
+      onActivate={setActiveSymbol}
+    />
+  ));
+
   const toolbar = (
     <div className="watchlist-toolbar-stack">
-      <div className="watchlist-search-bar">
-        <div className="watchlist-search-bar__meta">
-          <span className="watchlist-search-bar__title">Symbol Search</span>
-          <span
-            className={cn(
-              'watchlist-search-bar__summary num-mono',
-              search.trim() && 'watchlist-search-bar__summary--active',
-            )}
-          >
-            {search.trim()
-              ? `${displaySymbols.length} match${displaySymbols.length === 1 ? '' : 'es'}`
-              : `${symbolsList.length} symbols`}
-          </span>
-        </div>
-
-        <div className="watchlist-search-bar__input-wrap">
-          <Search size={12} className="watchlist-search-bar__input-icon" aria-hidden />
-          <Input
-            type="text"
-            placeholder="Filter by symbol…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="terminal-search-input watchlist-search-input"
-          />
-        </div>
+      <div className="watchlist-filter-row">
+        <Search className="watchlist-filter-row__icon shrink-0 text-muted-foreground" aria-hidden />
+        <Input
+          type="search"
+          placeholder="Filter symbols…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="terminal-search-input watchlist-search-input-compact h-[var(--control-h)] flex-1 min-w-0 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+          aria-label="Filter watchlist symbols"
+        />
+        <span className={cn('watchlist-filter-count num-mono', search.trim() && 'text-foreground')}>
+          {filterSummary}
+        </span>
       </div>
 
       <WidgetToolbar compact className="watchlist-cat-toolbar">
-        <div className="scroll-fade-x watchlist-cat-scroll">
-          <Tabs value={cat} onValueChange={setCat} className="w-full">
-            <TabsList variant="line" className="scroll-panel-x no-scrollbar h-8 w-full justify-start rounded-none border-0 bg-transparent px-0">
-            {[['ALL', 'All'], ['CRYPTO', 'Crypto'], ['EQUITY', 'Equity'], ['ETF', 'ETF']].map(([key, label]) => (
-              <TabsTrigger key={key} value={key} className="px-2 text-[0.68rem]">
-                {label}
-                <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-semibold">
-                  {counts[key]}
-                </Badge>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        <div className="scroll-fade-x watchlist-cat-scroll flex-1 min-w-0">
+          <Tabs value={cat} onValueChange={(v) => { if (v) setCat(v); }} className="w-full">
+            <TabsList variant="line" className="scroll-panel-x no-scrollbar h-7 w-full justify-start rounded-none border-0 bg-transparent px-0">
+              {[['ALL', 'All'], ['CRYPTO', 'Crypto'], ['EQUITY', 'Equity'], ['ETF', 'ETF']].map(([key, label]) => (
+                <TabsTrigger key={key} value={key} className="px-2 text-[0.68rem]">
+                  {label}
+                  <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[0.58rem] font-semibold">
+                    {counts[key]}
+                  </Badge>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </div>
       </WidgetToolbar>
     </div>
   );
 
+  const headerRight = useMemo(
+    () => (
+      <WatchlistColumnPicker
+        columns={watchlistColumns}
+        activePresetId={activePresetId}
+        presets={columnPresets}
+        onApplyPreset={handleApplyPreset}
+        onChange={handleWatchlistColumnsChange}
+      />
+    ),
+    [watchlistColumns, activePresetId, columnPresets, handleApplyPreset, handleWatchlistColumnsChange],
+  );
+
   return (
-    <WidgetShell icon={Activity} title="Watchlist" toolbar={toolbar} contentClassName="flex min-h-0 flex-col overflow-hidden p-0">
+    <WidgetShell
+      icon={Activity}
+      title="Watchlist"
+      toolbar={toolbar}
+      headerRight={headerRight}
+      contentClassName="flex min-h-0 flex-col overflow-hidden p-0"
+    >
       <ScrollTablePanel className="watchlist-table-panel">
-        <table className="watchlist-table text-xs">
-        <colgroup>
-          <col className="watchlist-col-symbol" />
-          <col className="watchlist-col-spark" />
-          <col className="watchlist-col-price" />
-          <col className="watchlist-col-chg" />
-          <col className="watchlist-col-vol" />
-        </colgroup>
-        <thead>
-          <tr>
-            {[
-              { field: 'symbol', label: 'Symbol', align: 'left', col: 'watchlist-col-symbol' },
-              { field: null, label: '', align: 'left', col: 'watchlist-col-spark' },
-              { field: 'price', label: 'Price', align: 'right', col: 'watchlist-col-price' },
-              { field: 'change_24h', label: terminalMode === 'LIVE_MASSIVE' ? 'Chg%' : '24h%', align: 'right', col: 'watchlist-col-chg', title: terminalMode === 'LIVE_MASSIVE' ? 'Rolling 24h change' : undefined },
-              { field: 'volume_24h', label: 'Vol', align: 'right', col: 'watchlist-col-vol' },
-            ].map(({ field, label, align, col, title }) => (
-              <th
-                key={label || 'spark'}
-                title={title}
-                onClick={field ? () => handleSort(field) : undefined}
-                className={cn(
-                  col,
-                  'sticky top-0 z-[1] border-b border-border bg-background/95 text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur-sm',
-                  align === 'right' ? 'text-right' : 'text-left',
-                  field && 'cursor-pointer hover:text-foreground',
-                  sort.field === field && 'text-trading-accent'
-                )}
-              >
-                {label}
-                {field && sort.field === field && (
-                  <span className="ml-0.5 opacity-70">{sort.dir === 'asc' ? '↑' : '↓'}</span>
-                )}
-              </th>
+        <DataTableRoot variant="watchlist" className="watchlist-table text-xs" {...columnPrefAttrs}>
+          <colgroup>
+            {visibleCols.map((col) => (
+              <col key={col.id} className={col.col} />
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          {displaySymbols.map(symbol => (
-            <WatchlistRow
-              key={symbol}
-              symbol={symbol}
-              terminalMode={terminalMode}
-              massiveHealth={massiveHealth}
-            />
-          ))}
-        </tbody>
-        </table>
+          </colgroup>
+          <DataTableHeader>
+            <tr className="watchlist-table__header-row border-b border-border hover:bg-transparent">
+              {visibleCols.map(({ field, label, align, col, title }) => (
+                <SortableDataTableHead
+                  key={col}
+                  field={field}
+                  sort={sort}
+                  onSort={handleSort}
+                  title={title}
+                  align={align}
+                  className={col}
+                  label={label}
+                />
+              ))}
+            </tr>
+          </DataTableHeader>
+          <DataTableBody>
+            {showSections
+              ? sectionGroups.map((section) => (
+                <React.Fragment key={section.key}>
+                  <DataTableSectionRow
+                    colSpan={visibleCols.length}
+                    label={section.label}
+                    count={section.symbols.length}
+                  />
+                  {renderRows(section.symbols)}
+                </React.Fragment>
+              ))
+              : renderRows(displaySymbols)}
+          </DataTableBody>
+        </DataTableRoot>
         {displaySymbols.length === 0 && (
           <WidgetEmpty message="No symbols match your filter" />
         )}

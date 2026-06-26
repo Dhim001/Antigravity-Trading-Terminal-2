@@ -171,7 +171,7 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [] }
   const isActive = sym === activeSymbol;
 
   return (
-    <tr className={cn(isActive && 'row-active')}>
+    <tr className={cn('data-table-row-deferred', isActive && 'row-active')}>
       <td>
         <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
         {ownerBots.length > 0 && (
@@ -1385,64 +1385,66 @@ export function AlgoTab({ hideToolbar = false }) {
             )}
           </div>
         </div>
-        <footer className="algo-tab__panel-footer">
-          <Button
-            variant="outline"
-            size="sm"
-            className="flex-1 text-xs"
-            onClick={handleRunBacktest}
-            disabled={backtestRunning}
-          >
-            {backtestRunning ? (
-              <Loader2 className="size-3.5 animate-spin" data-icon="inline-start" />
-            ) : (
-              <Activity data-icon="inline-start" />
+        <footer className="algo-tab__panel-footer algo-deploy-actions">
+          <div className="algo-deploy-actions__rail">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="algo-deploy-actions__btn"
+              onClick={handleRunBacktest}
+              disabled={backtestRunning}
+            >
+              {backtestRunning ? (
+                <Loader2 className="size-3.5 animate-spin" data-icon="inline-start" />
+              ) : (
+                <Activity data-icon="inline-start" />
+              )}
+              {backtestRunning ? 'RUNNING…' : 'BACKTEST'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="algo-deploy-actions__btn"
+              onClick={handleOpenOptimizer}
+              disabled={backtestRunning}
+              title="Open Backtest Lab optimizer with current symbol, strategy, and config"
+            >
+              OPTIMIZE
+            </Button>
+            {backtestRunning && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="algo-deploy-actions__btn algo-deploy-actions__btn--cancel"
+                onClick={handleCancelBacktest}
+                title="Cancel running backtest"
+              >
+                <XSquare size={14} />
+              </Button>
             )}
-            {backtestRunning ? 'RUNNING…' : 'BACKTEST'}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 text-xs"
-            onClick={handleOpenOptimizer}
-            disabled={backtestRunning}
-            title="Open Backtest Lab optimizer with current symbol, strategy, and config"
-          >
-            OPTIMIZE
-          </Button>
-          {backtestRunning && (
+            {backtestResults && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="algo-deploy-actions__btn algo-deploy-actions__btn--utility"
+                onClick={() => setBacktestLabOpen(true)}
+                title="Open full backtest report"
+              >
+                <Maximize2 size={14} />
+              </Button>
+            )}
             <Button
-              variant="ghost"
+              variant="buy"
               size="sm"
-              className="shrink-0 text-xs text-destructive"
-              onClick={handleCancelBacktest}
-              title="Cancel running backtest"
+              className="algo-deploy-actions__btn algo-deploy-actions__btn--deploy"
+              onClick={() => setDeployOpen(true)}
+              disabled={liveBotsBlocked}
+              title={liveBotsBlocked ? 'Live bot trading disabled on server' : 'Deploy bot'}
             >
-              <XSquare size={14} />
+              <Play data-icon="inline-start" />
+              DEPLOY
             </Button>
-          )}
-          {backtestResults && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="shrink-0 text-xs"
-              onClick={() => setBacktestLabOpen(true)}
-              title="Open full backtest report"
-            >
-              <Maximize2 size={14} />
-            </Button>
-          )}
-          <Button
-            variant="buy"
-            size="sm"
-            className="flex-[1.5] text-xs font-bold"
-            onClick={() => setDeployOpen(true)}
-            disabled={liveBotsBlocked}
-            title={liveBotsBlocked ? 'Live bot trading disabled on server' : 'Deploy bot'}
-          >
-            <Play data-icon="inline-start" />
-            DEPLOY
-          </Button>
+          </div>
         </footer>
       </section>
 
@@ -1554,7 +1556,7 @@ export function AlgoTab({ hideToolbar = false }) {
                   return (
                   <tr
                     key={bot.id}
-                    className={cn('algo-bot-row', selectedBotId === bot.id && 'row-active')}
+                    className={cn('algo-bot-row data-table-row-deferred', selectedBotId === bot.id && 'row-active')}
                     onClick={() => selectBot(bot.id)}
                   >
                     <td className="font-bold">{bot.symbol}</td>
@@ -2080,7 +2082,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
                 type="single"
                 value={activeGroup}
                 onValueChange={(v) => { if (v) handleGroupChange(v); }}
-                variant="outline"
+                variant="default"
                 size="sm"
                 spacing={0}
                 className="dock-group-toggle"

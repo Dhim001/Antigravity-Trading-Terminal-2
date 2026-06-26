@@ -93,7 +93,7 @@
   --header-h:  52px;
   --command-h: 40px;
   --strip-h:   34px;
-  --sidebar-w: 260px;
+  --sidebar-w: 320px;
   --panel-w:   316px;
   --dock-h:    320px;
   --dock-min:  200px;
@@ -163,6 +163,9 @@
   --input: var(--border-color);
   --ring: var(--color-accent-light);
   --radius: var(--r-md);
+  /* Token bridge — prefer shadcn semantic tokens in new table/UI code */
+  --surface-hover: color-mix(in oklab, var(--muted) 45%, transparent);
+  --watchlist-sticky-header-h: 1.875rem;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -339,22 +342,63 @@ body {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  gap: var(--icon-gap-tight);
-  padding-block: 0;
-  padding-inline: var(--sp-1) 0;
+  padding: 2px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent);
   box-sizing: border-box;
 }
 
 .dock-group-toggle {
   flex-shrink: 0;
+  display: flex;
+  height: calc(var(--dock-tab-h) - 2px);
+  min-height: calc(var(--dock-tab-h) - 2px);
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
-/* Vertical rule between the group rail and the tab list — center it
-   regardless of the flex bar's stretch alignment. */
+.dock-group-toggle [data-slot="toggle-group-item"] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--icon-gap);
+  height: 100%;
+  min-height: 0;
+  padding-inline: 10px;
+  border-radius: calc(var(--r-md) - 2px);
+  border: 1px solid transparent;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  background: transparent;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.dock-group-toggle [data-slot="toggle-group-item"]:hover {
+  color: var(--text-secondary);
+  background: color-mix(in oklab, var(--muted) 50%, transparent);
+}
+
+.dock-group-toggle [data-slot="toggle-group-item"][data-state="on"] {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-primary) 15%, transparent);
+}
+
+/* Vertical rule between the group rail and the tab list */
 .dock-tab-bar > [data-slot="separator"][data-orientation="vertical"] {
   align-self: center;
-  height: 22px;
-  margin-inline: var(--sp-1);
+  flex-shrink: 0;
+  height: calc(var(--dock-tab-h) + 2px);
+  margin-inline: 0;
 }
 
 .dock-tab-actions {
@@ -493,11 +537,63 @@ body {
   --panel-w: 44px;
 }
 
+/* Collapsed watchlist: rail stays beside chart only; dock spans full width so
+   footers align flush with the main workspace (no 36px gutter). */
+.dashboard-container[data-sidebar-collapsed]:not([data-zen]) .watchlist-sidebar {
+  grid-row: 3;
+  align-self: stretch;
+}
+
+.dashboard-container[data-sidebar-collapsed]:not([data-zen]) .bottom-dock {
+  grid-column: 1 / 3;
+  border-left: 1px solid var(--border-color);
+}
+
+.dashboard-container[data-sidebar-collapsed]:not([data-zen]) .bottom-dock--collapsed {
+  grid-column: 1 / 3;
+}
+
+.dashboard-container[data-sidebar-collapsed] .watchlist-sidebar--collapsed {
+  border-bottom: none;
+}
+
+.dashboard-container[data-sidebar-collapsed] .watchlist-collapse-rail {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dashboard-container[data-sidebar-collapsed] .dock-panel-tab__footer,
+.dashboard-container[data-sidebar-collapsed] .positions-tab__footer,
+.dashboard-container[data-sidebar-collapsed] .algo-tab__panel-footer {
+  padding-left: var(--sp-3);
+}
+
 .dashboard-container[data-density="comfortable"] {
   --dock-tab-h: 40px;
   --widget-header-h: 40px;
   --control-h: 32px;
   --command-h: 44px;
+}
+
+.dashboard-container[data-density="comfortable"] .watchlist-table td,
+.dashboard-container[data-density="comfortable"] .data-table--watchlist .data-table__td {
+  padding-block: var(--sp-3);
+}
+
+.dashboard-container[data-density="comfortable"] .watchlist-cell,
+.dashboard-container[data-density="comfortable"] .watchlist-table__th,
+.dashboard-container[data-density="comfortable"] .data-table--watchlist .data-table__th {
+  font-size: var(--fs-xs);
+}
+
+.dashboard-container[data-density="comfortable"] .watchlist-table__th,
+.dashboard-container[data-density="comfortable"] .data-table--watchlist .data-table__th {
+  padding-block: var(--sp-3);
+}
+
+.dashboard-container[data-density="comfortable"] .terminal-table th,
+.dashboard-container[data-density="comfortable"] .terminal-table td {
+  padding-block: 0.65rem;
 }
 
 .dashboard-container[data-layout-mode="analyze"] .workspace-main {
@@ -570,11 +666,10 @@ body {
   );
 }
 
-.dashboard-container[data-layout-mode="portfolio"] .bottom-dock[data-dock-group="data"] .dock-group-toggle [data-slot="toggle-group-item"][data-group="data"][data-state="on"] {
-  border-color: color-mix(in oklab, var(--color-up) 42%, var(--border-color));
-  background: color-mix(in oklab, var(--color-up) 20%, var(--secondary));
-  color: var(--foreground);
-  box-shadow: 0 0 12px color-mix(in oklab, var(--color-up) 12%, transparent);
+.dashboard-container[data-layout-mode="portfolio"] .bottom-dock .dock-group-toggle [data-slot="toggle-group-item"][data-state="on"] {
+  background: color-mix(in oklab, var(--color-up) 16%, transparent);
+  border-color: color-mix(in oklab, var(--color-up) 38%, transparent);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--color-up) 12%, transparent);
 }
 
 .dashboard-container[data-layout-mode="portfolio"] .bottom-dock .dock-tab-switch [data-slot="tabs-trigger"][data-state="active"],
@@ -651,7 +746,7 @@ body {
   display: none;
 }
 
-.command-bar[data-layout-mode="portfolio"] .portfolio-summary-bar > span {
+.command-bar[data-layout-mode="portfolio"] .portfolio-summary-bar > span:not(.terminal-warn-chip) {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -689,8 +784,68 @@ body {
 }
 
 /* Command bar (UX-4) — replaces aux + strip rows */
-.command-bar {
+.command-stack {
   grid-area: command;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+}
+
+.command-stack .command-bar {
+  border-bottom: none;
+  background: transparent;
+}
+
+.command-stack:has(.terminal-feed-banner) .command-bar {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.terminal-feed-banner {
+  flex-shrink: 0;
+  padding: var(--sp-1) var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+}
+
+.terminal-feed-banner--warn {
+  border-bottom: 1px solid color-mix(in oklab, var(--color-warn, #f59e0b) 30%, transparent);
+  background: color-mix(in oklab, var(--color-warn, #f59e0b) 10%, transparent);
+  color: var(--color-trading-warn);
+}
+
+.terminal-feed-banner--down {
+  border-bottom: 1px solid color-mix(in oklab, var(--color-down) 35%, transparent);
+  background: color-mix(in oklab, var(--color-down) 10%, transparent);
+  color: var(--color-trading-down);
+}
+
+.terminal-warn-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  max-width: min(100%, 14rem);
+  padding: 0.12rem 0.45rem;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in oklab, var(--color-warn, #f59e0b) 38%, var(--border));
+  background: color-mix(in oklab, var(--color-warn, #f59e0b) 10%, transparent);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: var(--color-trading-warn);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent);
+}
+
+.command-bar {
+  grid-area: unset;
   display: grid;
   grid-template-columns: minmax(140px, auto) 1fr minmax(180px, auto);
   align-items: center;
@@ -705,6 +860,29 @@ body {
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.command-bar__lead .terminal-warn-chip {
+  flex-shrink: 0;
+}
+
+.dashboard-container[data-sidebar-collapsed] .command-bar__metrics {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.dashboard-container[data-sidebar-collapsed] .command-bar__metrics .terminal-warn-chip,
+.dashboard-container[data-sidebar-collapsed] .command-bar__metrics .portfolio-summary-bar > span {
+  max-width: 8.5rem;
+}
+
+.command-bar__metrics .terminal-warn-chip {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 0.6rem;
+  font-weight: 600;
 }
 
 .command-bar__symbol {
@@ -733,8 +911,22 @@ body {
   white-space: nowrap;
 }
 
+.command-bar__symbol-change-abs,
 .command-bar__symbol-change {
+  flex-shrink: 0;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.command-bar__symbol-change-abs {
+  min-width: 4.5rem;
+  text-align: right;
+}
+
+.command-bar__symbol-change {
+  min-width: 3.75rem;
+  text-align: right;
 }
 
 @media (max-width: 1023px) {
@@ -1191,6 +1383,16 @@ body {
 
 .stale-data-banner {
   flex-shrink: 0;
+}
+
+.stale-data-banner:not(.stale-data-banner--inline) {
+  border-bottom: 1px solid color-mix(in oklab, var(--color-warn, #f59e0b) 30%, transparent);
+  background: color-mix(in oklab, var(--color-warn, #f59e0b) 10%, transparent);
+  color: var(--color-trading-warn);
+  padding: var(--sp-1) var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-xs);
+  line-height: 1.35;
 }
 
 .portfolio-summary-bar {
@@ -2202,7 +2404,7 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-wrap: nowrap;
-  align-items: stretch;
+  align-items: center;
   gap: var(--sp-2);
   min-height: calc(var(--dock-tab-h) + 4px);
   padding: var(--toolbar-pad-block) var(--sp-2);
@@ -2280,6 +2482,10 @@ body {
 }
 
 @media (max-width: 1279px) {
+  .dock-group-toggle [data-slot="toggle-group-item"] {
+    padding-inline: 8px;
+  }
+
   .dock-tab-switch [data-slot="tabs-trigger"] {
     padding-inline: 8px;
   }
@@ -3611,9 +3817,11 @@ body {
 }
 
 .watchlist-table-panel {
+  container-type: inline-size;
+  container-name: watchlist;
   min-height: 0;
   flex: 1;
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
   padding-inline: var(--sp-1);
   scrollbar-gutter: stable;
@@ -3622,18 +3830,20 @@ body {
 .watchlist-table {
   table-layout: fixed;
   width: 100%;
+  min-width: 16rem;
   border-collapse: collapse;
+}
+
+.data-table--watchlist[data-col-count="5"],
+.data-table--watchlist[data-col-count="6"] {
+  min-width: 21rem;
 }
 
 .watchlist-table th,
 .watchlist-table td {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.watchlist-table th {
-  padding: var(--sp-2) var(--sp-1);
-  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 .watchlist-table td {
@@ -3641,31 +3851,62 @@ body {
   padding-inline: var(--sp-1);
 }
 
+.watchlist-cell {
+  font-size: var(--fs-2xs);
+}
+
 .watchlist-table .watchlist-col-symbol {
-  width: 24%;
+  width: 18%;
   padding-left: var(--sp-2);
 }
 
-.watchlist-table .watchlist-col-spark {
-  width: 16%;
-}
-
 .watchlist-table .watchlist-col-price {
-  width: 26%;
-}
-
-.watchlist-table .watchlist-col-chg {
   width: 18%;
 }
 
+.watchlist-table .watchlist-col-chg {
+  width: 17%;
+}
+
+.watchlist-table .watchlist-col-chgpct {
+  width: 13%;
+}
+
 .watchlist-table .watchlist-col-vol {
-  width: 16%;
+  width: 17%;
+}
+
+.watchlist-table .watchlist-col-avgvol {
+  width: 17%;
   padding-right: var(--sp-2);
 }
 
-.watchlist-table th.watchlist-col-vol,
-.watchlist-table td.watchlist-col-vol {
+.watchlist-table th.watchlist-col-avgvol,
+.watchlist-table td.watchlist-col-avgvol {
   padding-right: var(--sp-2);
+}
+
+/* Narrow sidebar: auto-hide optional cols only when user has them disabled (data-pref absent) */
+@container watchlist (max-width: 19rem) {
+  .data-table--watchlist:not([data-pref-vol="1"]) .watchlist-col-vol,
+  .data-table--watchlist:not([data-pref-avg="1"]) .watchlist-col-avgvol {
+    display: none;
+  }
+
+  .watchlist-table .watchlist-col-symbol { width: 28%; }
+  .watchlist-table .watchlist-col-price { width: 26%; }
+  .watchlist-table .watchlist-col-chg { width: 24%; }
+  .watchlist-table .watchlist-col-chgpct { width: 22%; }
+}
+
+@container watchlist (max-width: 15rem) {
+  .data-table--watchlist:not([data-pref-change-abs="1"]) .watchlist-col-chg {
+    display: none;
+  }
+
+  .watchlist-table .watchlist-col-symbol { width: 34%; }
+  .watchlist-table .watchlist-col-price { width: 33%; }
+  .watchlist-table .watchlist-col-chgpct { width: 33%; }
 }
 
 .watchlist-search-bar {
@@ -3688,6 +3929,33 @@ body {
   flex-shrink: 0;
   flex-direction: column;
   border-bottom: 1px solid var(--border-color);
+}
+
+.watchlist-filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.watchlist-filter-row__icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.watchlist-filter-count {
+  flex-shrink: 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.watchlist-search-input-compact::placeholder {
+  color: var(--text-muted);
 }
 
 .watchlist-cat-toolbar {
@@ -4013,6 +4281,116 @@ body {
     rgba(0, 0, 0, 0.14) 0%,
     rgba(255, 255, 255, 0.02) 100%
   );
+}
+
+/* Deploy bot panel — segmented action rail (matches dock group toggles) */
+.algo-deploy-actions {
+  align-items: center;
+  padding: var(--toolbar-pad-block) var(--sp-2);
+}
+
+.algo-deploy-actions__rail {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent);
+  box-sizing: border-box;
+}
+
+.algo-deploy-actions__rail [data-slot="button"] {
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(var(--dock-tab-h) - 2px);
+  min-height: calc(var(--dock-tab-h) - 2px);
+  padding-inline: 10px;
+  border-radius: calc(var(--r-md) - 2px);
+  border: 1px solid transparent;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: transparent;
+  box-shadow: none;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.algo-deploy-actions__rail [data-slot="button"]:hover:not(:disabled) {
+  color: var(--text-secondary);
+  background: color-mix(in oklab, var(--muted) 50%, transparent);
+}
+
+.algo-deploy-actions__rail [data-slot="button"]:disabled:not(.algo-deploy-actions__btn--deploy) {
+  opacity: 1;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 32%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.algo-deploy-actions__btn--cancel {
+  flex: 0 0 auto;
+  padding-inline: 8px;
+  color: var(--color-down);
+}
+
+.algo-deploy-actions__btn--cancel:hover:not(:disabled) {
+  color: var(--color-down);
+  background: color-mix(in oklab, var(--color-down) 12%, transparent);
+  border-color: color-mix(in oklab, var(--color-down) 28%, transparent);
+}
+
+.algo-deploy-actions__btn--utility {
+  flex: 0 0 auto;
+  padding-inline: 8px;
+}
+
+.algo-deploy-actions__btn--deploy {
+  flex: 1.35 1 0;
+  color: var(--color-up);
+  background: color-mix(in srgb, var(--color-up) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-up) 32%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-up) 10%, transparent);
+}
+
+.algo-deploy-actions__btn--deploy:hover:not(:disabled) {
+  color: var(--color-up);
+  background: color-mix(in srgb, var(--color-up) 22%, transparent);
+  border-color: color-mix(in srgb, var(--color-up) 42%, transparent);
+}
+
+.algo-deploy-actions__btn--deploy:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.dashboard-container[data-layout-mode="portfolio"] .algo-deploy-actions__btn--deploy:not(:disabled) {
+  background: color-mix(in oklab, var(--color-up) 18%, transparent);
+  border-color: color-mix(in oklab, var(--color-up) 38%, transparent);
+  box-shadow: 0 0 10px color-mix(in oklab, var(--color-up) 12%, transparent);
+}
+
+.dashboard-container[data-layout-mode="automate"] .algo-deploy-actions__rail {
+  border-color: color-mix(in oklab, #f59e0b 22%, var(--border));
+  background: color-mix(in oklab, #f59e0b 6%, var(--muted) 40%, transparent);
+}
+
+@media (max-width: 1279px) {
+  .algo-deploy-actions__rail [data-slot="button"] {
+    padding-inline: 8px;
+    font-size: 0.62rem;
+  }
+
+  .algo-deploy-actions__btn--cancel,
+  .algo-deploy-actions__btn--utility {
+    padding-inline: 6px;
+  }
 }
 
 .algo-tab__scroll {
@@ -6373,6 +6751,105 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   DATA TABLE (Phase C — shadcn Table + terminal primitive)
+═══════════════════════════════════════════════════════════════════ */
+.data-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-2xs);
+}
+
+.data-table__th,
+.data-table__td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-table__td {
+  padding-block: var(--sp-2);
+  padding-inline: var(--sp-1);
+}
+
+.data-table:not(.data-table--watchlist) tbody tr:hover td {
+  background: var(--surface-hover);
+}
+
+/* Watchlist rows — single hover path on cells; preserve active tint */
+.data-table--watchlist thead .data-table__th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 95%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist:hover td {
+  background: var(--surface-hover);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"] td {
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"]:hover td {
+  background: color-mix(in oklab, var(--primary) 12%, var(--muted) 38%);
+}
+
+.data-table-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
+.data-table-section-row__label {
+  position: sticky;
+  top: var(--watchlist-sticky-header-h);
+  z-index: 1;
+  padding: var(--sp-1) var(--sp-2);
+  text-align: left;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--background) 92%, var(--muted));
+  border-block: 1px solid var(--border);
+}
+
+.data-table-section-row__count {
+  margin-left: var(--sp-2);
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.dashboard-container[data-density="comfortable"] .data-table__td {
+  padding-block: var(--sp-3);
+  font-size: var(--fs-xs);
+}
+
+.dashboard-container[data-density="comfortable"] .data-table__th {
+  padding-block: var(--sp-3);
+  font-size: var(--fs-xs);
+}
+
+.bottom-dock .terminal-table tbody tr.data-table-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+}
+
+/* Legacy watchlist alias — shares data-table watchlist variant */
+.data-table--watchlist.watchlist-table th,
+.data-table--watchlist.watchlist-table td,
+.watchlist-table th,
+.watchlist-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    TABLES
 ═══════════════════════════════════════════════════════════════════ */
 .terminal-table {
@@ -6425,7 +6902,7 @@ body {
 }
 
 .terminal-table tr:hover > td {
-  background: var(--bg-hover);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
 }
 
 .terminal-table tr.row-active > td {
@@ -6445,7 +6922,11 @@ body {
 /* ═══════════════════════════════════════════════════════════════════
    UTILITY CLASSES
 ═══════════════════════════════════════════════════════════════════ */
-.num-mono    { font-family: var(--font-mono); }
+.num-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
 .text-muted  { color: var(--text-muted); }
 .text-accent { color: var(--color-accent-light); }
 

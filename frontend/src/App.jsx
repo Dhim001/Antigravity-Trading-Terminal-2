@@ -85,7 +85,8 @@ export default function App() {
 
   const [showAdmin, setShowAdmin]   = useState(false);
   const [dockHeight, setDockHeight] = useState(() => workspace?.dockHeight || DOCK_DEFAULT);
-  const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 260);
+  const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 320);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -110,9 +111,13 @@ export default function App() {
     setDockHeight(h);
     updateWorkspace({ dockHeight: h });
   }, [updateWorkspace]);
-  const handleSidebarLayout = useCallback(({ width }) => {
-    setSidebarWidth(width);
-    updateWorkspace({ sidebarWidth: width });
+  const handleSidebarLayout = useCallback(({ width, collapsed }) => {
+    setSidebarWidth((prev) => (prev === width ? prev : width));
+    setSidebarCollapsed((prev) => (prev === collapsed ? prev : !!collapsed));
+    const stored = useSettingsStore.getState().settings.workspace?.sidebarWidth;
+    if (stored !== width) {
+      updateWorkspace({ sidebarWidth: width });
+    }
   }, [updateWorkspace]);
 
   const handleLayoutModeChange = useCallback((mode) => {
@@ -299,6 +304,7 @@ export default function App() {
       data-zen={zenMode ? '' : undefined}
       data-density={density}
       data-panel-collapsed={panelEnabled && panelCollapsed ? '' : !panelEnabled ? '' : undefined}
+      data-sidebar-collapsed={sidebarCollapsed ? '' : undefined}
       data-dock-hidden={!showDock && !zenMode ? '' : undefined}
       style={{
         '--dock-h': `${effectiveDockH}px`,
@@ -570,12 +576,13 @@ export default function App() {
       </header>
       </ErrorBoundary>
 
-      {terminalMode === 'LIVE_IB' && <IbFeedStatusBanner />}
-      {terminalMode === 'LIVE_MASSIVE' && <MassiveFeedStatusBanner />}
-
       {!zenMode && modeConfig.showCommandBar && (
         <ErrorBoundary name="Command bar">
-          <CommandBar />
+          <div className="command-stack">
+            {terminalMode === 'LIVE_IB' && <IbFeedStatusBanner />}
+            {terminalMode === 'LIVE_MASSIVE' && <MassiveFeedStatusBanner />}
+            <CommandBar />
+          </div>
         </ErrorBoundary>
       )}
 

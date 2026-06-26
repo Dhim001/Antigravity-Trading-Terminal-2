@@ -10,13 +10,14 @@ import MarketOverviewStrip from './MarketOverviewStrip';
 import PortfolioSummaryBar from './PortfolioSummaryBar';
 import StaleDataBanner from './StaleDataBanner';
 import { cn } from '@/lib/utils';
-import { formatPrice } from '@/lib/formatPrice';
+import { formatChangeAbs, formatChangePct, formatPrice } from '../lib/formatPrice';
 
 function CommandBar() {
   const { symbol, price, change } = useStore(useShallow(selectActiveSymbolTick));
   const layoutMode = useSettingsStore((s) => s.settings.workspace?.layoutMode || 'trade');
 
   const isUp = (change ?? 0) >= 0;
+  const changeTone = isUp ? 'text-trading-up' : 'text-trading-down';
 
   return (
     <div className="command-bar" data-layout-mode={layoutMode}>
@@ -28,13 +29,15 @@ function CommandBar() {
               {formatPrice(symbol, price)}
             </span>
           )}
-          {change != null && (
-            <span className={cn(
-              'command-bar__symbol-change num-mono',
-              isUp ? 'text-trading-up' : 'text-trading-down',
-            )}>
-              {isUp ? '+' : ''}{change.toFixed(2)}%
-            </span>
+          {change != null && price != null && (
+            <>
+              <span className={cn('command-bar__symbol-change-abs num-mono', changeTone)}>
+                {formatChangeAbs(symbol, price, change)}
+              </span>
+              <span className={cn('command-bar__symbol-change num-mono', changeTone)}>
+                {formatChangePct(change)}
+              </span>
+            </>
           )}
         </div>
         <StaleDataBanner inline />

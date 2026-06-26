@@ -1,6 +1,9 @@
 /** @typedef {'light' | 'dark' | 'system'} ThemeMode */
 /** @typedef {'candle' | 'line'} ChartType */
 
+import { DEFAULT_WATCHLIST_COLUMNS, normalizeWatchlistColumns } from './watchlistColumns';
+import { normalizeWatchlistColumnPresets } from './watchlistColumnPresets';
+
 /**
  * @typedef {Object} ChartAppearanceSettings
  * @property {string} background
@@ -48,6 +51,7 @@
  * @property {ChartLayoutSettings} chartLayout
  * @property {WorkspaceSettings} workspace
  * @property {WorkspacePreset[]} workspacePresets
+ * @property {WatchlistColumnPreset[]} watchlistColumnPresets User-saved watchlist column layouts
  * @property {AlertRule[]} alerts
  * @property {boolean} onboardingCompleted
  * @property {boolean} [syncChartToTheme] Auto-match chart canvas to light/dark theme
@@ -68,6 +72,17 @@
  * @property {'trade' | 'book' | 'depth'} rightPanelTab
  * @property {boolean} dockCollapsed
  * @property {'compact' | 'comfortable'} density
+ * @property {{ change_abs?: boolean, change_24h?: boolean, volume_24h?: boolean, avg_volume?: boolean }} watchlistColumns
+ * @property {boolean} watchlistSections Group symbols by asset class on All tab
+ * @property {string | null} watchlistColumnPresetId Active column preset id (or custom)
+ */
+
+/**
+ * @typedef {Object} WatchlistColumnPreset
+ * @property {string} id
+ * @property {string} name
+ * @property {string} [description]
+ * @property {{ change_abs?: boolean, change_24h?: boolean, volume_24h?: boolean, avg_volume?: boolean }} columns
  */
 
 /**
@@ -131,7 +146,7 @@ export const DEFAULT_TERMINAL_SETTINGS = {
   },
   workspace: {
     dockHeight: 320,
-    sidebarWidth: 260,
+    sidebarWidth: 320,
     dockActiveTab: 'positions',
     dockGroup: 'portfolio',
     viewMode: 'single',
@@ -142,7 +157,11 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     rightPanelTab: 'trade',
     dockCollapsed: false,
     density: 'compact',
+    watchlistColumns: { ...DEFAULT_WATCHLIST_COLUMNS },
+    watchlistSections: true,
+    watchlistColumnPresetId: 'full',
   },
+  watchlistColumnPresets: [],
   workspacePresets: [],
   alerts: [],
   onboardingCompleted: false,
@@ -260,11 +279,17 @@ export function migrateSettings(raw) {
         ? input.workspace.rightPanelTab
         : base.workspace.rightPanelTab,
       density: input.workspace?.density === 'comfortable' ? 'comfortable' : 'compact',
+      watchlistColumns: normalizeWatchlistColumns(input.workspace?.watchlistColumns),
+      watchlistSections: input.workspace?.watchlistSections !== false,
+      watchlistColumnPresetId: typeof input.workspace?.watchlistColumnPresetId === 'string'
+        ? input.workspace.watchlistColumnPresetId
+        : base.workspace.watchlistColumnPresetId,
       zenMode: Boolean(input.workspace?.zenMode),
       rightPanelCollapsed: Boolean(input.workspace?.rightPanelCollapsed),
       dockCollapsed: Boolean(input.workspace?.dockCollapsed),
     },
     workspacePresets: ensureBuiltinPresets(input.workspacePresets),
+    watchlistColumnPresets: normalizeWatchlistColumnPresets(input.watchlistColumnPresets),
     alerts: Array.isArray(input.alerts) ? input.alerts : [],
     onboardingCompleted: Boolean(input.onboardingCompleted),
     updatedAt: input.updatedAt || new Date().toISOString(),

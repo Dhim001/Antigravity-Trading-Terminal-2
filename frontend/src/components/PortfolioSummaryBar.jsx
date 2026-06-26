@@ -53,9 +53,12 @@ function PortfolioSummaryBar({ compact = false }) {
       <span className="text-muted-foreground">
         <strong className="text-foreground">{runningBots}</strong> bots
       </span>
-      {restOnly && !compact && (
-        <span className="rounded border border-trading-warn/40 bg-trading-warn/10 px-1.5 py-0.5 text-trading-warn">
-          REST fallback — WS reconnecting
+      {restOnly && (
+        <span
+          className="terminal-warn-chip"
+          title="REST fallback — WebSocket reconnecting"
+        >
+          {compact ? 'REST' : 'REST fallback — WS reconnecting'}
         </span>
       )}
     </div>
