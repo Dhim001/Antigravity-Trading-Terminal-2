@@ -70,7 +70,12 @@ graph TD
 ### Market data & charts
 - **Single-chart** and **multi-chart grid** layouts (⌘1 / ⌘2)
 - **Timeframes**: 1m, 5m, 15m, 1H, 4H, 1D
+- **Candle types**: Candlestick, Heikin-Ashi, time-aligned Renko, and Line
 - **Technical overlays**: EMA 9/21/50, Bollinger Bands, VWAP, Volume, RSI, MACD, ATR
+- **Drawing tools**: trendlines, horizontal levels, Fibonacci retracements, rectangles — persisted per-symbol to the backend
+- **Volume Profile (VPVR)** with POC / value-area highlighting
+- **Comparison mode**: overlay a second symbol rebased to percent change
+- **Replay mode**: step through historical price action bar-by-bar (play / pause / step / speed)
 - **Signal badge** with rule-based analysis popover (BUY / SELL / NEUTRAL)
 - **Market overview strip** with scrolling tickers
 - **Watchlist** with category filters (Crypto / Equity / ETF), search, and sparklines

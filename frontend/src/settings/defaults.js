@@ -137,6 +137,7 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     },
     multiChartLayoutId: '2x2',
     multiChartSymbols: ['BTCUSDT', 'ETHUSDT', 'AAPL', 'TSLA'],
+    volumeProfile: false,
     overlays: {
       trades: true,
       positions: true,

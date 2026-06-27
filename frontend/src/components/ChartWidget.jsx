@@ -20,14 +20,22 @@ import {
   calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcATR, buildVwapSeriesValues
 } from '../utils/indicators';
 import ChartAnalystBadge from './ChartAnalystBadge';
-import { AreaChart, TrendingUp, Activity, Maximize2, Minimize2 } from 'lucide-react';
+import {
+  AreaChart, TrendingUp, Activity, Maximize2, Minimize2, CandlestickChart, Grid3x3,
+  Spline, Minus, AlignJustify, Square, BarChart2, Trash2,
+  History, Play, Pause, SkipForward, SkipBack, RotateCcw, X,
+} from 'lucide-react';
 import { WidgetShell, WidgetToolbar, WidgetToolbarDivider } from './WidgetShell';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { GitCompareArrows } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { BACKTEST_OVERLAY_EVENT, symbolsMatch } from '@/lib/backtestDisplay';
-import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, patchHtFormingBarFromPrice, applyLivePrice, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
+import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, patchHtFormingBarFromPrice, applyLivePrice, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, setCandleHistory, setComparePinnedCandleSymbol, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
 import { fetchCandles } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import { isLiveMassiveMode } from '../lib/massiveMarket';
@@ -40,6 +48,13 @@ import {
   CHART_DISPLAY_BARS_DEFAULT,
   CHART_DISPLAY_MAX_BARS,
 } from '../services/memoryBudget';
+import { applyCandleTransform, estimateRenkoBrickSize } from '../lib/chart/candleTransforms';
+import { computeVolumeProfile, volumeProfileGraphic } from '../lib/chart/volumeProfile';
+import { alignComparisonSeries } from '../lib/chart/comparison';
+import {
+  createDrawing, drawingsToGraphic, hitTestDrawings, timeToFractionalIndex,
+} from '../lib/chart/drawings';
+import { useChartDrawings } from '../hooks/useChartDrawings';
 
 const TF_CONFIGS = [
   { label: '1m',  secs: 60    },
@@ -307,6 +322,27 @@ function bucketCandles(raw, intervalSecs) {
 
 function volumeSeriesEntry(bar, indicatorTheme) {
   return volumeBarEntry(bar, indicatorTheme);
+}
+
+/** Aggregate a symbol's candles to the active timeframe (shared by primary + comparison). */
+function aggregateCandlesForSymbol(symbol, cfg, limit, useNativeHt) {
+  if (!symbol) return [];
+  if (useNativeHt) {
+    const native = getCandles(symbol, cfg.label, cfg.secs);
+    if (native.length > 0) {
+      return native.length > limit ? native.slice(-limit) : native;
+    }
+    const raw = getCandles(symbol, '1m', 60);
+    if (!raw.length) return [];
+    const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
+    const fallback = bucketCandles(rawSlice, cfg.secs);
+    return fallback.length > limit ? fallback.slice(-limit) : fallback;
+  }
+  const raw = getCandles(symbol, '1m', 60);
+  if (!raw.length) return [];
+  const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
+  const series = bucketCandles(rawSlice, cfg.secs);
+  return series.length > limit ? series.slice(-limit) : series;
 }
 
 const MACD_WARMUP = 33;
@@ -740,6 +776,7 @@ export default function ChartWidget() {
   const loadOlderRef = useRef(null);
   const pinnedToLiveRef = useRef(true);
   const liveSeriesCacheRef = useRef({ main: null, volume: null, barCount: 0, chartType: null });
+  const renkoBrickSizeRef = useRef(0);
   const dataZoomHandlerLastMsRef = useRef(0);
   const lastConfigureRevisionRef = useRef('');
   const chartHistoryReadyRef = useRef(false);
@@ -877,6 +914,56 @@ export default function ChartWidget() {
   timeframeRef.current = timeframe;
   chartTypeRef.current = chartType;
   activeRef.current = active;
+
+  // ── Volume Profile (VPVR) + drawing tools ──
+  const [showVolumeProfile, setShowVolumeProfile] = useState(
+    () => Boolean(settings.chartLayout?.volumeProfile),
+  );
+  const {
+    drawings,
+    activeTool,
+    setActiveTool,
+    selectedId: selectedDrawingId,
+    setSelectedId: setSelectedDrawingId,
+    addDrawing,
+    removeDrawing,
+    clearDrawings,
+  } = useChartDrawings(activeSymbol);
+
+  // ── Comparison mode (overlay a second symbol, rebased %) ──
+  const [compareSymbol, setCompareSymbol] = useState(null);
+  const compareSymbolRef = useRef(compareSymbol);
+  compareSymbolRef.current = compareSymbol;
+  // Reactive to the *set* of available symbols (not per-tick price changes).
+  const compareSymbolsKey = useStore(
+    (s) => Object.keys(s.tickerData || {}).sort().join(','),
+  );
+  const compareOptions = useMemo(
+    () => (compareSymbolsKey ? compareSymbolsKey.split(',') : [])
+      .filter((s) => s && s !== activeSymbol),
+    [compareSymbolsKey, activeSymbol],
+  );
+
+  // ── Replay mode (bar-by-bar historical playback) ──
+  const [replayActive, setReplayActive] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replaySpeed, setReplaySpeed] = useState(1);
+  const replayActiveRef = useRef(replayActive);
+  replayActiveRef.current = replayActive;
+
+  const showVolumeProfileRef = useRef(showVolumeProfile);
+  const drawingsRef = useRef(drawings);
+  const activeToolRef = useRef(activeTool);
+  const selectedDrawingIdRef = useRef(selectedDrawingId);
+  const addDrawingRef = useRef(addDrawing);
+  const pendingDrawPointRef = useRef(null);
+  const overlayIdsRef = useRef(new Set());
+  showVolumeProfileRef.current = showVolumeProfile;
+  drawingsRef.current = drawings;
+  activeToolRef.current = activeTool;
+  selectedDrawingIdRef.current = selectedDrawingId;
+  addDrawingRef.current = addDrawing;
 
   useEffect(() => {
     lastConfigureRevisionRef.current = '';
@@ -1048,6 +1135,65 @@ export default function ChartWidget() {
     return series.length > limit ? series.slice(-limit) : series;
   }, [timeframe, activeSymbol, historyRev, displayBarLimit, useNativeHt]);
 
+  // Comparison-symbol candle revision (the active-symbol historyRev won't fire
+  // when only the comparison symbol's data arrives).
+  const compareRev = useStore((state) => {
+    if (!compareSymbol) return 0;
+    return (state.candleHistoryRevision[compareSymbol] || 0)
+      + (state.candleRevision[compareSymbol] || 0);
+  });
+
+  // Comparison-symbol candles aggregated to the active timeframe.
+  // Bumped after comparison history is (re)loaded so the memo recomputes even
+  // when neither the active-symbol nor compare-symbol live revisions change.
+  const [compareLoadRev, setCompareLoadRev] = useState(0);
+
+  const compareCandles = useMemo(() => {
+    if (!compareSymbol) return [];
+    const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
+    return aggregateCandlesForSymbol(compareSymbol, cfg, displayBarLimit, useNativeHt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareSymbol, timeframe, historyRev, compareRev, compareLoadRev, displayBarLimit, useNativeHt]);
+
+  // Load comparison-symbol history when selected. The generic history merge
+  // rejects an archived snapshot older than a pre-existing live bar (which the
+  // compare symbol usually already has from the ticker feed), so replace the
+  // buffer directly. Pin it so the LRU cache doesn't evict it (only the active
+  // chart symbol is pinned by default).
+  useEffect(() => {
+    setComparePinnedCandleSymbol(compareSymbol);
+    if (!compareSymbol) return undefined;
+    const interval = useNativeHt ? timeframe : '1m';
+    fetchCandles(compareSymbol, getStoreActions(), {
+      limit: CHART_SNAPSHOT_BARS,
+      interval,
+    }).then((body) => {
+      const bars = body?.data?.[compareSymbol];
+      if (Array.isArray(bars) && bars.length > 1) {
+        setCandleHistory(compareSymbol, bars, interval, chartTimeframeSecs(interval));
+        setCompareLoadRev((n) => n + 1);
+      }
+    }).catch(() => {});
+    return () => setComparePinnedCandleSymbol(null);
+  }, [compareSymbol, timeframe, useNativeHt]);
+
+  // During replay, only reveal bars up to the replay cursor.
+  const effectiveCandles = useMemo(() => {
+    if (!replayActive) return aggregatedCandles;
+    const end = Math.min(replayIndex, aggregatedCandles.length);
+    return aggregatedCandles.slice(0, Math.max(1, end));
+  }, [replayActive, replayIndex, aggregatedCandles]);
+
+  // Stable Renko brick size per symbol/timeframe so bricks don't rescale on every tick.
+  useEffect(() => {
+    if (chartType === 'renko') {
+      renkoBrickSizeRef.current = estimateRenkoBrickSize(aggregatedCandles);
+    } else {
+      renkoBrickSizeRef.current = 0;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartType, activeSymbol, timeframe, aggregatedCandles.length > 0]);
+
   const nativeHtLoaded = useNativeHt && hasCandleHistory(activeSymbol, timeframe);
 
   const chartHistoryReady = useMemo(
@@ -1073,9 +1219,12 @@ export default function ChartWidget() {
     activeIndicatorKeys.join(','),
     backtestOverlayKey,
     resolvedTheme,
+    replayActive ? `replay:${replayIndex}` : 'live',
+    compareSymbol ? `cmp:${compareSymbol}:${compareCandles.length}` : 'nocmp',
   ].join('|'), [
     activeSymbol, timeframe, chartType, historyRev, displayBarLimit, chartHistoryReady,
-    activeIndicatorKeys, backtestOverlayKey, resolvedTheme,
+    activeIndicatorKeys, backtestOverlayKey, resolvedTheme, replayActive, replayIndex,
+    compareSymbol, compareCandles.length,
   ]);
 
   const displayBarsSyncKey = useMemo(() => {
@@ -1102,7 +1251,7 @@ export default function ChartWidget() {
   // Sync display buffer on structural changes only — live OHLC patches use applyLiveCandleUpdate.
   useEffect(() => {
     const prev = displayBarsRef.current;
-    displayBarsRef.current = aggregatedCandles.map(c => ({ ...c }));
+    displayBarsRef.current = effectiveCandles.map(c => ({ ...c }));
     candlesRef.current = displayBarsRef.current;
     const next = displayBarsRef.current;
     const barCountChanged = prev.length !== next.length;
@@ -1111,7 +1260,7 @@ export default function ChartWidget() {
     if (barCountChanged || lastTimeChanged || !liveSeriesCacheRef.current.main) {
       liveSeriesCacheRef.current = { main: null, volume: null, barCount: 0, chartType: null };
     }
-  }, [displayBarsSyncKey, aggregatedCandles]);
+  }, [displayBarsSyncKey, effectiveCandles, replayIndex]);
 
   // Direct DOM Legend update
   const updateLegendDOM = useCallback((bar) => {
@@ -1208,7 +1357,12 @@ export default function ChartWidget() {
     }
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
 
-    const candlestickData = candles.map(c => [c.open, c.close, c.low, c.high]);
+    // Heikin-Ashi / Renko render with transformed OHLC on the same category axis;
+    // volume and indicators continue to use the raw candles below.
+    const mainCandles = applyCandleTransform(candles, chartType, {
+      renkoBrickSize: renkoBrickSizeRef.current,
+    });
+    const candlestickData = mainCandles.map(c => [c.open, c.close, c.low, c.high]);
     for (let i = 0; i < FUTURE_PADDING; i++) {
       candlestickData.push('-');
     }
@@ -1302,7 +1456,9 @@ export default function ChartWidget() {
       && symbolsMatch(backtestOverlay.symbol, activeSymbol)
       && backtestOverlay.equityCurve?.length;
 
-    const structureKey = chartStructureKey(chartType, subPanes, Boolean(showBacktestEquity));
+    const showCompare = Boolean(compareSymbol) && compareCandles.length > 1;
+
+    const structureKey = `${chartStructureKey(chartType, subPanes, Boolean(showBacktestEquity))}|cmp:${showCompare ? 1 : 0}`;
     const fullReplace = structureKey !== prevStructureKeyRef.current;
     prevStructureKeyRef.current = structureKey;
 
@@ -1322,12 +1478,32 @@ export default function ChartWidget() {
       },
     });
 
+    // Comparison overlay axis (percent change, left side).
+    let compareAxisIndex = -1;
+    if (showCompare) {
+      compareAxisIndex = yAxes.length;
+      yAxes.push({
+        id: 'compare-axis',
+        scale: true,
+        gridIndex: 0,
+        position: 'left',
+        offset: showBacktestEquity ? 38 : 0,
+        splitLine: { show: false },
+        axisLine: { show: true, lineStyle: { color: '#f472b6' } },
+        axisLabel: {
+          color: '#f472b6',
+          fontSize: 9,
+          formatter: (v) => `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`,
+        },
+      });
+    }
+
     // Series
     const series = [];
 
     // Main Candlestick / Line Series
     if (chartType === 'line') {
-      const lineData = candles.map(c => c.close);
+      const lineData = mainCandles.map(c => c.close);
       for (let i = 0; i < FUTURE_PADDING; i++) lineData.push('-');
       series.push(withSeriesAnimOff({
         id: 'main',
@@ -1353,6 +1529,25 @@ export default function ChartWidget() {
           borderColor: chartTheme.bullishColor,
           borderColor0: chartTheme.bearishColor,
         },
+      }));
+    }
+
+    // Comparison overlay — second symbol rebased to percent change.
+    if (showCompare) {
+      const pct = alignComparisonSeries(candles, compareCandles);
+      const compareData = [...pct];
+      for (let i = 0; i < FUTURE_PADDING; i++) compareData.push(null);
+      series.push(withSeriesAnimOff({
+        id: 'compare',
+        name: `${compareSymbol} %`,
+        type: 'line',
+        data: compareData,
+        xAxisIndex: 0,
+        yAxisIndex: compareAxisIndex,
+        showSymbol: false,
+        connectNulls: true,
+        lineStyle: { color: '#f472b6', width: 1.5, type: 'dashed' },
+        z: 3,
       }));
     }
 
@@ -1572,8 +1767,11 @@ export default function ChartWidget() {
     const lastBar = candles[candles.length - 1];
     updateLegendDOM(lastBar);
 
-    requestAnimationFrame(() => applyOverlayPatchRef.current?.());
-  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, indicatorTheme, backtestOverlay, backtestOverlayKey, chartHistoryReady]);
+    requestAnimationFrame(() => {
+      applyOverlayPatchRef.current?.();
+      renderChartGraphicsRef.current?.();
+    });
+  }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, indicatorTheme, backtestOverlay, backtestOverlayKey, chartHistoryReady, compareSymbol, compareCandles]);
 
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
@@ -1633,6 +1831,87 @@ export default function ChartWidget() {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
   }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, backtestOverlay, backtestOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
+
+  // Render the graphic overlay layer (Volume Profile + drawings) in pixel space.
+  // Recomputed on configure, zoom/pan, resize, and when drawings/VPVR change.
+  const renderChartGraphics = useCallback(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
+    const bars = candlesRef.current;
+
+    // Overlay elements are rendered as a FLAT list of ECharts `graphic` elements
+    // (not a nested group): ECharts v6 throws internally (updateLeaveTo) when a
+    // graphic *group* with children is diffed/removed, which silently breaks the
+    // overlay. Each element carries a stable, type-consistent id so stale ones can
+    // be removed by id when the set shrinks.
+    const setGraphic = (children) => {
+      try {
+        const nextIds = new Set();
+        for (const el of children) if (el && el.id != null) nextIds.add(el.id);
+        const removals = [];
+        for (const prevId of overlayIdsRef.current) {
+          if (!nextIds.has(prevId)) removals.push({ id: prevId, $action: 'remove' });
+        }
+        chart.setOption({ graphic: { elements: [...children, ...removals] } });
+        overlayIdsRef.current = nextIds;
+      } catch (err) {
+        console.warn('[ChartWidget] graphic overlay failed:', err);
+      }
+    };
+
+    if (!bars || !bars.length) {
+      setGraphic([]);
+      return;
+    }
+
+    // Category axes interpret numeric convertToPixel input as the ordinal index,
+    // so translate stored {time} → fractional bar index before conversion.
+    const priceToY = (price) => {
+      const px = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [0, price]);
+      return px && Number.isFinite(px[1]) ? px[1] : null;
+    };
+    const convert = (pt) => {
+      if (!pt) return null;
+      const idx = timeToFractionalIndex(bars, toUnixSeconds(pt.time));
+      if (idx == null) return null;
+      const px = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [idx, pt.price]);
+      return px && Number.isFinite(px[0]) && Number.isFinite(px[1]) ? px : null;
+    };
+
+    const width = chart.getWidth();
+    const plotLeft = width * 0.03;
+    const plotRight = width * 0.95;
+
+    const children = [];
+
+    if (showVolumeProfileRef.current) {
+      const profile = computeVolumeProfile(bars, { bins: 24 });
+      if (profile.bins.length >= 2) {
+        const y0 = priceToY(profile.bins[0].mid);
+        const y1 = priceToY(profile.bins[1].mid);
+        const binPx = y0 != null && y1 != null ? Math.abs(y0 - y1) : 6;
+        children.push(...volumeProfileGraphic(profile, {
+          plotRight,
+          maxWidthPx: width * 0.16,
+          priceToY,
+          binPx,
+        }));
+      }
+    }
+
+    children.push(...drawingsToGraphic(drawingsRef.current, convert, {
+      left: plotLeft,
+      right: plotRight,
+      width,
+      priceToY,
+      selectedId: selectedDrawingIdRef.current,
+    }));
+
+    setGraphic(children);
+  }, []);
+
+  const renderChartGraphicsRef = useRef(renderChartGraphics);
+  renderChartGraphicsRef.current = renderChartGraphics;
 
   configureChartRef.current = configureChart;
   applyOverlayPatchRef.current = applyOverlayPatch;
@@ -1720,6 +1999,9 @@ export default function ChartWidget() {
           }
         }
 
+        // Reposition the graphic overlay (VPVR + drawings) on zoom/pan.
+        renderChartGraphicsRef.current?.();
+
         const now = Date.now();
         if (now - dataZoomHandlerLastMsRef.current < DATAZOOM_HANDLER_MIN_MS) return;
         dataZoomHandlerLastMsRef.current = now;
@@ -1732,18 +2014,84 @@ export default function ChartWidget() {
         }
       });
 
-      chart.getZr().on('click', (params) => {
-        const mode = useStore.getState().chartInteractionMode;
-        if (mode === 'normal') return;
-
+      const handleChartClick = (params) => {
         const pointInPixel = [params.offsetX, params.offsetY];
-        if (chart.containPoint({ gridIndex: 0 }, pointInPixel)) {
-          const pointInValue = chart.convertFromPixel({ gridIndex: 0 }, pointInPixel);
-          const price = pointInValue[1];
-          if (price !== null && price > 0) {
-            window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+        const inGrid = chart.containPixel({ gridIndex: 0 }, pointInPixel);
+
+        // 1) SL/TP edit mode (existing behavior).
+        const mode = useStore.getState().chartInteractionMode;
+        if (mode !== 'normal') {
+          if (inGrid) {
+            const pointInValue = chart.convertFromPixel({ gridIndex: 0 }, pointInPixel);
+            const price = pointInValue[1];
+            if (price !== null && price > 0) {
+              window.dispatchEvent(new CustomEvent('chart-click', { detail: price }));
+            }
           }
+          return;
         }
+
+        const tool = activeToolRef.current;
+        const bars = candlesRef.current;
+        if (!inGrid) return;
+
+        // 2) Drawing creation.
+        if (tool) {
+          const val = chart.convertFromPixel({ xAxisIndex: 0, yAxisIndex: 0 }, pointInPixel);
+          const price = val?.[1];
+          if (price == null || !Number.isFinite(price)) return;
+          const idx = Math.round(val[0]);
+          const bar = bars[idx] ?? bars[bars.length - 1];
+          const time = bar ? toUnixSeconds(bar.time) : null;
+          if (time == null) return;
+
+          if (tool === 'hline') {
+            addDrawingRef.current(createDrawing('hline', [{ price }]));
+            setActiveTool(null);
+            return;
+          }
+          if (!pendingDrawPointRef.current) {
+            pendingDrawPointRef.current = { time, price };
+          } else {
+            const p1 = pendingDrawPointRef.current;
+            pendingDrawPointRef.current = null;
+            addDrawingRef.current(createDrawing(tool, [p1, { time, price }]));
+            setActiveTool(null);
+          }
+          return;
+        }
+
+        // 3) Selection (when no tool active): hit-test existing drawings.
+        const priceToY = (p) => {
+          const px = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [0, p]);
+          return px && Number.isFinite(px[1]) ? px[1] : null;
+        };
+        const convert = (pt) => {
+          const idx = timeToFractionalIndex(bars, toUnixSeconds(pt.time));
+          if (idx == null) return null;
+          const px = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [idx, pt.price]);
+          return px && Number.isFinite(px[0]) ? px : null;
+        };
+        const hit = hitTestDrawings(
+          params.offsetX, params.offsetY, drawingsRef.current, convert, { priceToY },
+        );
+        setSelectedDrawingId(hit);
+      };
+
+      // zrender's synthetic 'click' is suppressed on a live-updating chart (the
+      // hovered element changes between mousedown and mouseup), so detect clicks
+      // ourselves from a mousedown/mouseup pair with negligible movement. This
+      // also distinguishes a click from a pan-drag (dataZoom inside).
+      let downPt = null;
+      chart.getZr().on('mousedown', (p) => {
+        downPt = { x: p.offsetX, y: p.offsetY, t: Date.now() };
+      });
+      chart.getZr().on('mouseup', (p) => {
+        const start = downPt;
+        downPt = null;
+        if (!start) return;
+        const moved = Math.hypot(p.offsetX - start.x, p.offsetY - start.y);
+        if (moved <= 5 && Date.now() - start.t < 700) handleChartClick(p);
       });
 
       if (import.meta.env.DEV) {
@@ -1762,6 +2110,7 @@ export default function ChartWidget() {
     const ro = new ResizeObserver(() => {
       if (chart) {
         chart.resize();
+        renderChartGraphicsRef.current?.();
         return;
       }
       mountChart();
@@ -1808,6 +2157,55 @@ export default function ChartWidget() {
     applyOverlayPatchRef.current?.();
   }, [positionOverlayKey, tradeOverlayKey, botOverlayKey, backtestOverlayKey]);
 
+  // Re-render the graphic overlay (Volume Profile + drawings) on state changes.
+  useEffect(() => {
+    if (!chartReadyRef.current) return;
+    renderChartGraphicsRef.current?.();
+  }, [drawings, selectedDrawingId, showVolumeProfile]);
+
+  // Persist the Volume Profile toggle to settings.
+  useEffect(() => {
+    updateChartLayout({ volumeProfile: showVolumeProfile });
+  }, [showVolumeProfile, updateChartLayout]);
+
+  // Replay playback timer — advances the cursor one bar at a time.
+  useEffect(() => {
+    if (!replayActive || !replayPlaying) return undefined;
+    const total = aggregatedCandles.length;
+    const interval = Math.max(80, 700 / replaySpeed);
+    const id = setInterval(() => {
+      setReplayIndex((i) => {
+        const ni = i + 1;
+        if (ni >= total) {
+          setReplayPlaying(false);
+          return total;
+        }
+        return ni;
+      });
+    }, interval);
+    return () => clearInterval(id);
+  }, [replayActive, replayPlaying, replaySpeed, aggregatedCandles.length]);
+
+  const enterReplay = useCallback(() => {
+    const total = aggregatedCandles.length;
+    if (total < 5) return;
+    setReplayActive(true);
+    setReplayPlaying(false);
+    setReplayIndex(Math.max(2, Math.floor(total / 2)));
+  }, [aggregatedCandles.length]);
+
+  const exitReplay = useCallback(() => {
+    setReplayActive(false);
+    setReplayPlaying(false);
+  }, []);
+
+  // Leaving the symbol/timeframe abandons any active replay (data changed).
+  useEffect(() => {
+    setReplayActive(false);
+    setReplayPlaying(false);
+    setCompareSymbol((cur) => (cur === activeSymbol ? null : cur));
+  }, [activeSymbol, timeframe]);
+
   useEffect(() => {
     const onOverlayChanged = () => applyOverlayPatchRef.current?.();
     window.addEventListener(BACKTEST_OVERLAY_EVENT, onOverlayChanged);
@@ -1853,6 +2251,8 @@ export default function ChartWidget() {
   const applyLiveCandleUpdate = useCallback(() => {
     const chart = chartRef.current;
     if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
+    // Replay mode freezes live updates so the cursor controls what's visible.
+    if (replayActiveRef.current) return;
 
     const cfg = TF_CONFIGS.find(t => t.label === timeframe) || TF_CONFIGS[0];
     let aggregatedLive;
@@ -1895,6 +2295,14 @@ export default function ChartWidget() {
 
     candlesRef.current = bars;
     const cache = liveSeriesCacheRef.current;
+
+    // Heikin-Ashi / Renko depend on prior bars, so incremental OHLC patching
+    // would desync the forming bar. Rebuild the full option for correctness.
+    if (chartTypeRef.current === 'heikin' || chartTypeRef.current === 'renko') {
+      configureChartRef.current();
+      updateLegendDOM(aggregatedLive);
+      return;
+    }
 
     try {
       const patch = {};
@@ -2013,6 +2421,26 @@ export default function ChartWidget() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [chartInteractionMode, setChartInteractionMode]);
 
+  // Drawing-tool keyboard shortcuts: ESC cancels, Delete/Backspace removes selection.
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'Escape') {
+        if (pendingDrawPointRef.current || activeToolRef.current) {
+          pendingDrawPointRef.current = null;
+          setActiveTool(null);
+        } else if (selectedDrawingIdRef.current) {
+          setSelectedDrawingId(null);
+        }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDrawingIdRef.current) {
+        removeDrawing(selectedDrawingIdRef.current);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setActiveTool, setSelectedDrawingId, removeDrawing]);
+
   // Handle Chart Click for SL/TP
   useEffect(() => {
     const handleChartClick = (e) => {
@@ -2054,11 +2482,92 @@ export default function ChartWidget() {
                 <AreaChart data-icon="inline-start" />
                 Candle
               </ToggleGroupItem>
+              <ToggleGroupItem value="heikin" size="sm" className="px-2 text-[0.68rem] font-bold" title="Heikin-Ashi">
+                <CandlestickChart data-icon="inline-start" />
+                HA
+              </ToggleGroupItem>
+              <ToggleGroupItem value="renko" size="sm" className="px-2 text-[0.68rem] font-bold" title="Renko (time-aligned)">
+                <Grid3x3 data-icon="inline-start" />
+                Renko
+              </ToggleGroupItem>
               <ToggleGroupItem value="line" size="sm" className="px-2 text-[0.68rem] font-bold">
                 <TrendingUp data-icon="inline-start" />
                 Line
               </ToggleGroupItem>
             </ToggleGroup>
+            <WidgetToolbarDivider />
+            <ToggleGroup
+              type="single"
+              value={activeTool || ''}
+              onValueChange={(v) => { pendingDrawPointRef.current = null; setActiveTool(v || null); }}
+              spacing={0}
+            >
+              <ToggleGroupItem value="trendline" size="sm" className="px-1.5" title="Trendline (2 clicks)">
+                <Spline size={13} />
+              </ToggleGroupItem>
+              <ToggleGroupItem value="hline" size="sm" className="px-1.5" title="Horizontal level (1 click)">
+                <Minus size={13} />
+              </ToggleGroupItem>
+              <ToggleGroupItem value="fib" size="sm" className="px-1.5" title="Fibonacci retracement (2 clicks)">
+                <AlignJustify size={13} />
+              </ToggleGroupItem>
+              <ToggleGroupItem value="rectangle" size="sm" className="px-1.5" title="Rectangle (2 clicks)">
+                <Square size={13} />
+              </ToggleGroupItem>
+            </ToggleGroup>
+            <Button
+              variant={showVolumeProfile ? 'secondary' : 'ghost'}
+              size="sm"
+              className="px-1.5"
+              title="Volume Profile (VPVR)"
+              onClick={() => setShowVolumeProfile((v) => !v)}
+            >
+              <BarChart2 size={13} />
+            </Button>
+            <Button
+              variant={replayActive ? 'secondary' : 'ghost'}
+              size="sm"
+              className="px-1.5"
+              title="Replay mode (bar-by-bar)"
+              onClick={() => (replayActive ? exitReplay() : enterReplay())}
+            >
+              <History size={13} />
+            </Button>
+            {compareOptions.length > 0 && (
+              <Select
+                value={compareSymbol || '__none__'}
+                onValueChange={(v) => setCompareSymbol(v === '__none__' ? null : v)}
+              >
+                <SelectTrigger
+                  className={cn(
+                    'h-6 w-auto gap-1 border-0 px-1.5 text-[0.62rem] font-semibold',
+                    compareSymbol && 'text-[#f472b6]',
+                  )}
+                  aria-label="Compare symbol"
+                  title="Compare with another symbol (rebased %)"
+                >
+                  <GitCompareArrows size={13} />
+                  <SelectValue placeholder="Compare" />
+                </SelectTrigger>
+                <SelectContent position="popper" className="max-h-64">
+                  <SelectItem value="__none__" className="text-xs">Compare: off</SelectItem>
+                  {compareOptions.map((sym) => (
+                    <SelectItem key={sym} value={sym} className="text-xs">{sym}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {(drawings.length > 0 || selectedDrawingId) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-1.5 text-muted-foreground hover:text-destructive"
+                title={selectedDrawingId ? 'Delete selected drawing' : 'Clear all drawings'}
+                onClick={() => (selectedDrawingId ? removeDrawing(selectedDrawingId) : clearDrawings())}
+              >
+                <Trash2 size={13} />
+              </Button>
+            )}
             {chartInteractionMode !== 'normal' && (
               <Button
                 variant="destructive"
@@ -2139,6 +2648,45 @@ export default function ChartWidget() {
           Click chart to set {chartInteractionMode === 'edit_sl' ? 'Stop Loss' : 'Take Profit'}
           <span className="font-normal opacity-80">(ESC to cancel)</span>
         </Badge>
+      )}
+
+      {activeTool && (
+        <Badge className="icon-label pointer-events-none absolute top-2 left-1/2 z-[100] -translate-x-1/2 border-primary/40 bg-primary/90 px-3 py-1 text-[0.68rem] font-bold text-primary-foreground shadow-[0_0_15px_var(--color-accent-bg)]">
+          {activeTool === 'hline'
+            ? 'Click to place a horizontal level'
+            : `Click ${pendingDrawPointRef.current ? 'end' : 'start'} point for ${activeTool}`}
+          <span className="font-normal opacity-80">(ESC to cancel)</span>
+        </Badge>
+      )}
+
+      {replayActive && (
+        <div className="absolute bottom-3 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-1 rounded-md border border-border/60 bg-background/95 px-2 py-1 shadow-lg backdrop-blur">
+          <Button variant="ghost" size="icon-sm" title="Restart" onClick={() => { setReplayPlaying(false); setReplayIndex(2); }}>
+            <RotateCcw size={13} />
+          </Button>
+          <Button variant="ghost" size="icon-sm" title="Step back" onClick={() => { setReplayPlaying(false); setReplayIndex((i) => Math.max(2, i - 1)); }}>
+            <SkipBack size={13} />
+          </Button>
+          <Button variant="ghost" size="icon-sm" title={replayPlaying ? 'Pause' : 'Play'} onClick={() => setReplayPlaying((p) => !p)}>
+            {replayPlaying ? <Pause size={13} /> : <Play size={13} />}
+          </Button>
+          <Button variant="ghost" size="icon-sm" title="Step forward" onClick={() => { setReplayPlaying(false); setReplayIndex((i) => Math.min(aggregatedCandles.length, i + 1)); }}>
+            <SkipForward size={13} />
+          </Button>
+          <span className="px-1 font-mono text-[10px] text-muted-foreground tabular-nums">
+            {Math.min(replayIndex, aggregatedCandles.length)}/{aggregatedCandles.length}
+          </span>
+          <ToggleGroup type="single" value={String(replaySpeed)} onValueChange={(v) => v && setReplaySpeed(Number(v))} spacing={0}>
+            {[1, 2, 4].map((s) => (
+              <ToggleGroupItem key={s} value={String(s)} size="sm" className="px-1.5 text-[0.6rem] font-bold">
+                {s}x
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <Button variant="ghost" size="icon-sm" title="Exit replay" onClick={exitReplay}>
+            <X size={13} />
+          </Button>
+        </div>
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden">

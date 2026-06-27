@@ -21,6 +21,8 @@ const htBuffers = new Map();
 
 /** LRU: most recently used symbol at end; pinned active symbol is never evicted. */
 let pinnedSymbol = null;
+/** Secondary pin (e.g. chart comparison overlay symbol) — also never evicted. */
+let comparePinnedSymbol = null;
 const symbolAccessOrder = [];
 /** @type {Set<(symbol: string) => void>} */
 const evictListeners = new Set();
@@ -73,7 +75,9 @@ function evictSymbolBuffers(symbol) {
 /** Drop least-recent 1m symbols until at most CANDLE_LRU_MAX_SYMBOLS remain. */
 export function pruneSymbolCache() {
   while (symbolAccessOrder.length > CANDLE_LRU_MAX_SYMBOLS) {
-    const victim = symbolAccessOrder.find((s) => s !== pinnedSymbol);
+    const victim = symbolAccessOrder.find(
+      (s) => s !== pinnedSymbol && s !== comparePinnedSymbol,
+    );
     if (!victim) break;
     evictSymbolBuffers(victim);
   }
@@ -82,6 +86,12 @@ export function pruneSymbolCache() {
 /** Pin the active chart symbol (never LRU-evicted). */
 export function setPinnedCandleSymbol(symbol) {
   pinnedSymbol = symbol || null;
+  if (symbol) touchSymbol(symbol);
+}
+
+/** Pin the chart comparison-overlay symbol so its buffer survives LRU eviction. */
+export function setComparePinnedCandleSymbol(symbol) {
+  comparePinnedSymbol = symbol || null;
   if (symbol) touchSymbol(symbol);
 }
 

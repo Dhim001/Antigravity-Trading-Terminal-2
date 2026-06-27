@@ -136,11 +136,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   tradeExplains: {},
   scanResults: null,
   visionReports: {},
+  chartDrawings: {},
   orderPrefill: null,
 
   setScanResults: (data) => set({ scanResults: data }),
   setVisionReport: (key, report) => set((state) => ({
     visionReports: { ...state.visionReports, [key]: report },
+  })),
+  setChartDrawings: (symbol, drawings) => set((state) => ({
+    chartDrawings: { ...state.chartDrawings, [symbol]: drawings },
   })),
 
   setOrderPrefill: (prefill) => set({ orderPrefill: prefill }),

@@ -348,6 +348,14 @@ def init_db():
         "ON vision_reports (symbol, timeframe, bar_time DESC)"
     )
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chart_drawings (
+            symbol TEXT PRIMARY KEY,
+            drawings_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     if is_postgres():

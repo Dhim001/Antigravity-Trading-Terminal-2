@@ -42,6 +42,7 @@ export function getStoreActions() {
     setTradeExplain: s.setTradeExplain,
     setScanResults: s.setScanResults,
     setVisionReport: s.setVisionReport,
+    setChartDrawings: s.setChartDrawings,
   };
 }
 
@@ -178,6 +179,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
       break;
     case MessageType.SCAN_RESULTS:
       storeActions.setScanResults(data);
+      break;
+    case MessageType.CHART_DRAWINGS:
+      if (data?.symbol) {
+        storeActions.setChartDrawings(data.symbol, Array.isArray(data.drawings) ? data.drawings : []);
+      }
       break;
     case MessageType.VISION_REPORT:
       if (data?.symbol && data?.timeframe) {

@@ -40,6 +40,8 @@ export const Action = Object.freeze({
   EXPLAIN_TRADE: 'explain_trade',
   MARKET_SCAN: 'market_scan',
   CHART_VISION: 'chart_vision',
+  CHART_DRAWINGS_GET: 'chart_drawings_get',
+  CHART_DRAWINGS_SET: 'chart_drawings_set',
 });
 
 /** Server → client message types */
@@ -66,6 +68,7 @@ export const MessageType = Object.freeze({
   TRADE_EXPLAIN: 'trade_explain',
   SCAN_RESULTS: 'scan_results',
   VISION_REPORT: 'vision_report',
+  CHART_DRAWINGS: 'chart_drawings',
   ERROR: 'error',
 });
 
