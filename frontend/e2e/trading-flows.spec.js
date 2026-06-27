@@ -19,7 +19,7 @@ test.describe('SIM trading flows (UI)', () => {
     await openAlgoTab(page);
 
     await page.locator('.algo-template-grid').getByRole('button', { name: 'MACD + RSI' }).click();
-    await page.getByLabel('Capital allocation').fill('500');
+    await page.getByLabel('Max notional cap').fill('500');
 
     await page.getByRole('button', { name: /^DEPLOY$/i }).click();
     await expect(page.getByRole('dialog', { name: /Deploy trading bot/i })).toBeVisible();

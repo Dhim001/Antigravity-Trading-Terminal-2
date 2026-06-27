@@ -86,11 +86,28 @@ class RiskGate:
 
         allocation = float(bot.get("allocation") or 0)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
-        if loss_limit > 0 and daily_pnl <= -loss_limit:
-            return RiskDecision(
-                False,
-                f"Daily loss limit reached ({BOT_DAILY_LOSS_LIMIT_PCT}% of ${allocation:.0f} allocation).",
-            )
+
+        # 3.3-B: Graduated daily loss step-down.
+        # At full limit  → block entirely (existing behaviour).
+        # At half limit  → allow but reduce size by 50% to preserve capital.
+        if loss_limit > 0 and not is_exit:
+            half_limit = loss_limit * 0.5
+            if daily_pnl <= -loss_limit:
+                return RiskDecision(
+                    False,
+                    f"Daily loss limit reached ({BOT_DAILY_LOSS_LIMIT_PCT}% of ${allocation:.0f} allocation).",
+                )
+            if daily_pnl <= -half_limit:
+                reduced_qty = (quantity or 0) * 0.5
+                return RiskDecision(
+                    True,
+                    f"Half daily-loss reached — size reduced 50% (daily PnL ${daily_pnl:.2f}).",
+                    reduced_qty,
+                )
+        elif loss_limit > 0 and is_exit and daily_pnl <= -loss_limit:
+            # Still let exits through even at full limit.
+            pass
+
 
         if quantity <= 0:
             return RiskDecision(False, "Quantity must be greater than 0.")

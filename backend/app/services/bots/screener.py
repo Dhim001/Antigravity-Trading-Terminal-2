@@ -83,9 +83,12 @@ class MarketScreenerService:
         """Compute indicator columns needed by the given strategy."""
         strat = strategy.upper()
 
-        if strat in ("MACD_RSI", "BRS_SCALPING", "VWAP_PULLBACK"):
+        if strat in ("MACD_RSI", "BRS_SCALPING", "VWAP_PULLBACK", "SUPERTREND_ADX"):
             atr_len = cfg.get("atr_length", 14)
-            df[atr_col(atr_len)] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+            atr_name = atr_col(atr_len)
+            df[atr_name] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+            # 3.2-B: compute rolling median ATR to support regime-aware exit and sizing gates in any strategy
+            df[f"{atr_name}_median_20"] = df[atr_name].rolling(window=20, min_periods=1).median()
 
         if strat in ("MACD_RSI",):
             macd = ta.macd(
@@ -140,6 +143,9 @@ class MarketScreenerService:
 
         if strat == "VWAP_PULLBACK":
             self._compute_vwap(df)
+            # 3.2-C: Compute RSI for VWAP pullback confirmation filter
+            rsi_len = cfg.get("rsi_length", 14)
+            df[rsi_col(rsi_len)] = ta.rsi(df["close"], length=rsi_len)
 
         if strat == "CHART_AGENT":
             macd = ta.macd(
@@ -158,6 +164,12 @@ class MarketScreenerService:
                 df[f"EMA_{length}"] = ta.ema(df["close"], length=length)
             atr_len = cfg.get("atr_length", 14)
             df[atr_col(atr_len)] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+            # 3.4-A: compute ADX for CHART_AGENT trend regime detection
+            adx_len = cfg.get("adx_length", 14)
+            adx = ta.adx(df["high"], df["low"], df["close"], length=adx_len)
+            if adx is not None:
+                for col in adx.columns:
+                    df[col] = adx[col]
 
         # Full suite for unknown / backtest-all path
         if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK", "CHART_AGENT"):

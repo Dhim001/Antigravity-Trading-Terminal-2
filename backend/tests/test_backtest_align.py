@@ -39,6 +39,43 @@ class AlwaysBuyStrategy(BaseStrategy):
         return {"signal": "BUY", "stop_loss_distance": 2.0}
 
 
+class BacktestRiskSizingAlignmentTests(unittest.TestCase):
+    def setUp(self):
+        self.screener = MarketScreenerService()
+        self.backtester = BacktesterService(self.screener)
+        self.candles = _make_candles(120)
+
+    def test_backtest_sizes_from_account_snapshot_not_allocation(self):
+        """With risk_base=50k and cap=1000, qty reflects account risk then allocation cap."""
+        strategy = AlwaysBuyStrategy({})
+        import app.services.bots.backtester as bt_mod
+        original_get = bt_mod.get_strategy
+        bt_mod.get_strategy = lambda _name, _cfg: strategy
+        try:
+            result = self.backtester.run_backtest(
+                "TEST",
+                "MACD_RSI",
+                {
+                    "allocation": 1000,
+                    "risk_base": 50_000,
+                    "risk_base_mode": "account_snapshot",
+                    "trailing_stop_percent": 0,
+                },
+                self.candles,
+            )
+        finally:
+            bt_mod.get_strategy = original_get
+
+        entries = [t for t in result.get("trades", []) if not t.get("is_exit")]
+        self.assertGreater(len(entries), 0)
+        first = entries[0]
+        # 1% of 50k = 500 risk / 2 stop = 250 raw; capped to ~1000/price (~10 shares)
+        self.assertLessEqual(first["quantity"], 10.5)
+        self.assertGreater(first["quantity"], 9.0)
+        self.assertGreater(first["quantity"], 5.0)  # allocation-only sizing would be ~5 shares
+        self.assertEqual(result.get("risk_base"), 50_000.0)
+
+
 class BacktestLiveAlignmentTests(unittest.TestCase):
     def setUp(self):
         self.screener = MarketScreenerService()

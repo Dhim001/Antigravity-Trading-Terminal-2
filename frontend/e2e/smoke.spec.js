@@ -83,6 +83,6 @@ test.describe('Trading terminal smoke', () => {
     ).toBeVisible({ timeout: 10_000 });
 
     await openAlgoTab(page);
-    await expect(page.getByText('Capital Allocation')).toBeVisible();
+    await expect(page.getByText('Max notional cap')).toBeVisible();
   });
 });

@@ -19,6 +19,7 @@ from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
 from app.services.bots.risk_gate import RiskGate
+from app.services.bots.risk_sizing import RISK_PCT
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
@@ -596,6 +597,11 @@ class BotManagerService:
                 bar_time = eval_row.get("time")
                 eval_price = eval_row.get("close")
 
+                # Inject current position side for exit signal detection (3.2-A)
+                bot_pos = self._get_bot_position(bot_id, symbol)
+                pos_size = float(bot_pos.get("size") or 0.0)
+                eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
+
                 signal_data = strat.evaluate(eval_row)
                 signal = signal_data.get("signal")
                 if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
@@ -725,7 +731,7 @@ class BotManagerService:
 
         if not is_exit:
             account_balance = self.get_account_balance()
-            risk_amount = account_balance * 0.01
+            risk_amount = account_balance * RISK_PCT
 
             stop_loss_price = signal_data.get("stop_loss_price")
             if not stop_loss_price:
@@ -747,6 +753,15 @@ class BotManagerService:
                 size_factor = float(signal_data.get("size_factor") or 1.0)
                 if size_factor > 0 and size_factor != 1.0:
                     quantity *= size_factor
+
+            # 3.3-A: Confidence-scaled sizing — bet proportionally to signal conviction.
+            # Scale range [0.7, 1.3] centred at confidence=0.75. Opt-out via use_confidence_sizing=false.
+            if bot_cfg.get("use_confidence_sizing", True):
+                conf = float(signal_data.get("confidence") or 0.55)
+                # Linear interpolation: conf 0.55 → 0.76×, 0.75 → 1.00×, 1.00 → 1.30×
+                conf_scale = 0.7 + (conf * 0.6)
+                conf_scale = max(0.5, min(1.5, conf_scale))
+                quantity *= conf_scale
 
         pos_size = self._get_bot_position_size(bot_id, symbol)
         decision = self._risk_gate.validate_trade(
@@ -1275,7 +1290,7 @@ class BotManagerService:
                 is_exit=is_exit,
                 insight_snapshot=p.get("insight_snapshot"),
             )
-            bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price)
+            bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price, feed=getattr(self.oms, "feed", None))
             bot_analytics.delete_pending_fill(p["id"])
             if resolved_order_id:
                 recorded_order_ids.add(str(resolved_order_id))

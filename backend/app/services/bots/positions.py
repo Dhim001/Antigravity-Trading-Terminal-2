@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from app.database import get_connection
 
 _EPS = 1e-8
@@ -49,38 +50,72 @@ def evaluate_risk_trigger(
     take_profit_percent: float | None,
     stop_loss_price: float | None,
     take_profit_price: float | None,
-) -> tuple[str | None, float | None]:
+    chandelier_stop_enabled: bool = False,
+    chandelier_multiplier: float = 3.0,
+    high_watermark: float | None = None,
+    low_watermark: float | None = None,
+    entry_atr: float | None = None,
+    current_atr: float | None = None,
+) -> tuple[str | None, float | None, float | None, float | None]:
     """
-    Returns (trigger_type 'SL'|'TP'|None, updated trailing stop_loss_price).
+    Returns (trigger_type 'SL'|'TP'|None, updated trailing stop_loss_price, updated_high, updated_low).
     """
     if abs(size) <= _EPS:
-        return None, None
+        return None, None, None, None
 
     sl_price = stop_loss_price
     tp_price = take_profit_price
     trigger_type = None
 
-    if size > 0:
-        if stop_loss_percent is not None:
-            potential_sl = market_price * (1 - stop_loss_percent / 100)
-            if sl_price is None or potential_sl > sl_price:
-                sl_price = potential_sl
-        if sl_price is not None and market_price <= sl_price:
-            trigger_type = "SL"
-        elif tp_price is not None and market_price >= tp_price:
-            trigger_type = "TP"
-    else:
-        if stop_loss_percent is not None:
-            potential_sl = market_price * (1 + stop_loss_percent / 100)
-            if sl_price is None or potential_sl < sl_price:
-                sl_price = potential_sl
-        if sl_price is not None and market_price >= sl_price:
-            trigger_type = "SL"
-        elif tp_price is not None and market_price <= tp_price:
-            trigger_type = "TP"
+    updated_high = high_watermark
+    updated_low = low_watermark
 
-    trailing_sl = sl_price if stop_loss_percent is not None else None
-    return trigger_type, trailing_sl
+    if chandelier_stop_enabled:
+        atr = current_atr if current_atr is not None and current_atr > 0 else (entry_atr or 0.0)
+        if size > 0:
+            updated_high = max(high_watermark, market_price) if high_watermark is not None else market_price
+            if atr > 0:
+                profit_atr_units = (updated_high - avg_price) / atr
+                effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
+                potential_sl = updated_high - effective_mult * atr
+                sl_price = max(sl_price, potential_sl) if sl_price is not None else potential_sl
+            if sl_price is not None and market_price <= sl_price:
+                trigger_type = "SL"
+            elif tp_price is not None and market_price >= tp_price:
+                trigger_type = "TP"
+        elif size < 0:
+            updated_low = min(low_watermark, market_price) if low_watermark is not None else market_price
+            if atr > 0:
+                profit_atr_units = (avg_price - updated_low) / atr
+                effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
+                potential_sl = updated_low + effective_mult * atr
+                sl_price = min(sl_price, potential_sl) if sl_price is not None else potential_sl
+            if sl_price is not None and market_price >= sl_price:
+                trigger_type = "SL"
+            elif tp_price is not None and market_price <= tp_price:
+                trigger_type = "TP"
+    else:
+        if size > 0:
+            if stop_loss_percent is not None:
+                potential_sl = market_price * (1 - stop_loss_percent / 100)
+                if sl_price is None or potential_sl > sl_price:
+                    sl_price = potential_sl
+            if sl_price is not None and market_price <= sl_price:
+                trigger_type = "SL"
+            elif tp_price is not None and market_price >= tp_price:
+                trigger_type = "TP"
+        else:
+            if stop_loss_percent is not None:
+                potential_sl = market_price * (1 + stop_loss_percent / 100)
+                if sl_price is None or potential_sl < sl_price:
+                    sl_price = potential_sl
+            if sl_price is not None and market_price >= sl_price:
+                trigger_type = "SL"
+            elif tp_price is not None and market_price <= tp_price:
+                trigger_type = "TP"
+
+    trailing_sl = sl_price
+    return trigger_type, trailing_sl, updated_high, updated_low
 
 
 def get_bot_position(bot_id: str, symbol: str) -> dict:
@@ -93,6 +128,9 @@ def get_bot_position(bot_id: str, symbol: str) -> dict:
             "take_profit_percent": None,
             "stop_loss_price": None,
             "take_profit_price": None,
+            "high_watermark": None,
+            "low_watermark": None,
+            "entry_atr": None,
         }
     conn = get_connection()
     cursor = conn.cursor()
@@ -100,7 +138,8 @@ def get_bot_position(bot_id: str, symbol: str) -> dict:
         cursor.execute(
             """
             SELECT size, avg_price, stop_loss_percent, take_profit_percent,
-                   stop_loss_price, take_profit_price
+                   stop_loss_price, take_profit_price,
+                   high_watermark, low_watermark, entry_atr
             FROM bot_positions WHERE bot_id = ? AND symbol = ?
             """,
             (bot_id, symbol),
@@ -114,6 +153,9 @@ def get_bot_position(bot_id: str, symbol: str) -> dict:
                 "take_profit_percent": None,
                 "stop_loss_price": None,
                 "take_profit_price": None,
+                "high_watermark": None,
+                "low_watermark": None,
+                "entry_atr": None,
             }
         return {
             "size": float(row["size"]),
@@ -122,6 +164,9 @@ def get_bot_position(bot_id: str, symbol: str) -> dict:
             "take_profit_percent": row["take_profit_percent"],
             "stop_loss_price": row["stop_loss_price"],
             "take_profit_price": row["take_profit_price"],
+            "high_watermark": row["high_watermark"],
+            "low_watermark": row["low_watermark"],
+            "entry_atr": row["entry_atr"],
         }
     finally:
         conn.close()
@@ -150,11 +195,14 @@ def list_owners_grouped() -> dict[str, list[dict]]:
     try:
         cursor.execute(
             """
-            SELECT bot_id, symbol, size, avg_price,
-                   stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price
-            FROM bot_positions
-            WHERE ABS(size) > ?
-            ORDER BY symbol, ABS(size) DESC
+            SELECT bp.bot_id, bp.symbol, bp.size, bp.avg_price,
+                   bp.stop_loss_percent, bp.take_profit_percent, bp.stop_loss_price, bp.take_profit_price,
+                   bp.high_watermark, bp.low_watermark, bp.entry_atr,
+                   b.config as bot_config, b.timeframe as bot_timeframe
+            FROM bot_positions bp
+            LEFT JOIN bots b ON bp.bot_id = b.id
+            WHERE ABS(bp.size) > ?
+            ORDER BY bp.symbol, ABS(bp.size) DESC
             """,
             (_EPS,),
         )
@@ -169,6 +217,11 @@ def list_owners_grouped() -> dict[str, list[dict]]:
                 "take_profit_percent": row["take_profit_percent"],
                 "stop_loss_price": row["stop_loss_price"],
                 "take_profit_price": row["take_profit_price"],
+                "high_watermark": row["high_watermark"],
+                "low_watermark": row["low_watermark"],
+                "entry_atr": row["entry_atr"],
+                "bot_config": json.loads(row["bot_config"]) if row["bot_config"] else {},
+                "timeframe": row["bot_timeframe"] or "1m",
             })
         return grouped
     finally:
@@ -183,11 +236,14 @@ def get_symbol_owners(symbol: str) -> list[dict]:
     try:
         cursor.execute(
             """
-            SELECT bot_id, size, avg_price,
-                   stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price
-            FROM bot_positions
-            WHERE symbol = ? AND ABS(size) > ?
-            ORDER BY ABS(size) DESC
+            SELECT bp.bot_id, bp.size, bp.avg_price,
+                   bp.stop_loss_percent, bp.take_profit_percent, bp.stop_loss_price, bp.take_profit_price,
+                   bp.high_watermark, bp.low_watermark, bp.entry_atr,
+                   b.config as bot_config, b.timeframe as bot_timeframe
+            FROM bot_positions bp
+            LEFT JOIN bots b ON bp.bot_id = b.id
+            WHERE bp.symbol = ? AND ABS(bp.size) > ?
+            ORDER BY ABS(bp.size) DESC
             """,
             (symbol, _EPS),
         )
@@ -200,6 +256,11 @@ def get_symbol_owners(symbol: str) -> list[dict]:
                 "take_profit_percent": row["take_profit_percent"],
                 "stop_loss_price": row["stop_loss_price"],
                 "take_profit_price": row["take_profit_price"],
+                "high_watermark": row["high_watermark"],
+                "low_watermark": row["low_watermark"],
+                "entry_atr": row["entry_atr"],
+                "bot_config": json.loads(row["bot_config"]) if row["bot_config"] else {},
+                "timeframe": row["bot_timeframe"] or "1m",
             }
             for row in cursor.fetchall()
         ]
@@ -269,6 +330,7 @@ def apply_fill(
     price: float,
     *,
     risk: dict | None = None,
+    feed: Any = None,
 ) -> None:
     """Update bot-local position after a fill attributed to bot_id."""
     if not bot_id or not symbol or quantity <= 0:
@@ -277,10 +339,47 @@ def apply_fill(
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Load bot config to see if chandelier is enabled
+        cursor.execute("SELECT config, timeframe FROM bots WHERE id = ?", (bot_id,))
+        bot_row = cursor.fetchone()
+        entry_atr = None
+        high_watermark = None
+        low_watermark = None
+
+        if side == "BUY":
+            high_watermark = price
+        else:
+            low_watermark = price
+
+        if bot_row:
+            bot_config = json.loads(bot_row["config"]) if bot_row["config"] else {}
+            timeframe = bot_row["timeframe"] or "1m"
+            if bot_config.get("chandelier_stop_enabled"):
+                if feed is not None:
+                    try:
+                        from app.services.bots.candle_source import get_bot_candles
+                        import pandas as pd
+                        import pandas_ta as ta
+                        
+                        candles = get_bot_candles(symbol, feed, timeframe=timeframe)
+                        if candles and len(candles) >= 15:
+                            df = pd.DataFrame(candles)
+                            atr_len = bot_config.get("atr_length", 14)
+                            atr_series = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+                            if atr_series is not None and not atr_series.empty:
+                                import math
+                                val = atr_series.iloc[-1]
+                                if not math.isnan(val):
+                                    entry_atr = float(val)
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).debug("Failed to calculate entry ATR in apply_fill: %s", exc)
+
         cursor.execute(
             """
             SELECT size, avg_price, stop_loss_percent, take_profit_percent,
-                   stop_loss_price, take_profit_price
+                   stop_loss_price, take_profit_price,
+                   high_watermark, low_watermark, entry_atr
             FROM bot_positions WHERE bot_id = ? AND symbol = ?
             """,
             (bot_id, symbol),
@@ -304,31 +403,45 @@ def apply_fill(
                 new_size = 0.0
                 new_avg = 0.0
                 sl_pct = tp_pct = sl_price = tp_price = None
-            elif side == "BUY" and current_size >= 0:
-                new_avg = ((current_size * current_avg) + quantity * price) / new_size
-                sl_pct, tp_pct, sl_price, tp_price = (
-                    _risk_prices(new_size, new_avg, **risk) if risk
-                    else (
-                        row["stop_loss_percent"],
-                        row["take_profit_percent"],
-                        row["stop_loss_price"],
-                        row["take_profit_price"],
-                    )
-                )
-            elif side == "SELL" and current_size < 0:
-                new_avg = ((abs(current_size) * current_avg) + quantity * price) / abs(new_size)
-                sl_pct, tp_pct, sl_price, tp_price = (
-                    _risk_prices(new_size, new_avg, **risk) if risk
-                    else (
-                        row["stop_loss_percent"],
-                        row["take_profit_percent"],
-                        row["stop_loss_price"],
-                        row["take_profit_price"],
-                    )
-                )
+                high_watermark = low_watermark = entry_atr = None
             else:
-                new_avg = current_avg if new_size > 0 else (price if new_size < 0 else 0.0)
-                sl_pct = tp_pct = sl_price = tp_price = None
+                if row["high_watermark"] is not None:
+                    high_watermark = max(float(row["high_watermark"]), price) if side == "BUY" else row["high_watermark"]
+                else:
+                    high_watermark = price if side == "BUY" else None
+
+                if row["low_watermark"] is not None:
+                    low_watermark = min(float(row["low_watermark"]), price) if side == "SELL" else row["low_watermark"]
+                else:
+                    low_watermark = price if side == "SELL" else None
+
+                entry_atr = row["entry_atr"] if row["entry_atr"] is not None else entry_atr
+
+                if side == "BUY" and current_size >= 0:
+                    new_avg = ((current_size * current_avg) + quantity * price) / new_size
+                    sl_pct, tp_pct, sl_price, tp_price = (
+                        _risk_prices(new_size, new_avg, **risk) if risk
+                        else (
+                            row["stop_loss_percent"],
+                            row["take_profit_percent"],
+                            row["stop_loss_price"],
+                            row["take_profit_price"],
+                        )
+                    )
+                elif side == "SELL" and current_size < 0:
+                    new_avg = ((abs(current_size) * current_avg) + quantity * price) / abs(new_size)
+                    sl_pct, tp_pct, sl_price, tp_price = (
+                        _risk_prices(new_size, new_avg, **risk) if risk
+                        else (
+                            row["stop_loss_percent"],
+                            row["take_profit_percent"],
+                            row["stop_loss_price"],
+                            row["take_profit_price"],
+                        )
+                    )
+                else:
+                    new_avg = current_avg if new_size > 0 else (price if new_size < 0 else 0.0)
+                    sl_pct = tp_pct = sl_price = tp_price = None
 
         if abs(new_size) <= _EPS:
             cursor.execute(
@@ -340,11 +453,12 @@ def apply_fill(
                 """
                 INSERT INTO bot_positions (
                     bot_id, symbol, size, avg_price,
-                    stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price
+                    stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price,
+                    high_watermark, low_watermark, entry_atr
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (bot_id, symbol, new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price),
+                (bot_id, symbol, new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, high_watermark, low_watermark, entry_atr),
             )
         else:
             cursor.execute(
@@ -352,10 +466,11 @@ def apply_fill(
                 UPDATE bot_positions
                 SET size = ?, avg_price = ?,
                     stop_loss_percent = ?, take_profit_percent = ?,
-                    stop_loss_price = ?, take_profit_price = ?
+                    stop_loss_price = ?, take_profit_price = ?,
+                    high_watermark = ?, low_watermark = ?, entry_atr = ?
                 WHERE bot_id = ? AND symbol = ?
                 """,
-                (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, bot_id, symbol),
+                (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, high_watermark, low_watermark, entry_atr, bot_id, symbol),
             )
         conn.commit()
     finally:

@@ -205,8 +205,18 @@ def validate_walk_forward_oos(
     *,
     min_oos_pnl: float = 0.0,
     min_oos_trades: int = 1,
+    min_stability_score: float = 0.0,
+    min_oos_sortino: float | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    """Return whether OOS metrics pass auto-deploy gates."""
+    """Return whether OOS metrics pass auto-deploy gates.
+
+    Args:
+        min_stability_score: Fraction of WFO folds that must be profitable [0, 1].
+            Requires rolling_folds >= 3 to be meaningful; ignored for single-fold runs.
+            Set to 0.6 to require 60% of folds profitable (recommended).
+        min_oos_sortino: Optional Sortino ratio floor. Blocks strategies whose OOS
+            return distribution is dominated by downside volatility.
+    """
     wf = best_result.get("walk_forward") or {}
     oos = wf.get("out_of_sample") or {}
     summary = best_result.get("summary") or {}
@@ -229,17 +239,56 @@ def validate_walk_forward_oos(
     except (TypeError, ValueError):
         oos_trades_i = 0
 
+    aggregate = wf.get("aggregate") or {}
+    stability = aggregate.get("stability_score")
+    fold_count = int(aggregate.get("fold_count") or 1)
+
     metrics = {
         "oos_pnl": round(oos_pnl_f, 4),
         "oos_trades": oos_trades_i,
-        "mean_oos_objective": (wf.get("aggregate") or {}).get("mean_oos_objective"),
+        "mean_oos_objective": aggregate.get("mean_oos_objective"),
+        "stability_score": stability,
+        "fold_count": fold_count,
     }
 
     if oos_trades_i < max(0, int(min_oos_trades)):
         return False, f"OOS trades {oos_trades_i} below minimum {min_oos_trades}", metrics
     if oos_pnl_f < float(min_oos_pnl):
         return False, f"OOS PnL {oos_pnl_f:.2f} below minimum {min_oos_pnl:.2f}", metrics
+
+    # 3.5-A: Stability gate — require min fraction of folds to be profitable.
+    # Only meaningful when >= 3 folds ran (single-fold WFO skipped gracefully).
+    if min_stability_score > 0 and fold_count >= 3 and stability is not None:
+        try:
+            stab_f = float(stability)
+        except (TypeError, ValueError):
+            stab_f = 0.0
+        if stab_f < min_stability_score:
+            return (
+                False,
+                f"OOS stability {stab_f:.0%} below minimum {min_stability_score:.0%} "
+                f"across {fold_count} folds (overfitting risk)",
+                metrics,
+            )
+
+    # 3.5-B: Optional Sortino ratio gate.
+    if min_oos_sortino is not None:
+        oos_summary = (oos.get("summary") or summary)
+        sortino = oos_summary.get("sortino_ratio")
+        if sortino is not None:
+            try:
+                sortino_f = float(sortino)
+            except (TypeError, ValueError):
+                sortino_f = 0.0
+            if sortino_f < float(min_oos_sortino):
+                return (
+                    False,
+                    f"OOS Sortino {sortino_f:.2f} below minimum {min_oos_sortino:.2f}",
+                    metrics,
+                )
+
     return True, "OK", metrics
+
 
 
 async def auto_deploy_from_walk_forward(
@@ -253,6 +302,8 @@ async def auto_deploy_from_walk_forward(
     run_id: str | None = None,
     min_oos_pnl: float = 0.0,
     min_oos_trades: int = 1,
+    min_stability_score: float = 0.0,
+    min_oos_sortino: float | None = None,
     skip_existing: bool = True,
     base_config: dict | None = None,
 ) -> dict[str, Any]:
@@ -261,6 +312,8 @@ async def auto_deploy_from_walk_forward(
         best_result,
         min_oos_pnl=min_oos_pnl,
         min_oos_trades=min_oos_trades,
+        min_stability_score=min_stability_score,
+        min_oos_sortino=min_oos_sortino,
     )
     if not ok:
         return {"deployed": False, "reason": reason, "metrics": metrics}

@@ -51,7 +51,20 @@ def init_chart_analyst(
 
 
 class ChartAnalystService:
-    CACHE_TTL_SEC = 600
+    # 3.6-B: Adaptive per-timeframe cache TTL — prevents stale insights on fast bars.
+    # 1m needs very short TTL (< 2 bars); higher TFs can tolerate longer caching.
+    TF_CACHE_TTL_SEC: dict[str, int] = {
+        "1m":  90,    # ~1.5 bars
+        "3m":  210,
+        "5m":  360,   # ~1.2 bars
+        "15m": 900,   # 1 bar
+        "30m": 1800,
+        "1h":  3600,
+        "2h":  7200,
+        "4h":  14400,
+        "1d":  86400,
+    }
+    _DEFAULT_CACHE_TTL_SEC = 600  # fallback for unknown timeframes
 
     def __init__(
         self,
@@ -73,10 +86,16 @@ class ChartAnalystService:
             except Exception as exc:
                 logger.debug("Redis cache unavailable for agent: %s", exc)
 
+    def _cache_ttl(self, timeframe: str) -> int:
+        """Return the cache TTL in seconds for the given timeframe."""
+        tf = str(timeframe or "1m").lower().strip()
+        return self.TF_CACHE_TTL_SEC.get(tf, self._DEFAULT_CACHE_TTL_SEC)
+
     def get_cached(self, symbol: str, timeframe: str = "1m") -> dict | None:
         key = insight_cache_key(symbol, timeframe)
+        ttl = self._cache_ttl(timeframe)
         entry = self._cache.get(key)
-        if entry and time.monotonic() - entry[0] < self.CACHE_TTL_SEC:
+        if entry and time.monotonic() - entry[0] < ttl:
             return entry[1]
         if self._redis:
             try:
@@ -88,7 +107,7 @@ class ChartAnalystService:
         # Legacy in-memory key (pre Phase 5)
         if normalize_timeframe(timeframe) == "1m":
             legacy = self._cache.get(symbol.upper())
-            if legacy and time.monotonic() - legacy[0] < self.CACHE_TTL_SEC:
+            if legacy and time.monotonic() - legacy[0] < ttl:
                 return legacy[1]
         return None
 
@@ -96,11 +115,12 @@ class ChartAnalystService:
         payload = insight.to_dict()
         key = insight_cache_key(insight.symbol, insight.timeframe)
         self._cache[key] = (time.monotonic(), payload)
+        ttl = self._cache_ttl(insight.timeframe)
         if self._redis:
             try:
                 self._redis.setex(
                     f"agent:insight:{key}",
-                    self.CACHE_TTL_SEC,
+                    ttl,  # 3.6-B: use per-TF TTL for Redis as well
                     json.dumps(payload),
                 )
             except Exception:

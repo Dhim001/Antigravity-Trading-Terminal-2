@@ -30,9 +30,15 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "st_multiplier": 3.0,
         "adx_length": 14,
         "adx_threshold": 25,
+        "block_elevated_vol": False,  # 3.2-B: default block disabled
+        "atr_length": 14,
     },
     "VWAP_PULLBACK": {
         "atr_length": 14,
+        "rsi_length": 14,
+        "use_rsi_confirmation": True,  # 3.2-C: default enabled
+        "rsi_overbought_gate": 60,
+        "rsi_oversold_gate": 40,
     },
     "CHART_AGENT": {
         "rsi_length": 14,
@@ -40,6 +46,7 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "macd_slow": 26,
         "macd_signal": 9,
         "atr_length": 14,
+        "adx_length": 14,
         "min_confidence": 0.55,
         "use_llm": False,
         "use_vol_sizing": True,
@@ -54,6 +61,7 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "elevated_min_score": 3,
         "elevated_block_entries": False,
         "compressed_min_confidence": 0.55,
+        "block_ranging_markets": False,  # 3.4-A: default disabled
     },
 }
 

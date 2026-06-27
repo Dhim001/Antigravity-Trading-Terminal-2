@@ -16,6 +16,7 @@ import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { fetchBots, withLlmModel } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
+import { selectCashTotal } from '../store/selectors';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
@@ -642,6 +643,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const positions = useStore((state) => state.positions);
   const agentInsights = useStore((state) => state.agentInsights);
   const tickerPrice = useStore((state) => state.tickerData[state.activeSymbol]?.price);
+  const cashTotal = useStore(selectCashTotal);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
   const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
@@ -653,6 +655,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const [backtestOos, setBacktestOosLocal] = useState(false);
   const [backtestReasoning, setBacktestReasoning] = useState(false);
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
+  const [backtestRiskBaseMode, setBacktestRiskBaseMode] = useState('account_snapshot');
   const [portfolioBacktest, setPortfolioBacktest] = useState(false);
   const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
@@ -709,7 +712,7 @@ export function AlgoTab({ hideToolbar = false }) {
 
   const handleRunBacktest = async () => {
     if (!botConfig?.allocation || botConfig.allocation <= 0) {
-      toast.error('Set a valid capital allocation before backtesting');
+      toast.error('Set a valid max notional cap before backtesting');
       return;
     }
 
@@ -750,7 +753,12 @@ export function AlgoTab({ hideToolbar = false }) {
     const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel({
       strategy: botStrategy,
       symbol: activeSymbol,
-      config: { ...botConfig, sim_mode: backtestSimMode },
+      config: {
+        ...botConfig,
+        sim_mode: backtestSimMode,
+        risk_base_mode: backtestRiskBaseMode,
+        ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
+      },
       days,
       timeframe: isTick ? 'tick' : botTimeframe,
       oos_pct: backtestOos ? 30 : undefined,
@@ -782,7 +790,7 @@ export function AlgoTab({ hideToolbar = false }) {
       return;
     }
     if (!botConfig.allocation || botConfig.allocation <= 0) {
-      toast.error('Enter a valid capital allocation amount');
+      toast.error('Enter a valid max notional cap');
       return;
     }
 
@@ -982,7 +990,7 @@ export function AlgoTab({ hideToolbar = false }) {
               <Settings size={13} className="text-primary" aria-hidden />
               Deploy Bot
             </div>
-            <span className="algo-tab__panel-subtitle">Strategy · allocation · backtest</span>
+            <span className="algo-tab__panel-subtitle">Strategy · caps · backtest</span>
           </div>
         </header>
         <div className="algo-tab__scroll scroll-panel-y scroll-panel-y-0 algo-tab__deploy-body" data-tour="algo-deploy">
@@ -1136,7 +1144,7 @@ export function AlgoTab({ hideToolbar = false }) {
             </div>
 
             <div className="algo-deploy-field">
-              <Label className="algo-field-label">Capital Allocation</Label>
+              <Label className="algo-field-label">Max notional cap</Label>
               <InputGroup className="h-8">
                 <InputGroupInput
                   type="number"
@@ -1144,14 +1152,14 @@ export function AlgoTab({ hideToolbar = false }) {
                   value={botConfig?.allocation || ''}
                   onChange={e => updateBotConfig({ allocation: parseFloat(e.target.value) || 0 })}
                   className="text-xs"
-                  aria-label="Capital allocation"
+                  aria-label="Max notional cap"
                 />
                 <InputGroupAddon align="inline-end">
                   <InputGroupText className="text-xs">$</InputGroupText>
                 </InputGroupAddon>
               </InputGroup>
               <span className="algo-field-hint">
-                Risk sized at 1% of account balance using ATR-based stops. Signals evaluate on closed {formatBarTimeframeLabel(botTimeframe)} bars.
+                Hard limit on position size per trade. Risk is sized at 1% of account balance using ATR-based stops. Signals evaluate on closed {formatBarTimeframeLabel(botTimeframe)} bars.
               </span>
             </div>
 
@@ -1345,6 +1353,24 @@ export function AlgoTab({ hideToolbar = false }) {
             )}
 
             <div className="algo-deploy-field">
+              <Label className="algo-field-label">Risk base (backtest)</Label>
+              <Select value={backtestRiskBaseMode} onValueChange={setBacktestRiskBaseMode}>
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest risk base mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  <SelectItem value="account_snapshot" className="text-xs">
+                    Account snapshot{cashTotal > 0 ? ` ($${cashTotal.toLocaleString()} cash)` : ''}
+                  </SelectItem>
+                  <SelectItem value="simulated_equity" className="text-xs">Simulated equity (compounding)</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Matches live sizing: 1% of account cash at run time, or 1% of running backtest equity.
+              </span>
+            </div>
+
+            <div className="algo-deploy-field">
               <Label className="algo-field-label">Simulation mode</Label>
               <Select value={backtestSimMode} onValueChange={setBacktestSimMode}>
                 <SelectTrigger className="h-8 w-full text-xs" aria-label="Backtest simulation mode">
@@ -1467,7 +1493,7 @@ export function AlgoTab({ hideToolbar = false }) {
           <DialogHeader>
             <DialogTitle>Deploy trading bot</DialogTitle>
             <DialogDescription className="text-xs leading-relaxed">
-              This will start a live bot on the server using your current template and allocation.
+              This will start a live bot on the server using your current template and max notional cap.
             </DialogDescription>
           </DialogHeader>
           <div className="algo-dialog-summary">
@@ -1476,7 +1502,7 @@ export function AlgoTab({ hideToolbar = false }) {
               <StrategyBadge strategy={botStrategy} />
             </div>
             <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
-            <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
+            <div><span className="text-muted-foreground">Max cap:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
             <div>
               <span className="text-muted-foreground">Stop / TP:</span>{' '}
               <strong>
@@ -1549,7 +1575,7 @@ export function AlgoTab({ hideToolbar = false }) {
                 <DataTableHead>Strategy</DataTableHead>
                 <DataTableHead align="center">TF</DataTableHead>
                 <DataTableHead align="center">Position</DataTableHead>
-                <DataTableHead align="right">Alloc</DataTableHead>
+                <DataTableHead align="right">Cap</DataTableHead>
                 <DataTableHead align="right">Today PnL</DataTableHead>
                 <DataTableHead>Last signal</DataTableHead>
                 <DataTableHead align="center">Status</DataTableHead>
@@ -1803,7 +1829,7 @@ function GlobalDeployDialog({ switchToAlgoTab }) {
       return;
     }
     if (!botConfig?.allocation || botConfig.allocation <= 0) {
-      toast.error('Enter a valid capital allocation amount');
+      toast.error('Enter a valid max notional cap');
       return;
     }
     sendAction(Action.BOT_CREATE, {
@@ -1826,7 +1852,7 @@ function GlobalDeployDialog({ switchToAlgoTab }) {
         <DialogHeader>
           <DialogTitle>Deploy trading bot</DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
-            This will start a live bot on the server using your current template and allocation.
+            This will start a live bot on the server using your current template and max notional cap.
           </DialogDescription>
         </DialogHeader>
         <div className="algo-dialog-summary">
@@ -1835,7 +1861,7 @@ function GlobalDeployDialog({ switchToAlgoTab }) {
             <StrategyBadge strategy={botStrategy} />
           </div>
           <div><span className="text-muted-foreground">Symbol:</span> <strong>{activeSymbol}</strong></div>
-          <div><span className="text-muted-foreground">Allocation:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
+          <div><span className="text-muted-foreground">Max cap:</span> <strong>${botConfig?.allocation?.toLocaleString() ?? 0}</strong></div>
           <div>
             <span className="text-muted-foreground">Stop / TP:</span>{' '}
             <strong>

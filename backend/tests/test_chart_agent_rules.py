@@ -58,7 +58,7 @@ class TestChartAgentRules(unittest.TestCase):
         candles = make_trending_candles(200)
         df = self.builder.build("ETHUSDT", candles)
         insight = score_dataframe(df, "ETHUSDT")
-        expected = round(min(1.0, abs(insight.score) / 4.0), 3)
+        expected = round(1.0 / (1.0 + math.exp(-0.8 * (abs(insight.score) - 3))), 3)
         self.assertEqual(insight.confidence, expected)
 
     def test_sub_reports_sum_to_composite_score(self):

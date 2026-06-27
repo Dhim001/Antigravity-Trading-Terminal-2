@@ -348,7 +348,7 @@ class SimulatedOMSService(BaseOMSService):
             risk = None
         else:
             bid, fsym, fside, fqty, fprice, risk = fill_tuple
-        bot_positions.apply_fill(bid, fsym, fside, fqty, fprice, risk=risk)
+        bot_positions.apply_fill(bid, fsym, fside, fqty, fprice, risk=risk, feed=self.feed)
 
     def _process_fill(
         self,
@@ -532,10 +532,12 @@ class SimulatedOMSService(BaseOMSService):
         if not symbols:
             return [], [], []
 
-        trailing_bot_updates: list[tuple[str, str, float]] = []
+        trailing_bot_updates: list[tuple[str, str, float | None, float | None, float | None]] = []
         trailing_account_updates: list[tuple[str, float]] = []
         exit_plans: list[dict] = []
         triggered_logs: list[str] = []
+
+        current_atrs = {}
 
         for symbol in symbols:
             if symbol not in self.feed._symbols:
@@ -553,7 +555,36 @@ class SimulatedOMSService(BaseOMSService):
                 if abs(osize) <= 1e-8:
                     continue
 
-                trigger_type, trailing_sl = bot_positions.evaluate_risk_trigger(
+                bot_config = owner.get("bot_config") or {}
+                use_chandelier = bool(bot_config.get("chandelier_stop_enabled", False))
+                current_atr = None
+
+                if use_chandelier:
+                    timeframe = owner.get("timeframe") or "1m"
+                    key = (symbol, timeframe)
+                    if key not in current_atrs:
+                        current_atr_val = 0.0
+                        try:
+                            from app.services.bots.candle_source import get_bot_candles
+                            import pandas as pd
+                            import pandas_ta as ta
+
+                            candles = get_bot_candles(symbol, self.feed, timeframe=timeframe)
+                            if candles and len(candles) >= 15:
+                                df = pd.DataFrame(candles)
+                                atr_len = bot_config.get("atr_length", 14)
+                                atr_series = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+                                if atr_series is not None and not atr_series.empty:
+                                    import math
+                                    val = atr_series.iloc[-1]
+                                    if not math.isnan(val):
+                                        current_atr_val = float(val)
+                        except Exception as exc:
+                            print(f"Failed to calculate current ATR in check_sl_tp_triggers: {exc}")
+                        current_atrs[key] = current_atr_val
+                    current_atr = current_atrs[key]
+
+                trigger_type, trailing_sl, updated_high, updated_low = bot_positions.evaluate_risk_trigger(
                     osize,
                     float(owner["avg_price"]),
                     market_price,
@@ -561,10 +592,20 @@ class SimulatedOMSService(BaseOMSService):
                     take_profit_percent=owner["take_profit_percent"],
                     stop_loss_price=owner["stop_loss_price"],
                     take_profit_price=owner["take_profit_price"],
+                    chandelier_stop_enabled=use_chandelier,
+                    chandelier_multiplier=float(bot_config.get("chandelier_multiplier") or 3.0),
+                    high_watermark=owner.get("high_watermark"),
+                    low_watermark=owner.get("low_watermark"),
+                    entry_atr=owner.get("entry_atr"),
+                    current_atr=current_atr,
                 )
-                if trailing_sl is not None and owner.get("stop_loss_percent") is not None:
-                    if owner.get("stop_loss_price") is None or abs(trailing_sl - owner["stop_loss_price"]) > 1e-9:
-                        trailing_bot_updates.append((owner["bot_id"], symbol, trailing_sl))
+
+                if (
+                    trailing_sl != owner.get("stop_loss_price")
+                    or updated_high != owner.get("high_watermark")
+                    or updated_low != owner.get("low_watermark")
+                ):
+                    trailing_bot_updates.append((owner["bot_id"], symbol, trailing_sl, updated_high, updated_low))
 
                 if not trigger_type:
                     continue
@@ -656,13 +697,14 @@ class SimulatedOMSService(BaseOMSService):
             conn = get_connection()
             cursor = conn.cursor()
             try:
-                for bot_id, symbol, sl_price in trailing_bot_updates:
+                for bot_id, symbol, sl_price, high_wm, low_wm in trailing_bot_updates:
                     cursor.execute(
                         """
-                        UPDATE bot_positions SET stop_loss_price = ?
+                        UPDATE bot_positions
+                        SET stop_loss_price = ?, high_watermark = ?, low_watermark = ?
                         WHERE bot_id = ? AND symbol = ?
                         """,
-                        (sl_price, bot_id, symbol),
+                        (sl_price, high_wm, low_wm, bot_id, symbol),
                     )
                 conn.commit()
             finally:

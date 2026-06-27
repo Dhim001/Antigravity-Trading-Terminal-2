@@ -78,6 +78,12 @@ def check_entry_filters(
         if regime == "elevated":
             return "elevated ATR regime blocks entry"
 
+    # 3.4-A: ADX trend regime filter — blocks momentum entries in choppy, ranging markets
+    if cfg.get("block_ranging_markets"):
+        trend_reg = (sub.get("trend") or {}).get("trend_regime")
+        if trend_reg == "ranging":
+            return "ranging market blocks entry"
+
     confirm_tf = (cfg.get("confirm_timeframe") or "").strip()
     if confirm_tf:
         if not confirm_insight:
@@ -103,6 +109,8 @@ def classify_filter_reject(reason: str | None) -> str | None:
     if " confirm " in f" {text} " and "trend" in text:
         return "htf"
     if "trend" in text and ("align" in text or "does not" in text):
+        return "trend"
+    if "ranging market" in text:
         return "trend"
     if "elevated" in text or "atr regime" in text:
         return "vol"

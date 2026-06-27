@@ -16,6 +16,7 @@ from app.services.bots.tick_strategies import is_tick_strategy
 from app.services.market.resample import resample_candles_for_timeframe
 from app.services.market.timeframes import normalize_timeframe
 from app.services.bots.risk_gate import RiskGate
+from app.services.bots.risk_sizing import entry_quantity_from_risk, parse_risk_sizing_config
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.backtest_analytics import drawdown_curve, enrich_summary
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
@@ -73,6 +74,47 @@ def _update_trailing_stop(position: dict, bar_low: float, bar_high: float, trail
     position["high_watermark"] = max(position["high_watermark"], bar_high)
     new_sl = position["high_watermark"] * (1 - trailing_pct / 100)
     position["stop_loss"] = max(position.get("stop_loss") or 0, new_sl)
+
+
+# 3.3-C: Chandelier ATR trailing stop helpers.
+def _update_chandelier_stop(
+    position: dict,
+    bar_high: float,
+    atr: float,
+    multiplier: float = 3.0,
+) -> None:
+    """Long Chandelier Exit: trail from highest-high minus N×ATR.
+
+    When PnL already exceeds 2×ATR gained (the 'profit-lock' zone), tighten
+    the multiplier to 2× to protect unrealised gains more aggressively.
+    """
+    if atr <= 0:
+        return
+    position["high_watermark"] = max(position.get("high_watermark", bar_high), bar_high)
+    # Tighten once price has moved >2×ATR in our favour (profit-lock).
+    entry_price = float(position.get("entry_price") or bar_high)
+    profit_atr_units = (position["high_watermark"] - entry_price) / atr
+    effective_mult = 2.0 if profit_atr_units >= 2.0 else multiplier
+    new_sl = position["high_watermark"] - effective_mult * atr
+    position["stop_loss"] = max(position.get("stop_loss") or 0, new_sl)
+
+
+def _update_chandelier_stop_short(
+    position: dict,
+    bar_low: float,
+    atr: float,
+    multiplier: float = 3.0,
+) -> None:
+    """Short Chandelier Exit: trail from lowest-low plus N×ATR."""
+    if atr <= 0:
+        return
+    position["low_watermark"] = min(position.get("low_watermark", bar_low), bar_low)
+    entry_price = float(position.get("entry_price") or bar_low)
+    profit_atr_units = (entry_price - position["low_watermark"]) / atr
+    effective_mult = 2.0 if profit_atr_units >= 2.0 else multiplier
+    new_sl = position["low_watermark"] + effective_mult * atr
+    current_sl = position.get("stop_loss")
+    position["stop_loss"] = min(current_sl, new_sl) if current_sl is not None else new_sl
 
 
 def _sharpe_ratio(equity_curve: list[dict]) -> float | None:
@@ -225,7 +267,11 @@ class BacktesterService:
         trailing_pct = float(
             cfg.get("trailing_stop_percent") or cfg.get("stop_loss_percent") or 0,
         )
-        risk_per_entry = allocation * 0.01
+        # 3.3-C: Chandelier ATR trailing stop config.
+        use_chandelier = bool(cfg.get("chandelier_stop_enabled", False))
+        chandelier_mult = float(cfg.get("chandelier_multiplier") or 3.0)
+        chandelier_mult = max(1.0, min(10.0, chandelier_mult))
+        risk_cfg = parse_risk_sizing_config(cfg)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
         total_fees = 0.0
@@ -378,10 +424,17 @@ class BacktesterService:
             if price_diff <= 0:
                 return
 
-            qty = risk_per_entry / price_diff
             size_factor = float((signal_data or {}).get("size_factor") or 1.0)
-            if strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True) and size_factor > 0:
-                qty *= size_factor
+            qty = entry_quantity_from_risk(
+                risk_cfg=risk_cfg,
+                simulated_equity=equity,
+                price=current_price,
+                stop_loss=stop_loss,
+                size_factor=size_factor,
+                apply_vol_sizing=(
+                    strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True)
+                ),
+            )
             if research:
                 qty = min(qty, allocation / max(current_price, 1e-9))
             else:
@@ -398,6 +451,14 @@ class BacktesterService:
                     blocked_entries += 1
                     return
                 qty = decision.quantity if decision.quantity is not None else qty
+
+            # 3.3-A: Confidence-scaled sizing — mirrors live manager behaviour.
+            if chart_cfg.get("use_confidence_sizing", True) and strat_key == "CHART_AGENT":
+                conf = float((signal_data or {}).get("confidence") or 0.55)
+                conf_scale = 0.7 + (conf * 0.6)
+                conf_scale = max(0.5, min(1.5, conf_scale))
+                qty *= conf_scale
+
             if qty < _MIN_QTY:
                 blocked_entries += 1
                 return
@@ -418,6 +479,8 @@ class BacktesterService:
                 "stop_loss": stop_loss,
                 "take_profit": tp_price,
                 "high_watermark": current_price,
+                # 3.3-C: store ATR at entry for Chandelier scaling.
+                "entry_atr": float(row.get("ATR_14") or row.get("ATRr_14") or 0),
             }
             entry_row = {
                 "time": int(bar_time) if bar_time is not None else 0,
@@ -464,10 +527,17 @@ class BacktesterService:
             if price_diff <= 0:
                 return
 
-            qty = risk_per_entry / price_diff
             size_factor = float((signal_data or {}).get("size_factor") or 1.0)
-            if strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True) and size_factor > 0:
-                qty *= size_factor
+            qty = entry_quantity_from_risk(
+                risk_cfg=risk_cfg,
+                simulated_equity=equity,
+                price=current_price,
+                stop_loss=stop_loss,
+                size_factor=size_factor,
+                apply_vol_sizing=(
+                    strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True)
+                ),
+            )
             qty = min(qty, allocation / max(current_price, 1e-9))
             if qty < _MIN_QTY:
                 blocked_entries += 1
@@ -519,10 +589,19 @@ class BacktesterService:
             if position:
                 bars_in_market += 1
                 if position["side"] == "BUY":
-                    _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
+                    # 3.3-C: Use Chandelier ATR stop when enabled; fall back to pct trailing.
+                    if use_chandelier:
+                        bar_atr = float(row.get("ATR_14") or row.get("ATRr_14") or position.get("entry_atr") or 0)
+                        _update_chandelier_stop(position, bar_high, bar_atr, chandelier_mult)
+                    else:
+                        _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
                     trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high)
                 else:
-                    _update_trailing_stop_short(position, bar_low, bar_high, trailing_pct)
+                    if use_chandelier:
+                        bar_atr = float(row.get("ATR_14") or row.get("ATRr_14") or position.get("entry_atr") or 0)
+                        _update_chandelier_stop_short(position, bar_low, bar_atr, chandelier_mult)
+                    else:
+                        _update_trailing_stop_short(position, bar_low, bar_high, trailing_pct)
                     trigger, exit_px = _check_short_sl_tp(position, bar_low, bar_high)
                 if trigger:
                     _close_position(bar_time, exit_px, trigger)
@@ -531,6 +610,7 @@ class BacktesterService:
             if _chart_agent_signal is not None:
                 signal_data = _chart_agent_signal(i)
             else:
+                row["_current_side"] = position["side"] if position else "NONE"
                 signal_data = strategy.evaluate(row)
             signal = (signal_data or {}).get("signal")
 
@@ -618,6 +698,8 @@ class BacktesterService:
             "drawdown_curve": dd_curve,
             "starting_equity": round(starting_equity, 2),
             "allocation": round(allocation, 2),
+            "risk_base_mode": risk_cfg["mode"],
+            "risk_base": round(risk_cfg["snapshot"], 2),
             "trades": trade_log,
             "trades_total": len(trade_log),
             "summary": summary,

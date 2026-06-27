@@ -84,8 +84,13 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
         <span className="algo-backtest-lab__chip">{meta.days ?? backtestDays}d</span>
         <span className="algo-backtest-lab__chip">{meta.timeframe ?? backtestTimeframe}</span>
         {allocation != null && (
-          <span className="algo-backtest-lab__chip num-mono">
-            ${Number(allocation).toLocaleString()}
+          <span className="algo-backtest-lab__chip num-mono" title="Max notional cap">
+            cap ${Number(allocation).toLocaleString()}
+          </span>
+        )}
+        {results?.risk_base != null && (
+          <span className="algo-backtest-lab__chip num-mono" title="Risk base (1% sizing)">
+            risk ${Number(results.risk_base).toLocaleString()}
           </span>
         )}
       </div>

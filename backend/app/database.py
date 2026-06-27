@@ -202,6 +202,9 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN take_profit_percent REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN take_profit_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN high_watermark REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN low_watermark REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN entry_atr REAL DEFAULT NULL")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_pending_fills (
             id TEXT PRIMARY KEY,

@@ -89,7 +89,7 @@ graph TD
   - `SUPERTREND_ADX` — SuperTrend flip + ADX confirmation
   - `VWAP_PULLBACK` — VWAP mean-reversion entries
 - **Backtester** service for offline strategy evaluation
-- Dock **Algo Bot** tab: strategy templates, capital allocation, live bot logs, backtest equity curve, deploy confirmation
+- Dock **Algo Bot** tab: strategy templates, max notional cap, live bot logs, backtest equity curve, deploy confirmation
 - **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all
 - **Bot analytics**: per-bot trades, snapshots, detail panel, chart trade markers
 - **Config-driven strategies**: indicator periods wired from bot `config`

@@ -18,6 +18,7 @@ from app.services.bots.backtester import (
     _utc_day_key,
 )
 from app.services.bots.risk_gate import RiskGate
+from app.services.bots.risk_sizing import entry_quantity_from_risk, parse_risk_sizing_config
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 from app.services.bots.tick_screener import TickScreener
 from app.services.bots.tick_strategies import get_tick_strategy, merge_tick_config
@@ -82,7 +83,7 @@ class TickBacktester:
         trailing_pct = float(
             cfg.get("trailing_stop_percent") or cfg.get("stop_loss_percent") or 0,
         )
-        risk_per_entry = allocation * 0.01
+        risk_cfg = parse_risk_sizing_config(cfg)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
         cooldown_ms = int(float(tick_cfg.get("tick_cooldown_sec", 10)) * 1000)
@@ -172,7 +173,12 @@ class TickBacktester:
             if price_diff <= 0:
                 return
 
-            qty = risk_per_entry / price_diff
+            qty = entry_quantity_from_risk(
+                risk_cfg=risk_cfg,
+                simulated_equity=equity,
+                price=price,
+                stop_loss=stop_loss,
+            )
             if research:
                 qty = min(qty, allocation / max(price, 1e-9))
             else:
@@ -324,6 +330,8 @@ class TickBacktester:
             "drawdown_curve": drawdown_curve(equity_curve),
             "starting_equity": round(starting_equity, 2),
             "allocation": round(allocation, 2),
+            "risk_base_mode": risk_cfg["mode"],
+            "risk_base": round(risk_cfg["snapshot"], 2),
             "trades": trade_log,
             "trades_total": len(trade_log),
             "summary": summary,

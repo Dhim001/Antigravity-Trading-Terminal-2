@@ -109,7 +109,7 @@ class VirtualTpTests(unittest.TestCase):
         pos_a = bot_positions.get_bot_position("bot-a", "ETHUSDT")
         pos_b = bot_positions.get_bot_position("bot-b", "ETHUSDT")
 
-        trigger_a, _ = bot_positions.evaluate_risk_trigger(
+        trigger_a, _, _, _ = bot_positions.evaluate_risk_trigger(
             pos_a["size"],
             pos_a["avg_price"],
             102.5,
@@ -118,7 +118,7 @@ class VirtualTpTests(unittest.TestCase):
             stop_loss_price=pos_a["stop_loss_price"],
             take_profit_price=pos_a["take_profit_price"],
         )
-        trigger_b, _ = bot_positions.evaluate_risk_trigger(
+        trigger_b, _, _, _ = bot_positions.evaluate_risk_trigger(
             pos_b["size"],
             pos_b["avg_price"],
             102.5,

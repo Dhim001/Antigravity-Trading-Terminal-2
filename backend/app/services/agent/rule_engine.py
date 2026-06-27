@@ -45,7 +45,8 @@ def _bot_signal(score: int) -> SignalType:
 
 
 def _confidence(score: int) -> float:
-    return round(min(1.0, max(0.0, abs(score) / 4.0)), 3)
+    """Sigmoid-mapped confidence: score 2→~0.62, 3→~0.73, 4→~0.82, 5→~0.88."""
+    return round(1.0 / (1.0 + math.exp(-0.8 * (abs(score) - 3))), 3)
 
 
 def _score_trend(row: pd.Series, price: float) -> DomainScore:
@@ -128,6 +129,38 @@ def _score_momentum(row: pd.Series, prev: pd.Series | None) -> DomainScore:
     return DomainScore(score=score, reasons=reasons)
 
 
+def _score_volume(row: pd.Series, df: pd.DataFrame, idx: int) -> DomainScore:
+    """Volume domain: rewards conviction surges, penalises low-volume signals.
+
+    +1 when bar volume is ≥ 1.5× the 20-bar rolling average (conviction surge).
+    −1 when bar volume is ≤ 0.5× the 20-bar rolling average (weak conviction).
+     0 otherwise (normal volume or data unavailable).
+    """
+    vol = row.get("volume")
+    if vol is None or (isinstance(vol, float) and math.isnan(vol)):
+        return DomainScore(score=0, reasons=["volume unavailable"])
+    vol_f = float(vol)
+    if vol_f <= 0:
+        return DomainScore(score=0, reasons=["volume zero"])
+
+    window = df.iloc[max(0, idx - 19): idx + 1]
+    if "volume" not in window.columns:
+        return DomainScore(score=0, reasons=["volume column missing"])
+    series = window["volume"].replace(0, float("nan")).dropna()
+    if series.empty:
+        return DomainScore(score=0, reasons=["no volume history"])
+    avg_vol = float(series.mean())
+    if avg_vol <= 0:
+        return DomainScore(score=0, reasons=["avg volume zero"])
+
+    ratio = vol_f / avg_vol
+    if ratio >= 1.5:
+        return DomainScore(score=1, reasons=[f"Volume surge {ratio:.1f}× avg (confirms move)"])
+    if ratio <= 0.5:
+        return DomainScore(score=-1, reasons=[f"Volume below avg {ratio:.1f}× (weak conviction)"])
+    return DomainScore(score=0, reasons=[f"Volume normal {ratio:.1f}× avg"])
+
+
 def _risk_report(row: pd.Series, df: pd.DataFrame, idx: int) -> dict:
     atr = row.get(atr_col(ATR_LEN))
     if atr is None or (isinstance(atr, float) and math.isnan(atr)):
@@ -191,33 +224,66 @@ def _score_row(
     return score, reasons
 
 
+def _classify_trend_regime(row: pd.Series, df: pd.DataFrame, idx: int) -> str:
+    """Classifies the market trend regime based on ADX (3.4-A).
+
+    Returns 'trending' if ADX > 25, else 'ranging'.
+    """
+    from app.services.bots.indicators import adx_col
+    # Retrieve ADX column name (default length 14)
+    adx_name = adx_col(14)
+    if adx_name not in df.columns:
+        return "unknown"
+
+    adx_val = row.get(adx_name)
+    if adx_val is None or (isinstance(adx_val, float) and math.isnan(adx_val)):
+        return "unknown"
+
+    return "trending" if float(adx_val) > 25 else "ranging"
+
+
 def _build_sub_reports(row: pd.Series, prev: pd.Series | None, price: float, df: pd.DataFrame, idx: int) -> dict:
     trend = _score_trend(row, price)
     momentum = _score_momentum(row, prev)
+    volume = _score_volume(row, df, idx)
     risk = _risk_report(row, df, idx)
+    trend_regime = _classify_trend_regime(row, df, idx)
     indicator = {"score": momentum.score, "reasons": list(momentum.reasons)}
     return {
-        "trend": {"score": trend.score, "reasons": trend.reasons},
+        "trend": {
+            "score": trend.score,
+            "reasons": trend.reasons,
+            "trend_regime": trend_regime,  # 3.4-A: ADX trend regime detection
+        },
         # Plan §Future: Indicator / Trend / Risk — momentum is the indicator domain (RSI/MACD).
         "indicator": indicator,
         "momentum": {"score": momentum.score, "reasons": momentum.reasons},
+        # 3.1-A: Volume conviction domain.
+        "volume": {"score": volume.score, "reasons": volume.reasons},
         "risk": risk,
     }
 
 
-def _levels(row: pd.Series, signal: SignalType, price: float) -> dict:
+def _levels(row: pd.Series, signal: SignalType, price: float, df: pd.DataFrame, idx: int) -> dict:
     atr = row.get(atr_col(ATR_LEN))
     if atr is None or (isinstance(atr, float) and math.isnan(atr)):
         atr = 0.0
     atr = float(atr)
     levels: dict = {"entry_hint": price}
     if atr > 0:
-        levels["stop_loss_distance"] = round(1.5 * atr, 6)
+        # 3.1-B: Regime-aware SL multiplier — wider in elevated vol (prevents whipsaw),
+        # tighter in compressed vol (quick reversals need snug stops).
+        risk = _risk_report(row, df, idx)
+        regime = risk.get("atr_regime", "normal")
+        sl_mult = {"elevated": 2.0, "compressed": 1.2, "normal": 1.5}.get(regime, 1.5)
+        levels["stop_loss_distance"] = round(sl_mult * atr, 6)
+        levels["sl_regime"] = regime  # expose for transparency in insight
         if signal == "BUY":
             levels["take_profit_price"] = round(price + 3.0 * atr, 6)
         elif signal == "SELL":
             levels["take_profit_price"] = round(price - 3.0 * atr, 6)
     return levels
+
 
 
 def score_dataframe(
@@ -245,8 +311,14 @@ def score_dataframe(
     sub_reports = _build_sub_reports(row, prev, price, df, idx)
     trend_score = sub_reports["trend"]["score"]
     momentum_score = sub_reports["momentum"]["score"]
-    score = trend_score + momentum_score
-    reasons = sub_reports["trend"]["reasons"] + sub_reports["momentum"]["reasons"]
+    volume_score = sub_reports["volume"]["score"]
+    # 3.1-A: Include volume conviction in total score.
+    score = trend_score + momentum_score + volume_score
+    reasons = (
+        sub_reports["trend"]["reasons"]
+        + sub_reports["momentum"]["reasons"]
+        + sub_reports["volume"]["reasons"]
+    )
     bot_sig = _bot_signal(score)
 
     return ChartAgentInsight(
@@ -254,10 +326,10 @@ def score_dataframe(
         bar_time=int(bar_time),
         timeframe=timeframe,
         signal=bot_sig,
-        confidence=_confidence(score),
+        confidence=_confidence(score),  # 3.1-A: now sigmoid-mapped
         score=score,
         reasons=reasons,
-        levels=_levels(row, bot_sig, price),
+        levels=_levels(row, bot_sig, price, df, idx),
         version=2,
         sub_reports=sub_reports,
     )

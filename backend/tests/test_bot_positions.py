@@ -82,6 +82,45 @@ class BotPositionsTests(unittest.TestCase):
         self.assertEqual(owners[0]["bot_id"], self.bot_id)
         self.assertAlmostEqual(owners[0]["size"], 2.5)
 
+    def test_evaluate_risk_trigger_chandelier_long(self):
+        # Initial trail: high_watermark = 100.0, ATR = 2.0, multiplier = 3.0 -> SL = 95.0
+        trigger, sl, updated_high, updated_low = bot_positions.evaluate_risk_trigger(
+            1.0,
+            100.0,
+            101.0,
+            stop_loss_percent=None,
+            take_profit_percent=None,
+            stop_loss_price=None,
+            take_profit_price=None,
+            chandelier_stop_enabled=True,
+            chandelier_multiplier=3.0,
+            high_watermark=100.0,
+            low_watermark=None,
+            entry_atr=2.0,
+            current_atr=2.0,
+        )
+        self.assertIsNone(trigger)
+        self.assertEqual(updated_high, 101.0)
+        self.assertEqual(sl, 95.0)
+
+        # Trigger SL check when market price drops to 94.0
+        trigger, sl, updated_high, updated_low = bot_positions.evaluate_risk_trigger(
+            1.0,
+            100.0,
+            94.0,
+            stop_loss_percent=None,
+            take_profit_percent=None,
+            stop_loss_price=95.0,
+            take_profit_price=None,
+            chandelier_stop_enabled=True,
+            chandelier_multiplier=3.0,
+            high_watermark=101.0,
+            low_watermark=None,
+            entry_atr=2.0,
+            current_atr=2.0,
+        )
+        self.assertEqual(trigger, "SL")
+
 
 class PendingFillReconcileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

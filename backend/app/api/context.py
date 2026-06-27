@@ -1,9 +1,12 @@
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from app.services.base_oms import BaseOMSService
-from app.services.bots.manager import BotManagerService
 from app.websocket.connection_manager import ConnectionManager
+
+if TYPE_CHECKING:
+    from app.services.bots.manager import BotManagerService
 
 
 @dataclass

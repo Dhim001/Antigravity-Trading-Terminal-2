@@ -37,6 +37,13 @@ class MacdRsiStrategy(BaseStrategy):
             rsi = df_row.get(rsi_col(cfg["rsi_length"]), 50)
             atr = df_row.get(atr_col(cfg["atr_length"]), 0)
 
+            # 3.2-A: Exit via CLOSE signal when MACD reverses (MACD histogram crosses zero)
+            current_side = df_row.get("_current_side", "NONE")
+            if current_side == "BUY" and macd_hist < 0 and macd_hist_prev >= 0:
+                return {"signal": "CLOSE", "stop_loss_distance": 1.5 * atr}
+            if current_side == "SELL" and macd_hist > 0 and macd_hist_prev <= 0:
+                return {"signal": "CLOSE", "stop_loss_distance": 1.5 * atr}
+
             if macd_hist > 0 and macd_hist_prev <= 0 and rsi < 50:
                 return {"signal": "BUY", "stop_loss_distance": 1.5 * atr}
 
@@ -108,6 +115,16 @@ class SupertrendAdxStrategy(BaseStrategy):
             if None in (st_dir, st_dir_prev, adx):
                 return {"signal": "NONE"}
 
+            # 3.2-B: Block entries in elevated ATR regime to prevent buying into high-vol spikes
+            if cfg.get("block_elevated_vol", False):
+                atr_len = cfg.get("atr_length", 14)
+                atr_val = df_row.get(atr_col(atr_len))
+                atr_median = df_row.get(f"ATR_{atr_len}_median_20")
+                if atr_val is not None and atr_median is not None and atr_median > 0:
+                    ratio = atr_val / atr_median
+                    if ratio >= 1.5:
+                        return {"signal": "NONE"}
+
             threshold = cfg["adx_threshold"]
             if st_dir == 1 and st_dir_prev == -1 and adx > threshold:
                 return {"signal": "BUY", "stop_loss_price": st_val}
@@ -133,10 +150,19 @@ class VwapPullbackStrategy(BaseStrategy):
             if None in (vwap, close, close_prev):
                 return {"signal": "NONE"}
 
+            # 3.2-C: RSI confirmation filter to avoid buying overbought pops or selling oversold drops
+            use_rsi = cfg.get("use_rsi_confirmation", True)
+            rsi_val = df_row.get(rsi_col(cfg.get("rsi_length", 14))) if use_rsi else None
+            rsi_f = float(rsi_val) if rsi_val is not None else 50.0
+
             if close_prev > vwap and close <= vwap:
+                if use_rsi and rsi_f > float(cfg.get("rsi_overbought_gate", 60)):
+                    return {"signal": "NONE"}
                 return {"signal": "BUY", "stop_loss_distance": 1.5 * atr}
 
             if close_prev < vwap and close >= vwap:
+                if use_rsi and rsi_f < float(cfg.get("rsi_oversold_gate", 40)):
+                    return {"signal": "NONE"}
                 return {"signal": "SELL", "stop_loss_distance": 1.5 * atr}
         except Exception:
             pass

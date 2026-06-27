@@ -260,6 +260,19 @@ async def _execute_backtest(
 
     try:
         from app.services.archive.resolve import resolve_backtest_candles
+        from app.services.bots.risk_sizing import enrich_backtest_risk_config
+
+        account_balance = None
+        if getattr(ctx, "bot_manager", None):
+            account_balance = ctx.bot_manager.get_account_balance()
+        elif hasattr(ctx.oms, "get_account_data"):
+            balances = ctx.oms.get_account_data().get("balances", {})
+            usd = balances.get("USD", {}).get("balance")
+            if usd is not None:
+                account_balance = float(usd)
+            else:
+                account_balance = float(balances.get("USDT", {}).get("balance") or 0)
+        config = enrich_backtest_risk_config(config, account_balance)
 
         enqueue_progress({"pct": 0, "phase": "resolve", "message": "Loading candles…"})
         try:
