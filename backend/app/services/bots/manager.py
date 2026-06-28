@@ -2,6 +2,7 @@ import logging
 import json
 import uuid
 import asyncio
+import time
 from datetime import datetime, timezone
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
@@ -23,6 +24,7 @@ from app.services.bots.risk_sizing import RISK_PCT
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
+from app.services.runtime import system_state
 
 ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
 
@@ -149,6 +151,47 @@ class BotManagerService:
             del self.active_bots[bot_id]
         conn.close()
         self.logger.info(f"Loaded {len(self.active_bots)} bots from DB.")
+
+    def restore_runtime_checkpoint(self, checkpoint: dict) -> None:
+        for bot_id, fields in checkpoint.items():
+            bot = self.active_bots.get(bot_id)
+            if not bot or not isinstance(fields, dict):
+                continue
+            for key in ("last_signal_bar_time", "last_signal_at", "last_tick_signal_at"):
+                if key in fields and fields[key] is not None:
+                    bot[key] = fields[key]
+
+    def apply_safe_mode_pause(self) -> int:
+        """Pause all RUNNING bots in DB and memory. Returns count paused."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM bots WHERE status = 'RUNNING'")
+        rows = cursor.fetchall()
+        running_ids = [row["id"] if isinstance(row, dict) else row[0] for row in rows]
+        if running_ids:
+            cursor.executemany(
+                "UPDATE bots SET status = 'PAUSED' WHERE id = ?",
+                [(bid,) for bid in running_ids],
+            )
+            conn.commit()
+        conn.close()
+        for bot_id in running_ids:
+            if bot_id in self.active_bots:
+                self.active_bots[bot_id]["status"] = "PAUSED"
+        return len(running_ids)
+
+    async def pause_all_running_bots(self) -> int:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM bots WHERE status = 'RUNNING'")
+        rows = cursor.fetchall()
+        conn.close()
+        paused = 0
+        for row in rows:
+            bot_id = row["id"] if isinstance(row, dict) else row[0]
+            await self.pause_bot(bot_id)
+            paused += 1
+        return paused
 
     async def _flush_log_buffer(self):
         if not self._log_buffer:
@@ -396,6 +439,8 @@ class BotManagerService:
     async def process_market_tick(self, symbol: str, ohlcv_1m: list | None = None, *, feed=None):
         if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
             return
+        if system_state.is_safe_mode_active():
+            return
         if not self.active_bots or not any(
             b["symbol"] == symbol and b.get("status") == "RUNNING"
             for b in self.active_bots.values()
@@ -632,6 +677,8 @@ class BotManagerService:
         """Evaluate tick-mode bots on each price update (separate from bar-close path)."""
         if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
             return
+        if system_state.is_safe_mode_active():
+            return
         if not self.active_bots or price <= 0:
             return
 
@@ -787,6 +834,13 @@ class BotManagerService:
             await self.log_bot_event(bot_id, "INFO", decision.reason)
 
         if not is_exit:
+            bot_cfg = bot.get("config") or {}
+            if isinstance(bot_cfg, str):
+                try:
+                    bot_cfg = json.loads(bot_cfg) if bot_cfg else {}
+                except json.JSONDecodeError:
+                    bot_cfg = {}
+            entry_leverage = float(bot_cfg.get("leverage") or 1)
             port_decision = self._risk_gate.validate_portfolio(
                 self.oms,
                 symbol,
@@ -794,6 +848,7 @@ class BotManagerService:
                 quantity,
                 current_price,
                 is_exit=False,
+                entry_leverage=entry_leverage,
             )
             if not port_decision.allowed:
                 signal_ledger.release_signal(signal_id)
@@ -895,6 +950,17 @@ class BotManagerService:
                 live_submitted = not uses_paper_oms() and result.get("average_fill_price") is None
 
                 if live_submitted:
+                    signal_ledger.mark_signal_submitted(
+                        signal_id,
+                        order_id=order_id,
+                        broker=TERMINAL_MODE,
+                        payload={
+                            "symbol": symbol,
+                            "side": side,
+                            "quantity": quantity,
+                            "bot_id": bot_id,
+                        },
+                    )
                     bot_analytics.record_pending_fill(
                         bot_id,
                         order_id,
@@ -940,6 +1006,7 @@ class BotManagerService:
 
                         get_calibration_store().invalidate(bot_id)
                     self.record_snapshot_for_bot(bot_id)
+                    signal_ledger.mark_signal_filled(signal_id, order_id=order_id)
 
                 await publish_post_trade_bundle(
                     self.broadcast_cb,
@@ -950,7 +1017,6 @@ class BotManagerService:
                 detail = self.get_bot_detail(bot_id)
                 if detail:
                     await publish_bot_detail(self.broadcast_cb, detail)
-                signal_ledger.mark_signal_filled(signal_id)
                 self._risk_gate.invalidate_portfolio_cache()
                 log_event(
                     logger,
@@ -962,9 +1028,14 @@ class BotManagerService:
                     insight_id=signal_data.get("insight_id"),
                 )
             else:
-                signal_ledger.release_signal(signal_id)
                 msg = result.get("message", "Unknown error")
                 status = result.get("status", "error")
+                if status == "ambiguous":
+                    signal_ledger.mark_signal_ambiguous(
+                        signal_id, msg, order_id=result.get("order_id")
+                    )
+                else:
+                    signal_ledger.mark_signal_failed(signal_id, msg)
                 _record_order_blocked(bot, msg)
                 if status == "ambiguous":
                     await self.log_bot_event(
@@ -981,7 +1052,10 @@ class BotManagerService:
                         "Live order not retried (at-most-once). Reconcile manually if needed.",
                     )
         except Exception as e:
-            signal_ledger.release_signal(signal_id)
+            if not uses_paper_oms():
+                signal_ledger.mark_signal_ambiguous(signal_id, str(e))
+            else:
+                signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")
             if not uses_paper_oms():
                 await self.log_bot_event(
@@ -1093,11 +1167,132 @@ class BotManagerService:
 
         await self.log_bot_event(bot_id, "INFO", "Bot stopped.")
 
+    def _mark_price(self, symbol: str, fallback: float = 0.0) -> float:
+        feed = getattr(self.oms, "feed", None)
+        if feed and hasattr(feed, "_symbols") and symbol in feed._symbols:
+            return float(feed._symbols[symbol].get("price") or fallback)
+        return fallback
+
+    def _get_bot_dict(self, bot_id: str) -> dict | None:
+        if bot_id in self.active_bots:
+            return self.active_bots[bot_id]
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM bots WHERE id = ?", (bot_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            bot = dict(row)
+            bot["config"] = json.loads(bot["config"]) if bot.get("config") else {}
+            return bot
+        finally:
+            conn.close()
+
+    async def flatten_weekend_non_crypto_positions(self) -> int:
+        """Close open bot positions for non-crypto symbols during the weekend window."""
+        from app.services.bots.time_windows import (
+            in_weekend_flatten_window,
+            should_flatten_symbol,
+            weekend_flatten_bar_time,
+        )
+
+        if not in_weekend_flatten_window():
+            return 0
+
+        bar_time = weekend_flatten_bar_time()
+        closed = 0
+        for symbol, owners in bot_positions.list_owners_grouped().items():
+            if not should_flatten_symbol(symbol):
+                continue
+            for owner in owners:
+                size = float(owner.get("size") or 0)
+                if abs(size) < 1e-8:
+                    continue
+                bot_id = owner["bot_id"]
+                bot = self._get_bot_dict(bot_id)
+                if not bot:
+                    continue
+                avg = float(owner.get("avg_price") or 0)
+                price = self._mark_price(symbol, avg or 1.0)
+                side = "SELL" if size > 0 else "BUY"
+                signal_data = {
+                    "signal": "CLOSE",
+                    "reasons": ["Weekend flatten (non-crypto)"],
+                }
+                await self._execute_order(
+                    bot,
+                    side,
+                    abs(size),
+                    price,
+                    signal_data,
+                    is_exit=True,
+                    bar_time=bar_time,
+                    entry_price=avg or price,
+                )
+                closed += 1
+        return closed
+
+    async def close_stale_positions(self) -> int:
+        """Auto-close bot positions that exceed max_position_hours."""
+        from app.services.bots.position_duration import (
+            duration_close_bar_time,
+            is_position_stale,
+            resolve_max_position_hours,
+        )
+
+        closed = 0
+        now = time.time()
+        for symbol, owners in bot_positions.list_owners_grouped().items():
+            for owner in owners:
+                size = float(owner.get("size") or 0)
+                if abs(size) < 1e-8:
+                    continue
+                bot_id = owner["bot_id"]
+                bot_config = owner.get("bot_config") or {}
+                if resolve_max_position_hours(bot_config) is None:
+                    continue
+
+                opened_at = owner.get("opened_at")
+                if opened_at is None:
+                    opened_at = bot_positions.ensure_opened_at(bot_id, symbol)
+                stale, reason, limit = is_position_stale(opened_at, bot_config, now=now)
+                if not stale or limit is None or opened_at is None:
+                    continue
+
+                bot = self._get_bot_dict(bot_id)
+                if not bot:
+                    continue
+                avg = float(owner.get("avg_price") or 0)
+                price = self._mark_price(symbol, avg or 1.0)
+                side = "SELL" if size > 0 else "BUY"
+                await self._execute_order(
+                    bot,
+                    side,
+                    abs(size),
+                    price,
+                    {"signal": "CLOSE", "reasons": [reason]},
+                    is_exit=True,
+                    bar_time=duration_close_bar_time(opened_at, limit),
+                    entry_price=avg or price,
+                )
+                closed += 1
+        return closed
+
     async def stop_all_bots(self):
-        bot_ids = list(self.active_bots.keys())
-        for bot_id in bot_ids:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM bots WHERE status != 'STOPPED'")
+        db_ids = [
+            row["id"] if isinstance(row, dict) else row[0]
+            for row in cursor.fetchall()
+        ]
+        conn.close()
+
+        all_ids = list(dict.fromkeys([*self.active_bots.keys(), *db_ids]))
+        for bot_id in all_ids:
             await self.stop_bot(bot_id)
-        return len(bot_ids)
+        return len(all_ids)
 
     def list_bots_public(self) -> list:
         bot_ids = [bot["id"] for bot in self.active_bots.values()]
@@ -1292,6 +1487,8 @@ class BotManagerService:
             )
             bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price, feed=getattr(self.oms, "feed", None))
             bot_analytics.delete_pending_fill(p["id"])
+            if p.get("signal_id"):
+                signal_ledger.mark_signal_filled(p["signal_id"], order_id=resolved_order_id)
             if resolved_order_id:
                 recorded_order_ids.add(str(resolved_order_id))
             confirmed += 1

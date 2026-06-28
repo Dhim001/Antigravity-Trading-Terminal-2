@@ -155,6 +155,22 @@ async def admin_emergency_stop(ctx: RequestContext) -> None:
     await broadcast_bots_update(ctx)
 
 
+@route(Action.ADMIN_RESET_RISK_KILL_SWITCH, tags=["admin"])
+async def admin_reset_risk_kill_switch(ctx: RequestContext) -> None:
+    from app.services.bots.portfolio_risk import build_portfolio_snapshot
+    from app.services.bots.risk_state_store import reset_kill_switch
+
+    snap = build_portfolio_snapshot(ctx.oms)
+    reset_kill_switch(current_equity=snap.account_equity)
+    await send_order_result(ctx, {
+        "status": "success",
+        "message": (
+            f"Drawdown kill switch reset. Peak equity re-based to "
+            f"${snap.account_equity:,.2f}."
+        ),
+    })
+
+
 @route(Action.ADMIN_GET_STATS, tags=["admin"])
 async def admin_get_stats(ctx: RequestContext) -> None:
     stats = get_db_stats()
@@ -171,8 +187,10 @@ async def admin_get_stats(ctx: RequestContext) -> None:
             PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
             PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
         )
+        from app.services.bots.margin_risk import build_margin_snapshot, margin_to_dict
 
         snap = build_portfolio_snapshot(ctx.oms)
+        margin = margin_to_dict(build_margin_snapshot(ctx.oms, snap))
         stats["portfolio"] = {
             "equity": round(snap.account_equity, 2),
             "gross_exposure": round(snap.gross_exposure, 2),
@@ -182,6 +200,8 @@ async def admin_get_stats(ctx: RequestContext) -> None:
             "max_gross_pct": PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
             "max_group_pct": PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
             "group_exposure": {k: round(v, 2) for k, v in snap.group_exposure.items()},
+            "margin": margin,
+            "margin_utilization_pct": margin.get("utilization_pct", 0.0),
         }
     except Exception:
         pass
@@ -287,4 +307,28 @@ async def admin_resolve_ambiguous(ctx: RequestContext) -> None:
     await send_order_result(ctx, {
         "status": "success" if ok else "error",
         "message": "Ambiguous order resolved" if ok else "Order not found or already resolved",
+    })
+
+
+@route(Action.ADMIN_GET_SAFE_MODE, tags=["admin"])
+async def admin_get_safe_mode(ctx: RequestContext) -> None:
+    from app.services.runtime.system_state import runtime_status_dict
+
+    runtime = runtime_status_dict()
+    await send_order_result(ctx, {
+        "status": "success",
+        "message": "Safe mode active — confirm before resuming bots" if runtime.get("safe_mode", {}).get("active") else "System operational",
+        "runtime": runtime,
+    })
+
+
+@route(Action.ADMIN_CONFIRM_SAFE_MODE, tags=["admin"])
+async def admin_confirm_safe_mode(ctx: RequestContext) -> None:
+    from app.services.runtime.startup_recovery import confirm_safe_mode
+
+    result = confirm_safe_mode()
+    await send_order_result(ctx, {
+        "status": "success",
+        "message": "Safe mode cleared — resume bots manually when ready",
+        "runtime": result,
     })

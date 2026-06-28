@@ -109,6 +109,15 @@ export const HTTP_ROUTES = Object.freeze({
     path: () => '/api/v1/admin/reconciliation/resolve',
     body: (p) => p,
   },
+  [Action.ADMIN_GET_SAFE_MODE]: {
+    method: 'GET',
+    path: () => '/api/v1/admin/safe-mode',
+  },
+  [Action.ADMIN_CONFIRM_SAFE_MODE]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/safe-mode/confirm',
+    body: (p) => p,
+  },
   [Action.GET_MARKET_TICKS]: {
     method: 'GET',
     path: (p) => {
@@ -131,6 +140,7 @@ export const HTTP_ROUTES = Object.freeze({
   },
   [Action.ADMIN_RESET_SYSTEM]: { method: 'POST', path: () => '/api/v1/admin/reset' },
   [Action.ADMIN_EMERGENCY_STOP]: { method: 'POST', path: () => '/api/v1/admin/emergency-stop' },
+  [Action.ADMIN_RESET_RISK_KILL_SWITCH]: { method: 'POST', path: () => '/api/v1/admin/risk/reset-kill-switch' },
   [Action.CHART_ANALYZE]: { method: 'POST', path: () => '/api/v1/agent/analyze', body: (p) => p },
   [Action.CHART_DEEP_REASON]: { method: 'POST', path: () => '/api/v1/agent/deep-reason', body: (p) => p },
   [Action.EXPLAIN_TRADE]: { method: 'POST', path: () => '/api/v1/agent/explain-trade', body: (p) => p },

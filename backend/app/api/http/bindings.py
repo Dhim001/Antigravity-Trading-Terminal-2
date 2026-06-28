@@ -41,9 +41,12 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("GET", "/api/v1/admin/reconciliation", Action.ADMIN_GET_RECONCILIATION, None),
     ("POST", "/api/v1/admin/reconciliation/reconcile", Action.ADMIN_RECONCILE, None),
     ("POST", "/api/v1/admin/reconciliation/resolve", Action.ADMIN_RESOLVE_AMBIGUOUS, None),
+    ("GET", "/api/v1/admin/safe-mode", Action.ADMIN_GET_SAFE_MODE, None),
+    ("POST", "/api/v1/admin/safe-mode/confirm", Action.ADMIN_CONFIRM_SAFE_MODE, None),
     ("GET", "/api/v1/market/{symbol}/ticks", Action.GET_MARKET_TICKS, {"symbol": "symbol"}),
     ("POST", "/api/v1/admin/simulation", Action.ADMIN_SET_SIMULATION, None),
     ("POST", "/api/v1/admin/seed-balance", Action.ADMIN_SEED_BALANCE, None),
     ("POST", "/api/v1/admin/reset", Action.ADMIN_RESET_SYSTEM, None),
     ("POST", "/api/v1/admin/emergency-stop", Action.ADMIN_EMERGENCY_STOP, None),
+    ("POST", "/api/v1/admin/risk/reset-kill-switch", Action.ADMIN_RESET_RISK_KILL_SWITCH, None),
 ]

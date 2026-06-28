@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCorrelationHeatmapCells,
   buildPortfolioInvalidateKey,
   calendarHeatmapData,
   calendarPnlRange,
+  correlationStrengthLabel,
   nextSortState,
   sortBreakdownRows,
 } from './helpers';
@@ -50,5 +52,20 @@ describe('analytics helpers', () => {
     expect(nextSortState({ field: null, dir: null }, 'x')).toEqual({ field: 'x', dir: 'desc' });
     expect(nextSortState({ field: 'x', dir: 'desc' }, 'x')).toEqual({ field: 'x', dir: 'asc' });
     expect(nextSortState({ field: 'x', dir: 'asc' }, 'x')).toEqual({ field: null, dir: null });
+  });
+
+  it('buildCorrelationHeatmapCells keeps lower triangle only', () => {
+    const matrix = [[1, 0.5], [0.5, 1]];
+    expect(buildCorrelationHeatmapCells(matrix)).toEqual([
+      [0, 0, 1],
+      [0, 1, 0.5],
+      [1, 1, 1],
+    ]);
+  });
+
+  it('correlationStrengthLabel describes magnitude and sign', () => {
+    expect(correlationStrengthLabel(0.85)).toBe('Strong positive');
+    expect(correlationStrengthLabel(-0.55)).toBe('Moderate negative');
+    expect(correlationStrengthLabel(0.05)).toBe('Negligible');
   });
 });

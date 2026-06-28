@@ -302,19 +302,6 @@ def get_allocation(oms) -> dict:
     }
 
 
-def _pearson(xs: list[float], ys: list[float]) -> float:
-    n = len(xs)
-    if n < 2:
-        return 0.0
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    den_x = math.sqrt(sum((x - mx) ** 2 for x in xs))
-    den_y = math.sqrt(sum((y - my) ** 2 for y in ys))
-    if den_x < 1e-12 or den_y < 1e-12:
-        return 0.0
-    return round(num / (den_x * den_y), 3)
-
 
 def get_correlation_matrix(
     account_history: dict | list,
@@ -322,37 +309,36 @@ def get_correlation_matrix(
     period: str | int | None = "1M",
     source: SourceFilter = "combined",
     symbols: list[str] | None = None,
+    mode: str = "auto",
+    feed=None,
+    oms=None,
 ) -> dict:
+    mode = (mode or "auto").lower()
+    from app.config import RISK_DYNAMIC_CORRELATION_ENABLED
+    from app.services.bots.correlation import get_price_correlation_matrix, get_trade_pnl_correlation_matrix
+
+    use_price = mode == "price" or (mode == "auto" and RISK_DYNAMIC_CORRELATION_ENABLED)
+    if use_price:
+        price_result = get_price_correlation_matrix(symbols=symbols, feed=feed)
+        if price_result.get("matrix"):
+            return price_result
+        if mode == "price":
+            return price_result
+
     trades = collect_exit_trades(account_history, period=period, source=source)
-    daily_symbol: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    for t in trades:
-        daily_symbol[t["symbol"]][_day_key(t["timestamp"])] += t["pnl"]
+    account_equity = 0.0
+    if oms is not None:
+        try:
+            account_equity = float(build_portfolio_snapshot(oms).account_equity)
+        except Exception:
+            account_equity = 0.0
 
-    if symbols:
-        allowed = {s.upper() for s in symbols if s}
-        daily_symbol = {
-            sym: days for sym, days in daily_symbol.items()
-            if sym.upper() in allowed
-        }
-
-    symbols = sorted(daily_symbol.keys())
-    if len(symbols) < 2:
-        return {"symbols": symbols, "matrix": [], "period": period or "ALL"}
-
-    all_days = sorted({d for sym in symbols for d in daily_symbol[sym]})
-    series = {
-        sym: [daily_symbol[sym].get(d, 0.0) for d in all_days]
-        for sym in symbols
-    }
-
-    matrix = []
-    for i, sym_a in enumerate(symbols):
-        row = []
-        for j, sym_b in enumerate(symbols):
-            row.append(_pearson(series[sym_a], series[sym_b]) if i != j else 1.0)
-        matrix.append(row)
-
-    return {"symbols": symbols, "matrix": matrix, "period": period or "ALL"}
+    return get_trade_pnl_correlation_matrix(
+        trades,
+        period=period,
+        symbols=symbols,
+        account_equity=account_equity,
+    )
 
 
 def get_bot_rankings(*, limit: int = 10) -> dict:
@@ -384,6 +370,8 @@ def get_bot_rankings(*, limit: int = 10) -> dict:
 
 
 def get_risk_utilization(oms) -> dict:
+    from app.services.bots.risk_monitor import compute_drawdown, drawdown_to_dict
+
     snapshot = build_portfolio_snapshot(oms)
     equity = max(snapshot.account_equity, 1.0)
     max_gross = equity * (PORTFOLIO_MAX_GROSS_EXPOSURE_PCT / 100.0)
@@ -400,6 +388,15 @@ def get_risk_utilization(oms) -> dict:
         })
 
     bot_rows = list_bot_exposures()
+    drawdown = drawdown_to_dict(compute_drawdown(oms))
+    from app.services.bots.time_windows import time_controls_status
+    from app.services.bots.position_duration import position_duration_status
+    from app.services.bots.correlation import correlation_status
+    from app.services.bots.margin_risk import build_margin_snapshot, margin_status, margin_to_dict
+
+    margin = build_margin_snapshot(oms, snapshot)
+    margin_dict = margin_to_dict(margin)
+
     return {
         "account_equity": round(equity, 2),
         "gross_exposure": round(snapshot.gross_exposure, 2),
@@ -409,4 +406,16 @@ def get_risk_utilization(oms) -> dict:
         "max_group_pct": PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
         "groups": sorted(groups, key=lambda g: g["utilization_pct"], reverse=True),
         "open_bot_positions": len(bot_rows),
+        "time_controls": time_controls_status(),
+        "position_duration": position_duration_status(),
+        "dynamic_correlation": correlation_status(),
+        "margin": margin_dict,
+        "margin_enabled": margin_dict.get("enabled", False),
+        "margin_utilization_pct": margin_dict.get("utilization_pct", 0.0),
+        "margin_used": margin_dict.get("margin_used", 0.0),
+        "margin_capacity": margin_dict.get("margin_capacity", equity),
+        "max_margin_utilization_pct": margin_dict.get("max_utilization_pct"),
+        "max_leverage_cap": margin_dict.get("max_leverage_cap"),
+        "margin_config": margin_status(),
+        **drawdown,
     }

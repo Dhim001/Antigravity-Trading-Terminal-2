@@ -8,6 +8,7 @@ from app.api.protocol import Action, MessageType
 from app.api.responses import send_to
 from app.api.router import route
 from app.services.analytics.benchmarks import get_benchmarks
+from app.services.analytics.exposure import get_exposure_heatmap
 from app.services.analytics.portfolio import (
     get_allocation,
     get_bot_rankings,
@@ -20,7 +21,7 @@ from app.services.analytics.portfolio import (
 
 _VALID_REPORTS = frozenset({
     "equity", "breakdown", "calendar", "allocation",
-    "correlation", "bot_rankings", "risk", "benchmarks", "dashboard",
+    "correlation", "bot_rankings", "risk", "benchmarks", "exposure", "dashboard",
 })
 _VALID_SOURCES = frozenset({"bot", "account", "combined"})
 _VALID_GROUPS = frozenset({"strategy", "symbol", "timeframe"})
@@ -80,17 +81,24 @@ async def analytics_get(ctx: RequestContext) -> None:
         if report in ("allocation", "dashboard"):
             data["allocation"] = get_allocation(ctx.oms)
         if report in ("correlation", "dashboard"):
+            corr_mode = (ctx.message.get("correlation_mode") or "auto").lower()
+            feed = getattr(ctx.oms, "feed", None)
             data["correlation"] = get_correlation_matrix(
                 account_history,
                 period=period or "1M",
                 source=source,
                 symbols=symbol_universe,
+                mode=corr_mode,
+                feed=feed,
+                oms=ctx.oms,
             )
         if report in ("bot_rankings", "dashboard"):
             limit = int(ctx.message.get("limit") or 10)
             data["bot_rankings"] = get_bot_rankings(limit=limit)
         if report in ("risk", "dashboard"):
             data["risk"] = get_risk_utilization(ctx.oms)
+        if report in ("exposure", "dashboard"):
+            data["exposure"] = get_exposure_heatmap(ctx.oms)
         if report == "benchmarks":
             symbols = ctx.message.get("symbols")
             if isinstance(symbols, str):

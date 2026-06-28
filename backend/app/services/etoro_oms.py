@@ -269,6 +269,29 @@ class EtoroOMSService(BaseOMSService):
             locked += float(o.get("amount", 0.0))
         return credit - locked
 
+    def _margin_totals(self, portfolio: dict) -> tuple[float, float]:
+        invested = 0.0
+        max_leverage = 1.0
+        for pos in portfolio.get("positions", []):
+            invested += float(pos.get("amount", 0.0))
+            max_leverage = max(max_leverage, float(pos.get("leverage", 1) or 1))
+        for o in portfolio.get("ordersForOpen", []):
+            if int(o.get("mirrorID") or 0) == 0:
+                invested += float(o.get("amount", 0.0))
+        for o in portfolio.get("orders", []):
+            invested += float(o.get("amount", 0.0))
+        return invested, max_leverage
+
+    def _unrealized_pnl(self, portfolio: dict) -> float:
+        total = 0.0
+        for pos in portfolio.get("positions", []):
+            raw = pos.get("unrealizedPnL")
+            if isinstance(raw, dict):
+                total += float(raw.get("pnL") or 0)
+            elif raw is not None:
+                total += float(raw)
+        return total
+
     def _map_positions(self, portfolio: dict) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
         for pos in portfolio.get("positions", []):
@@ -324,10 +347,20 @@ class EtoroOMSService(BaseOMSService):
         try:
             portfolio = self._fetch_portfolio()
             cash = self._available_cash(portfolio)
+            invested, max_leverage = self._margin_totals(portfolio)
+            unrealized = self._unrealized_pnl(portfolio)
+            equity = cash + invested + unrealized
             return {
                 "balances": {"USD": {"balance": round(cash, 2), "locked": 0.0}},
                 "positions": self._map_positions(portfolio),
                 "orders": self._map_orders(portfolio),
+                "margin": {
+                    "source": "etoro",
+                    "equity": round(max(equity, 1.0), 2),
+                    "available_cash": round(cash, 2),
+                    "margin_used": round(invested, 2),
+                    "max_leverage": max_leverage,
+                },
             }
         except _AuthDead:
             logger.error("eToro auth dead while fetching account data.")

@@ -47,6 +47,7 @@ from app.services.bots.runtime import (
     bar_publish_loop,
     bot_market_loop,
     bot_snapshot_loop,
+    risk_monitor_loop,
     bot_reconcile_loop,
     calibration_refresh_loop,
     runs_bar_publisher,
@@ -55,6 +56,13 @@ from app.services.bots.runtime import (
 from app.services.bots.paper_oms import run_paper_oms_tick
 from app.services.bots.massive_scheduler import run_massive_bot_tick
 from app.services.bots.execution_mode import execution_mode_label, uses_paper_oms
+from app.services.runtime.shutdown import (
+    graceful_shutdown,
+    install_signal_handlers,
+    wait_for_shutdown_or_tasks,
+)
+from app.services.runtime.startup_recovery import run_startup_recovery
+from app.services.runtime import system_state
 from app.services.archive.runtime import archive_capture_loop, archive_rollup_loop, archive_startup_backfill
 from app.services.events import channels, publish as event_publish
 
@@ -354,6 +362,7 @@ async def heartbeat_loop():
 
 async def main():
     init_db()
+    system_state.mark_process_starting()
     try:
         from app.config import BACKTEST_JOB_RETENTION_DAYS, OPTIMIZATION_RETENTION_DAYS
         from app.services.bots.backtest_job_store import prune_backtest_jobs
@@ -390,76 +399,83 @@ async def main():
     await state.feed.start()
     await state.oms.initialize()
 
+    recovery = await run_startup_recovery(state.oms, state.bot_manager)
+    if recovery.get("safe_mode"):
+        logging.warning("Server started in safe mode — all bots paused until operator confirms.")
+
+    shutdown_event = asyncio.Event()
+    install_signal_handlers(asyncio.get_running_loop(), shutdown_event)
+
     logging.info("Starting server (role=%s, ws=%s:%s, http=%s:%s)...", TERMINAL_ROLE, WS_HOST, WS_PORT, HTTP_HOST, HTTP_PORT)
 
-    async with websockets.serve(
-        websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
-    ):
-        logging.info("WebSocket Server listening on ws://%s:%s", WS_HOST, WS_PORT)
-        if HTTP_ENABLED:
-            logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
+    try:
+        async with websockets.serve(
+            websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
+        ):
+            logging.info("WebSocket Server listening on ws://%s:%s", WS_HOST, WS_PORT)
+            if HTTP_ENABLED:
+                logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
 
-        tasks = [asyncio.create_task(heartbeat_loop())]
+            tasks = [asyncio.create_task(heartbeat_loop())]
 
-        if HTTP_ENABLED:
-            tasks.append(asyncio.create_task(run_http_server(state)))
+            if HTTP_ENABLED:
+                tasks.append(asyncio.create_task(run_http_server(state)))
 
-        if runs_bot_engine_inline():
-            if not state.bot_engine_uses_bar_hooks:
-                tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
-            tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
-            tasks.append(asyncio.create_task(calibration_refresh_loop()))
-            if not uses_paper_oms():
-                tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
-        elif runs_bar_publisher():
-            tasks.append(asyncio.create_task(bar_publish_loop(state.feed, state.event_bus)))
-            tasks.append(asyncio.create_task(redis_forward_loop()))
+            if runs_bot_engine_inline():
+                if not state.bot_engine_uses_bar_hooks:
+                    tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
+                tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
+                tasks.append(asyncio.create_task(risk_monitor_loop(state.bot_manager)))
+                tasks.append(asyncio.create_task(calibration_refresh_loop()))
+                if not uses_paper_oms():
+                    tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
+            elif runs_bar_publisher():
+                tasks.append(asyncio.create_task(bar_publish_loop(state.feed, state.event_bus)))
+                tasks.append(asyncio.create_task(redis_forward_loop()))
 
-        if TERMINAL_MODE == "SIMULATED":
-            tasks.append(asyncio.create_task(simulated_market_loop()))
-            if SIM_SBBS_WARM_ON_STARTUP and hasattr(state.feed, "warm_generators"):
-                tasks.append(asyncio.create_task(state.feed.warm_generators()))
-        elif TERMINAL_MODE == "LIVE_IB":
-            tasks.append(asyncio.create_task(live_ib_market_broadcast_loop()))
-            tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
-        elif TERMINAL_MODE == "LIVE_MASSIVE":
-            tasks.append(asyncio.create_task(live_massive_market_broadcast_loop()))
-            tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
-        else:
-            tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
+            if TERMINAL_MODE == "SIMULATED":
+                tasks.append(asyncio.create_task(simulated_market_loop()))
+                if SIM_SBBS_WARM_ON_STARTUP and hasattr(state.feed, "warm_generators"):
+                    tasks.append(asyncio.create_task(state.feed.warm_generators()))
+            elif TERMINAL_MODE == "LIVE_IB":
+                tasks.append(asyncio.create_task(live_ib_market_broadcast_loop()))
+                tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
+            elif TERMINAL_MODE == "LIVE_MASSIVE":
+                tasks.append(asyncio.create_task(live_massive_market_broadcast_loop()))
+                tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
+            else:
+                tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
 
-        if ARCHIVE_ENABLED:
-            tasks.append(asyncio.create_task(archive_startup_backfill(state.feed)))
-            tasks.append(asyncio.create_task(archive_capture_loop(state.feed)))
-            tasks.append(asyncio.create_task(archive_rollup_loop(state.feed)))
+            if ARCHIVE_ENABLED:
+                tasks.append(asyncio.create_task(archive_startup_backfill(state.feed)))
+                tasks.append(asyncio.create_task(archive_capture_loop(state.feed)))
+                tasks.append(asyncio.create_task(archive_rollup_loop(state.feed)))
 
-        if ARCHIVE_TICKS_ENABLED:
-            from app.services.archive.tick_writer import tick_flush_loop
-            tasks.append(asyncio.create_task(tick_flush_loop()))
+            if ARCHIVE_TICKS_ENABLED:
+                from app.services.archive.tick_writer import tick_flush_loop
+                tasks.append(asyncio.create_task(tick_flush_loop()))
 
-        from app.services.bots.backtest_worker import backtest_job_worker_loop
-        tasks.append(asyncio.create_task(backtest_job_worker_loop(state)))
+            from app.services.bots.backtest_worker import backtest_job_worker_loop
+            tasks.append(asyncio.create_task(backtest_job_worker_loop(state)))
 
-        await asyncio.gather(*tasks)
+            await wait_for_shutdown_or_tasks(tasks, shutdown_event)
+    finally:
+        await graceful_shutdown(
+            bot_manager=state.bot_manager if runs_bot_engine_inline() else None,
+            oms=state.oms,
+            feed=state.feed,
+            event_bus=state.event_bus,
+        )
 
 
 async def _shutdown() -> None:
-    """Gracefully stop feed (IB disconnect) before process exit."""
-    try:
-        if state.oms is not None and hasattr(state.oms, "stop"):
-            await state.oms.stop()
-    except Exception as exc:
-        logging.debug("OMS shutdown: %s", exc)
-    try:
-        if state.feed is not None and hasattr(state.feed, "stop"):
-            await state.feed.stop()
-    except Exception as exc:
-        logging.debug("Feed shutdown: %s", exc)
-    try:
-        if state.event_bus is not None:
-            await state.event_bus.stop()
-    except Exception as exc:
-        logging.debug("Event bus shutdown: %s", exc)
+    """Backward-compatible shutdown hook for main.py."""
+    await graceful_shutdown(
+        bot_manager=state.bot_manager if runs_bot_engine_inline() else None,
+        oms=state.oms,
+        feed=state.feed,
+        event_bus=state.event_bus,
+    )
 
 
 if __name__ == "__main__":

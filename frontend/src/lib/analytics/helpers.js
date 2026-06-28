@@ -94,6 +94,42 @@ export function calendarPnlRange(days) {
   return maxAbs;
 }
 
+/** ECharts heatmap cells; optional lower triangle hides redundant upper half. */
+export function buildCorrelationHeatmapCells(matrix, { lowerTriangleOnly = true } = {}) {
+  if (!Array.isArray(matrix)) return [];
+  return matrix.flatMap((row, rowIdx) =>
+    row.map((value, colIdx) => {
+      if (lowerTriangleOnly && colIdx > rowIdx) return null;
+      return [colIdx, rowIdx, value];
+    }).filter(Boolean),
+  );
+}
+
+export function correlationCellSize(symbolCount) {
+  if (symbolCount <= 4) return 52;
+  if (symbolCount <= 6) return 44;
+  if (symbolCount <= 10) return 36;
+  return 30;
+}
+
+export function correlationAxisFontSize(symbolCount) {
+  if (symbolCount <= 4) return 11;
+  if (symbolCount <= 8) return 10;
+  if (symbolCount <= 12) return 9;
+  return 8;
+}
+
+export function correlationStrengthLabel(value) {
+  const v = Number(value);
+  if (Number.isNaN(v)) return 'Unknown';
+  const abs = Math.abs(v);
+  const sign = v > 0.05 ? 'positive' : v < -0.05 ? 'negative' : 'neutral';
+  if (abs >= 0.7) return `Strong ${sign}`;
+  if (abs >= 0.4) return `Moderate ${sign}`;
+  if (abs >= 0.2) return `Weak ${sign}`;
+  return 'Negligible';
+}
+
 /** Rebase equity + benchmark series to aligned percent-from-start overlay. */
 export function alignBenchmarkOverlay(equitySeries, benchmarkSeries) {
   if (!equitySeries?.length || !benchmarkSeries?.length) return [];

@@ -9,15 +9,24 @@ from app.db.connection import DB_DRIVER
 from app.services.agent.chart_analyst import init_chart_analyst
 from app.services.bots.runtime import (
     bot_snapshot_loop,
+    risk_monitor_loop,
     bot_reconcile_loop,
     create_bot_stack,
     create_feed_and_oms,
     register_worker_handlers,
     worker_keepalive,
 )
+from app.services.bots.execution_mode import uses_paper_oms
 from app.services.candle_feed_stub import CandleFeedStub
 from app.services.events.event_bus import create_event_bus
 from app.services.events import channels
+from app.services.runtime.shutdown import (
+    graceful_shutdown,
+    install_signal_handlers,
+    wait_for_shutdown_or_tasks,
+)
+from app.services.runtime.startup_recovery import run_startup_recovery
+from app.services.runtime import system_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -30,6 +39,7 @@ async def main():
         raise SystemExit("Worker mode requires REDIS_URL (bar-close events from server role).")
 
     init_db()
+    system_state.mark_process_starting()
     logger.info("Bot worker starting (db=%s, redis=%s)", DB_DRIVER, REDIS_URL)
 
     if TERMINAL_MODE == "SIMULATED":
@@ -74,14 +84,34 @@ async def main():
     await feed.start()
     await oms.initialize()
 
+    recovery = await run_startup_recovery(oms, bot_manager)
+    if recovery.get("safe_mode"):
+        logger.warning("Worker started in safe mode — all bots paused until operator confirms.")
+
     register_worker_handlers(bot_manager, event_bus, feed, oms, chart_analyst=chart_analyst)
     await event_bus.start()
     logger.info("Bot worker listening on %s", channels.BAR_CLOSE)
 
-    tasks = [bot_snapshot_loop(bot_manager), worker_keepalive()]
-    if TERMINAL_MODE != "SIMULATED":
-        tasks.append(bot_reconcile_loop(bot_manager))
-    await asyncio.gather(*tasks)
+    shutdown_event = asyncio.Event()
+    install_signal_handlers(asyncio.get_running_loop(), shutdown_event)
+
+    tasks = [
+        asyncio.create_task(bot_snapshot_loop(bot_manager)),
+        asyncio.create_task(risk_monitor_loop(bot_manager)),
+        asyncio.create_task(worker_keepalive()),
+    ]
+    if TERMINAL_MODE != "SIMULATED" and not uses_paper_oms():
+        tasks.append(asyncio.create_task(bot_reconcile_loop(bot_manager)))
+
+    try:
+        await wait_for_shutdown_or_tasks(tasks, shutdown_event)
+    finally:
+        await graceful_shutdown(
+            bot_manager=bot_manager,
+            oms=oms,
+            feed=feed,
+            event_bus=event_bus,
+        )
 
 
 if __name__ == "__main__":

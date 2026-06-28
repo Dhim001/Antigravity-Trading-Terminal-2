@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
-  AlertCircle, BarChart2, LayoutDashboard, Loader2, RefreshCw, TrendingUp,
+  AlertCircle, BarChart2, LayoutDashboard, Loader2, RefreshCw, ShieldAlert, TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAnalytics, fetchBenchmarks } from '@/hooks/useAnalytics';
@@ -23,6 +23,8 @@ import { useStore } from '@/store/useStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { StatCard } from './StatCard';
 import PnlCalendar from './analytics/PnlCalendar';
+import CorrelationMatrix from './analytics/CorrelationMatrix';
+import ExposureHeatmap from './analytics/ExposureHeatmap';
 import StatsBreakdownTable from './analytics/StatsBreakdownTable';
 import TradeJournal from './analytics/TradeJournal';
 import { ANALYTICS_PERIODS, buildPortfolioInvalidateKey, fmtPct, fmtUsd, pnlTone } from '@/lib/analytics/helpers';
@@ -64,12 +66,28 @@ function EChartPanel({ option, className, deps = [] }) {
   return <div ref={ref} className={cn('min-h-[180px] w-full min-w-0', className)} />;
 }
 
-function ChartCard({ title, description, children, className, contentClassName }) {
+function ChartCard({
+  title,
+  description,
+  children,
+  className,
+  contentClassName,
+  headerActions,
+}) {
   return (
     <Card className={cn('portfolio-dashboard__card ring-0 flex min-h-0 flex-col shadow-none', className)}>
       <CardHeader className="portfolio-dashboard__card-header">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        {description ? <CardDescription>{description}</CardDescription> : null}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex flex-col gap-0.5">
+            <CardTitle className="text-sm">{title}</CardTitle>
+            {description ? <CardDescription>{description}</CardDescription> : null}
+          </div>
+          {headerActions ? (
+            <div className="portfolio-dashboard__card-header-actions shrink-0">
+              {headerActions}
+            </div>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent className={cn('portfolio-dashboard__card-content', contentClassName)}>
         {children}
@@ -123,6 +141,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
   const [benchmarks, setBenchmarks] = useState(null);
   const [showSpy, setShowSpy] = useState(true);
   const [showBtc, setShowBtc] = useState(true);
+  const [correlationMode, setCorrelationMode] = useState('auto');
 
   const analyticsBenchmarks = useStore((s) => s.analyticsBenchmarks);
   const tradeHistory = useStore((s) => s.tradeHistory);
@@ -143,8 +162,9 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     period,
     source,
     group_by: groupBy,
+    correlation_mode: correlationMode,
     ...(symbolUniverse.length ? { symbols: symbolUniverse } : {}),
-  }), [period, source, groupBy, symbolUniverse]);
+  }), [period, source, groupBy, correlationMode, symbolUniverse]);
 
   const invalidateKey = useMemo(
     () => buildPortfolioInvalidateKey({
@@ -181,8 +201,18 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     invokeHttpAction(Action.ANALYTICS_GET, payload).catch(() => sendAction(Action.ANALYTICS_GET, payload));
   }, [period, source]);
 
+  const resetKillSwitch = useCallback(async () => {
+    try {
+      await invokeHttpAction(Action.ADMIN_RESET_RISK_KILL_SWITCH, {});
+    } catch {
+      await sendAction(Action.ADMIN_RESET_RISK_KILL_SWITCH, {});
+    }
+    refresh();
+  }, [refresh]);
+
   const equity = data?.equity;
   const stats = equity?.stats;
+  const risk = data?.risk;
   const series = equity?.series || [];
 
   const equityOption = useMemo(() => {
@@ -276,48 +306,24 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     };
   }, [data?.allocation]);
 
-  const correlationOption = useMemo(() => {
-    const corr = data?.correlation;
-    if (!corr?.symbols?.length || !corr.matrix?.length) return null;
-    return {
-      backgroundColor: 'transparent',
-      tooltip: { position: 'top' },
-      grid: { left: 60, right: 20, top: 20, bottom: 40 },
-      xAxis: {
-        type: 'category',
-        data: corr.symbols,
-        axisLabel: { color: '#9ca3af', fontSize: 8, rotate: 45 },
-      },
-      yAxis: {
-        type: 'category',
-        data: corr.symbols,
-        axisLabel: { color: '#9ca3af', fontSize: 8 },
-      },
-      visualMap: {
-        min: -1,
-        max: 1,
-        calculable: false,
-        orient: 'horizontal',
-        left: 'center',
-        bottom: 0,
-        inRange: { color: ['#ef4444', '#1f2937', '#10b981'] },
-        textStyle: { color: '#9ca3af', fontSize: 9 },
-      },
-      series: [{
-        type: 'heatmap',
-        data: corr.matrix.flatMap((row, i) =>
-          row.map((v, j) => [j, i, v]),
-        ),
-        label: { show: true, fontSize: 8, formatter: (p) => p.data[2].toFixed(2) },
-      }],
-    };
-  }, [data?.correlation]);
-
   const riskOption = useMemo(() => {
-    const risk = data?.risk;
     if (!risk) return null;
+    const ddLimit = risk.max_drawdown_pct ?? 15;
+    const ddUtil = ddLimit > 0
+      ? Math.min(((risk.current_drawdown_pct ?? 0) / ddLimit) * 100, 100)
+      : 0;
     const gauges = [
+      ...(risk.kill_switch_enabled ? [{
+        name: 'Drawdown',
+        value: ddUtil,
+        detail: `${(risk.current_drawdown_pct ?? 0).toFixed(1)}%`,
+      }] : []),
       { name: 'Gross', value: risk.gross_utilization_pct },
+      ...(risk.margin_enabled ? [{
+        name: 'Margin',
+        value: Math.min(risk.margin_utilization_pct ?? 0, 100),
+        detail: `${(risk.margin_utilization_pct ?? 0).toFixed(1)}%`,
+      }] : []),
       ...(risk.groups || []).slice(0, 3).map((g) => ({
         name: g.group,
         value: g.utilization_pct,
@@ -353,7 +359,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
           splitLine: { show: false },
           pointer: { show: false },
           detail: {
-            formatter: '{value}%',
+            formatter: g.detail ? () => g.detail : '{value}%',
             fontSize: 17,
             fontWeight: 600,
             color: '#f3f4f6',
@@ -369,7 +375,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
         };
       }),
     };
-  }, [data?.risk]);
+  }, [risk]);
 
   const topBots = data?.bot_rankings?.top || [];
   const bottomBots = data?.bot_rankings?.bottom || [];
@@ -435,6 +441,20 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
             </Alert>
           )}
 
+          {risk?.kill_switch_tripped && (
+            <Alert variant="destructive" className="portfolio-dashboard__alert shrink-0">
+              <ShieldAlert />
+              <AlertTitle>Drawdown kill switch tripped</AlertTitle>
+              <AlertDescription className="flex flex-wrap items-center gap-2">
+                Drawdown {fmtPct(risk.current_drawdown_pct)} exceeded the {fmtPct(risk.max_drawdown_pct)} limit.
+                All bots were stopped.
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={resetKillSwitch}>
+                  Reset kill switch
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {loading && !data ? (
             <Empty className="flex-1 border-0">
               <EmptyHeader>
@@ -451,6 +471,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
                 <TabsTrigger value="calendar">P&L Calendar</TabsTrigger>
+                <TabsTrigger value="exposure">Exposure</TabsTrigger>
                 <TabsTrigger value="journal">Journal</TabsTrigger>
               </TabsList>
 
@@ -461,6 +482,15 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
                     <StatCard label="Win Rate" value={fmtPct(stats.win_rate)} tone={pnlTone(stats.win_rate - 50)} />
                     <StatCard label="Expectancy" value={fmtUsd(stats.expectancy)} tone={pnlTone(stats.expectancy)} />
                     <StatCard label="Trades" icon={BarChart2} value={stats.trade_count} tone="accent" />
+                    {risk?.kill_switch_enabled && (
+                      <StatCard
+                        label="Drawdown"
+                        icon={ShieldAlert}
+                        value={fmtPct(risk.current_drawdown_pct)}
+                        sub={`Peak ${fmtUsd(risk.equity_peak)} · limit ${fmtPct(risk.max_drawdown_pct)}`}
+                        tone={pnlTone(-(risk.current_drawdown_pct ?? 0))}
+                      />
+                    )}
                   </div>
                 )}
 
@@ -496,7 +526,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
                     )}
                   </ChartCard>
 
-                  <ChartCard title="Risk Utilization" description="Gross and per-group exposure vs limits" className="portfolio-dashboard__bento-risk" contentClassName="portfolio-dashboard__risk-content">
+                  <ChartCard title="Risk Utilization" description="Drawdown vs peak equity, gross and per-group exposure caps" className="portfolio-dashboard__bento-risk" contentClassName="portfolio-dashboard__risk-content">
                     {riskOption ? (
                       <EChartPanel option={riskOption} className="portfolio-dashboard__risk-chart flex-1" />
                     ) : (
@@ -511,12 +541,43 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
 
                   <ChartCard
                     title="Correlation Matrix"
-                    description="Symbol return correlation from trade history"
+                    description={
+                      data?.correlation?.mode === 'price'
+                        ? `Log-return correlation (${data?.correlation?.period || '60d'}, ${data?.correlation?.source || 'yfinance'})`
+                        : data?.correlation?.mode === 'trade_pnl'
+                          ? 'Pairwise daily return on capital (bot snapshots / normalized PnL)'
+                          : 'Auto: price log-returns when dynamic groups enabled'
+                    }
                     className="portfolio-dashboard__bento-correlation"
-                    contentClassName="min-h-[240px]"
+                    contentClassName="min-h-[280px]"
+                    headerActions={(
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <ToggleGroup
+                          type="single"
+                          value={correlationMode}
+                          onValueChange={(v) => { if (v) setCorrelationMode(v); }}
+                          size="sm"
+                          variant="outline"
+                          className="flex-wrap"
+                        >
+                          <ToggleGroupItem value="auto" className="text-xs px-2">Auto</ToggleGroupItem>
+                          <ToggleGroupItem value="price" className="text-xs px-2">Price</ToggleGroupItem>
+                          <ToggleGroupItem value="trade_pnl" className="text-xs px-2">Trade PnL</ToggleGroupItem>
+                        </ToggleGroup>
+                        {data?.correlation?.groups && Object.keys(data.correlation.groups).length ? (
+                          <Badge variant="outline" className="text-[0.62rem]">
+                            {Object.keys(data.correlation.groups).length} dynamic group(s)
+                          </Badge>
+                        ) : null}
+                      </div>
+                    )}
                   >
-                    {correlationOption ? (
-                      <EChartPanel option={correlationOption} className="min-h-[240px] flex-1" />
+                    {data?.correlation?.symbols?.length >= 2 && data?.correlation?.matrix?.length ? (
+                      <CorrelationMatrix
+                        correlation={data.correlation}
+                        profitColor={bullishColor}
+                        lossColor={bearishColor}
+                      />
                     ) : (
                       <Empty className="flex-1 border-0 py-8">
                         <EmptyHeader>
@@ -549,6 +610,20 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
                   profitColor={bullishColor}
                   lossColor={bearishColor}
                 />
+              </TabsContent>
+
+              <TabsContent value="exposure" className="portfolio-dashboard__panel">
+                <ChartCard
+                  title="Exposure Heatmap"
+                  description="Open notional concentration by asset class, correlation sector, strategy, or cross-matrix"
+                  contentClassName="min-h-[320px]"
+                >
+                  <ExposureHeatmap
+                    exposure={data?.exposure}
+                    profitColor={bullishColor}
+                    lossColor={bearishColor}
+                  />
+                </ChartCard>
               </TabsContent>
 
               <TabsContent value="journal" className="portfolio-dashboard__panel">

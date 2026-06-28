@@ -164,6 +164,15 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     toast.success('Diagnostics refreshed');
   };
 
+  const safeMode = systemStats.runtime?.safe_mode;
+  const safeModeActive = Boolean(safeMode?.active);
+
+  const handleConfirmSafeMode = () => {
+    sendAction(Action.ADMIN_CONFIRM_SAFE_MODE, {});
+    toast.success('Safe mode cleared — resume bots when ready');
+    handleRefreshStats();
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -462,6 +471,29 @@ export default function SystemControlPanel({ isOpen, onClose }) {
             </TabsContent>
 
             <TabsContent value="diagnostics" className="mt-0 flex flex-col gap-4">
+              {safeModeActive && (
+                <Alert variant="destructive" className="border-destructive/40 bg-destructive/10">
+                  <ShieldAlert className="size-4" aria-hidden />
+                  <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span>
+                      <strong>Safe mode active</strong>
+                      {' — '}
+                      {safeMode.reason || 'Unclean shutdown or unresolved fills detected.'}
+                      {' '}
+                      All bots are paused until you confirm system state.
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 border-destructive/50"
+                      onClick={handleConfirmSafeMode}
+                    >
+                      Confirm &amp; clear safe mode
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
+
               <AdminSection
                 title="Runtime Metrics"
                 description="Live server stats from the WebSocket backend."
@@ -527,6 +559,20 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                       tone="accent"
                       sub="Basis for exposure limits"
                     />
+                    {systemStats.portfolio.margin?.enabled !== false && (
+                      <StatCard
+                        label="Margin Used"
+                        icon={Zap}
+                        value={`${systemStats.portfolio.margin_utilization_pct ?? systemStats.portfolio.margin?.utilization_pct ?? 0}%`}
+                        tone={
+                          (systemStats.portfolio.margin_utilization_pct ?? 0) >=
+                          (systemStats.portfolio.margin?.max_utilization_pct ?? 85) * 0.9
+                            ? 'down'
+                            : 'neutral'
+                        }
+                        sub={`$${(systemStats.portfolio.margin?.margin_used ?? 0).toLocaleString()} / ${systemStats.portfolio.margin?.max_utilization_pct ?? 85}% cap`}
+                      />
+                    )}
                     <StatCard
                       label="Group Cap"
                       icon={Zap}

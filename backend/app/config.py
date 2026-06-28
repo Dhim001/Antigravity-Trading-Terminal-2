@@ -100,6 +100,47 @@ BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", 
 PORTFOLIO_MAX_GROSS_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "80"))
 PORTFOLIO_MAX_GROUP_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROUP_EXPOSURE_PCT", "40"))
 
+# Account drawdown kill switch — stops all bots when equity falls this % below peak
+RISK_KILL_SWITCH_ENABLED = os.environ.get("RISK_KILL_SWITCH_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_MAX_DRAWDOWN_PCT = float(os.environ.get("RISK_MAX_DRAWDOWN_PCT", "15.0"))
+RISK_MONITOR_INTERVAL_SEC = float(os.environ.get("RISK_MONITOR_INTERVAL_SEC", "30"))
+
+# Time-based risk controls (equities only — crypto exempt from no-trade + weekend flatten)
+RISK_TIME_CONTROLS_ENABLED = os.environ.get("RISK_TIME_CONTROLS_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_NO_TRADE_WINDOWS = os.environ.get("RISK_NO_TRADE_WINDOWS", "09:30-09:35,15:55-16:00")
+RISK_EQUITY_MARKET_TZ = os.environ.get("RISK_EQUITY_MARKET_TZ", "America/New_York")
+RISK_WEEKEND_FLATTEN_ENABLED = os.environ.get("RISK_WEEKEND_FLATTEN_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_WEEKEND_FLATTEN_FRIDAY_AFTER = os.environ.get("RISK_WEEKEND_FLATTEN_FRIDAY_AFTER", "15:50")
+
+# Per-bot max position duration — auto-close when hold time exceeds limit
+RISK_POSITION_DURATION_ENABLED = os.environ.get("RISK_POSITION_DURATION_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_MAX_POSITION_HOURS = float(os.environ.get("RISK_MAX_POSITION_HOURS", "0"))
+
+# Dynamic correlation groups — rolling price correlation replaces static buckets when enabled
+RISK_DYNAMIC_CORRELATION_ENABLED = os.environ.get("RISK_DYNAMIC_CORRELATION_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_CORRELATION_LOOKBACK_DAYS = int(os.environ.get("RISK_CORRELATION_LOOKBACK_DAYS", "60"))
+RISK_CORRELATION_THRESHOLD = float(os.environ.get("RISK_CORRELATION_THRESHOLD", "0.7"))
+RISK_CORRELATION_REFRESH_SEC = float(os.environ.get("RISK_CORRELATION_REFRESH_SEC", "300"))
+RISK_CORRELATION_MIN_DAYS = int(os.environ.get("RISK_CORRELATION_MIN_DAYS", "30"))
+RISK_CORRELATION_WINSORIZE_PCT = float(os.environ.get("RISK_CORRELATION_WINSORIZE_PCT", "0.005"))
+
+# Margin / leverage awareness — block or cap entries when utilization exceeds limit
+RISK_MARGIN_ENABLED = os.environ.get("RISK_MARGIN_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+RISK_MAX_MARGIN_UTILIZATION_PCT = float(os.environ.get("RISK_MAX_MARGIN_UTILIZATION_PCT", "85"))
+RISK_MAX_LEVERAGE = float(os.environ.get("RISK_MAX_LEVERAGE", "1"))
+
 # Static correlation buckets for group exposure caps
 CORRELATION_GROUPS = {
     "TECH": ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL", "AMZN", "META", "NFLX"],

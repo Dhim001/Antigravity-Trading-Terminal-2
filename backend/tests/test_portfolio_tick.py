@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from app.services.bots.portfolio_risk import (
     PortfolioSnapshot,
@@ -10,11 +11,13 @@ from app.services.bots.tick_screener import TickScreener
 
 
 class TestPortfolioRisk(unittest.TestCase):
+    @mock.patch("app.services.bots.correlation.RISK_DYNAMIC_CORRELATION_ENABLED", False)
     def test_symbol_groups(self):
         self.assertEqual(symbol_correlation_group("AAPL"), "TECH")
         self.assertEqual(symbol_correlation_group("BTCUSDT"), "CRYPTO_MAJOR")
         self.assertEqual(symbol_correlation_group("SPY"), "INDEX_ETF")
 
+    @mock.patch("app.services.bots.correlation.RISK_DYNAMIC_CORRELATION_ENABLED", False)
     def test_gross_cap_blocks_entry(self):
         snap = PortfolioSnapshot(
             account_equity=100_000,
@@ -26,6 +29,7 @@ class TestPortfolioRisk(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("gross exposure", reason.lower())
 
+    @mock.patch("app.services.bots.correlation.RISK_DYNAMIC_CORRELATION_ENABLED", False)
     def test_group_cap_blocks_entry(self):
         snap = PortfolioSnapshot(
             account_equity=100_000,

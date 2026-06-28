@@ -13,6 +13,8 @@ from app.services.bots.portfolio_risk import (
     build_portfolio_snapshot,
     validate_portfolio_entry,
 )
+from app.services.bots import risk_state_store
+from app.services.bots.time_windows import is_no_trade_window
 
 
 @dataclass
@@ -26,6 +28,14 @@ class RiskGate:
     def __init__(self):
         self._portfolio_cache: PortfolioSnapshot | None = None
         self._portfolio_cache_at: float = 0.0
+
+    def _kill_switch_block(self) -> RiskDecision | None:
+        if risk_state_store.is_kill_switch_tripped():
+            return RiskDecision(
+                False,
+                "Drawdown kill switch tripped — reset risk controls before trading.",
+            )
+        return None
 
     def invalidate_portfolio_cache(self) -> None:
         self._portfolio_cache = None
@@ -42,6 +52,9 @@ class RiskGate:
         return snap
 
     def validate_create(self, active_bot_count: int) -> RiskDecision:
+        blocked = self._kill_switch_block()
+        if blocked:
+            return blocked
         if active_bot_count >= BOT_MAX_ACTIVE_BOTS:
             return RiskDecision(
                 False,
@@ -58,12 +71,23 @@ class RiskGate:
         price: float,
         *,
         is_exit: bool,
+        entry_leverage: float = 1.0,
     ) -> RiskDecision:
         if is_exit:
             return RiskDecision(True, "OK", quantity)
         snapshot = self.get_portfolio_snapshot(oms)
+        from app.config import RISK_MARGIN_ENABLED
+        from app.services.bots.margin_risk import build_margin_snapshot
+
+        margin = build_margin_snapshot(oms, snapshot) if RISK_MARGIN_ENABLED else None
         allowed, reason, capped = validate_portfolio_entry(
-            snapshot, symbol, side, quantity, price
+            snapshot,
+            symbol,
+            side,
+            quantity,
+            price,
+            margin=margin,
+            entry_leverage=entry_leverage,
         )
         if not allowed:
             return RiskDecision(False, reason)
@@ -80,8 +104,18 @@ class RiskGate:
         daily_pnl: float,
         position_size: float,
     ) -> RiskDecision:
+        if not is_exit:
+            blocked = self._kill_switch_block()
+            if blocked:
+                return blocked
+
+            symbol = str(bot.get("symbol") or "")
+            in_window, window_reason = is_no_trade_window(None, symbol)
+            if in_window:
+                return RiskDecision(False, window_reason)
+
         status = bot.get("status", "STOPPED")
-        if status != "RUNNING":
+        if status != "RUNNING" and not is_exit:
             return RiskDecision(False, f"Bot is {status}, not RUNNING.")
 
         allocation = float(bot.get("allocation") or 0)

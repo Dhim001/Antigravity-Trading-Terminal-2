@@ -205,6 +205,7 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN high_watermark REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN low_watermark REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN entry_atr REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_positions ADD COLUMN opened_at REAL DEFAULT NULL")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_pending_fills (
             id TEXT PRIMARY KEY,
@@ -240,6 +241,22 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_bot_signal_ledger_bot ON bot_signal_ledger (bot_id)"
     )
+    _safe_alter(cursor, "ALTER TABLE bot_signal_ledger ADD COLUMN order_id TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_signal_ledger ADD COLUMN broker TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_signal_ledger ADD COLUMN payload TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_signal_ledger ADD COLUMN message TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_signal_ledger ADD COLUMN updated_at TEXT DEFAULT NULL")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_signal_ledger_status ON bot_signal_ledger (status)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS system_runtime (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ambiguous_orders (
@@ -378,6 +395,14 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_trade_journal_updated ON trade_journal (updated_at DESC)"
     )
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS risk_state (
+            key TEXT PRIMARY KEY,
+            value REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     if is_postgres():
@@ -496,6 +521,12 @@ def get_db_stats():
             stats["reconciliation"] = {
                 "pending_count": len(list_ambiguous_orders(include_resolved=False)),
             }
+        except Exception:
+            pass
+        try:
+            from app.services.runtime.system_state import runtime_status_dict
+
+            stats["runtime"] = runtime_status_dict()
         except Exception:
             pass
         try:

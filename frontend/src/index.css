@@ -8450,6 +8450,66 @@ body {
 
 .portfolio-dashboard__bento-correlation {
   grid-area: corr;
+  min-height: 0;
+}
+
+.portfolio-dashboard__bento-correlation .portfolio-dashboard__card-content {
+  overflow: hidden;
+}
+
+.portfolio-dashboard__card-header-actions {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.portfolio-dashboard__correlation {
+  min-height: 0;
+  position: relative;
+  z-index: 0;
+}
+
+.portfolio-dashboard__correlation-meta [data-slot="badge"] {
+  font-variant-numeric: tabular-nums;
+}
+
+.portfolio-dashboard__correlation-scroll {
+  width: 100%;
+  border-radius: calc(var(--pd-radius) - 2px);
+  border: 1px solid color-mix(in oklab, var(--border-color) 65%, transparent);
+  background: color-mix(in oklab, var(--bg-primary) 40%, transparent);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.portfolio-dashboard__correlation-scroll--bounded {
+  max-height: min(28rem, 55vh);
+}
+
+.portfolio-dashboard__correlation-scroll [data-slot="scroll-area-viewport"] {
+  overflow: auto;
+}
+
+.portfolio-dashboard__correlation-chart-wrap {
+  padding: 0.375rem 0.5rem 0.5rem;
+  box-sizing: border-box;
+}
+
+.portfolio-dashboard__correlation-chart {
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: pan-x pan-y;
+}
+
+.portfolio-dashboard__exposure-chart {
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: calc(var(--pd-radius) - 2px);
+  border: 1px solid color-mix(in oklab, var(--border-color) 65%, transparent);
+  background: color-mix(in oklab, var(--bg-primary) 40%, transparent);
 }
 
 .portfolio-dashboard__card {

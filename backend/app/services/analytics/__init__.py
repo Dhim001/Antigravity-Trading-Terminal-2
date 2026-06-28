@@ -1,5 +1,6 @@
 """Portfolio analytics and benchmark services."""
 
+from app.services.analytics.exposure import get_exposure_heatmap
 from app.services.analytics.portfolio import (
     collect_exit_trades,
     get_allocation,
@@ -19,5 +20,6 @@ __all__ = [
     "get_allocation",
     "get_correlation_matrix",
     "get_bot_rankings",
+    "get_exposure_heatmap",
     "get_risk_utilization",
 ]

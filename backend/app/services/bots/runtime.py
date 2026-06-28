@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 
-from app.config import TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL, BOT_SNAPSHOT_INTERVAL
+from app.config import TERMINAL_MODE, TERMINAL_ROLE, REDIS_URL, BOT_SNAPSHOT_INTERVAL, RISK_KILL_SWITCH_ENABLED, RISK_MONITOR_INTERVAL_SEC, RISK_TIME_CONTROLS_ENABLED, RISK_WEEKEND_FLATTEN_ENABLED, RISK_POSITION_DURATION_ENABLED, RISK_DYNAMIC_CORRELATION_ENABLED
 from app.services.bots.bar_events import BarCloseTracker
 from app.services.bots.candle_source import get_bot_candles
 from app.services.bots.manager import BotManagerService
@@ -202,6 +202,31 @@ async def bot_snapshot_loop(bot_manager: BotManagerService):
         except Exception as exc:
             logger.error("Error in bot snapshot loop: %s", exc)
         await asyncio.sleep(BOT_SNAPSHOT_INTERVAL)
+
+
+async def risk_monitor_loop(bot_manager: BotManagerService):
+    from app.services.bots.risk_monitor import RiskMonitor
+
+    monitor_enabled = (
+        RISK_KILL_SWITCH_ENABLED
+        or (RISK_TIME_CONTROLS_ENABLED and RISK_WEEKEND_FLATTEN_ENABLED)
+        or RISK_POSITION_DURATION_ENABLED
+        or RISK_DYNAMIC_CORRELATION_ENABLED
+    )
+    if not monitor_enabled:
+        logger.info("Risk monitor disabled (kill switch + time controls off) — loop idle.")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    monitor = RiskMonitor()
+    logger.info("Starting risk monitor loop (interval=%.0fs)...", RISK_MONITOR_INTERVAL_SEC)
+    while True:
+        try:
+            await monitor.evaluate(bot_manager.oms, bot_manager)
+        except Exception as exc:
+            logger.error("Error in risk monitor loop: %s", exc)
+        await asyncio.sleep(RISK_MONITOR_INTERVAL_SEC)
 
 
 async def bot_reconcile_loop(bot_manager: BotManagerService, interval: float = 12.0):

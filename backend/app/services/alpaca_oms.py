@@ -57,6 +57,24 @@ class AlpacaOMSService(BaseOMSService):
         try:
             balances = self.get_balances()
             positions = {p["symbol"]: p for p in self.get_positions()}
+
+            account_resp = requests.get(
+                f"{ALPACA_BASE_URL}/v2/account", headers=self.headers, timeout=5
+            )
+            margin = {}
+            if account_resp.status_code == 200:
+                acct = account_resp.json()
+                equity = float(acct.get("equity") or 0)
+                buying_power = float(acct.get("buying_power") or 0)
+                cash = float(acct.get("cash") or 0)
+                margin = {
+                    "source": "alpaca",
+                    "equity": equity,
+                    "buying_power": buying_power,
+                    "available_cash": buying_power,
+                    "margin_used": max(0.0, equity - buying_power),
+                    "max_leverage": 1.0,
+                }
             
             # Fetch last 50 orders
             resp = requests.get(f"{ALPACA_BASE_URL}/v2/orders?status=all&limit=50", headers=self.headers, timeout=5)
@@ -80,7 +98,8 @@ class AlpacaOMSService(BaseOMSService):
             return {
                 "balances": balances,
                 "positions": positions,
-                "orders": orders
+                "orders": orders,
+                "margin": margin,
             }
         except Exception as e:
             logging.error(f"Error getting Alpaca account data: {str(e)}")

@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import (
-    CORRELATION_GROUPS,
     PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
     PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
-    CRYPTO_SYMBOLS,
 )
 from app.database import get_connection
 
@@ -22,14 +20,9 @@ class PortfolioSnapshot:
 
 
 def symbol_correlation_group(symbol: str) -> str:
-    for group, members in CORRELATION_GROUPS.items():
-        if symbol in members:
-            return group
-    if symbol.endswith("USDT") or symbol in CRYPTO_SYMBOLS:
-        return "CRYPTO"
-    if symbol in ("SPY", "QQQ"):
-        return "INDEX_ETF"
-    return "US_EQUITY"
+    from app.services.bots.correlation import resolve_correlation_group
+
+    return resolve_correlation_group(symbol)
 
 
 def _mark_prices(oms, symbols: set[str]) -> dict[str, float]:
@@ -119,6 +112,9 @@ def validate_portfolio_entry(
     side: str,
     quantity: float,
     price: float,
+    *,
+    margin=None,
+    entry_leverage: float = 1.0,
 ) -> tuple[bool, str, float | None]:
     """Return (allowed, reason, capped_quantity). Exits are always allowed."""
     if side != "BUY":
@@ -130,6 +126,9 @@ def validate_portfolio_entry(
 
     max_gross = snapshot.account_equity * (PORTFOLIO_MAX_GROSS_EXPOSURE_PCT / 100.0)
     projected_gross = snapshot.gross_exposure + notional
+    capped_qty = quantity
+    cap_reason = "OK"
+
     if projected_gross > max_gross:
         headroom = max(0.0, max_gross - snapshot.gross_exposure)
         if headroom < price * 0.001:
@@ -138,11 +137,11 @@ def validate_portfolio_entry(
                 f"${snapshot.account_equity:,.0f} equity) reached."
             ), None
         capped_qty = headroom / price
-        return True, f"Capped to portfolio gross limit ({PORTFOLIO_MAX_GROSS_EXPOSURE_PCT}%).", capped_qty
+        cap_reason = f"Capped to portfolio gross limit ({PORTFOLIO_MAX_GROSS_EXPOSURE_PCT}%)."
 
     group = symbol_correlation_group(symbol)
     max_group = snapshot.account_equity * (PORTFOLIO_MAX_GROUP_EXPOSURE_PCT / 100.0)
-    projected_group = snapshot.group_exposure.get(group, 0.0) + notional
+    projected_group = snapshot.group_exposure.get(group, 0.0) + capped_qty * price
     if projected_group > max_group:
         headroom = max(0.0, max_group - snapshot.group_exposure.get(group, 0.0))
         if headroom < price * 0.001:
@@ -150,7 +149,25 @@ def validate_portfolio_entry(
                 f"Correlation group '{group}' exposure cap "
                 f"({PORTFOLIO_MAX_GROUP_EXPOSURE_PCT}% of equity) reached."
             ), None
-        capped_qty = headroom / price
-        return True, f"Capped to {group} group limit ({PORTFOLIO_MAX_GROUP_EXPOSURE_PCT}%).", capped_qty
+        group_cap = headroom / price
+        if group_cap < capped_qty:
+            capped_qty = group_cap
+            cap_reason = f"Capped to {group} group limit ({PORTFOLIO_MAX_GROUP_EXPOSURE_PCT}%)."
 
+    from app.services.bots.margin_risk import validate_margin_entry
+
+    margin_ok, margin_reason, margin_cap = validate_margin_entry(
+        margin,
+        price=price,
+        quantity=capped_qty,
+        leverage=entry_leverage,
+    )
+    if not margin_ok:
+        return False, margin_reason, None
+    if margin_cap is not None and margin_cap < capped_qty:
+        capped_qty = margin_cap
+        cap_reason = margin_reason if margin_reason != "OK" else cap_reason
+
+    if capped_qty < quantity:
+        return True, cap_reason, capped_qty
     return True, "OK", quantity
