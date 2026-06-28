@@ -15,6 +15,14 @@ export const DOCK_GROUPS = /** @type {const} */ ([
   'data',
 ]);
 
+export const PRESET_CATEGORIES = {
+  scalping: { label: 'Scalping', icon: 'Zap', color: 'text-yellow-500' },
+  swing: { label: 'Swing', icon: 'TrendingUp', color: 'text-blue-500' },
+  analysis: { label: 'Analysis', icon: 'Brain', color: 'text-purple-500' },
+  portfolio: { label: 'Portfolio', icon: 'Landmark', color: 'text-emerald-500' },
+  monitoring: { label: 'Monitoring', icon: 'Activity', color: 'text-orange-500' },
+};
+
 /** @type {Record<DockGroup, { label: string; tabs: string[] }>} */
 export const DOCK_GROUP_CONFIG = {
   portfolio: {

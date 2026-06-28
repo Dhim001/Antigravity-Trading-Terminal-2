@@ -71,6 +71,7 @@ import { normalizeWatchlistColumnPresets } from './watchlistColumnPresets';
  * @property {boolean} rightPanelCollapsed
  * @property {'trade' | 'book' | 'depth'} rightPanelTab
  * @property {boolean} dockCollapsed
+ * @property {string[]} detachedTabs
  * @property {'compact' | 'comfortable'} density
  * @property {{ change_abs?: boolean, change_24h?: boolean, volume_24h?: boolean, avg_volume?: boolean }} watchlistColumns
  * @property {boolean} watchlistSections Group symbols by asset class on All tab
@@ -157,6 +158,7 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     rightPanelCollapsed: false,
     rightPanelTab: 'trade',
     dockCollapsed: false,
+    detachedTabs: [],
     density: 'compact',
     watchlistColumns: { ...DEFAULT_WATCHLIST_COLUMNS },
     watchlistSections: true,
@@ -172,8 +174,11 @@ export const DEFAULT_TERMINAL_SETTINGS = {
 /** Built-in workspace presets (UX-6) */
 export const BUILTIN_WORKSPACE_PRESETS = [
   {
-    id: 'builtin-trade',
-    name: 'Day Trade',
+    id: 'builtin-scalping',
+    name: 'Scalping',
+    description: 'DOM+Chart focus for fast action',
+    category: 'scalping',
+    icon: 'Zap',
     workspace: {
       ...DEFAULT_TERMINAL_SETTINGS.workspace,
       layoutMode: 'trade',
@@ -181,26 +186,67 @@ export const BUILTIN_WORKSPACE_PRESETS = [
       dockGroup: 'portfolio',
       dockHeight: 260,
       rightPanelCollapsed: false,
-      rightPanelTab: 'trade',
+      rightPanelTab: 'book',
+      density: 'compact',
     },
-    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout, timeframe: '1m' },
   },
   {
-    id: 'builtin-analyze',
-    name: 'Research',
+    id: 'builtin-swing',
+    name: 'Swing Trading',
+    description: 'Multi-chart tracking for high timeframes',
+    category: 'swing',
+    icon: 'TrendingUp',
+    workspace: {
+      ...DEFAULT_TERMINAL_SETTINGS.workspace,
+      layoutMode: 'portfolio',
+      dockActiveTab: 'equity',
+      dockGroup: 'data',
+      dockHeight: 300,
+      rightPanelCollapsed: true,
+      viewMode: 'multi',
+    },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout, timeframe: '4h', multiChartLayoutId: '2x2' },
+  },
+  {
+    id: 'builtin-analysis',
+    name: 'Market Analysis',
+    description: 'Deep scanner and AI analyst research',
+    category: 'analysis',
+    icon: 'Brain',
     workspace: {
       ...DEFAULT_TERMINAL_SETTINGS.workspace,
       layoutMode: 'analyze',
       dockActiveTab: 'scanner',
       dockGroup: 'intelligence',
-      dockHeight: 280,
+      dockHeight: 400,
+      rightPanelCollapsed: true,
+      density: 'comfortable',
+    },
+    chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout, timeframe: '1d' },
+  },
+  {
+    id: 'builtin-portfolio',
+    name: 'Portfolio Monitor',
+    description: 'High level account tracking',
+    category: 'portfolio',
+    icon: 'Landmark',
+    workspace: {
+      ...DEFAULT_TERMINAL_SETTINGS.workspace,
+      layoutMode: 'portfolio',
+      dockActiveTab: 'balances',
+      dockGroup: 'portfolio',
+      dockHeight: 420,
       rightPanelCollapsed: true,
     },
     chartLayout: { ...DEFAULT_TERMINAL_SETTINGS.chartLayout },
   },
   {
     id: 'builtin-automate',
-    name: 'Bot Ops',
+    name: 'Bot Operations',
+    description: 'Algo bot deployment and history',
+    category: 'monitoring',
+    icon: 'Activity',
     workspace: {
       ...DEFAULT_TERMINAL_SETTINGS.workspace,
       layoutMode: 'automate',
@@ -288,6 +334,7 @@ export function migrateSettings(raw) {
       zenMode: Boolean(input.workspace?.zenMode),
       rightPanelCollapsed: Boolean(input.workspace?.rightPanelCollapsed),
       dockCollapsed: Boolean(input.workspace?.dockCollapsed),
+      detachedTabs: Array.isArray(input.workspace?.detachedTabs) ? input.workspace.detachedTabs : [],
     },
     workspacePresets: ensureBuiltinPresets(input.workspacePresets),
     watchlistColumnPresets: normalizeWatchlistColumnPresets(input.watchlistColumnPresets),

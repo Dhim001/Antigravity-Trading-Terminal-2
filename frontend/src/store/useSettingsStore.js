@@ -199,6 +199,84 @@ export const useSettingsStore = create(subscribeWithSelector((set, get) => ({
     });
   },
 
+  cloudWorkspaces: [],
+  cloudWorkspacesLoading: false,
+
+  fetchCloudWorkspaces: async () => {
+    set({ cloudWorkspacesLoading: true });
+    try {
+      const { fetchWorkspaces } = await import('../api/endpoints');
+      const res = await fetchWorkspaces();
+      if (res.ok) {
+        set({ cloudWorkspaces: res.workspaces, cloudWorkspacesLoading: false });
+      }
+    } catch (err) {
+      console.error('Failed to fetch cloud workspaces', err);
+      set({ cloudWorkspacesLoading: false });
+    }
+  },
+
+  saveCloudWorkspace: async (name) => {
+    try {
+      const { settings } = get();
+      const state = {
+        workspace: settings.workspace,
+        chartLayout: settings.chartLayout,
+      };
+      const { saveWorkspace } = await import('../api/endpoints');
+      const res = await saveWorkspace(null, name, state);
+      if (res.ok) {
+        await get().fetchCloudWorkspaces();
+        return res.workspace_id;
+      }
+    } catch (err) {
+      console.error('Failed to save cloud workspace', err);
+    }
+    return null;
+  },
+
+  deleteCloudWorkspace: async (id) => {
+    try {
+      const { deleteWorkspace } = await import('../api/endpoints');
+      const res = await deleteWorkspace(id);
+      if (res.ok) {
+        set((state) => ({
+          cloudWorkspaces: state.cloudWorkspaces.filter(w => w.id !== id),
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to delete cloud workspace', err);
+    }
+  },
+
+  loadCloudWorkspace: (id) => {
+    const { cloudWorkspaces, settings } = get();
+    const ws = cloudWorkspaces.find((w) => w.id === id);
+    if (!ws || !ws.state) return false;
+    
+    set((state) => {
+      const next = {
+        ...state.settings,
+        workspace: { ...ws.state.workspace },
+        chartLayout: {
+          ...state.settings.chartLayout,
+          ...ws.state.chartLayout,
+          activeIndicators: {
+            ...state.settings.chartLayout.activeIndicators,
+            ...(ws.state.chartLayout?.activeIndicators || {}),
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      persistSettings(next);
+      return { settings: next };
+    });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('terminal:workspace-loaded', { detail: ws.state }));
+    }
+    return true;
+  },
+
   /** @param {Partial<import('../settings/defaults').ChartLayoutSettings>} patch */
   updateChartLayout: (patch) => {
     set((state) => {

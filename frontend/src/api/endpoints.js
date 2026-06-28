@@ -284,6 +284,37 @@ export async function fetchOptimizationRun(runId) {
   return body.run;
 }
 
+export async function getOptimizationRun(runId) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/backtest/optimizations/${runId}`, { headers: getHeaders() });
+  if (!res.ok) throw new Error('Failed to fetch optimization run');
+  return res.json();
+}
+
+export async function fetchWorkspaces() {
+  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces`, { headers: getHeaders() });
+  if (!res.ok) throw new Error('Failed to fetch workspaces');
+  return res.json();
+}
+
+export async function saveWorkspace(id, name, state) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ id, name, state }),
+  });
+  if (!res.ok) throw new Error('Failed to save workspace');
+  return res.json();
+}
+
+export async function deleteWorkspace(id) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces/${id}`, {
+    method: 'DELETE',
+    headers: getHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete workspace');
+  return res.json();
+}
+
 /** GET /api/v1/bots/calibration — closed-trade win rates by setup bucket. */
 export async function fetchBotCalibration({ botId, symbol, minSamples = 3, limit = 2000 } = {}) {
   const qs = new URLSearchParams();

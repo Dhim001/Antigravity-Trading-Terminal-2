@@ -134,6 +134,17 @@ def init_db():
         )
     """)
     
+    # Create workspaces table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
 
     _safe_alter(cursor, "ALTER TABLE bot_logs ADD COLUMN meta TEXT DEFAULT NULL")

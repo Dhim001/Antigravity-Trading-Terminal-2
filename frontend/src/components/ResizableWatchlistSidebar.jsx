@@ -35,12 +35,30 @@ function readCollapsed() {
 
 export default function ResizableWatchlistSidebar({ onLayoutChange }) {
   const activeSymbol = useStore(s => s.activeSymbol);
-  const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth);
+const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth);
+  const workspaceCollapsed = useSettingsStore(s => s.settings.workspace?.rightPanelCollapsed);
+  const updateWorkspace = useSettingsStore(s => s.updateWorkspace);
+
   const [width, setWidth] = useState(() => {
     if (workspaceWidth >= SIDEBAR_MIN && workspaceWidth <= SIDEBAR_MAX) return workspaceWidth;
     return readWidth();
   });
-  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [collapsed, setCollapsed] = useState(() => {
+    if (workspaceCollapsed !== undefined) return workspaceCollapsed;
+    return readCollapsed();
+  });
+
+  useEffect(() => {
+    if (workspaceCollapsed !== undefined && workspaceCollapsed !== collapsed) {
+      setCollapsed(workspaceCollapsed);
+    }
+  }, [workspaceCollapsed]);
+
+  useEffect(() => {
+    if (workspaceWidth !== undefined && workspaceWidth !== width) {
+      setWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, workspaceWidth)));
+    }
+  }, [workspaceWidth]);
   const [dragging, setDragging] = useState(false);
   const isDragging = useRef(false);
   const startX = useRef(0);
@@ -61,8 +79,8 @@ export default function ResizableWatchlistSidebar({ onLayoutChange }) {
   }, [collapsed]);
 
   useEffect(() => {
-    const onToggle = () => setCollapsed(c => !c);
-    const onExpand = () => setCollapsed(false);
+    const onToggle = () => { setCollapsed(c => { updateWorkspace({ rightPanelCollapsed: !c }); return !c; }); };
+    const onExpand = () => { setCollapsed(false); updateWorkspace({ rightPanelCollapsed: false }); };
     window.addEventListener('sidebar-toggle', onToggle);
     window.addEventListener('sidebar-expand', onExpand);
     return () => {
@@ -88,12 +106,18 @@ export default function ResizableWatchlistSidebar({ onLayoutChange }) {
       const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW.current + (e.clientX - startX.current)));
       setWidth(next);
     };
-    const onUp = () => {
+const onUp = () => {
       if (!isDragging.current) return;
       isDragging.current = false;
       setDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      
+      // Save new width to workspace settings
+      setWidth(currentWidth => {
+        updateWorkspace({ sidebarWidth: currentWidth });
+        return currentWidth;
+      });
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -104,8 +128,8 @@ export default function ResizableWatchlistSidebar({ onLayoutChange }) {
   }, []);
 
   const toggleCollapsed = useCallback(() => {
-    setCollapsed(c => !c);
-  }, []);
+    setCollapsed(c => { const next = !c; updateWorkspace({ rightPanelCollapsed: next }); return next; });
+  }, [updateWorkspace]);
 
   const shortSym = activeSymbol?.replace('USDT', '') ?? '—';
 

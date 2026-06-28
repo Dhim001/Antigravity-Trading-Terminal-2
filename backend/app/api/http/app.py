@@ -46,6 +46,7 @@ from app.services.bots.calibration import (
     get_calibration,
     get_filter_reject_dashboard,
 )
+from app.api.http.workspaces import get_workspaces_handler, save_workspace_handler, delete_workspace_handler
 from app.services.events import channels
 
 ensure_routes_loaded()
@@ -620,6 +621,9 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/agent/pipeline/status", agent_pipeline_status_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),
         Route("/api/v1/openapi.json", openapi_json, methods=["GET"]),
+        Route("/api/v1/workspaces", get_workspaces_handler, methods=["GET"]),
+        Route("/api/v1/workspaces", save_workspace_handler, methods=["POST"]),
+        Route("/api/v1/workspaces/{workspace_id}", delete_workspace_handler, methods=["DELETE"]),
     ]
 
     seen: set[tuple[str, str]] = set()
