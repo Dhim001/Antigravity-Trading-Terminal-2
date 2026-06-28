@@ -137,6 +137,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   scanResults: null,
   visionReports: {},
   chartDrawings: {},
+  analyticsReport: null,
+  analyticsBenchmarks: null,
+  analyticsLoading: false,
+  journalEntries: [],
   orderPrefill: null,
 
   setScanResults: (data) => set({ scanResults: data }),
@@ -145,6 +149,27 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   })),
   setChartDrawings: (symbol, drawings) => set((state) => ({
     chartDrawings: { ...state.chartDrawings, [symbol]: drawings },
+  })),
+  setAnalyticsReport: (data) => set((state) => {
+    if (data?.report === 'benchmarks') {
+      return { analyticsBenchmarks: data.benchmarks, analyticsLoading: false };
+    }
+    if (data?.report === 'dashboard') {
+      return { analyticsReport: data, analyticsLoading: false };
+    }
+    return {
+      analyticsReport: { ...(state.analyticsReport || {}), ...data },
+      analyticsLoading: false,
+    };
+  }),
+  setAnalyticsLoading: (loading) => set({ analyticsLoading: loading }),
+  setJournalEntries: (entries) => set({ journalEntries: Array.isArray(entries) ? entries : [] }),
+  upsertJournalEntry: (entry) => set((state) => {
+    const list = state.journalEntries.filter((e) => e.id !== entry.id);
+    return { journalEntries: [entry, ...list] };
+  }),
+  removeJournalEntry: (id) => set((state) => ({
+    journalEntries: state.journalEntries.filter((e) => e.id !== id),
   })),
 
   setOrderPrefill: (prefill) => set({ orderPrefill: prefill }),

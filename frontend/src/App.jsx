@@ -27,6 +27,7 @@ const SystemControlPanel = lazy(() => import('./components/SystemControlPanel'))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
 const InsightsHub = lazy(() => import('./components/InsightsHub'));
 const AutomationStudio = lazy(() => import('./components/AutomationStudio'));
+const PortfolioDashboard = lazy(() => import('./components/PortfolioDashboard'));
 const BotDetailDrawer = lazy(() => import('./components/BotDetailDrawer'));
 const TradingPanel = lazy(() => import('./components/TradingPanel'));
 const ResizableDock = lazy(() => import('./components/ResizableDock'));
@@ -93,6 +94,7 @@ export default function App() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
+  const [portfolioOpen, setPortfolioOpen] = useState(false);
   const [stopBotsOpen, setStopBotsOpen] = useState(false);
   const zenPrevLayoutRef = useRef(null);
   const workspaceHydrated = useRef(false);
@@ -213,9 +215,13 @@ export default function App() {
     const onAutomation = () => {
       requestAnimationFrame(() => setAutomationOpen(true));
     };
+    const onPortfolio = () => {
+      requestAnimationFrame(() => setPortfolioOpen(true));
+    };
     const onSettings = (e) => setSettingsOpen(true, e.detail);
     window.addEventListener('insights-hub-open', onInsights);
     window.addEventListener('automation-studio-open', onAutomation);
+    window.addEventListener('portfolio-dashboard-open', onPortfolio);
     window.addEventListener('open-settings', onSettings);
     const onChartZen = () => toggleZenMode();
     window.addEventListener('chart-zen-toggle', onChartZen);
@@ -227,6 +233,7 @@ export default function App() {
     return () => {
       window.removeEventListener('insights-hub-open', onInsights);
       window.removeEventListener('automation-studio-open', onAutomation);
+      window.removeEventListener('portfolio-dashboard-open', onPortfolio);
       window.removeEventListener('open-settings', onSettings);
       window.removeEventListener('chart-zen-toggle', onChartZen);
       window.removeEventListener('chart-focus', onChartFocus);
@@ -346,6 +353,9 @@ export default function App() {
       </Suspense>
       <Suspense fallback={null}>
         <AutomationStudio open={automationOpen} onOpenChange={setAutomationOpen} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <PortfolioDashboard open={portfolioOpen} onOpenChange={setPortfolioOpen} />
       </Suspense>
       <Suspense fallback={null}>
         <ErrorBoundary name="Bot detail">

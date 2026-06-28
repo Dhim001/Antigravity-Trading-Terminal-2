@@ -43,6 +43,11 @@ export function getStoreActions() {
     setScanResults: s.setScanResults,
     setVisionReport: s.setVisionReport,
     setChartDrawings: s.setChartDrawings,
+    setAnalyticsReport: s.setAnalyticsReport,
+    setAnalyticsLoading: s.setAnalyticsLoading,
+    setJournalEntries: s.setJournalEntries,
+    upsertJournalEntry: s.upsertJournalEntry,
+    removeJournalEntry: s.removeJournalEntry,
   };
 }
 
@@ -185,12 +190,25 @@ export function applyServerMessage(type, data, storeActions, meta) {
         storeActions.setChartDrawings(data.symbol, Array.isArray(data.drawings) ? data.drawings : []);
       }
       break;
+    case MessageType.ANALYTICS_REPORT:
+      storeActions.setAnalyticsReport(data);
+      break;
+    case MessageType.JOURNAL_ENTRIES:
+      storeActions.setJournalEntries(data?.entries);
+      break;
+    case MessageType.JOURNAL_ENTRY:
+      if (data?.id) storeActions.upsertJournalEntry(data);
+      break;
+    case MessageType.JOURNAL_DELETED:
+      if (data?.id) storeActions.removeJournalEntry(data.id);
+      break;
     case MessageType.VISION_REPORT:
       if (data?.symbol && data?.timeframe) {
         storeActions.setVisionReport(`${data.symbol}:${data.timeframe}`, data);
       }
       break;
     case MessageType.ERROR:
+      storeActions.setAnalyticsLoading(false);
       console.error('Server execution error:', data?.message ?? data);
       break;
     default:

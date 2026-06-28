@@ -1,0 +1,104 @@
+"""Portfolio analytics aggregation tests."""
+
+import os
+import tempfile
+import unittest
+import uuid
+from datetime import datetime, timezone
+
+import app.db.connection as db_conn
+from app.database import get_connection, init_db
+from app.services.analytics.portfolio import (
+    MANUAL_STRATEGY,
+    collect_exit_trades,
+    get_breakdown_stats,
+    get_daily_pnl_calendar,
+    get_portfolio_equity_curve,
+)
+from app.services.bots import analytics as bot_analytics
+
+
+class PortfolioAnalyticsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        db_conn.DB_PATH = os.path.join(self._tmpdir, "analytics.db")
+        db_conn._pool = None
+        init_db()
+        conn = get_connection()
+        cursor = conn.cursor()
+        self.bot_id = str(uuid.uuid4())
+        cursor.execute(
+            "INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (self.bot_id, "MACD_RSI", "BTCUSDT", "5m", "RUNNING", 1000, "{}"),
+        )
+        conn.commit()
+        conn.close()
+
+        bot_analytics.record_trade(
+            self.bot_id, "o1", "BTCUSDT", "BUY", 1.0, 100.0, is_exit=False,
+        )
+        bot_analytics.record_trade(
+            self.bot_id, "o2", "BTCUSDT", "SELL", 1.0, 110.0, pnl=10.0, is_exit=True,
+        )
+        bot_analytics.record_trade(
+            self.bot_id, "o3", "BTCUSDT", "SELL", 1.0, 90.0, pnl=-5.0, is_exit=True,
+        )
+
+        ts = datetime.now(timezone.utc).isoformat()
+        self.account_history = {
+            "trades": [
+                {
+                    "id": "manual-1",
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 7.5,
+                    "timestamp": ts,
+                },
+            ],
+        }
+
+    def test_combined_exit_trades(self):
+        trades = collect_exit_trades(self.account_history, source="combined")
+        self.assertEqual(len(trades), 3)
+        sources = {t["source"] for t in trades}
+        self.assertEqual(sources, {"bot", "account"})
+
+    def test_equity_curve_cumulative(self):
+        result = get_portfolio_equity_curve(self.account_history, source="combined")
+        series = result["series"]
+        self.assertEqual(len(series), 3)
+        self.assertEqual(series[-1]["value"], 12.5)
+        self.assertEqual(result["stats"]["total_pnl"], 12.5)
+
+    def test_breakdown_by_strategy_includes_manual(self):
+        result = get_breakdown_stats(self.account_history, "strategy", source="combined")
+        keys = {r["key"] for r in result["rows"]}
+        self.assertIn("MACD_RSI", keys)
+        self.assertIn(MANUAL_STRATEGY, keys)
+
+    def test_daily_calendar(self):
+        result = get_daily_pnl_calendar(self.account_history, source="combined")
+        self.assertTrue(len(result["days"]) >= 1)
+        total = sum(d["pnl"] for d in result["days"])
+        self.assertEqual(total, 12.5)
+
+    def test_source_filter_bot_only(self):
+        trades = collect_exit_trades(self.account_history, source="bot")
+        self.assertEqual(len(trades), 2)
+        self.assertTrue(all(t["source"] == "bot" for t in trades))
+
+    def test_correlation_respects_symbol_universe(self):
+        from app.services.analytics.portfolio import get_correlation_matrix
+
+        result = get_correlation_matrix(
+            self.account_history,
+            source="combined",
+            symbols=["BTCUSDT"],
+        )
+        self.assertEqual(result["symbols"], ["BTCUSDT"])
+
+
+if __name__ == "__main__":
+    unittest.main()

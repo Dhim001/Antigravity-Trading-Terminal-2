@@ -7454,6 +7454,7 @@ body {
 .terminal-sheet,
 .automation-studio,
 .insights-hub,
+.portfolio-dashboard,
 .bot-detail-drawer {
   pointer-events: auto;
   display: flex !important;
@@ -8286,6 +8287,256 @@ body {
   scrollbar-gutter: stable;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   PORTFOLIO DASHBOARD — full-window analytics workspace
+═══════════════════════════════════════════════════════════════════ */
+.portfolio-dashboard {
+  --pd-gutter: 1.5rem;
+  --pd-gutter-sm: 1rem;
+  --pd-gap: 1rem;
+  --pd-section-gap: 1.25rem;
+  --pd-card-pad: 1rem;
+  --pd-card-header-pad-y: 0.75rem;
+  --pd-radius: var(--r-lg, 0.75rem);
+
+  inset: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  height: 100dvh !important;
+  border: none !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  translate: none !important;
+  animation: none !important;
+}
+
+.portfolio-dashboard__overlay {
+  background: color-mix(in oklab, var(--bg-primary) 72%, black) !important;
+  backdrop-filter: blur(10px);
+}
+
+.portfolio-dashboard [data-slot="sheet-close"] {
+  top: 1.125rem;
+  right: var(--pd-gutter);
+  z-index: 2;
+}
+
+.portfolio-dashboard__header {
+  gap: 0.75rem !important;
+  margin: 0 !important;
+  padding: 1.125rem calc(var(--pd-gutter) + 2.25rem) 1rem var(--pd-gutter) !important;
+  border-bottom: 1px solid color-mix(in oklab, var(--border-color) 90%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--primary) 10%, transparent) 0%,
+    color-mix(in oklab, var(--bg-primary) 96%, transparent) 100%
+  );
+}
+
+.portfolio-dashboard__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.portfolio-dashboard__title svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--primary);
+}
+
+.portfolio-dashboard__description {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.portfolio-dashboard__toolbar {
+  padding-top: 0.125rem;
+}
+
+.portfolio-dashboard__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--bg-primary) 98%, var(--bg-secondary));
+}
+
+.portfolio-dashboard__alert {
+  margin: var(--pd-gap) var(--pd-gutter) 0;
+}
+
+.portfolio-dashboard__tabs {
+  min-height: 0;
+}
+
+.portfolio-dashboard__tablist {
+  margin: var(--pd-gap) var(--pd-gutter) 0 !important;
+  max-width: calc(100% - (var(--pd-gutter) * 2));
+  border-color: color-mix(in oklab, var(--border-color) 88%, transparent);
+  background: color-mix(in oklab, var(--bg-secondary) 65%, transparent);
+}
+
+.portfolio-dashboard__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pd-section-gap);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: var(--pd-gap) var(--pd-gutter) 1.75rem;
+}
+
+.portfolio-dashboard__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: var(--pd-gap);
+}
+
+.portfolio-dashboard__stats [data-slot="card"] {
+  margin: 0;
+  padding-block: 0.625rem;
+  border-radius: var(--pd-radius);
+  border: 1px solid color-mix(in oklab, var(--border-color) 82%, transparent);
+  background: color-mix(in oklab, var(--bg-secondary) 55%, transparent);
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+.portfolio-dashboard__stats [data-slot="card-content"] {
+  padding-inline: var(--pd-card-pad);
+  padding-block: 0;
+}
+
+.portfolio-dashboard__bento {
+  display: grid;
+  gap: var(--pd-gap);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-areas:
+    "equity equity equity equity equity equity equity equity alloc alloc alloc alloc"
+    "equity equity equity equity equity equity equity equity risk risk risk risk"
+    "corr corr corr corr corr corr corr corr corr corr corr corr";
+}
+
+.portfolio-dashboard__bento-equity {
+  grid-area: equity;
+}
+
+.portfolio-dashboard__bento-alloc {
+  grid-area: alloc;
+}
+
+.portfolio-dashboard__bento-risk {
+  grid-area: risk;
+}
+
+.portfolio-dashboard__risk-content {
+  min-height: 17rem;
+  padding-block: 0.75rem 1rem;
+}
+
+.portfolio-dashboard__risk-chart {
+  min-height: 15rem;
+  width: 100%;
+}
+
+.portfolio-dashboard__bento-correlation {
+  grid-area: corr;
+}
+
+.portfolio-dashboard__card {
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  border-radius: var(--pd-radius);
+  border: 1px solid color-mix(in oklab, var(--border-color) 82%, transparent);
+  background: color-mix(in oklab, var(--bg-secondary) 55%, transparent);
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+.portfolio-dashboard__card-header {
+  gap: 0.2rem;
+  margin: 0;
+  padding: var(--pd-card-header-pad-y) var(--pd-card-pad);
+  border-bottom: 1px solid color-mix(in oklab, var(--border-color) 72%, transparent);
+  background: color-mix(in oklab, var(--bg-secondary) 35%, transparent);
+}
+
+.portfolio-dashboard__card-header [data-slot="card-description"] {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.portfolio-dashboard__card-content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: var(--pd-card-pad);
+}
+
+.portfolio-dashboard__card-content--list {
+  padding-block: 0.625rem var(--pd-card-pad);
+}
+
+.portfolio-dashboard__card-content [data-slot="empty"] {
+  padding-block: 1.5rem;
+  margin: 0;
+}
+
+.portfolio-dashboard__card-content .echarts-for-react,
+.portfolio-dashboard__card-content > div[class*="min-h"] {
+  margin-inline: -0.125rem;
+}
+
+.portfolio-dashboard__bots {
+  display: grid;
+  gap: var(--pd-gap);
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.portfolio-dashboard__panel .scroll-panel-x,
+.portfolio-dashboard__panel .rounded-md.border {
+  border-color: color-mix(in oklab, var(--border-color) 82%, transparent) !important;
+  border-radius: var(--pd-radius);
+}
+
+@media (max-width: 960px) {
+  .portfolio-dashboard {
+    --pd-gutter: 1rem;
+    --pd-gap: 0.875rem;
+    --pd-section-gap: 1rem;
+    --pd-card-pad: 0.875rem;
+  }
+
+  .portfolio-dashboard__bento {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "equity"
+      "alloc"
+      "risk"
+      "corr";
+  }
+
+  .portfolio-dashboard__header {
+    padding-right: calc(var(--pd-gutter) + 2rem) !important;
+  }
+
+  .portfolio-dashboard__toolbar {
+    width: 100%;
+  }
+}
+
 /* Layered overlays — sheets, dialogs, popovers, tour */
 [data-slot="sheet-overlay"] {
   z-index: var(--z-sheet-overlay) !important;
@@ -8294,6 +8545,7 @@ body {
 [data-slot="sheet-content"].terminal-sheet,
 [data-slot="sheet-content"].automation-studio,
 [data-slot="sheet-content"].insights-hub,
+[data-slot="sheet-content"].portfolio-dashboard,
 [data-slot="sheet-content"].settings-panel,
 [data-slot="sheet-content"].activity-center,
 [data-slot="sheet-content"].bot-detail-drawer,

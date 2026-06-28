@@ -356,6 +356,28 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_journal (
+            id TEXT PRIMARY KEY,
+            trade_ref TEXT,
+            order_id TEXT,
+            bot_id TEXT,
+            symbol TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            lesson TEXT NOT NULL DEFAULT '',
+            screenshot_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trade_journal_symbol ON trade_journal (symbol)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trade_journal_updated ON trade_journal (updated_at DESC)"
+    )
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     if is_postgres():

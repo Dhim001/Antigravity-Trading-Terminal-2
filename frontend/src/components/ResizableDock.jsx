@@ -2178,6 +2178,16 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
               </TabsList>
             </div>
             <div className="dock-tab-actions">
+            {activeGroup === 'portfolio' && (
+              <Button
+                variant="outline"
+                size="sm"
+                title="Open Portfolio Dashboard — equity, allocation, risk analytics"
+                onClick={() => window.dispatchEvent(new CustomEvent('portfolio-dashboard-open'))}
+              >
+                Dashboard
+              </Button>
+            )}
             {activeGroup === 'intelligence' && (
               <Button
                 variant="outline"

@@ -42,6 +42,10 @@ export const Action = Object.freeze({
   CHART_VISION: 'chart_vision',
   CHART_DRAWINGS_GET: 'chart_drawings_get',
   CHART_DRAWINGS_SET: 'chart_drawings_set',
+  ANALYTICS_GET: 'analytics_get',
+  JOURNAL_LIST: 'journal_list',
+  JOURNAL_UPSERT: 'journal_upsert',
+  JOURNAL_DELETE: 'journal_delete',
 });
 
 /** Server → client message types */
@@ -69,6 +73,10 @@ export const MessageType = Object.freeze({
   SCAN_RESULTS: 'scan_results',
   VISION_REPORT: 'vision_report',
   CHART_DRAWINGS: 'chart_drawings',
+  ANALYTICS_REPORT: 'analytics_report',
+  JOURNAL_ENTRIES: 'journal_entries',
+  JOURNAL_ENTRY: 'journal_entry',
+  JOURNAL_DELETED: 'journal_deleted',
   ERROR: 'error',
 });
 
