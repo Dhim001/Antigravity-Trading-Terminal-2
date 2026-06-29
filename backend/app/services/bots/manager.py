@@ -283,6 +283,15 @@ class BotManagerService:
             await self._flush_log_buffer()
         else:
             await self._schedule_log_flush()
+        try:
+            sym = self.active_bots.get(bot_id, {}).get("symbol")
+            from app.services.notifications.dispatcher import notify_bot_log
+            import asyncio
+            asyncio.create_task(
+                notify_bot_log(bot_id, level, message, symbol=sym, meta=meta)
+            )
+        except Exception:
+            pass
 
     def get_account_balance(self):
         balances = self.oms.get_account_data().get("balances", {})
@@ -484,10 +493,18 @@ class BotManagerService:
         await self.log_bot_event(bot_id, "ERROR", reason)
 
     async def process_market_tick(self, symbol: str, ohlcv_1m: list | None = None, *, feed=None):
+        try:
+            from app.services.notifications.alert_rules.engine import maybe_evaluate_alert_rules
+
+            await maybe_evaluate_alert_rules(symbol, ohlcv_1m=ohlcv_1m, feed=feed)
+        except Exception as exc:
+            self.logger.debug("Alert rule evaluation skipped for %s: %s", symbol, exc)
+
         if TERMINAL_MODE != "SIMULATED" and not ALLOW_LIVE_BOTS:
             return
         if system_state.is_safe_mode_active():
             return
+
         if not self.active_bots or not any(
             b["symbol"] == symbol and b.get("status") == "RUNNING"
             for b in self.active_bots.values()
@@ -556,6 +573,12 @@ class BotManagerService:
                 continue
             await self._warm_chart_agent_caches(symbol, None, feed=feed)
             await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
+            try:
+                from app.services.notifications.alert_rules.engine import evaluate_rules_for_bar
+
+                await evaluate_rules_for_bar(symbol, timeframe, ohlcv)
+            except Exception as exc:
+                self.logger.debug("HT alert rules skipped %s %s: %s", symbol, timeframe, exc)
 
     async def _warm_chart_agent_caches(
         self,

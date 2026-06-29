@@ -146,6 +146,70 @@ export const HTTP_ROUTES = Object.freeze({
   [Action.ADMIN_RESET_SYSTEM]: { method: 'POST', path: () => '/api/v1/admin/reset' },
   [Action.ADMIN_EMERGENCY_STOP]: { method: 'POST', path: () => '/api/v1/admin/emergency-stop' },
   [Action.ADMIN_RESET_RISK_KILL_SWITCH]: { method: 'POST', path: () => '/api/v1/admin/risk/reset-kill-switch' },
+  [Action.NOTIFY_CHANNEL_LIST]: { method: 'GET', path: () => '/api/v1/notifications/channels' },
+  [Action.NOTIFY_CHANNEL_UPSERT]: {
+    method: 'POST',
+    path: () => '/api/v1/notifications/channels',
+    body: (p) => p,
+  },
+  [Action.NOTIFY_CHANNEL_DELETE]: {
+    method: 'DELETE',
+    path: (p) => `/api/v1/notifications/channels/${encodeURIComponent(p.id)}`,
+  },
+  [Action.NOTIFY_CHANNEL_TEST]: {
+    method: 'POST',
+    path: (p) => `/api/v1/notifications/channels/${encodeURIComponent(p.id)}/test`,
+    body: () => ({}),
+  },
+  [Action.NOTIFY_DIGEST_SEND_NOW]: {
+    method: 'POST',
+    path: () => '/api/v1/notifications/digest/send',
+    body: () => ({}),
+  },
+  [Action.ALERT_RULE_LIST]: {
+    method: 'GET',
+    path: (p) => (p?.symbol ? `/api/v1/alerts/rules?symbol=${encodeURIComponent(p.symbol)}` : '/api/v1/alerts/rules'),
+  },
+  [Action.ALERT_RULE_UPSERT]: {
+    method: 'POST',
+    path: () => '/api/v1/alerts/rules',
+    body: (p) => p,
+  },
+  [Action.ALERT_RULE_DELETE]: {
+    method: 'DELETE',
+    path: (p) => `/api/v1/alerts/rules/${encodeURIComponent(p.id)}`,
+  },
+  [Action.ALERT_RULE_HISTORY]: {
+    method: 'GET',
+    path: (p) => {
+      const q = new URLSearchParams();
+      if (p?.rule_id) q.set('rule_id', p.rule_id);
+      if (p?.limit) q.set('limit', String(p.limit));
+      const qs = q.toString();
+      return `/api/v1/alerts/history${qs ? `?${qs}` : ''}`;
+    },
+  },
+  [Action.NOTIFY_PUSH_VAPID_PUBLIC]: {
+    method: 'GET',
+    path: () => '/api/v1/notifications/push/vapid-public-key',
+  },
+  [Action.NOTIFY_PUSH_SUBSCRIBE]: {
+    method: 'POST',
+    path: () => '/api/v1/notifications/push/subscribe',
+    body: (p) => p,
+  },
+  [Action.NOTIFY_PUSH_UNSUBSCRIBE]: {
+    method: 'POST',
+    path: () => '/api/v1/notifications/push/unsubscribe',
+    body: (p) => p,
+  },
+  [Action.NOTIFY_PUSH_LIST]: {
+    method: 'GET',
+    path: (p) => {
+      const q = p?.channel_id ? `?channel_id=${encodeURIComponent(p.channel_id)}` : '';
+      return `/api/v1/notifications/push/subscriptions${q}`;
+    },
+  },
   [Action.CHART_ANALYZE]: { method: 'POST', path: () => '/api/v1/agent/analyze', body: (p) => p },
   [Action.CHART_DEEP_REASON]: { method: 'POST', path: () => '/api/v1/agent/deep-reason', body: (p) => p },
   [Action.EXPLAIN_TRADE]: { method: 'POST', path: () => '/api/v1/agent/explain-trade', body: (p) => p },

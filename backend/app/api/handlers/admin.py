@@ -148,6 +148,21 @@ async def admin_emergency_stop(ctx: RequestContext) -> None:
     msg = result.get("message", "Emergency stop executed.")
     result["message"] = f"{msg} Stopped {bot_count} bot(s)."
     await event_publish.publish(channels.EMERGENCY_STOP, {"source": "admin"})
+    try:
+        from app.services.notifications.dispatcher import emit_notification
+        from app.services.notifications.events import NotificationEvent
+        from app.services.notifications import types as ntypes
+
+        await emit_notification(
+            NotificationEvent(
+                event_type=ntypes.EMERGENCY_STOP,
+                title="Emergency stop executed",
+                body=result.get("message", "All bots stopped and positions flattened."),
+                severity="error",
+            )
+        )
+    except Exception:
+        pass
     await _notify_bot_registry_change()
     await send_order_result(ctx, result)
     await broadcast_account_update(ctx)

@@ -476,6 +476,11 @@ async def main():
                 from app.services.altdata.loop import altdata_refresh_loop
                 tasks.append(asyncio.create_task(altdata_refresh_loop(state.feed)))
 
+            from app.config import NOTIFICATION_DIGEST_ENABLED
+            if NOTIFICATION_DIGEST_ENABLED:
+                from app.services.notifications.digest_loop import notification_digest_loop
+                tasks.append(asyncio.create_task(notification_digest_loop(state.oms)))
+
             from app.services.bots.backtest_worker import backtest_job_worker_loop
             tasks.append(asyncio.create_task(backtest_job_worker_loop(state)))
 

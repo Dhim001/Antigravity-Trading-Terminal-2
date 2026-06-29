@@ -78,6 +78,22 @@ async def run_startup_recovery(
                 "terminal_mode": TERMINAL_MODE,
             },
         )
+        try:
+            from app.services.notifications.dispatcher import emit_notification
+            from app.services.notifications.events import NotificationEvent
+            from app.services.notifications import types as ntypes
+
+            await emit_notification(
+                NotificationEvent(
+                    event_type=ntypes.SAFE_MODE,
+                    title="Safe mode active",
+                    body=f"System started in safe mode ({reason}). All bots paused until operator confirms.",
+                    severity="warn",
+                    payload={"reason": reason},
+                )
+            )
+        except Exception:
+            pass
         paused = bot_manager.apply_safe_mode_pause()
         logger.warning(
             "Safe mode active (%s) — paused %d bot(s). Operator confirmation required.",

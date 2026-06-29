@@ -414,6 +414,91 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notification_channels (
+            id TEXT PRIMARY KEY,
+            channel_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            event_types TEXT NOT NULL DEFAULT '[]',
+            config_encrypted TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_channels_type ON notification_channels (channel_type)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notification_log (
+            id TEXT PRIMARY KEY,
+            dedupe_key TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload_json TEXT,
+            error TEXT,
+            created_at REAL NOT NULL,
+            delivered_at REAL,
+            UNIQUE (dedupe_key, channel_id)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_log_created ON notification_log (created_at DESC)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alert_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL DEFAULT '1m',
+            condition_type TEXT NOT NULL,
+            threshold REAL,
+            signal TEXT,
+            cooldown_sec INTEGER NOT NULL DEFAULT 300,
+            notify_channels TEXT NOT NULL DEFAULT '[]',
+            last_triggered_at REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_rules_symbol ON alert_rules (symbol, enabled)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS alert_rule_log (
+            id TEXT PRIMARY KEY,
+            rule_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            message TEXT NOT NULL,
+            payload_json TEXT,
+            created_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_rule_log_rule ON alert_rule_log (rule_id, created_at DESC)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            endpoint TEXT NOT NULL UNIQUE,
+            keys_encrypted TEXT NOT NULL,
+            user_agent TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_channel ON push_subscriptions (channel_id)"
+    )
+
     from app.services.archive.schema import init_archive_schema
     init_archive_schema(cursor)
     if is_postgres():

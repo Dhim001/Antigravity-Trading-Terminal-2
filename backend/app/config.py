@@ -192,6 +192,32 @@ DATA_QUALITY_ACTIVE_PAUSE = os.environ.get("DATA_QUALITY_ACTIVE_PAUSE", "true").
 ALTDATA_ENABLED = os.environ.get("ALTDATA_ENABLED", "true").lower() in ("1", "true", "yes")
 ALTDATA_REFRESH_INTERVAL_SEC = float(os.environ.get("ALTDATA_REFRESH_INTERVAL_SEC", "3600"))
 
+# External notifications (webhooks, Telegram, email digest)
+NOTIFICATIONS_ENABLED = os.environ.get("NOTIFICATIONS_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+# Master key for encrypting per-channel secrets in DB (generate a long random string)
+NOTIFICATION_ENCRYPTION_KEY = os.environ.get("NOTIFICATION_ENCRYPTION_KEY", "").strip()
+NOTIFICATION_DEDUPE_WINDOW_SEC = float(os.environ.get("NOTIFICATION_DEDUPE_WINDOW_SEC", "60"))
+NOTIFICATION_DELIVERY_MAX_RETRIES = int(os.environ.get("NOTIFICATION_DELIVERY_MAX_RETRIES", "3"))
+NOTIFICATION_DIGEST_ENABLED = os.environ.get("NOTIFICATION_DIGEST_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+NOTIFICATION_DIGEST_HOUR = int(os.environ.get("NOTIFICATION_DIGEST_HOUR", "18"))
+NOTIFICATION_DIGEST_TZ = os.environ.get(
+    "NOTIFICATION_DIGEST_TZ",
+    os.environ.get("RISK_EQUITY_MARKET_TZ", "America/New_York"),
+)
+ALERT_RULES_ENABLED = os.environ.get("ALERT_RULES_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+WEB_PUSH_ENABLED = os.environ.get("WEB_PUSH_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@localhost").strip()
+
 if ARCHIVE_BACKEND not in ("db", "parquet", "both", ""):
     import logging as _logging
     _logging.getLogger(__name__).warning(

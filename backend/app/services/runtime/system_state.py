@@ -14,6 +14,7 @@ KEY_UNCLEAN_BOOT = "unclean_boot_detected"
 KEY_SAFE_MODE_ACTIVE = "safe_mode_active"
 KEY_SAFE_MODE_REASON = "safe_mode_reason"
 KEY_BOT_RUNTIME_CHECKPOINT = "bot_runtime_checkpoint"
+KEY_NOTIFICATION_LAST_DIGEST_DATE = "notification_last_digest_date"
 
 
 def _process_role() -> str:
@@ -137,6 +138,15 @@ def load_bot_runtime_checkpoint() -> dict[str, Any]:
 
 def clear_bot_runtime_checkpoint() -> None:
     _delete_key(KEY_BOT_RUNTIME_CHECKPOINT)
+
+
+def get_last_digest_date() -> str | None:
+    """ISO date (YYYY-MM-DD) of the last scheduled daily digest send."""
+    return _get_text(KEY_NOTIFICATION_LAST_DIGEST_DATE)
+
+
+def set_last_digest_date(iso_date: str) -> None:
+    _set_text(KEY_NOTIFICATION_LAST_DIGEST_DATE, iso_date)
 
 
 def runtime_status_dict() -> dict[str, Any]:

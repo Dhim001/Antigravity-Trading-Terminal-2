@@ -20,6 +20,7 @@ import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
 import MemoryDevBadge from './components/MemoryDevBadge';
+import PwaInstallBanner from './components/PwaInstallBanner';
 
 const ChartWidget = lazy(() => import('./components/ChartWidget'));
 const MultiChartGrid = lazy(() => import('./components/MultiChartGrid'));
@@ -630,6 +631,7 @@ export default function App() {
         </ErrorBoundary>
       )}
       <MemoryDevBadge />
+      <PwaInstallBanner />
     </div>
   );
 }

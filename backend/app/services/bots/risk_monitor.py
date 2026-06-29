@@ -157,6 +157,26 @@ class RiskMonitor:
                     f"Stopped {stopped} bot(s)."
                 )
                 logger.error(reason)
+                try:
+                    from app.services.notifications.dispatcher import emit_notification
+                    from app.services.notifications.events import NotificationEvent
+                    from app.services.notifications import types as ntypes
+
+                    await emit_notification(
+                        NotificationEvent(
+                            event_type=ntypes.KILL_SWITCH,
+                            title="Drawdown kill switch tripped",
+                            body=reason,
+                            severity="error",
+                            payload={
+                                "drawdown_pct": snapshot.current_drawdown_pct,
+                                "equity": snapshot.account_equity,
+                                "peak": snapshot.equity_peak,
+                            },
+                        )
+                    )
+                except Exception:
+                    pass
                 await event_publish.publish(
                     channels.EMERGENCY_STOP,
                     {

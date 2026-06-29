@@ -50,6 +50,19 @@ export const Action = Object.freeze({
   JOURNAL_LIST: 'journal_list',
   JOURNAL_UPSERT: 'journal_upsert',
   JOURNAL_DELETE: 'journal_delete',
+  NOTIFY_CHANNEL_LIST: 'notify_channel_list',
+  NOTIFY_CHANNEL_UPSERT: 'notify_channel_upsert',
+  NOTIFY_CHANNEL_DELETE: 'notify_channel_delete',
+  NOTIFY_CHANNEL_TEST: 'notify_channel_test',
+  NOTIFY_DIGEST_SEND_NOW: 'notify_digest_send_now',
+  ALERT_RULE_LIST: 'alert_rule_list',
+  ALERT_RULE_UPSERT: 'alert_rule_upsert',
+  ALERT_RULE_DELETE: 'alert_rule_delete',
+  ALERT_RULE_HISTORY: 'alert_rule_history',
+  NOTIFY_PUSH_VAPID_PUBLIC: 'notify_push_vapid_public',
+  NOTIFY_PUSH_SUBSCRIBE: 'notify_push_subscribe',
+  NOTIFY_PUSH_UNSUBSCRIBE: 'notify_push_unsubscribe',
+  NOTIFY_PUSH_LIST: 'notify_push_list',
 });
 
 /** Server → client message types */

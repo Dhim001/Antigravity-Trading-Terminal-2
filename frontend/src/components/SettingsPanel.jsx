@@ -46,6 +46,8 @@ import {
   ShieldAlert,
   Cpu,
   Wifi,
+  Bell,
+  BellRing,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -66,6 +68,8 @@ import {
 } from '../settings/watchlistColumnPresets';
 import { fetchHealth, parseMetricsSummary, fetchLlmModels } from '../api/endpoints';
 import LlmSettingsSection from './LlmSettingsSection';
+import NotificationSettingsSection from './NotificationSettingsSection';
+import AlertRulesSection from './AlertRulesSection';
 import {
   useMemoryObservability,
   MemoryObservabilityBadge,
@@ -1227,6 +1231,24 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   selectedLlmModel={selectedLlmModel}
                   setSelectedLlmModel={setSelectedLlmModel}
                 />
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="notifications"
+                title="Notifications"
+                hint="External alerts (webhook, Telegram, email, browser push) when the tab is closed."
+                badge={<Bell size={13} className="text-muted-foreground" aria-hidden />}
+              >
+                <NotificationSettingsSection />
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="alert-rules"
+                title="Alert rules"
+                hint="Bar-close conditions (RSI, price, MACD) routed through notification channels."
+                badge={<BellRing size={13} className="text-muted-foreground" aria-hidden />}
+              >
+                <AlertRulesSection activeSymbol={activeSymbol} />
               </SettingsAccordionSection>
 
               <SettingsAccordionSection

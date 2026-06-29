@@ -25,5 +25,9 @@ pyarrow>=18.0.0
 # Optional scale-out (Phase 6): Redis pub/sub + PostgreSQL
 redis>=5.0.0
 psycopg[binary,pool]>=3.1.0
+# Encrypted notification channel secrets at rest
+cryptography>=42.0.0
+# Web Push (browser notifications)
+pywebpush>=2.0.0
 # Interactive Brokers market data (LIVE_IB feed-only)
 ib_async>=2.0.0
