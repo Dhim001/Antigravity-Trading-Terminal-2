@@ -13,7 +13,8 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
-  AlertCircle, BarChart2, LayoutDashboard, Loader2, RefreshCw, ShieldAlert, TrendingUp,
+  AlertCircle, ArrowUpDown, Award, BarChart2, Flame, LayoutDashboard,
+  Loader2, RefreshCw, ShieldAlert, Sigma, TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAnalytics, fetchBenchmarks } from '@/hooks/useAnalytics';
@@ -225,6 +226,15 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     const isProfit = (stats?.total_pnl ?? 0) >= 0;
     const lineColor = isProfit ? bullishColor : bearishColor;
 
+    // Compute drawdown % from equity series
+    // Use the first value as initial peak to handle portfolios starting negative
+    let peak = lineData[0] ?? 0;
+    const ddData = lineData.map((v) => {
+      if (v > peak) peak = v;
+      if (peak <= 0) return 0;
+      return -Math.max(0, ((peak - v) / peak) * 100);
+    });
+
     const benchSeries = [];
     if (benchmarks?.benchmarks) {
       if (showSpy && benchmarks.benchmarks.SPY?.length) {
@@ -249,34 +259,63 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
 
     return {
       backgroundColor: 'transparent',
-      grid: { left: '2%', right: '4%', top: '12%', bottom: '12%' },
+      grid: [
+        { left: '2%', right: '4%', top: '10%', bottom: '30%' },
+        { left: '2%', right: '4%', top: '75%', bottom: '4%' },
+      ],
       tooltip: { trigger: 'axis' },
-      legend: benchSeries.length ? { data: ['Equity P&L', ...benchSeries.map((s) => s.name)], textStyle: { color: '#9ca3af', fontSize: 10 } } : undefined,
-      xAxis: {
-        type: 'category',
-        data: cats,
-        axisLabel: { color: '#6b7280', fontSize: 9 },
+      legend: {
+        data: ['Equity P&L', 'Drawdown %', ...benchSeries.map((s) => s.name)],
+        textStyle: { color: '#9ca3af', fontSize: 10 },
       },
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      xAxis: [
+        {
+          type: 'category',
+          data: cats,
+          axisLabel: { color: '#6b7280', fontSize: 9 },
+          gridIndex: 0,
+        },
+        {
+          type: 'category',
+          data: cats,
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          gridIndex: 1,
+        },
+      ],
       yAxis: [
         {
           type: 'value',
           name: 'P&L $',
           axisLabel: { color: '#6b7280', fontSize: 9, formatter: (v) => `$${v}` },
           splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+          gridIndex: 0,
         },
-        benchSeries.length ? {
+        ...(benchSeries.length ? [{
           type: 'value',
           name: '%',
           axisLabel: { color: '#6b7280', fontSize: 9, formatter: (v) => `${v}%` },
           splitLine: { show: false },
-        } : null,
-      ].filter(Boolean),
+          gridIndex: 0,
+        }] : []),
+        {
+          type: 'value',
+          name: 'DD%',
+          axisLabel: { color: '#6b7280', fontSize: 8, formatter: (v) => `${v}%` },
+          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+          gridIndex: 1,
+          max: 0,
+        },
+      ],
       series: [
         {
           name: 'Equity P&L',
           type: 'line',
           data: lineData,
           showSymbol: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
           lineStyle: { color: lineColor, width: 2 },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -285,7 +324,22 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
             ]),
           },
         },
-        ...benchSeries.map((s) => ({ ...s, yAxisIndex: 1 })),
+        ...benchSeries.map((s) => ({ ...s, yAxisIndex: 1, xAxisIndex: 0 })),
+        {
+          name: 'Drawdown %',
+          type: 'line',
+          data: ddData,
+          showSymbol: false,
+          xAxisIndex: 1,
+          yAxisIndex: benchSeries.length ? 2 : 1,
+          lineStyle: { color: bearishColor, width: 1 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: `${bearishColor}40` },
+              { offset: 1, color: `${bearishColor}08` },
+            ]),
+          },
+        },
       ],
     };
   }, [series, stats, benchmarks, showSpy, showBtc, bullishColor, bearishColor]);
@@ -376,6 +430,56 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
       }),
     };
   }, [risk]);
+
+  const distributionOption = useMemo(() => {
+    const bins = data?.distribution?.bins || [];
+    if (!bins.length) return null;
+    return {
+      backgroundColor: 'transparent',
+      grid: { left: '8%', right: '4%', top: '10%', bottom: '14%' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params) => {
+          const p = params[0];
+          if (!p) return '';
+          const bin = bins[p.dataIndex];
+          return `${bin ? `$${bin.edge} – $${bin.upper}` : ''}<br/>Trades: <b>${p.value}</b>`;
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: bins.map((b) => `$${b.edge}`),
+        axisLabel: { color: '#6b7280', fontSize: 8, rotate: 45 },
+        name: 'P&L Range',
+        nameTextStyle: { color: '#6b7280', fontSize: 9 },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Trades',
+        axisLabel: { color: '#6b7280', fontSize: 9 },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      },
+      series: [{
+        type: 'bar',
+        data: bins.map((b) => ({
+          value: b.count,
+          itemStyle: {
+            color: b.is_positive
+              ? new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                  { offset: 0, color: `${bullishColor}cc` },
+                  { offset: 1, color: `${bullishColor}44` },
+                ])
+              : new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                  { offset: 0, color: `${bearishColor}cc` },
+                  { offset: 1, color: `${bearishColor}44` },
+                ]),
+            borderRadius: [3, 3, 0, 0],
+          },
+        })),
+        barMaxWidth: 28,
+      }],
+    };
+  }, [data?.distribution, bullishColor, bearishColor]);
 
   const topBots = data?.bot_rankings?.top || [];
   const bottomBots = data?.bot_rankings?.bottom || [];
@@ -477,29 +581,84 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
 
               <TabsContent value="overview" className="portfolio-dashboard__panel">
                 {stats && (
-                  <div className="portfolio-dashboard__stats">
-                    <StatCard label="Total P&L" icon={TrendingUp} value={fmtUsd(stats.total_pnl)} tone={pnlTone(stats.total_pnl)} />
-                    <StatCard label="Win Rate" value={fmtPct(stats.win_rate)} tone={pnlTone(stats.win_rate - 50)} />
-                    <StatCard label="Expectancy" value={fmtUsd(stats.expectancy)} tone={pnlTone(stats.expectancy)} />
-                    <StatCard label="Trades" icon={BarChart2} value={stats.trade_count} tone="accent" />
-                    {risk?.kill_switch_enabled && (
+                  <>
+                    <div className="portfolio-dashboard__stats">
+                      <StatCard label="Total P&L" icon={TrendingUp} value={fmtUsd(stats.total_pnl)} tone={pnlTone(stats.total_pnl)} tooltip="Net realized profit/loss across all trades." />
+                      <StatCard label="Win Rate" value={fmtPct(stats.win_rate)} tone={pnlTone(stats.win_rate - 50)} tooltip="Percentage of trades that closed with a profit." />
+                      <StatCard label="Expectancy" value={fmtUsd(stats.expectancy)} tone={pnlTone(stats.expectancy)} tooltip="Average P&L per trade — positive means the system is profitable on average." />
+                      <StatCard label="Trades" icon={BarChart2} value={stats.trade_count} tone="accent" tooltip="Total number of completed (exit) trades." />
+                      {risk?.kill_switch_enabled && (
+                        <StatCard
+                          label="Drawdown"
+                          icon={ShieldAlert}
+                          value={fmtPct(risk.current_drawdown_pct)}
+                          sub={`Peak ${fmtUsd(risk.equity_peak)} · limit ${fmtPct(risk.max_drawdown_pct)}`}
+                          tone={pnlTone(-(risk.current_drawdown_pct ?? 0))}
+                          tooltip="Current drawdown from cash equity peak. Kill switch trips at the limit."
+                        />
+                      )}
+                    </div>
+                    <div className="portfolio-dashboard__stats portfolio-dashboard__stats--secondary">
                       <StatCard
-                        label="Drawdown"
-                        icon={ShieldAlert}
-                        value={fmtPct(risk.current_drawdown_pct)}
-                        sub={`Peak ${fmtUsd(risk.equity_peak)} · limit ${fmtPct(risk.max_drawdown_pct)}`}
-                        tone={pnlTone(-(risk.current_drawdown_pct ?? 0))}
+                        label="Sharpe"
+                        icon={Sigma}
+                        value={stats.sharpe_ratio != null ? stats.sharpe_ratio.toFixed(2) : '—'}
+                        tone={pnlTone(stats.sharpe_ratio ?? 0)}
+                        tooltip="Annualized Sharpe ratio — risk-adjusted return. >1 good, >2 excellent."
                       />
-                    )}
-                  </div>
+                      <StatCard
+                        label="Sortino"
+                        icon={Sigma}
+                        value={stats.sortino_ratio != null ? stats.sortino_ratio.toFixed(2) : '—'}
+                        tone={pnlTone(stats.sortino_ratio ?? 0)}
+                        tooltip="Annualized Sortino ratio — like Sharpe but only penalizes downside volatility."
+                      />
+                      <StatCard
+                        label="Profit Factor"
+                        icon={ArrowUpDown}
+                        value={stats.profit_factor != null ? stats.profit_factor.toFixed(2) : '—'}
+                        tone={pnlTone((stats.profit_factor ?? 1) - 1)}
+                        tooltip="Gross profit ÷ gross loss. >1 profitable, >2 strong."
+                      />
+                      <StatCard
+                        label="Max DD"
+                        icon={ShieldAlert}
+                        value={fmtUsd(-(stats.max_drawdown_usd ?? 0))}
+                        sub={stats.max_drawdown_pct != null ? `${stats.max_drawdown_pct.toFixed(1)}%` : undefined}
+                        tone="down"
+                        tooltip="Largest peak-to-trough decline in the cumulative P&L curve."
+                      />
+                      <StatCard
+                        label="Streak"
+                        icon={Flame}
+                        value={stats.current_streak > 0 ? `${stats.current_streak}W` : stats.current_streak < 0 ? `${Math.abs(stats.current_streak)}L` : '—'}
+                        sub={`Best ${stats.max_win_streak ?? 0}W · Worst ${stats.max_loss_streak ?? 0}L`}
+                        tone={stats.current_streak > 0 ? 'up' : stats.current_streak < 0 ? 'down' : 'neutral'}
+                        tooltip="Current consecutive win/loss streak. W=wins, L=losses."
+                      />
+                      <StatCard
+                        label="Best Trade"
+                        icon={Award}
+                        value={fmtUsd(stats.best_trade ?? 0)}
+                        tone="up"
+                        tooltip="Largest single-trade profit."
+                      />
+                      <StatCard
+                        label="Worst Trade"
+                        value={fmtUsd(stats.worst_trade ?? 0)}
+                        tone="down"
+                        tooltip="Largest single-trade loss."
+                      />
+                    </div>
+                  </>
                 )}
 
                 <div className="portfolio-dashboard__bento">
                   <ChartCard
                     title="Equity Curve"
-                    description="Cumulative P&L with optional SPY and BTC benchmarks"
+                    description="Cumulative P&L with drawdown underwater chart, optional SPY & BTC benchmarks"
                     className="portfolio-dashboard__bento-equity"
-                    contentClassName="min-h-[260px]"
+                    contentClassName="min-h-[340px]"
                   >
                     {equityOption ? (
                       <EChartPanel option={equityOption} className="min-h-[260px] flex-1" deps={[period, source]} />
@@ -583,6 +742,24 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
                         <EmptyHeader>
                           <EmptyTitle>Insufficient symbols</EmptyTitle>
                           <EmptyDescription>Need two or more symbols with trades.</EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    )}
+                  </ChartCard>
+
+                  <ChartCard
+                    title="P&L Distribution"
+                    description="Histogram of trade returns — reveals skew and fat tails"
+                    className="portfolio-dashboard__bento-distribution"
+                    contentClassName="min-h-[220px]"
+                  >
+                    {distributionOption ? (
+                      <EChartPanel option={distributionOption} className="min-h-[220px] flex-1" />
+                    ) : (
+                      <Empty className="flex-1 border-0 py-8">
+                        <EmptyHeader>
+                          <EmptyTitle>Not enough trades</EmptyTitle>
+                          <EmptyDescription>Need at least 2 closed trades for distribution.</EmptyDescription>
                         </EmptyHeader>
                       </Empty>
                     )}

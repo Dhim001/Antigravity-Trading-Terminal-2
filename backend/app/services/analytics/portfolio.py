@@ -75,6 +75,80 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
         profit_factor = 0.0
     win_rate = round((win_count / exits) * 100, 1) if exits else 0.0
     expectancy = round(total_pnl / exits, 2) if exits else 0.0
+
+    # --- Sharpe & Sortino ratios (annualised, assuming ~252 trading days) ---
+    sharpe_ratio = None
+    sortino_ratio = None
+    if exits >= 2:
+        mean_r = total_pnl / exits
+        variance = sum((p - mean_r) ** 2 for p in pnls) / (exits - 1)
+        std_dev = math.sqrt(variance) if variance > 0 else 0.0
+        if std_dev > 0:
+            sharpe_ratio = round((mean_r / std_dev) * math.sqrt(252), 2)
+        downside = [p for p in pnls if p < 0]
+        downside_var = (
+            sum((p - mean_r) ** 2 for p in downside) / (exits - 1)
+            if downside else 0.0
+        )
+        downside_dev = math.sqrt(downside_var) if downside_var > 0 else 0.0
+        if downside_dev > 0:
+            sortino_ratio = round((mean_r / downside_dev) * math.sqrt(252), 2)
+
+    # --- Max drawdown (from cumulative P&L curve) ---
+    cum = 0.0
+    peak = 0.0
+    max_dd_usd = 0.0
+    max_dd_pct = 0.0
+    for p in pnls:
+        cum += p
+        if cum > peak:
+            peak = cum
+        dd = peak - cum
+        if dd > max_dd_usd:
+            max_dd_usd = dd
+        dd_pct = (dd / peak * 100.0) if peak > 0 else 0.0
+        if dd_pct > max_dd_pct:
+            max_dd_pct = dd_pct
+
+    # --- Win / loss streaks ---
+    cur_streak = 0
+    max_win_streak = 0
+    max_loss_streak = 0
+    cur_win = 0
+    cur_loss = 0
+    for p in pnls:
+        if p > 0:
+            cur_win += 1
+            cur_loss = 0
+            if cur_win > max_win_streak:
+                max_win_streak = cur_win
+        elif p < 0:
+            cur_loss += 1
+            cur_win = 0
+            if cur_loss > max_loss_streak:
+                max_loss_streak = cur_loss
+        else:
+            cur_win = 0
+            cur_loss = 0
+    # Current streak: positive = wins, negative = losses
+    if pnls:
+        streak_val = 0
+        for p in reversed(pnls):
+            if p > 0:
+                if streak_val < 0:
+                    break
+                streak_val += 1
+            elif p < 0:
+                if streak_val > 0:
+                    break
+                streak_val -= 1
+            else:
+                break
+        cur_streak = streak_val
+
+    best_trade = round(max(pnls), 2) if pnls else 0.0
+    worst_trade = round(min(pnls), 2) if pnls else 0.0
+
     return {
         "trade_count": exits,
         "exit_count": exits,
@@ -85,6 +159,15 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
         "profit_factor": profit_factor,
         "avg_win": round(sum(wins) / len(wins), 2) if wins else 0.0,
         "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0.0,
+        "sharpe_ratio": sharpe_ratio,
+        "sortino_ratio": sortino_ratio,
+        "max_drawdown_pct": round(max_dd_pct, 2),
+        "max_drawdown_usd": round(max_dd_usd, 2),
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "current_streak": cur_streak,
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
     }
 
 
@@ -211,6 +294,58 @@ def get_breakdown_stats(
         row["group_by"] = group_by
         rows.append(row)
     return {"rows": rows, "group_by": group_by, "source": source, "period": period or "ALL"}
+
+
+def get_pnl_distribution(
+    account_history: dict | list,
+    *,
+    period: str | int | None = None,
+    source: SourceFilter = "combined",
+    max_bins: int = 30,
+) -> dict:
+    """Bin trade P&L values into a histogram for distribution analysis."""
+    trades = collect_exit_trades(account_history, period=period, source=source)
+    pnls = [t["pnl"] for t in trades]
+    if len(pnls) < 2:
+        return {"bins": [], "source": source, "period": period or "ALL"}
+
+    lo, hi = min(pnls), max(pnls)
+    if lo == hi:
+        return {
+            "bins": [{"edge": round(lo, 2), "count": len(pnls), "is_positive": lo >= 0}],
+            "source": source,
+            "period": period or "ALL",
+        }
+
+    # Freedman-Diaconis bin width
+    sorted_pnls = sorted(pnls)
+    n = len(sorted_pnls)
+    q1 = sorted_pnls[n // 4]
+    q3 = sorted_pnls[(3 * n) // 4]
+    iqr = q3 - q1
+    if iqr > 0:
+        bin_width = 2.0 * iqr / (n ** (1.0 / 3.0))
+        num_bins = min(max(int(math.ceil((hi - lo) / bin_width)), 5), max_bins)
+    else:
+        num_bins = min(max(int(math.sqrt(n)), 5), max_bins)
+    bin_width = (hi - lo) / num_bins
+
+    bins = []
+    for i in range(num_bins):
+        edge = lo + i * bin_width
+        upper = edge + bin_width
+        if i == num_bins - 1:
+            count = sum(1 for p in pnls if edge <= p <= upper)
+        else:
+            count = sum(1 for p in pnls if edge <= p < upper)
+        bins.append({
+            "edge": round(edge, 2),
+            "upper": round(upper, 2),
+            "count": count,
+            "is_positive": (edge + upper) / 2 >= 0,
+        })
+
+    return {"bins": bins, "source": source, "period": period or "ALL"}
 
 
 def _day_key(ts: float) -> str:

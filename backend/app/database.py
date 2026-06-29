@@ -547,6 +547,21 @@ def get_db_stats():
             stats["archive"]["ticks"] = _row_val(row)
         except Exception:
             pass
+        try:
+            from app.services.data_quality.loop import get_last_report
+            from app.services.data_quality.monitor import data_quality_stats_from_report
+
+            report = get_last_report()
+            if report:
+                stats["data_quality"] = data_quality_stats_from_report(report)
+        except Exception:
+            pass
+        try:
+            from app.services.altdata.store import altdata_counts
+
+            stats["altdata"] = altdata_counts()
+        except Exception:
+            pass
     except Exception:
         stats = {
             "positions_count": 0,

@@ -38,6 +38,7 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("GET", "/api/v1/admin/stats", Action.ADMIN_GET_STATS, None),
     ("POST", "/api/v1/admin/archive/backfill", Action.ADMIN_ARCHIVE_BACKFILL, None),
     ("POST", "/api/v1/admin/archive/export", Action.ADMIN_ARCHIVE_EXPORT, None),
+    ("POST", "/api/v1/admin/archive/import", Action.ADMIN_ARCHIVE_IMPORT, None),
     ("GET", "/api/v1/admin/reconciliation", Action.ADMIN_GET_RECONCILIATION, None),
     ("POST", "/api/v1/admin/reconciliation/reconcile", Action.ADMIN_RECONCILE, None),
     ("POST", "/api/v1/admin/reconciliation/resolve", Action.ADMIN_RESOLVE_AMBIGUOUS, None),

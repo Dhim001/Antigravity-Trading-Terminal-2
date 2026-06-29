@@ -9,11 +9,11 @@ const TONE_CLASS = {
 };
 
 /** Compact stat tile used in history, equity curve, and dock panels */
-export function StatCard({ label, value, sub, icon: Icon, tone = 'neutral' }) {
+export function StatCard({ label, value, sub, icon: Icon, tone = 'neutral', tooltip }) {
   const toneClass = TONE_CLASS[tone] ?? TONE_CLASS.neutral;
 
   return (
-    <Card size="sm" className="min-w-[100px] flex-1 rounded-md py-2 shadow-none">
+    <Card size="sm" className="min-w-[100px] flex-1 rounded-md py-2 shadow-none" title={tooltip}>
       <CardContent className="flex flex-col gap-1 px-3 py-0">
         <div className="flex items-center justify-between">
           <span className="text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">

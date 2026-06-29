@@ -739,12 +739,9 @@ class MassiveFeedService(BaseFeedService):
                         self._trades_received += 1
                         inc("massive_trades_received_total", labels={"market": market})
                         try:
-                            from app.config import ARCHIVE_TICKS_ENABLED
+                            from app.services.archive.tick_writer import record_tick
 
-                            if ARCHIVE_TICKS_ENABLED:
-                                from app.services.archive.tick_writer import record_tick
-
-                                record_tick(sym, price, volume=float(msg.get("s") or 0))
+                            record_tick(sym, price, volume=float(msg.get("s") or 0))
                         except Exception:
                             pass
                         updates[sym] = self.get_market_data(sym)
@@ -761,6 +758,12 @@ class MassiveFeedService(BaseFeedService):
                         self._patch_forming_candle(sym, mid)
                         self._quotes_received += 1
                         inc("massive_quotes_received_total", labels={"market": market})
+                        try:
+                            from app.services.archive.tick_writer import record_tick
+
+                            record_tick(sym, mid, bid=bp, ask=ap, tick_type="quote")
+                        except Exception:
+                            pass
                         updates[sym] = self.get_market_data(sym)
 
                 if updates and self.broadcast_callback:

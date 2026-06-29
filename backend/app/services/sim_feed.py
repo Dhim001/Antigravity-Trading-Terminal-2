@@ -209,10 +209,8 @@ class SimulatedFeedService(BaseFeedService):
         self.order_books[symbol] = self._generate_order_book(symbol, new_price)
         
         try:
-            from app.config import ARCHIVE_TICKS_ENABLED
-            if ARCHIVE_TICKS_ENABLED:
-                from app.services.archive.tick_writer import record_tick
-                record_tick(symbol, new_price, volume=vol_tick)
+            from app.services.archive.tick_writer import record_tick
+            record_tick(symbol, new_price, volume=vol_tick)
         except Exception:
             pass
         

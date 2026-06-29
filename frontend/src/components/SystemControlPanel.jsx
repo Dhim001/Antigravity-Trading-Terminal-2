@@ -657,6 +657,78 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                 )}
               </AdminSection>
 
+              {systemStats.data_quality && (
+                <AdminSection
+                  title="Data Quality"
+                  description="Feed freshness, spread anomalies, and candle gaps. Severe stale feeds auto-pause bots."
+                >
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    <StatCard
+                      label="Status"
+                      icon={Activity}
+                      value={systemStats.data_quality.healthy ? 'Healthy' : 'Issues'}
+                      tone={systemStats.data_quality.healthy ? 'up' : 'down'}
+                      sub={`${systemStats.data_quality.issue_count ?? 0} active issue(s)`}
+                    />
+                    <StatCard
+                      label="Stale (warn)"
+                      icon={Zap}
+                      value={(systemStats.data_quality.stale_warn ?? []).length}
+                      tone="neutral"
+                      sub={(systemStats.data_quality.stale_warn ?? []).join(', ') || '—'}
+                    />
+                    <StatCard
+                      label="Stale (critical)"
+                      icon={Zap}
+                      value={(systemStats.data_quality.stale_severe ?? []).length}
+                      tone={
+                        (systemStats.data_quality.stale_severe ?? []).length > 0 ? 'down' : 'neutral'
+                      }
+                      sub={(systemStats.data_quality.stale_severe ?? []).join(', ') || '—'}
+                    />
+                    {(systemStats.data_quality.spread_alerts ?? []).length > 0 && (
+                      <StatCard
+                        label="Spread alerts"
+                        icon={Activity}
+                        value={systemStats.data_quality.spread_alerts.length}
+                        tone="down"
+                        sub={systemStats.data_quality.spread_alerts.join(', ')}
+                      />
+                    )}
+                    {(systemStats.data_quality.gap_symbols ?? []).length > 0 && (
+                      <StatCard
+                        label="Candle gaps"
+                        icon={Database}
+                        value={systemStats.data_quality.gap_symbols.length}
+                        tone="neutral"
+                        sub={systemStats.data_quality.gap_symbols.join(', ')}
+                      />
+                    )}
+                  </div>
+                </AdminSection>
+              )}
+
+              {systemStats.altdata && (
+                <AdminSection title="Alternative Data" description="Corporate actions and market calendar (Massive/Polygon REST).">
+                  <div className="flex flex-wrap gap-2">
+                    <StatCard
+                      label="Corporate events"
+                      icon={Database}
+                      value={(systemStats.altdata.corporate_events ?? 0).toLocaleString()}
+                      tone="neutral"
+                      sub="Dividends & splits"
+                    />
+                    <StatCard
+                      label="Economic events"
+                      icon={Database}
+                      value={(systemStats.altdata.economic_events ?? 0).toLocaleString()}
+                      tone="neutral"
+                      sub="Market holidays & macro"
+                    />
+                  </div>
+                </AdminSection>
+              )}
+
               <AdminSection title="Database Row Counts" description="Persistent store record totals.">
                 <Card className="admin-panel-card py-0 shadow-none">
                   <CardContent className="p-0">

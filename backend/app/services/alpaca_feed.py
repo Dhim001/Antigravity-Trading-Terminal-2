@@ -170,10 +170,8 @@ class AlpacaFeedService(BaseFeedService):
                                 price = m.get("p")
                                 self._symbols[symbol]["price"] = price
                                 try:
-                                    from app.config import ARCHIVE_TICKS_ENABLED
-                                    if ARCHIVE_TICKS_ENABLED:
-                                        from app.services.archive.tick_writer import record_tick
-                                        record_tick(symbol, float(price), volume=float(m.get("s", 0) or 0))
+                                    from app.services.archive.tick_writer import record_tick
+                                    record_tick(symbol, float(price), volume=float(m.get("s", 0) or 0))
                                 except Exception:
                                     pass
                                 self.order_books[symbol] = self._generate_synthetic_book(symbol, price)

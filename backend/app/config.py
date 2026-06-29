@@ -173,6 +173,24 @@ ARCHIVE_TICKS_ENABLED = os.environ.get("ARCHIVE_TICKS_ENABLED", "false").lower()
 )
 ARCHIVE_TICK_RETENTION_HOURS = int(os.environ.get("ARCHIVE_TICK_RETENTION_HOURS", "24"))
 ARCHIVE_TICK_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_TICK_FLUSH_INTERVAL", "30"))
+ARCHIVE_TICK_BATCH_MAX = int(os.environ.get("ARCHIVE_TICK_BATCH_MAX", "5000"))
+
+# Data quality monitoring (stale feeds, candle gaps, abnormal spreads)
+DATA_QUALITY_ENABLED = os.environ.get("DATA_QUALITY_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+DATA_QUALITY_INTERVAL_SEC = float(os.environ.get("DATA_QUALITY_INTERVAL_SEC", "15"))
+DATA_QUALITY_STALE_WARN_SEC = float(os.environ.get("DATA_QUALITY_STALE_WARN_SEC", "30"))
+DATA_QUALITY_STALE_PAUSE_SEC = float(os.environ.get("DATA_QUALITY_STALE_PAUSE_SEC", "60"))
+DATA_QUALITY_MAX_SPREAD_PCT = float(os.environ.get("DATA_QUALITY_MAX_SPREAD_PCT", "2.0"))
+DATA_QUALITY_GAP_BAR_SEC = int(os.environ.get("DATA_QUALITY_GAP_BAR_SEC", "120"))
+DATA_QUALITY_ACTIVE_PAUSE = os.environ.get("DATA_QUALITY_ACTIVE_PAUSE", "true").lower() in (
+    "1", "true", "yes"
+)
+
+# Alternative data refresh (Massive/Polygon REST)
+ALTDATA_ENABLED = os.environ.get("ALTDATA_ENABLED", "true").lower() in ("1", "true", "yes")
+ALTDATA_REFRESH_INTERVAL_SEC = float(os.environ.get("ALTDATA_REFRESH_INTERVAL_SEC", "3600"))
 
 if ARCHIVE_BACKEND not in ("db", "parquet", "both", ""):
     import logging as _logging

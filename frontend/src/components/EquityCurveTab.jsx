@@ -81,41 +81,98 @@ export default function EquityCurveTab() {
     const lineColor = isProfit ? '#10b981' : '#ef4444';
     const areaColor = isProfit ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)';
 
+    // Compute drawdown % from equity series
+    let peak = lineData[0] ?? 0;
+    const ddData = lineData.map((v) => {
+      if (v > peak) peak = v;
+      if (peak <= 0) return 0;
+      return -Math.max(0, ((peak - v) / peak) * 100);
+    });
+
     const option = {
       backgroundColor: 'transparent',
-      grid: { left: '2%', right: '6%', top: '10%', bottom: '20%' },
+      grid: [
+        { left: '2%', right: '6%', top: '10%', bottom: '32%' },
+        { left: '2%', right: '6%', top: '74%', bottom: '6%' },
+      ],
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross', label: { backgroundColor: '#1e3a8a' } },
       },
-      xAxis: {
-        type: 'category',
-        data: categoryData,
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
-        axisLabel: { color: '#6b7280', fontSize: 9 },
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      legend: {
+        data: ['Equity P&L', 'Drawdown %'],
+        textStyle: { color: '#9ca3af', fontSize: 10 },
       },
-      yAxis: {
-        type: 'value',
-        position: 'right',
-        splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-        axisLabel: { color: '#6b7280', fontSize: 9, formatter: val => `$${val}` },
-      },
-      dataZoom: [{ type: 'inside' }],
-      series: [{
-        name: 'Equity P&L',
-        type: 'line',
-        data: lineData,
-        showSymbol: false,
-        lineStyle: { color: lineColor, width: 2 },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: areaColor },
-            { offset: 1, color: 'transparent' },
-          ]),
+      xAxis: [
+        {
+          type: 'category',
+          data: categoryData,
+          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+          splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+          axisLabel: { color: '#6b7280', fontSize: 9 },
+          gridIndex: 0,
         },
-      }],
+        {
+          type: 'category',
+          data: categoryData,
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          axisLine: { show: false },
+          gridIndex: 1,
+        },
+      ],
+      yAxis: [
+        {
+          type: 'value',
+          position: 'right',
+          splitLine: { show: true, lineStyle: { color: 'rgba(255,255,255,0.02)' } },
+          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+          axisLabel: { color: '#6b7280', fontSize: 9, formatter: val => `$${val}` },
+          gridIndex: 0,
+        },
+        {
+          type: 'value',
+          position: 'right',
+          axisLabel: { color: '#6b7280', fontSize: 8, formatter: (v) => `${v}%` },
+          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } },
+          gridIndex: 1,
+          max: 0,
+        },
+      ],
+      dataZoom: [{ type: 'inside', xAxisIndex: [0, 1] }],
+      series: [
+        {
+          name: 'Equity P&L',
+          type: 'line',
+          data: lineData,
+          showSymbol: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          lineStyle: { color: lineColor, width: 2 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: areaColor },
+              { offset: 1, color: 'transparent' },
+            ]),
+          },
+        },
+        {
+          name: 'Drawdown %',
+          type: 'line',
+          data: ddData,
+          showSymbol: false,
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          lineStyle: { color: '#ef4444', width: 1 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(239,68,68,0.25)' },
+              { offset: 1, color: 'rgba(239,68,68,0.03)' },
+            ]),
+          },
+        },
+      ],
     };
 
     chartInst.current.setOption(option, { notMerge: true });

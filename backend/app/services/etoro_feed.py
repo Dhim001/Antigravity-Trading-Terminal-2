@@ -317,10 +317,16 @@ class EtoroFeedService(BaseFeedService):
             info["price"] = price
 
             try:
-                from app.config import ARCHIVE_TICKS_ENABLED
-                if ARCHIVE_TICKS_ENABLED:
-                    from app.services.archive.tick_writer import record_tick
-                    record_tick(symbol, price)
+                from app.services.archive.tick_writer import record_tick
+                bid = entry.get("bid")
+                ask = entry.get("ask")
+                record_tick(
+                    symbol,
+                    price,
+                    bid=float(bid) if bid else None,
+                    ask=float(ask) if ask else None,
+                    tick_type="quote" if bid and ask else "trade",
+                )
             except Exception:
                 pass
 

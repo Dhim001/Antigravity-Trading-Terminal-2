@@ -159,9 +159,11 @@ async def admin_emergency_stop(ctx: RequestContext) -> None:
 async def admin_reset_risk_kill_switch(ctx: RequestContext) -> None:
     from app.services.bots.portfolio_risk import build_portfolio_snapshot
     from app.services.bots.risk_state_store import reset_kill_switch
+    import app.services.bots.risk_monitor as _rm
 
     snap = build_portfolio_snapshot(ctx.oms)
     reset_kill_switch(current_equity=snap.account_equity)
+    _rm._breach_counter = 0  # clear confirmation counter
     await send_order_result(ctx, {
         "status": "success",
         "message": (
@@ -205,6 +207,20 @@ async def admin_get_stats(ctx: RequestContext) -> None:
         }
     except Exception:
         pass
+
+    if not stats.get("data_quality"):
+        try:
+            feed = getattr(ctx.oms, "feed", None)
+            symbols = list(getattr(feed, "symbols", []) or []) if feed else []
+            if symbols:
+                from app.services.data_quality.monitor import (
+                    evaluate_symbols,
+                    data_quality_stats_from_report,
+                )
+
+                stats["data_quality"] = data_quality_stats_from_report(evaluate_symbols(symbols))
+        except Exception:
+            pass
 
     await send_system_stats(ctx, stats)
 
@@ -264,6 +280,48 @@ async def admin_archive_export(ctx: RequestContext) -> None:
             "status": "success",
             "message": f"Exported {result.get('total_rows', 0)} rows to {ARCHIVE_PARQUET_DIR}",
             "archive_export": result,
+        })
+    except Exception as exc:
+        await send_order_result(ctx, {"status": "error", "message": str(exc)})
+
+
+@route(Action.ADMIN_ARCHIVE_IMPORT, tags=["admin"])
+async def admin_archive_import(ctx: RequestContext) -> None:
+    """Import user CSV/Parquet OHLCV files into market_bars_1m."""
+    from app.services.archive.import_user_data import run_user_import
+
+    msg = ctx.message
+    imports = msg.get("imports")
+    if not imports:
+        symbol = msg.get("symbol")
+        path = msg.get("path") or msg.get("file")
+        if symbol and path:
+            imports = [{"symbol": symbol, "path": path, "format": msg.get("format"), "force": msg.get("force")}]
+    if not imports or not isinstance(imports, list):
+        await send_order_result(ctx, {"status": "error", "message": "imports[] or symbol+path required"})
+        return
+
+    try:
+        result = run_user_import(
+            imports,
+            source=str(msg.get("source") or "USER_IMPORT"),
+            skip_existing=not bool(msg.get("force")),
+        )
+        errors = [d for d in result.get("imports", []) if d.get("error")]
+        rows = int(result.get("rows_written") or 0)
+        if errors and rows == 0:
+            status = "error"
+            message = errors[0].get("error", "Import failed")
+        elif errors:
+            status = "success"
+            message = f"User import wrote {rows} rows with {len(errors)} error(s)"
+        else:
+            status = "success"
+            message = f"User import wrote {rows} rows"
+        await send_order_result(ctx, {
+            "status": status,
+            "message": message,
+            "archive_import": result,
         })
     except Exception as exc:
         await send_order_result(ctx, {"status": "error", "message": str(exc)})

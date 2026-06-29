@@ -20,6 +20,7 @@ export const Action = Object.freeze({
   ADMIN_GET_STATS: 'admin_get_stats',
   ADMIN_ARCHIVE_BACKFILL: 'admin_archive_backfill',
   ADMIN_ARCHIVE_EXPORT: 'admin_archive_export',
+  ADMIN_ARCHIVE_IMPORT: 'admin_archive_import',
   ADMIN_GET_RECONCILIATION: 'admin_get_reconciliation',
   ADMIN_RECONCILE: 'admin_reconcile',
   ADMIN_RESOLVE_AMBIGUOUS: 'admin_resolve_ambiguous',

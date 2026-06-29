@@ -33,22 +33,47 @@ class DrawdownSnapshot:
     kill_switch_tripped_at: float | None
 
 
+# Number of consecutive risk-monitor ticks a drawdown must persist before the
+# kill switch actually fires.  This prevents transient mark-to-market dips
+# (e.g. one bad tick, a single open trade fluctuating) from tripping the switch.
+_BREACH_CONFIRM_TICKS = 3
+_breach_counter: int = 0
+
+
 def compute_drawdown(oms) -> DrawdownSnapshot:
     snapshot = build_portfolio_snapshot(oms)
     total_equity = max(float(snapshot.account_equity), 0.0)
-    # Use cash (realised) equity for drawdown tracking, not total equity.
-    # Total equity includes unrealised position mark-to-market which inflates
-    # the peak and causes false kill-switch trips when winning trades close
-    # below an intra-trade high-water mark.
-    cash_equity = max(total_equity - float(snapshot.gross_exposure), 0.0)
-    # Only ratchet peak on cash equity — immune to unrealised position swings.
-    peak = store.update_peak_if_higher(cash_equity)
-    dd_pct = ((peak - cash_equity) / peak * 100.0) if peak > 0 else 0.0
+    gross = float(snapshot.gross_exposure)
+
+    # --- Peak tracking ---
+    # Only ratchet the peak upward when the portfolio is flat (no open
+    # positions).  While positions are open, mark-to-market swings can
+    # inflate total_equity above the "real" high-water mark.  When the
+    # position eventually closes, equity may drop back below that
+    # inflated peak — causing a false drawdown signal.
+    #
+    # By only updating the peak when gross == 0 (all positions closed),
+    # we ensure the peak reflects *realised* equity — money that is
+    # actually locked in.
+    is_flat = gross < 1.0  # effectively zero exposure
+    if is_flat:
+        peak = store.update_peak_if_higher(total_equity)
+    else:
+        peak = store.get_equity_peak()
+        # If no peak has ever been recorded (first run), initialise it
+        # to current equity so we don't start with peak=None / 0.
+        if peak is None or peak <= 0:
+            store.set_equity_peak(total_equity)
+            peak = total_equity
+
+    dd_pct = ((peak - total_equity) / peak * 100.0) if peak > 0 else 0.0
+    dd_pct = max(dd_pct, 0.0)
+
     return DrawdownSnapshot(
         account_equity=round(total_equity, 2),
-        cash_equity=round(cash_equity, 2),
+        cash_equity=round(total_equity - gross, 2),
         equity_peak=round(peak, 2),
-        current_drawdown_pct=round(max(dd_pct, 0.0), 2),
+        current_drawdown_pct=round(dd_pct, 2),
         max_drawdown_pct=RISK_MAX_DRAWDOWN_PCT,
         kill_switch_enabled=RISK_KILL_SWITCH_ENABLED,
         kill_switch_tripped=store.is_kill_switch_tripped(),
@@ -106,32 +131,59 @@ class RiskMonitor:
         if store.is_kill_switch_tripped():
             return snapshot
 
+        global _breach_counter
+
         if snapshot.current_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
-            store.trip_kill_switch()
-            stopped = await bot_manager.stop_all_bots()
-            reason = (
-                f"Drawdown kill switch: cash equity ${snapshot.cash_equity:,.2f} is "
-                f"{snapshot.current_drawdown_pct:.1f}% below peak "
-                f"${snapshot.equity_peak:,.2f} (limit {RISK_MAX_DRAWDOWN_PCT:.1f}%). "
-                f"Stopped {stopped} bot(s)."
+            _breach_counter += 1
+            logger.warning(
+                "Drawdown %.1f%% >= limit %.1f%% — breach tick %d/%d "
+                "(equity $%s, peak $%s).",
+                snapshot.current_drawdown_pct,
+                RISK_MAX_DRAWDOWN_PCT,
+                _breach_counter,
+                _BREACH_CONFIRM_TICKS,
+                f"{snapshot.account_equity:,.2f}",
+                f"{snapshot.equity_peak:,.2f}",
             )
-            logger.error(reason)
-            await event_publish.publish(
-                channels.EMERGENCY_STOP,
-                {
-                    "source": "drawdown_kill_switch",
-                    "drawdown_pct": snapshot.current_drawdown_pct,
-                    "equity": snapshot.account_equity,
-                    "peak": snapshot.equity_peak,
-                },
-            )
-            await event_publish.publish(channels.BOT_RELOAD, {})
-            if bot_manager.broadcast_cb:
-                await publish_bots_update(
-                    bot_manager.broadcast_cb,
-                    bot_manager.list_bots_public(),
+            if _breach_counter >= _BREACH_CONFIRM_TICKS:
+                _breach_counter = 0
+                store.trip_kill_switch()
+                stopped = await bot_manager.stop_all_bots()
+                reason = (
+                    f"Drawdown kill switch: equity ${snapshot.account_equity:,.2f} is "
+                    f"{snapshot.current_drawdown_pct:.1f}% below peak "
+                    f"${snapshot.equity_peak:,.2f} (limit {RISK_MAX_DRAWDOWN_PCT:.1f}%). "
+                    f"Confirmed over {_BREACH_CONFIRM_TICKS} consecutive checks. "
+                    f"Stopped {stopped} bot(s)."
                 )
-            snapshot.kill_switch_tripped = True
-            snapshot.kill_switch_tripped_at = store.get_kill_switch_tripped_at()
+                logger.error(reason)
+                await event_publish.publish(
+                    channels.EMERGENCY_STOP,
+                    {
+                        "source": "drawdown_kill_switch",
+                        "drawdown_pct": snapshot.current_drawdown_pct,
+                        "equity": snapshot.account_equity,
+                        "peak": snapshot.equity_peak,
+                    },
+                )
+                await event_publish.publish(channels.BOT_RELOAD, {})
+                if bot_manager.broadcast_cb:
+                    await publish_bots_update(
+                        bot_manager.broadcast_cb,
+                        bot_manager.list_bots_public(),
+                    )
+                snapshot.kill_switch_tripped = True
+                snapshot.kill_switch_tripped_at = store.get_kill_switch_tripped_at()
+        else:
+            # Drawdown recovered below limit — reset confirmation counter.
+            if _breach_counter > 0:
+                logger.info(
+                    "Drawdown recovered to %.1f%% (< %.1f%%) — "
+                    "resetting breach counter (was %d).",
+                    snapshot.current_drawdown_pct,
+                    RISK_MAX_DRAWDOWN_PCT,
+                    _breach_counter,
+                )
+            _breach_counter = 0
 
         return snapshot

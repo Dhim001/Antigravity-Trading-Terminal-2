@@ -65,3 +65,45 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_time ON market_ticks (symbol, time_ms)"
     )
+
+    def _safe_alter_tick(col_sql: str) -> None:
+        from app.database import _safe_alter as _sa
+        _sa(cursor, col_sql)
+
+    _safe_alter_tick("ALTER TABLE market_ticks ADD COLUMN bid REAL DEFAULT NULL")
+    _safe_alter_tick("ALTER TABLE market_ticks ADD COLUMN ask REAL DEFAULT NULL")
+    _safe_alter_tick("ALTER TABLE market_ticks ADD COLUMN spread REAL DEFAULT NULL")
+    _safe_alter_tick("ALTER TABLE market_ticks ADD COLUMN tick_type TEXT DEFAULT 'trade'")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economic_events (
+            event_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            scheduled_at TEXT NOT NULL,
+            impact TEXT,
+            country TEXT,
+            source TEXT NOT NULL,
+            raw_json TEXT,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_economic_events_sched ON economic_events (scheduled_at)"
+    )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS corporate_events (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_date TEXT NOT NULL,
+            title TEXT,
+            metadata_json TEXT,
+            source TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_corporate_events_sym ON corporate_events (symbol, event_date)"
+    )

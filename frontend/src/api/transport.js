@@ -95,6 +95,11 @@ export const HTTP_ROUTES = Object.freeze({
     path: () => '/api/v1/admin/archive/export',
     body: (p) => p,
   },
+  [Action.ADMIN_ARCHIVE_IMPORT]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/archive/import',
+    body: (p) => p,
+  },
   [Action.ADMIN_GET_RECONCILIATION]: {
     method: 'GET',
     path: () => '/api/v1/admin/reconciliation',

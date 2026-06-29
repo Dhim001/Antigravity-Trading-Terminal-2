@@ -8416,6 +8416,15 @@ body {
   padding-block: 0;
 }
 
+.portfolio-dashboard__stats--secondary {
+  margin-top: calc(var(--pd-gap) * 0.5);
+}
+
+.portfolio-dashboard__stats--secondary [data-slot="card"] {
+  background: color-mix(in oklab, var(--bg-secondary) 35%, transparent);
+  border-color: color-mix(in oklab, var(--border-color) 55%, transparent);
+}
+
 .portfolio-dashboard__bento {
   display: grid;
   gap: var(--pd-gap);
@@ -8423,7 +8432,7 @@ body {
   grid-template-areas:
     "equity equity equity equity equity equity equity equity alloc alloc alloc alloc"
     "equity equity equity equity equity equity equity equity risk risk risk risk"
-    "corr corr corr corr corr corr corr corr corr corr corr corr";
+    "corr corr corr corr corr corr corr corr dist dist dist dist";
 }
 
 .portfolio-dashboard__bento-equity {
@@ -8450,6 +8459,11 @@ body {
 
 .portfolio-dashboard__bento-correlation {
   grid-area: corr;
+  min-height: 0;
+}
+
+.portfolio-dashboard__bento-distribution {
+  grid-area: dist;
   min-height: 0;
 }
 

@@ -105,10 +105,8 @@ class BinanceFeedService(BaseFeedService):
                             close_price = float(k.get("c"))
                             self._symbols[symbol]["price"] = close_price
                             try:
-                                from app.config import ARCHIVE_TICKS_ENABLED
-                                if ARCHIVE_TICKS_ENABLED:
-                                    from app.services.archive.tick_writer import record_tick
-                                    record_tick(symbol, close_price, volume=float(k.get("v", 0)))
+                                from app.services.archive.tick_writer import record_tick
+                                record_tick(symbol, close_price, volume=float(k.get("v", 0)))
                             except Exception:
                                 pass
                             

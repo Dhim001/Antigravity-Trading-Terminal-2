@@ -15,13 +15,14 @@ from app.services.analytics.portfolio import (
     get_breakdown_stats,
     get_correlation_matrix,
     get_daily_pnl_calendar,
+    get_pnl_distribution,
     get_portfolio_equity_curve,
     get_risk_utilization,
 )
 
 _VALID_REPORTS = frozenset({
     "equity", "breakdown", "calendar", "allocation",
-    "correlation", "bot_rankings", "risk", "benchmarks", "exposure", "dashboard",
+    "correlation", "bot_rankings", "risk", "benchmarks", "exposure", "distribution", "dashboard",
 })
 _VALID_SOURCES = frozenset({"bot", "account", "combined"})
 _VALID_GROUPS = frozenset({"strategy", "symbol", "timeframe"})
@@ -99,6 +100,10 @@ async def analytics_get(ctx: RequestContext) -> None:
             data["risk"] = get_risk_utilization(ctx.oms)
         if report in ("exposure", "dashboard"):
             data["exposure"] = get_exposure_heatmap(ctx.oms)
+        if report in ("distribution", "dashboard"):
+            data["distribution"] = get_pnl_distribution(
+                account_history, period=period, source=source,
+            )
         if report == "benchmarks":
             symbols = ctx.message.get("symbols")
             if isinstance(symbols, str):

@@ -56,6 +56,12 @@ class ArchiveWriter:
             return
         row = _bar_row(symbol, bar, source)
         self._buffer[(row["symbol"], row["time"])] = row
+        try:
+            from app.services.data_quality import registry
+
+            registry.note_bar(symbol, int(row["time"]))
+        except Exception:
+            pass
 
     def maybe_flush(self) -> int:
         if not ARCHIVE_ENABLED or not self._buffer:
