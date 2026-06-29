@@ -52,22 +52,38 @@ export const FIELD_META = {
   lookback_ticks: { label: 'Lookback ticks', group: 'tick', kind: 'integer' },
   tick_cooldown_sec: { label: 'Cooldown', group: 'tick', kind: 'seconds' },
   module: { label: 'Custom module', group: 'other', kind: 'text' },
+  direction_mode: { label: 'Trade direction', group: 'risk', kind: 'direction_mode', hint: 'LONG_ONLY, SHORT_ONLY, or BOTH. Controls which trade directions are allowed.' },
+  filter_strategy: { label: 'Filter strategy', group: 'other', kind: 'text', hint: 'Gate signals through a secondary strategy (e.g. SUPERTREND_ADX).' },
+  filter_mode: { label: 'Filter mode', group: 'other', kind: 'text', hint: 'How the filter gates signals (TREND_GATE).' },
+  ob_lookback: { label: 'OB lookback', group: 'indicators', kind: 'integer', hint: 'Bars to scan for order blocks.' },
+  fvg_min_gap_pct: { label: 'FVG min gap %', group: 'indicators', kind: 'decimal', hint: 'Minimum gap as % of price for a fair value gap.' },
+  sweep_lookback: { label: 'Sweep lookback', group: 'indicators', kind: 'integer', hint: 'Rolling window for liquidity sweep detection.' },
+  breakout_length: { label: 'Entry channel', group: 'indicators', kind: 'integer', hint: 'Donchian entry channel lookback.' },
+  exit_length: { label: 'Exit channel', group: 'indicators', kind: 'integer', hint: 'Donchian exit channel lookback (shorter = faster exit).' },
+  atr_confirm_mult: { label: 'ATR confirm mult', group: 'indicators', kind: 'decimal', hint: 'ATR must be ≥ this × median ATR to confirm breakout.' },
+  spread_pct: { label: 'Spread %', group: 'indicators', kind: 'decimal', hint: 'Minimum bid-ask spread to capture (0.002 = 0.2%).' },
+  max_skew: { label: 'Max inventory skew', group: 'risk', kind: 'decimal', hint: 'Maximum inventory imbalance before one-sided quoting.' },
+  vol_shutdown_mult: { label: 'Vol shutdown mult', group: 'risk', kind: 'decimal', hint: 'Shut down MM when ATR > this × median (too volatile).' },
+  inventory_target: { label: 'Inventory target', group: 'risk', kind: 'decimal', hint: 'Target inventory level (0 = neutral).' },
 };
 
 const COMMON_FIELD_KEYS = ['trailing_stop_percent', 'tp_mode', 'take_profit_percent'];
 
 export const STRATEGY_FIELD_KEYS = {
-  MACD_RSI: ['rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
-  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold'],
+  MACD_RSI: ['rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
+  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold', 'direction_mode'],
   BRS_SCALPING: [
     'bb_length', 'bb_std', 'rsi_length', 'stoch_k', 'stoch_d', 'stoch_smooth',
-    'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length',
+    'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length', 'direction_mode',
   ],
-  VWAP_PULLBACK: ['atr_length'],
-  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length'],
+  VWAP_PULLBACK: ['atr_length', 'direction_mode'],
+  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
   TICK_MOMENTUM: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_MEAN_REVERT: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_BREAKOUT: ['lookback_ticks', 'tick_cooldown_sec'],
+  ICT_SMC: ['ob_lookback', 'fvg_min_gap_pct', 'sweep_lookback', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy'],
+  DONCHIAN_BREAKOUT: ['breakout_length', 'exit_length', 'atr_confirm_mult', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy'],
+  MARKET_MAKING: ['spread_pct', 'max_skew', 'vol_shutdown_mult', 'inventory_target', 'atr_length', 'direction_mode'],
 };
 
 export const TP_MODE_OPTIONS = [
@@ -98,6 +114,7 @@ function inferGroup(key) {
 function getInputType(key, meta) {
   if (meta?.readOnly) return 'readonly';
   if (key === 'tp_mode') return 'select';
+  if (key === 'direction_mode') return 'select';
   if (meta?.kind === 'boolean') return 'checkbox';
   if (meta?.kind === 'confidence') return 'range';
   if (['percent', 'integer', 'decimal', 'seconds', 'price'].includes(meta?.kind)) return 'number';
@@ -232,7 +249,8 @@ export function buildConfigDraft(config, fields) {
     if (f.input === 'checkbox') {
       draft[f.key] = Boolean(v);
     } else if (f.input === 'select') {
-      draft[f.key] = v ?? 'percent';
+      const selectDefault = f.key === 'direction_mode' ? 'LONG_ONLY' : 'percent';
+      draft[f.key] = v ?? selectDefault;
     } else if (f.input === 'number' || f.input === 'range') {
       draft[f.key] = v != null && v !== '' ? String(v) : '';
     } else {
@@ -312,6 +330,10 @@ export function formatBotConfigValue(key, value, meta = fieldMeta(key)) {
   if (kind === 'tp_mode') {
     const mode = String(value).toLowerCase();
     return { text: TP_MODE_LABELS[mode] ?? humanizeKey(mode), tone: 'default' };
+  }
+  if (kind === 'direction_mode') {
+    const DIRECTION_LABELS = { LONG_ONLY: 'Long only', SHORT_ONLY: 'Short only', BOTH: 'Both' };
+    return { text: DIRECTION_LABELS[String(value).toUpperCase()] ?? String(value), tone: 'default' };
   }
   if (kind === 'confidence' && typeof value === 'number') {
     return { text: `${Math.round(value * 100)}%`, tone: 'default' };

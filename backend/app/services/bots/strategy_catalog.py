@@ -46,6 +46,27 @@ _BAR_BUILTIN = [
         "category": "agent",
         "execution_mode": "BAR_CLOSE",
     },
+    {
+        "id": "ICT_SMC",
+        "name": "ICT Smart Money Concepts",
+        "description": "Order blocks, fair value gaps, and liquidity sweeps — popular SMC methodology.",
+        "category": "smc",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "DONCHIAN_BREAKOUT",
+        "name": "Donchian Breakout",
+        "description": "Classic channel breakout with ATR expansion filter for momentum confirmation.",
+        "category": "breakout",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "MARKET_MAKING",
+        "name": "Market Making (Spread Capture)",
+        "description": "Hummingbot-style spread capture with inventory skew management for crypto pairs.",
+        "category": "market_making",
+        "execution_mode": "BAR_CLOSE",
+    },
 ]
 
 _TICK_BUILTIN = [

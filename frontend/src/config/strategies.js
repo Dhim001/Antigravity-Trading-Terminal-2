@@ -5,6 +5,9 @@ import {
   Cpu,
   Target,
   TrendingUp,
+  Coins,
+  Landmark,
+  Zap,
 } from 'lucide-react';
 
 /** Visual + copy metadata for built-in bot strategies (mirrors backend strategy keys). */
@@ -48,6 +51,30 @@ export const STRATEGY_CATALOG = Object.freeze({
     color: '#a78bfa',
     tagline: 'Hybrid rule+LLM chart analysis',
     style: 'agent',
+  },
+  ICT_SMC: {
+    label: 'ICT Smart Money',
+    shortLabel: 'ICT',
+    icon: Landmark,
+    color: '#f43f5e',
+    tagline: 'Order blocks, FVGs & liquidity sweeps',
+    style: 'smc',
+  },
+  DONCHIAN_BREAKOUT: {
+    label: 'Donchian Breakout',
+    shortLabel: 'Donchian',
+    icon: Zap,
+    color: '#06b6d4',
+    tagline: 'Channel breakout with ATR expansion',
+    style: 'breakout',
+  },
+  MARKET_MAKING: {
+    label: 'Market Making',
+    shortLabel: 'MM',
+    icon: Coins,
+    color: '#eab308',
+    tagline: 'Spread capture with inventory skew',
+    style: 'market-making',
   },
 });
 

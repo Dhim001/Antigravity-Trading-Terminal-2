@@ -13,7 +13,12 @@ from app.services.runtime import system_state
 logger = logging.getLogger(__name__)
 
 
-async def run_startup_recovery(oms, bot_manager) -> dict[str, Any]:
+async def run_startup_recovery(
+    oms,
+    bot_manager,
+    *,
+    restore_checkpoint: bool = True,
+) -> dict[str, Any]:
     """
     Scan fill journal and ambiguous orders before bots trade.
     Enters safe mode after unclean shutdown or unresolved discrepancies.
@@ -24,7 +29,6 @@ async def run_startup_recovery(oms, bot_manager) -> dict[str, Any]:
     ambiguous_count = len(list_ambiguous_orders(include_resolved=False))
 
     broker_reconciled = 0
-    journal_confirmed = 0
 
     if incomplete and oms is not None and hasattr(oms, "get_trade_history"):
         try:
@@ -51,7 +55,7 @@ async def run_startup_recovery(oms, bot_manager) -> dict[str, Any]:
                 )
 
     incomplete_final = signal_ledger.list_incomplete_signals()
-    journal_confirmed = len(incomplete) - len(incomplete_final)
+    journal_reconciled = max(0, len(incomplete) - len(incomplete_final))
 
     should_safe_mode = unclean or bool(incomplete_final) or ambiguous_after > 0
 
@@ -80,17 +84,21 @@ async def run_startup_recovery(oms, bot_manager) -> dict[str, Any]:
             reason,
             paused,
         )
-    else:
+    elif restore_checkpoint:
         checkpoint = system_state.load_bot_runtime_checkpoint()
         if checkpoint:
-            bot_manager.restore_runtime_checkpoint(checkpoint)
+            restored = bot_manager.restore_runtime_checkpoint(checkpoint)
             system_state.clear_bot_runtime_checkpoint()
-            logger.info("Restored bot runtime checkpoint for %d bot(s).", len(checkpoint))
+            logger.info(
+                "Restored bot runtime checkpoint for %d bot(s) (%d resumed).",
+                len(checkpoint),
+                restored,
+            )
 
     result = {
         "unclean_shutdown": unclean,
         "orphaned_claims": orphaned,
-        "journal_reconciled": journal_confirmed,
+        "journal_reconciled": journal_reconciled,
         "broker_reconciled": broker_reconciled,
         "incomplete_remaining": len(incomplete_final),
         "ambiguous_orders": ambiguous_after,

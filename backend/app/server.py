@@ -29,7 +29,7 @@ from app.config import (
     LOG_JSON,
 )
 from app.database import init_db
-from app.api.http_server import run_http_server
+from app.api.http_server import start_http_server
 from app.api.outbound import (
     account_update,
     bots_update,
@@ -399,7 +399,11 @@ async def main():
     await state.feed.start()
     await state.oms.initialize()
 
-    recovery = await run_startup_recovery(state.oms, state.bot_manager)
+    recovery = await run_startup_recovery(
+        state.oms,
+        state.bot_manager,
+        restore_checkpoint=runs_bot_engine_inline(),
+    )
     if recovery.get("safe_mode"):
         logging.warning("Server started in safe mode — all bots paused until operator confirms.")
 
@@ -419,7 +423,7 @@ async def main():
             tasks = [asyncio.create_task(heartbeat_loop())]
 
             if HTTP_ENABLED:
-                tasks.append(asyncio.create_task(run_http_server(state)))
+                start_http_server(state, shutdown_event)
 
             if runs_bot_engine_inline():
                 if not state.bot_engine_uses_bar_hooks:
@@ -481,10 +485,5 @@ async def _shutdown() -> None:
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Server stopping (graceful shutdown)...")
-        try:
-            asyncio.run(_shutdown())
-        except Exception:
-            pass
+    except (KeyboardInterrupt, SystemExit):
         logging.info("Server stopped.")

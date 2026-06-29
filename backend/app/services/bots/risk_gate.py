@@ -1,5 +1,6 @@
 """Pre-trade risk checks for algo bot orders."""
 
+import json
 from dataclasses import dataclass
 
 from app.config import (
@@ -161,8 +162,22 @@ class RiskGate:
 
         if side == "BUY" and position_size > 0:
             return RiskDecision(False, "Already long — skip entry.")
-        if side == "SELL" and position_size <= 0:
+
+        bot_cfg = bot.get("config") or {}
+        if isinstance(bot_cfg, str):
+            try:
+                bot_cfg = json.loads(bot_cfg) if bot_cfg else {}
+            except (json.JSONDecodeError, TypeError):
+                bot_cfg = {}
+
+        direction_mode = bot_cfg.get("direction_mode", "LONG_ONLY").upper()
+        if direction_mode not in ("LONG_ONLY", "SHORT_ONLY", "BOTH"):
+            direction_mode = "LONG_ONLY"
+
+        if direction_mode == "LONG_ONLY" and side == "SELL" and position_size <= 0:
             return RiskDecision(False, "Long-only mode — no short entry.")
+        if direction_mode == "SHORT_ONLY" and side == "BUY" and position_size >= 0:
+            return RiskDecision(False, "Short-only mode — no long entry.")
 
         if notional < BOT_MIN_NOTIONAL:
             return RiskDecision(

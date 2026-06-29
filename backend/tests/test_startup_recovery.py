@@ -1,5 +1,6 @@
 """Tests for startup recovery and safe mode."""
 
+import os
 import unittest
 
 from app.database import get_connection, init_db
@@ -16,7 +17,6 @@ class TestStartupRecovery(unittest.TestCase):
     def setUp(self):
         signal_ledger.clear_signal_ledger()
         system_state.clear_safe_mode()
-        system_state.mark_shutdown_clean()
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM system_runtime")
@@ -29,9 +29,17 @@ class TestStartupRecovery(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def test_unclean_shutdown_detected(self):
+    def tearDown(self):
+        if "TERMINAL_ROLE" in os.environ:
+            del os.environ["TERMINAL_ROLE"]
+
+    def test_unclean_shutdown_is_role_scoped(self):
+        os.environ["TERMINAL_ROLE"] = "server"
         system_state.mark_shutdown_clean()
         system_state.mark_process_starting()
+        self.assertFalse(system_state.was_unclean_shutdown())
+
+        os.environ["TERMINAL_ROLE"] = "worker"
         self.assertFalse(system_state.was_unclean_shutdown())
 
         system_state.mark_process_starting()

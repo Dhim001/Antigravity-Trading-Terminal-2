@@ -327,6 +327,9 @@ async def admin_confirm_safe_mode(ctx: RequestContext) -> None:
     from app.services.runtime.startup_recovery import confirm_safe_mode
 
     result = confirm_safe_mode()
+    ctx.bot_manager.load_bots_from_db()
+    await broadcast_bots_update(ctx)
+    await event_publish.publish(channels.BOT_RELOAD, {})
     await send_order_result(ctx, {
         "status": "success",
         "message": "Safe mode cleared — resume bots manually when ready",

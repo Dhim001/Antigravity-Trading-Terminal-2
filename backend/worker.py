@@ -84,7 +84,7 @@ async def main():
     await feed.start()
     await oms.initialize()
 
-    recovery = await run_startup_recovery(oms, bot_manager)
+    recovery = await run_startup_recovery(oms, bot_manager, restore_checkpoint=True)
     if recovery.get("safe_mode"):
         logger.warning("Worker started in safe mode — all bots paused until operator confirms.")
 

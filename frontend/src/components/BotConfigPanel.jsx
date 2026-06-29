@@ -23,18 +23,32 @@ import {
   getEditableConfigFields,
 } from '@/lib/botConfigDisplay';
 
+const DIRECTION_MODE_OPTIONS = [
+  { value: 'LONG_ONLY', label: 'Long only' },
+  { value: 'SHORT_ONLY', label: 'Short only' },
+  { value: 'BOTH', label: 'Both (long & short)' },
+];
+
 function ConfigField({ field, value, strategy, disabled, onChange }) {
   const id = `bot-config-${field.key}`;
 
   if (field.input === 'select') {
     const strat = (strategy || '').toUpperCase();
-    const options = TP_MODE_OPTIONS.filter(
-      (opt) => !opt.strategies || opt.strategies.includes(strat),
-    );
+    let options;
+    let defaultValue;
+    if (field.key === 'direction_mode') {
+      options = DIRECTION_MODE_OPTIONS;
+      defaultValue = 'LONG_ONLY';
+    } else {
+      options = TP_MODE_OPTIONS.filter(
+        (opt) => !opt.strategies || opt.strategies.includes(strat),
+      );
+      defaultValue = 'percent';
+    }
     return (
       <div className="bot-config-field">
         <Label htmlFor={id} className="bot-config-field__label">{field.label}</Label>
-        <Select value={value || 'percent'} onValueChange={(v) => onChange(field.key, v)} disabled={disabled}>
+        <Select value={value || defaultValue} onValueChange={(v) => onChange(field.key, v)} disabled={disabled}>
           <SelectTrigger id={id} className="bot-config-field__input h-8 w-full text-xs">
             <SelectValue />
           </SelectTrigger>

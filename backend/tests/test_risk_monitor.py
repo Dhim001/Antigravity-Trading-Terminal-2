@@ -97,6 +97,56 @@ class RiskMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.current_drawdown_pct, 5.0)
         self.assertFalse(snap.kill_switch_tripped)
 
+    @patch("app.services.bots.risk_monitor.RISK_MAX_DRAWDOWN_PCT", 15.0)
+    @patch("app.services.bots.risk_monitor.build_portfolio_snapshot")
+    def test_unrealized_gains_dont_inflate_peak(self, mock_snapshot):
+        """Winning trades should not trip the kill switch.
+
+        Scenario:
+        1. Start with $10,000 cash, no positions.
+        2. Bot buys — cash=0, gross=10,000, equity=10,000.
+        3. Price spikes — gross=13,500, equity=13,500 (unrealized).
+        4. Bot sells at profit — cash=11,500, gross=0, equity=11,500.
+
+        OLD BUG: peak ratcheted to $13,500 at step 3, then step 4 shows
+        14.8% drawdown → false kill switch trip despite a $1,500 win.
+
+        FIX: peak tracks cash equity (ignoring unrealized), so peak stays
+        at $10,000 and step 4 shows 0% drawdown (cash rose).
+        """
+        from app.services.bots.portfolio_risk import PortfolioSnapshot
+
+        # Step 1: initial state, $10,000 cash
+        store.set_equity_peak(10_000)
+
+        # Step 3: mid-trade, price spiked — gross exposure inflated
+        mock_snapshot.return_value = PortfolioSnapshot(
+            account_equity=13_500,  # cash(0) + gross(13,500)
+            gross_exposure=13_500,
+            group_exposure={},
+            symbol_exposure={},
+        )
+        snap_mid = compute_drawdown(_FakeOms(0))
+        # Cash equity is 0 while in position — peak should NOT ratchet up
+        self.assertEqual(snap_mid.cash_equity, 0.0)
+        # Peak stays at $10,000 (the cash peak, not the inflated total)
+        self.assertEqual(snap_mid.equity_peak, 10_000)
+
+        # Step 4: trade closed profitably — cash = $11,500
+        mock_snapshot.return_value = PortfolioSnapshot(
+            account_equity=11_500,  # cash(11,500) + gross(0)
+            gross_exposure=0,
+            group_exposure={},
+            symbol_exposure={},
+        )
+        snap_after = compute_drawdown(_FakeOms(11_500))
+        # Cash equity is $11,500 — new high, peak should ratchet up
+        self.assertEqual(snap_after.cash_equity, 11_500)
+        self.assertEqual(snap_after.equity_peak, 11_500)
+        # Drawdown should be 0% — we're at a new cash high
+        self.assertEqual(snap_after.current_drawdown_pct, 0.0)
+        self.assertFalse(snap_after.kill_switch_tripped)
+
 
 if __name__ == "__main__":
     unittest.main()

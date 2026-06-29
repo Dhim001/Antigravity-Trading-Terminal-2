@@ -341,7 +341,7 @@ class BacktesterService:
         daily_pnl = 0.0
         daily_pnl_day: str | None = None
         halted = False
-        bot_stub = {"status": "RUNNING", "allocation": allocation}
+        bot_stub = {"status": "RUNNING", "allocation": allocation, "config": cfg}
         blocked_entries = 0
         filter_rejects: dict[str, int] = {
             "min_score": 0,
@@ -510,7 +510,7 @@ class BacktesterService:
 
         def _try_short_entry(signal: str, signal_data: dict, row: dict, bar_time) -> None:
             nonlocal position, last_signal_bar_time, blocked_entries, equity, total_fees
-            if not research or signal != "SELL":
+            if (not research and halted) or signal != "SELL":
                 return
             if bar_time is not None and last_signal_bar_time == bar_time:
                 return
@@ -538,7 +538,22 @@ class BacktesterService:
                     strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True)
                 ),
             )
-            qty = min(qty, allocation / max(current_price, 1e-9))
+            if research:
+                qty = min(qty, allocation / max(current_price, 1e-9))
+            else:
+                decision = self._risk_gate.validate_trade(
+                    bot_stub,
+                    "SELL",
+                    qty,
+                    current_price,
+                    is_exit=False,
+                    daily_pnl=daily_pnl,
+                    position_size=0.0,
+                )
+                if not decision.allowed:
+                    blocked_entries += 1
+                    return
+                qty = decision.quantity if decision.quantity is not None else qty
             if qty < _MIN_QTY:
                 blocked_entries += 1
                 return
@@ -632,8 +647,10 @@ class BacktesterService:
 
             if not position and signal == "BUY":
                 _try_entry(signal, signal_data, row, bar_time)
-            elif not position and signal == "SELL" and research:
-                _try_short_entry(signal, signal_data, row, bar_time)
+            elif not position and signal == "SELL":
+                direction_mode = str(cfg.get("direction_mode", "LONG_ONLY")).upper()
+                if research or direction_mode in ("BOTH", "SHORT_ONLY"):
+                    _try_short_entry(signal, signal_data, row, bar_time)
 
             peak_equity = max(peak_equity, equity)
             drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity else 0

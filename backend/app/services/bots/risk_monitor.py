@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DrawdownSnapshot:
     account_equity: float
+    cash_equity: float
     equity_peak: float
     current_drawdown_pct: float
     max_drawdown_pct: float
@@ -34,11 +35,18 @@ class DrawdownSnapshot:
 
 def compute_drawdown(oms) -> DrawdownSnapshot:
     snapshot = build_portfolio_snapshot(oms)
-    equity = max(float(snapshot.account_equity), 0.0)
-    peak = store.update_peak_if_higher(equity)
-    dd_pct = ((peak - equity) / peak * 100.0) if peak > 0 else 0.0
+    total_equity = max(float(snapshot.account_equity), 0.0)
+    # Use cash (realised) equity for drawdown tracking, not total equity.
+    # Total equity includes unrealised position mark-to-market which inflates
+    # the peak and causes false kill-switch trips when winning trades close
+    # below an intra-trade high-water mark.
+    cash_equity = max(total_equity - float(snapshot.gross_exposure), 0.0)
+    # Only ratchet peak on cash equity — immune to unrealised position swings.
+    peak = store.update_peak_if_higher(cash_equity)
+    dd_pct = ((peak - cash_equity) / peak * 100.0) if peak > 0 else 0.0
     return DrawdownSnapshot(
-        account_equity=round(equity, 2),
+        account_equity=round(total_equity, 2),
+        cash_equity=round(cash_equity, 2),
         equity_peak=round(peak, 2),
         current_drawdown_pct=round(max(dd_pct, 0.0), 2),
         max_drawdown_pct=RISK_MAX_DRAWDOWN_PCT,
@@ -51,6 +59,7 @@ def compute_drawdown(oms) -> DrawdownSnapshot:
 def drawdown_to_dict(snapshot: DrawdownSnapshot) -> dict:
     return {
         "account_equity": snapshot.account_equity,
+        "cash_equity": snapshot.cash_equity,
         "equity_peak": snapshot.equity_peak,
         "current_drawdown_pct": snapshot.current_drawdown_pct,
         "max_drawdown_pct": snapshot.max_drawdown_pct,
@@ -101,7 +110,7 @@ class RiskMonitor:
             store.trip_kill_switch()
             stopped = await bot_manager.stop_all_bots()
             reason = (
-                f"Drawdown kill switch: equity ${snapshot.account_equity:,.2f} is "
+                f"Drawdown kill switch: cash equity ${snapshot.cash_equity:,.2f} is "
                 f"{snapshot.current_drawdown_pct:.1f}% below peak "
                 f"${snapshot.equity_peak:,.2f} (limit {RISK_MAX_DRAWDOWN_PCT:.1f}%). "
                 f"Stopped {stopped} bot(s)."

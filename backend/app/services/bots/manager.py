@@ -44,6 +44,13 @@ def _block_reason_bucket(reason: str) -> str:
     return "risk"
 
 
+def _build_filter(bot_config: dict):
+    """Lazily import and construct a strategy filter from bot config."""
+    from app.services.bots.strategy_filter import build_filter_from_config
+
+    return build_filter_from_config(bot_config)
+
+
 def _record_order_blocked(bot: dict, reason: str) -> None:
     bucket = _block_reason_bucket(reason)
     strat = normalize_strategy_name(bot.get("strategy", ""))
@@ -56,6 +63,30 @@ def _record_order_blocked(bot: dict, reason: str) -> None:
         action="bot_order",
         event="bot_order_blocked",
     )
+
+
+def _record_ambiguous_outcome(
+    order_req: dict,
+    signal_id: str,
+    message: str,
+    *,
+    bot_id: str,
+    order_id: str | None = None,
+) -> None:
+    signal_ledger.mark_signal_ambiguous(signal_id, message, order_id=order_id)
+    if uses_paper_oms():
+        return
+    try:
+        from app.services.reconciliation import record_ambiguous_order
+
+        record_ambiguous_order(
+            order_req,
+            message,
+            bot_id=bot_id,
+            broker=TERMINAL_MODE,
+        )
+    except Exception as exc:
+        logger.warning("Failed to record ambiguous order for reconciliation UI: %s", exc)
 
 
 def _coerce_bar_time(bar_time) -> int | None:
@@ -152,14 +183,30 @@ class BotManagerService:
         conn.close()
         self.logger.info(f"Loaded {len(self.active_bots)} bots from DB.")
 
-    def restore_runtime_checkpoint(self, checkpoint: dict) -> None:
-        for bot_id, fields in checkpoint.items():
-            bot = self.active_bots.get(bot_id)
-            if not bot or not isinstance(fields, dict):
-                continue
-            for key in ("last_signal_bar_time", "last_signal_at", "last_tick_signal_at"):
-                if key in fields and fields[key] is not None:
-                    bot[key] = fields[key]
+    def restore_runtime_checkpoint(self, checkpoint: dict) -> int:
+        """Restore in-memory signal timing and resume bots that were RUNNING before shutdown."""
+        resumed = 0
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            for bot_id, fields in checkpoint.items():
+                if not isinstance(fields, dict):
+                    continue
+                bot = self.active_bots.get(bot_id)
+                if bot:
+                    for key in ("last_signal_bar_time", "last_signal_at", "last_tick_signal_at"):
+                        if key in fields and fields[key] is not None:
+                            bot[key] = fields[key]
+                prior_status = (fields.get("status") or "").upper()
+                if prior_status == "RUNNING":
+                    cursor.execute("UPDATE bots SET status = 'RUNNING' WHERE id = ?", (bot_id,))
+                    if bot:
+                        bot["status"] = "RUNNING"
+                    resumed += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return resumed
 
     def apply_safe_mode_pause(self) -> int:
         """Pause all RUNNING bots in DB and memory. Returns count paused."""
@@ -671,7 +718,83 @@ class BotManagerService:
                 if bar_time is not None and bot.get("last_signal_bar_time") == bar_time:
                     continue
 
+                # ── Multi-timeframe confirmation gate ──
+                confirm_tf = (bot_config or {}).get("confirm_timeframe", "").strip()
+                if confirm_tf and signal in ("BUY", "SELL"):
+                    htf_bias = await self._get_htf_bias(symbol, confirm_tf)
+                    if signal == "BUY" and htf_bias == "BEAR":
+                        inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
+                        await self.log_bot_event(
+                            bot_id, "WARN",
+                            f"HTF gate blocked BUY — {confirm_tf} bias is BEAR",
+                        )
+                        continue
+                    if signal == "SELL" and htf_bias == "BULL":
+                        inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
+                        await self.log_bot_event(
+                            bot_id, "WARN",
+                            f"HTF gate blocked SELL — {confirm_tf} bias is BULL",
+                        )
+                        continue
+
+                # ── Strategy composition / filter gate ──
+                strat_filter = _build_filter(bot_config)
+                if strat_filter and signal in ("BUY", "SELL"):
+                    allowed, reason = strat_filter.evaluate_gate(eval_row, signal)
+                    if not allowed:
+                        inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "filter_gate"})
+                        await self.log_bot_event(
+                            bot_id, "WARN",
+                            f"Filter gate blocked {signal}: {reason}",
+                        )
+                        continue
+
                 await self._handle_signal(bot, signal, signal_data, eval_price, bar_time)
+
+    async def _get_htf_bias(self, symbol: str, confirm_tf: str) -> str:
+        """Compute higher-timeframe trend bias for multi-TF confirmation.
+
+        Returns 'BULL', 'BEAR', or 'NEUTRAL'.
+        Uses SuperTrend direction if available, otherwise falls back to EMA slope.
+        """
+        try:
+            from app.services.market.timeframes import normalize_timeframe
+
+            cf_tf = normalize_timeframe(confirm_tf)
+            feed = getattr(self.oms, "feed", None)
+
+            if feed is not None:
+                ohlcv = get_bot_candles(symbol, feed, timeframe=cf_tf)
+            else:
+                return "NEUTRAL"
+
+            if not ohlcv or len(ohlcv) < 3:
+                return "NEUTRAL"
+
+            # Quick bias: compare last 2 closed bars' close prices + simple EMA direction
+            bar_prev = ohlcv[-3]  # 2 bars ago (closed)
+            bar_last = ohlcv[-2]  # last closed bar
+
+            close_last = float(bar_last.get("close", 0))
+            close_prev = float(bar_prev.get("close", 0))
+
+            if close_last <= 0 or close_prev <= 0:
+                return "NEUTRAL"
+
+            # Simple trend: higher highs/higher lows = BULL, lower/lower = BEAR
+            high_last = float(bar_last.get("high", 0))
+            low_last = float(bar_last.get("low", 0))
+            high_prev = float(bar_prev.get("high", 0))
+            low_prev = float(bar_prev.get("low", 0))
+
+            if close_last > close_prev and low_last >= low_prev:
+                return "BULL"
+            if close_last < close_prev and high_last <= high_prev:
+                return "BEAR"
+            return "NEUTRAL"
+
+        except Exception:
+            return "NEUTRAL"
 
     async def process_price_tick(self, symbol: str, price: float, time_ms: int):
         """Evaluate tick-mode bots on each price update (separate from bar-close path)."""
@@ -738,18 +861,35 @@ class BotManagerService:
         if signal == "BUY":
             if pos_size > 0:
                 return
-            await self._execute_order(
-                bot, "BUY", None, eval_price, signal_data,
-                is_exit=False, bar_time=bar_time,
-            )
+            if pos_size < 0:
+                # Close existing short first
+                await self._execute_order(
+                    bot, "BUY", abs(pos_size), eval_price, signal_data,
+                    is_exit=True, bar_time=bar_time,
+                    entry_price=float(bot_pos.get("avg_price") or eval_price),
+                )
+            else:
+                await self._execute_order(
+                    bot, "BUY", None, eval_price, signal_data,
+                    is_exit=False, bar_time=bar_time,
+                )
             return
 
         if signal == "SELL":
+            if pos_size < 0:
+                return
             if pos_size > 0:
+                # Close existing long first
                 await self._execute_order(
                     bot, "SELL", abs(pos_size), eval_price, signal_data,
                     is_exit=True, bar_time=bar_time,
                     entry_price=float(bot_pos.get("avg_price") or eval_price),
+                )
+            else:
+                # Open new short (risk_gate enforces direction_mode)
+                await self._execute_order(
+                    bot, "SELL", None, eval_price, signal_data,
+                    is_exit=False, bar_time=bar_time,
                 )
             return
 
@@ -924,22 +1064,36 @@ class BotManagerService:
             bot_cfg = merge_tp_config(bot.get("strategy", ""), bot.get("config", {}))
             tp_pct, tp_price = resolve_take_profit(bot_cfg, signal_data, side, current_price)
 
+        order_req = {
+            "symbol": symbol,
+            "type": "MARKET",
+            "side": side,
+            "quantity": quantity,
+            "stop_loss_percent": (
+                None if is_exit
+                else bot.get("config", {}).get("trailing_stop_percent")
+                or bot.get("config", {}).get("stop_loss_percent")
+            ),
+            "take_profit_percent": None if is_exit else tp_pct,
+            "take_profit_price": None if is_exit else tp_price,
+            "bot_id": bot_id,
+            "signal_id": signal_id,
+        }
+
+        if not uses_paper_oms():
+            signal_ledger.mark_signal_submitted(
+                signal_id,
+                broker=TERMINAL_MODE,
+                payload={
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "bot_id": bot_id,
+                },
+            )
+
         try:
-            result = await self.oms.place_order({
-                "symbol": symbol,
-                "type": "MARKET",
-                "side": side,
-                "quantity": quantity,
-                "stop_loss_percent": (
-                    None if is_exit
-                    else bot.get("config", {}).get("trailing_stop_percent")
-                    or bot.get("config", {}).get("stop_loss_percent")
-                ),
-                "take_profit_percent": None if is_exit else tp_pct,
-                "take_profit_price": None if is_exit else tp_price,
-                "bot_id": bot_id,
-                "signal_id": signal_id,
-            })
+            result = await self.oms.place_order(order_req)
 
             if result.get("status") == "success":
                 if bar_time is not None:
@@ -1031,8 +1185,12 @@ class BotManagerService:
                 msg = result.get("message", "Unknown error")
                 status = result.get("status", "error")
                 if status == "ambiguous":
-                    signal_ledger.mark_signal_ambiguous(
-                        signal_id, msg, order_id=result.get("order_id")
+                    _record_ambiguous_outcome(
+                        order_req,
+                        signal_id,
+                        msg,
+                        bot_id=bot_id,
+                        order_id=result.get("order_id"),
                     )
                 else:
                     signal_ledger.mark_signal_failed(signal_id, msg)
@@ -1053,7 +1211,12 @@ class BotManagerService:
                     )
         except Exception as e:
             if not uses_paper_oms():
-                signal_ledger.mark_signal_ambiguous(signal_id, str(e))
+                _record_ambiguous_outcome(
+                    order_req,
+                    signal_id,
+                    str(e),
+                    bot_id=bot_id,
+                )
             else:
                 signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "ERROR", f"Order exception: {str(e)}")

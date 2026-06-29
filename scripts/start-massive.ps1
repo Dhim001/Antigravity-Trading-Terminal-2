@@ -2,8 +2,8 @@
 # Massive:  WS 8785, HTTP 8786, UI http://127.0.0.1:5175
 #
 # Usage:
-#   .\scripts\start-massive.ps1           # skip if ports already in use
-#   .\scripts\start-massive.ps1 -Restart  # stop existing listeners, then start fresh
+#   .\scripts\start-massive.ps1           # restart backend; keep UI if already running
+#   .\scripts\start-massive.ps1 -Restart  # restart backend + frontend
 
 param(
     [switch]$Restart
@@ -23,6 +23,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($Restart) {
     Stop-TerminalProfileListeners -ProfileKey 'massive'
+} else {
+    # Always recycle backend so code changes and clean shutdown apply (WS + HTTP only).
+    Write-Host "Recycling Massive backend (WS :$ws, HTTP :$http)..." -ForegroundColor DarkGray
+    Stop-ListenerOnPort -Port $ws
+    Stop-ListenerOnPort -Port $http
+    Start-Sleep -Seconds 1
 }
 
 Write-Host @"
@@ -35,19 +41,22 @@ Write-Host @"
 Opening backend and frontend windows...
 "@ -ForegroundColor Green
 
-$backendBusy = (-not (Test-BackendPortFree -Port $ws)) -or (-not (Test-BackendPortFree -Port $http))
-if ($backendBusy) {
-    Write-Host "Massive backend ports $ws/$http already in use - skipping backend window." -ForegroundColor Yellow
-    Write-Host "Health: http://127.0.0.1:$http/health" -ForegroundColor DarkGray
-} else {
-    Start-Process powershell -ArgumentList @(
-        '-NoExit', '-ExecutionPolicy', 'Bypass',
-        '-File', (Join-Path $here 'start-backend.ps1'), '-Profile', 'Massive'
-    )
-    Start-Sleep -Seconds 2
-}
+Start-Process powershell -ArgumentList @(
+    '-NoExit', '-ExecutionPolicy', 'Bypass',
+    '-File', (Join-Path $here 'start-backend.ps1'), '-Profile', 'Massive'
+)
+Start-Sleep -Seconds 2
 
-if (Test-DevPortInUse -Port $dev) {
+if ($Restart) {
+    if (Test-DevPortInUse -Port $dev) {
+        Write-Host "Massive UI already on http://127.0.0.1:$dev - skipping frontend window." -ForegroundColor Yellow
+    } else {
+        Start-Process powershell -ArgumentList @(
+            '-NoExit', '-ExecutionPolicy', 'Bypass',
+            '-File', (Join-Path $here 'start-frontend.ps1'), '-Profile', 'Massive'
+        )
+    }
+} elseif (Test-DevPortInUse -Port $dev) {
     Write-Host "Massive UI already on http://127.0.0.1:$dev - skipping frontend window." -ForegroundColor Yellow
 } else {
     Start-Process powershell -ArgumentList @(
@@ -57,3 +66,4 @@ if (Test-DevPortInUse -Port $dev) {
 }
 
 Write-Host 'Done. Sim (:5173) and IB (:5174) can keep running in parallel.' -ForegroundColor DarkGray
+Write-Host 'Tip: use -Restart to also recycle the Vite UI on :5175.' -ForegroundColor DarkGray

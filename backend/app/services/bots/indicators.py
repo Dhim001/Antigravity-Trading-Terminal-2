@@ -40,6 +40,25 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "rsi_overbought_gate": 60,
         "rsi_oversold_gate": 40,
     },
+    "ICT_SMC": {
+        "ob_lookback": 10,
+        "fvg_min_gap_pct": 0.0005,
+        "sweep_lookback": 20,
+        "atr_length": 14,
+    },
+    "DONCHIAN_BREAKOUT": {
+        "breakout_length": 20,
+        "exit_length": 10,
+        "atr_confirm_mult": 1.0,
+        "atr_length": 14,
+    },
+    "MARKET_MAKING": {
+        "spread_pct": 0.002,
+        "inventory_target": 0.0,
+        "max_skew": 0.5,
+        "atr_length": 14,
+        "vol_shutdown_mult": 2.5,
+    },
     "CHART_AGENT": {
         "rsi_length": 14,
         "macd_fast": 12,
@@ -149,6 +168,28 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
             out[f"{st_dir}_prev"] = out[st_dir].shift(1)
     elif key == "VWAP_PULLBACK":
         out["close_prev"] = out["close"].shift(1)
+    elif key == "ICT_SMC":
+        # OB detection needs prior bar open/close
+        out["close_prev"] = out["close"].shift(1)
+        out["open_prev"] = out["open"].shift(1)
+        # FVG detection needs bar[-2] high and low
+        out["prev2_high"] = out["high"].shift(2)
+        out["prev2_low"] = out["low"].shift(2)
+        # Liquidity sweep needs rolling high/low
+        sweep_lb = int(cfg.get("sweep_lookback", 20))
+        out[f"rolling_low_{sweep_lb}"] = out["low"].rolling(sweep_lb).min().shift(1)
+        out[f"rolling_high_{sweep_lb}"] = out["high"].rolling(sweep_lb).max().shift(1)
+    elif key == "DONCHIAN_BREAKOUT":
+        breakout_len = int(cfg.get("breakout_length", 20))
+        exit_len = int(cfg.get("exit_length", 10))
+        # Donchian channels: rolling high/low (shifted by 1 to avoid lookahead)
+        out[f"dc_high_{breakout_len}"] = out["high"].rolling(breakout_len).max().shift(1)
+        out[f"dc_low_{breakout_len}"] = out["low"].rolling(breakout_len).min().shift(1)
+        if exit_len != breakout_len:
+            out[f"dc_high_{exit_len}"] = out["high"].rolling(exit_len).max().shift(1)
+            out[f"dc_low_{exit_len}"] = out["low"].rolling(exit_len).min().shift(1)
+    elif key == "MARKET_MAKING":
+        pass  # Market making uses only standard OHLC + ATR columns
 
     return out
 

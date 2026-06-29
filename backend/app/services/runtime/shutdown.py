@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from typing import Any
 
 from app.services.runtime import system_state
 
@@ -21,7 +20,12 @@ def install_signal_handlers(loop: asyncio.AbstractEventLoop, event: asyncio.Even
 
     def _request_shutdown() -> None:
         logger.info("Shutdown signal received — initiating graceful shutdown...")
-        event.set()
+        if event.is_set():
+            return
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            event.set()
 
     for sig in (getattr(signal, "SIGTERM", None), signal.SIGINT):
         if sig is None:
@@ -32,6 +36,14 @@ def install_signal_handlers(loop: asyncio.AbstractEventLoop, event: asyncio.Even
             signal.signal(sig, lambda _s, _f: _request_shutdown())
 
 
+async def _cancel_background_tasks(tasks: list[asyncio.Task]) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def graceful_shutdown(
     *,
     bot_manager=None,
@@ -40,6 +52,13 @@ async def graceful_shutdown(
     event_bus=None,
 ) -> None:
     """Persist bot state, pause bots, stop services, mark clean shutdown."""
+    try:
+        from app.api.http_server import stop_http_server
+
+        await stop_http_server()
+    except Exception as exc:
+        logger.debug("HTTP server shutdown: %s", exc)
+
     if bot_manager is not None:
         try:
             checkpoint = {}
@@ -48,13 +67,14 @@ async def graceful_shutdown(
                     "last_signal_bar_time": bot.get("last_signal_bar_time"),
                     "last_signal_at": bot.get("last_signal_at"),
                     "last_tick_signal_at": bot.get("last_tick_signal_at"),
+                    "status": bot.get("status"),
                 }
             if checkpoint:
                 system_state.save_bot_runtime_checkpoint(checkpoint)
             await bot_manager._flush_log_buffer()
             await bot_manager.pause_all_running_bots()
         except Exception as exc:
-            logger.debug("Bot shutdown checkpoint failed: %s", exc)
+            logger.warning("Bot shutdown checkpoint failed: %s", exc)
 
     try:
         if oms is not None and hasattr(oms, "stop"):
@@ -79,16 +99,33 @@ async def graceful_shutdown(
     logger.info("Graceful shutdown complete.")
 
 
-async def wait_for_shutdown_or_tasks(tasks: list[asyncio.Task], shutdown_event: asyncio.Event) -> None:
-    """Run until shutdown signal; cancel background tasks on exit."""
-    shutdown_task = asyncio.create_task(shutdown_event.wait())
-    all_tasks = [*tasks, shutdown_task]
+async def wait_for_shutdown_or_tasks(
+    tasks: list[asyncio.Task],
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Block until shutdown signal — one-shot tasks finishing must not stop the server."""
+    async def _log_task_failures() -> None:
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error("Background task %s failed: %s", task.get_name(), exc)
+
+    monitor = asyncio.create_task(_log_task_failures(), name="task-monitor")
     try:
-        done, pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_COMPLETED)
-        if shutdown_event.is_set():
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+        await shutdown_event.wait()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        shutdown_event.set()
+        raise
     finally:
-        shutdown_task.cancel()
+        from app.api.http_server import stop_http_server
+
+        try:
+            await stop_http_server()
+        except Exception:
+            pass
+        await _cancel_background_tasks(tasks)
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)

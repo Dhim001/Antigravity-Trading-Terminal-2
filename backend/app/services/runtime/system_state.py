@@ -6,6 +6,7 @@ import json
 import time
 from typing import Any
 
+from app.config import TERMINAL_ROLE
 from app.db.connection import get_connection
 
 KEY_SHUTDOWN_CLEAN = "shutdown_clean"
@@ -13,6 +14,14 @@ KEY_UNCLEAN_BOOT = "unclean_boot_detected"
 KEY_SAFE_MODE_ACTIVE = "safe_mode_active"
 KEY_SAFE_MODE_REASON = "safe_mode_reason"
 KEY_BOT_RUNTIME_CHECKPOINT = "bot_runtime_checkpoint"
+
+
+def _process_role() -> str:
+    return TERMINAL_ROLE or "all"
+
+
+def _role_key(base: str) -> str:
+    return f"{base}:{_process_role()}"
 
 
 def _now() -> float:
@@ -62,24 +71,27 @@ def _delete_key(key: str) -> None:
 
 
 def mark_process_starting() -> bool:
-    """Mark boot in progress. Returns True when the previous run did not shut down cleanly."""
-    was_clean = _get_text(KEY_SHUTDOWN_CLEAN)
+    """Mark boot in progress. Returns True when this process role did not shut down cleanly."""
+    shutdown_key = _role_key(KEY_SHUTDOWN_CLEAN)
+    unclean_key = _role_key(KEY_UNCLEAN_BOOT)
+    was_clean = _get_text(shutdown_key)
     unclean = was_clean is not None and was_clean not in ("1", "true")
-    _set_text(KEY_UNCLEAN_BOOT, "1" if unclean else "0")
-    _set_text(KEY_SHUTDOWN_CLEAN, "0")
+    _set_text(unclean_key, "1" if unclean else "0")
+    _set_text(shutdown_key, "0")
     return unclean
 
 
 def mark_shutdown_clean() -> None:
-    _set_text(KEY_SHUTDOWN_CLEAN, "1")
-    _set_text(KEY_UNCLEAN_BOOT, "0")
+    _set_text(_role_key(KEY_SHUTDOWN_CLEAN), "1")
+    _set_text(_role_key(KEY_UNCLEAN_BOOT), "0")
 
 
 def was_unclean_shutdown() -> bool:
-    flag = _get_text(KEY_UNCLEAN_BOOT)
+    flag = _get_text(_role_key(KEY_UNCLEAN_BOOT))
     if flag is not None:
         return flag == "1"
-    return _get_text(KEY_SHUTDOWN_CLEAN) not in ("1", "true")
+    was_clean = _get_text(_role_key(KEY_SHUTDOWN_CLEAN))
+    return was_clean is not None and was_clean not in ("1", "true")
 
 
 def enter_safe_mode(reason: str, *, details: dict | None = None) -> None:
@@ -132,6 +144,7 @@ def runtime_status_dict() -> dict[str, Any]:
 
     incomplete = signal_ledger.list_incomplete_signals()
     return {
+        "process_role": _process_role(),
         "shutdown_clean": not was_unclean_shutdown(),
         "safe_mode": get_safe_mode_info(),
         "incomplete_journal_count": len(incomplete),

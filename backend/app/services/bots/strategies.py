@@ -172,6 +172,13 @@ class VwapPullbackStrategy(BaseStrategy):
 _STRATEGY_ALIASES = {
     "SUPERTREND": "SUPERTREND_ADX",
     "BB_STOCH": "BRS_SCALPING",
+    "ICT": "ICT_SMC",
+    "SMART_MONEY": "ICT_SMC",
+    "SMC": "ICT_SMC",
+    "DONCHIAN": "DONCHIAN_BREAKOUT",
+    "BREAKOUT": "DONCHIAN_BREAKOUT",
+    "MM": "MARKET_MAKING",
+    "MARKET_MAKER": "MARKET_MAKING",
 }
 
 
@@ -193,6 +200,21 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
         from app.services.bots.strategies_chart_agent import ChartAgentStrategy
 
         return ChartAgentStrategy(config or {})
+
+    if key == "ICT_SMC":
+        from app.services.bots.strategies_ict import IctSmcStrategy
+
+        return IctSmcStrategy(config or {})
+
+    if key == "DONCHIAN_BREAKOUT":
+        from app.services.bots.strategies_breakout import DonchianBreakoutStrategy
+
+        return DonchianBreakoutStrategy(config or {})
+
+    if key == "MARKET_MAKING":
+        from app.services.bots.strategies_market_making import MarketMakingStrategy
+
+        return MarketMakingStrategy(config or {})
 
     if key == "CUSTOM":
         from app.services.bots.custom_loader import get_custom_strategy
