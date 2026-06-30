@@ -76,7 +76,9 @@ async def emit_notification(
     if not channels:
         return 0
 
-    if channel_ids:
+    if channel_ids is not None:
+        if not channel_ids:
+            return 0
         allow = set(channel_ids)
         channels = [c for c in channels if c.get("id") in allow]
 

@@ -11,6 +11,8 @@ from app.db.connection import get_connection
 from app.services.market.timeframes import normalize_timeframe
 from app.services.notifications.alert_rules import types as atypes
 
+_UNSET = object()
+
 
 def _now() -> float:
     return time.time()
@@ -27,16 +29,50 @@ def _row_to_dict(row) -> dict[str, Any]:
     return {cols[i]: row[i] for i in range(min(len(row), len(cols)))}
 
 
-def _parse_channels(raw) -> list[str]:
+def _parse_channels_list(raw) -> list[str]:
     if isinstance(raw, list):
         return [str(x) for x in raw if x]
     if isinstance(raw, str):
         try:
             data = json.loads(raw)
+            if isinstance(data, dict) and "channels" in data:
+                return [str(x) for x in (data.get("channels") or []) if x]
             return [str(x) for x in data if x] if isinstance(data, list) else []
         except Exception:
             return []
     return []
+
+
+def _encode_notify_channels(channels: list[str] | None) -> str | None:
+    """Persist channel targeting. None = all channels."""
+    if channels is None:
+        return "*"
+    return json.dumps({"channels": [str(x) for x in channels if x]})
+
+
+def _read_notify_channels(raw) -> list[str] | None:
+    """None = all channels; [] = none; non-empty list = specific channels."""
+    if raw is None or raw == "*":
+        return None
+    if isinstance(raw, str) and raw.strip() == "[]":
+        # Legacy rows stored an empty JSON array when the field was omitted.
+        return None
+    parsed = _parse_channels_list(raw)
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and "channels" in data:
+                return parsed
+        except Exception:
+            pass
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return parsed if parsed else None
+        except Exception:
+            pass
+    return parsed if parsed else None
 
 
 def rule_to_public(row: dict[str, Any]) -> dict[str, Any]:
@@ -50,7 +86,7 @@ def rule_to_public(row: dict[str, Any]) -> dict[str, Any]:
         "threshold": row.get("threshold"),
         "signal": row.get("signal"),
         "cooldown_sec": int(row.get("cooldown_sec") or 300),
-        "notify_channels": _parse_channels(row.get("notify_channels")),
+        "notify_channels": _read_notify_channels(row.get("notify_channels")),
         "last_triggered_at": row.get("last_triggered_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -112,7 +148,7 @@ def upsert_rule(
     threshold: float | None,
     signal: str | None,
     cooldown_sec: int,
-    notify_channels: list[str],
+    notify_channels: list[str] | None | object = _UNSET,
 ) -> dict[str, Any]:
     if condition_type not in atypes.ALL_CONDITION_TYPES:
         raise ValueError(f"Unknown condition type: {condition_type}")
@@ -127,13 +163,23 @@ def upsert_rule(
     tf = normalize_timeframe(timeframe or "1m")
     rid = rule_id or str(uuid.uuid4())
     now = _now()
-    channels_json = json.dumps(notify_channels or [])
 
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT id FROM alert_rules WHERE id = ?", (rid,))
-        exists = cursor.fetchone() is not None
+        cursor.execute("SELECT id, notify_channels FROM alert_rules WHERE id = ?", (rid,))
+        existing = cursor.fetchone()
+        exists = existing is not None
+
+        if notify_channels is _UNSET:
+            if exists:
+                raw = existing["notify_channels"] if isinstance(existing, dict) else existing[1]
+                channels_json = raw
+            else:
+                channels_json = _encode_notify_channels(None)
+        else:
+            channels_json = _encode_notify_channels(notify_channels)
+
         if exists:
             cursor.execute(
                 """

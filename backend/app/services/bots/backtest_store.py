@@ -64,7 +64,7 @@ def _parse_run_row(row) -> dict[str, Any]:
 
 def _summary_from_results(results: dict) -> dict[str, Any]:
     summary = results.get("summary") or {}
-    if not summary.get("total_pnl") and "total_pnl" in results:
+    if summary.get("total_pnl") is None and "total_pnl" in results:
         summary = {
             "total_pnl": results.get("total_pnl"),
             "win_rate": results.get("win_rate"),

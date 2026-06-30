@@ -117,11 +117,7 @@ export default function App() {
   const handleSidebarLayout = useCallback(({ width, collapsed }) => {
     setSidebarWidth((prev) => (prev === width ? prev : width));
     setSidebarCollapsed((prev) => (prev === collapsed ? prev : !!collapsed));
-    const stored = useSettingsStore.getState().settings.workspace?.sidebarWidth;
-    if (stored !== width) {
-      updateWorkspace({ sidebarWidth: width });
-    }
-  }, [updateWorkspace]);
+  }, []);
 
   const handleLayoutModeChange = useCallback((mode) => {
     const cfg = applyLayoutMode(mode);

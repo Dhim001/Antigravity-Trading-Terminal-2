@@ -35,7 +35,7 @@ function readCollapsed() {
 
 export default function ResizableWatchlistSidebar({ onLayoutChange }) {
   const activeSymbol = useStore(s => s.activeSymbol);
-const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth);
+  const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth);
   const workspaceCollapsed = useSettingsStore(s => s.settings.workspace?.rightPanelCollapsed);
   const updateWorkspace = useSettingsStore(s => s.updateWorkspace);
 
@@ -48,17 +48,30 @@ const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth)
     return readCollapsed();
   });
 
+  // Apply workspace preset / settings changes without echoing layout callbacks back to the store.
   useEffect(() => {
-    if (workspaceCollapsed !== undefined && workspaceCollapsed !== collapsed) {
-      setCollapsed(workspaceCollapsed);
-    }
-  }, [workspaceCollapsed]);
+    if (workspaceCollapsed === undefined || workspaceCollapsed === collapsed) return;
+    setCollapsed(workspaceCollapsed);
+  }, [workspaceCollapsed, collapsed]);
 
   useEffect(() => {
-    if (workspaceWidth !== undefined && workspaceWidth !== width) {
-      setWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, workspaceWidth)));
-    }
+    if (workspaceWidth == null || workspaceWidth < SIDEBAR_MIN || workspaceWidth > SIDEBAR_MAX) return;
+    setWidth((prev) => (prev === workspaceWidth ? prev : workspaceWidth));
   }, [workspaceWidth]);
+
+  useEffect(() => {
+    const onWorkspaceLoaded = (e) => {
+      const ws = e.detail?.workspace;
+      if (ws?.rightPanelCollapsed !== undefined) {
+        setCollapsed(ws.rightPanelCollapsed);
+      }
+      if (ws?.sidebarWidth >= SIDEBAR_MIN && ws?.sidebarWidth <= SIDEBAR_MAX) {
+        setWidth(ws.sidebarWidth);
+      }
+    };
+    window.addEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
+    return () => window.removeEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
+  }, []);
   const [dragging, setDragging] = useState(false);
   const isDragging = useRef(false);
   const startX = useRef(0);
@@ -79,15 +92,24 @@ const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth)
   }, [collapsed]);
 
   useEffect(() => {
-    const onToggle = () => { setCollapsed(c => { updateWorkspace({ rightPanelCollapsed: !c }); return !c; }); };
-    const onExpand = () => { setCollapsed(false); updateWorkspace({ rightPanelCollapsed: false }); };
+    const onToggle = () => {
+      setCollapsed(c => {
+        const next = !c;
+        updateWorkspace({ rightPanelCollapsed: next });
+        return next;
+      });
+    };
+    const onExpand = () => {
+      setCollapsed(false);
+      updateWorkspace({ rightPanelCollapsed: false });
+    };
     window.addEventListener('sidebar-toggle', onToggle);
     window.addEventListener('sidebar-expand', onExpand);
     return () => {
       window.removeEventListener('sidebar-toggle', onToggle);
       window.removeEventListener('sidebar-expand', onExpand);
     };
-  }, []);
+  }, [updateWorkspace]);
 
   const onResizeMouseDown = useCallback((e) => {
     if (collapsed) return;
@@ -106,15 +128,14 @@ const workspaceWidth = useSettingsStore(s => s.settings.workspace?.sidebarWidth)
       const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW.current + (e.clientX - startX.current)));
       setWidth(next);
     };
-const onUp = () => {
+    const onUp = () => {
       if (!isDragging.current) return;
       isDragging.current = false;
       setDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      
-      // Save new width to workspace settings
-      setWidth(currentWidth => {
+
+      setWidth((currentWidth) => {
         updateWorkspace({ sidebarWidth: currentWidth });
         return currentWidth;
       });
@@ -125,7 +146,7 @@ const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, []);
+  }, [updateWorkspace]);
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed(c => { const next = !c; updateWorkspace({ rightPanelCollapsed: next }); return next; });

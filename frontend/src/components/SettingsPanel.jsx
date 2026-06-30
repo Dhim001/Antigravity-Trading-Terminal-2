@@ -195,16 +195,16 @@ function SettingsAccordionSection({ value, title, hint, badge, children }) {
   return (
     <AccordionItem value={value} className="settings-accordion__item">
       <AccordionTrigger className="settings-accordion__trigger">
-        <div className="flex min-w-0 flex-1 items-start justify-between gap-2 pr-1">
-          <div className="flex min-w-0 flex-col gap-0.5 text-left">
-            <span className="settings-accordion__title">{title}</span>
-            {hint && <span className="settings-accordion__hint">{hint}</span>}
-          </div>
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-2 pr-1">
+          <span className="settings-accordion__title">{title}</span>
           {badge}
         </div>
       </AccordionTrigger>
       <AccordionContent className="settings-accordion__content">
-        <div className="settings-accordion__inner">{children}</div>
+        <div className="settings-accordion__inner">
+          {hint ? <p className="settings-section__hint m-0">{hint}</p> : null}
+          {children}
+        </div>
       </AccordionContent>
     </AccordionItem>
   );
@@ -360,33 +360,37 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="terminal-sheet settings-panel w-full sm:max-w-lg">
+      <SheetContent side="right" className="terminal-sheet settings-panel w-full sm:max-w-none">
         <SheetHeader className="settings-panel__header terminal-sheet__header">
           <SheetTitle className="settings-panel__title">
             <Palette aria-hidden />
             Preferences
           </SheetTitle>
           <SheetDescription className="settings-panel__description">
-            Appearance, charts, layout, and system controls.
+            Theme, charts, workspace layout, alerts, and terminal status.
           </SheetDescription>
         </SheetHeader>
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="terminal-tabs settings-panel__tabs">
-          <TabsList variant="line" className="terminal-tabs__list settings-panel__tablist w-full justify-start">
-            <TabsTrigger value="appearance" className="gap-1.5 text-xs">
-              <Palette size={13} aria-hidden />
+          <TabsList variant="line" className="terminal-tabs__list settings-panel__tablist w-full">
+            <TabsTrigger value="appearance" className="settings-panel__tab">
+              <Palette aria-hidden data-icon="inline-start" />
               Theme
             </TabsTrigger>
-            <TabsTrigger value="chart" className="gap-1.5 text-xs">
-              <BarChart3 size={13} aria-hidden />
+            <TabsTrigger value="chart" className="settings-panel__tab">
+              <BarChart3 aria-hidden data-icon="inline-start" />
               Chart
             </TabsTrigger>
-            <TabsTrigger value="layout" className="gap-1.5 text-xs">
-              <LayoutGrid size={13} aria-hidden />
+            <TabsTrigger value="layout" className="settings-panel__tab">
+              <LayoutGrid aria-hidden data-icon="inline-start" />
               Layout
             </TabsTrigger>
-            <TabsTrigger value="system" className="gap-1.5 text-xs">
-              <Cpu size={13} aria-hidden />
+            <TabsTrigger value="alerts" className="settings-panel__tab">
+              <Bell aria-hidden data-icon="inline-start" />
+              Alerts
+            </TabsTrigger>
+            <TabsTrigger value="system" className="settings-panel__tab">
+              <Cpu aria-hidden data-icon="inline-start" />
               System
             </TabsTrigger>
           </TabsList>
@@ -429,6 +433,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </SettingsAccordionSection>
 
               <SettingsAccordionSection value="trading-colors" title="Trading colors">
+                <div className="settings-color-grid">
                 <ColorField
                   id="bullish-color"
                   label="Bullish / Up"
@@ -456,6 +461,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   onChange={(v) => updateSettings({ accentColor: v })}
                   presets={PRESET_SWATCHES.accent}
                 />
+                </div>
                 <div className="flex justify-end pt-1">
                   <Button
                     variant="outline"
@@ -566,6 +572,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     {settings.syncChartToTheme !== false ? 'Synced to theme' : 'Custom colors'}
                   </Button>
                 </div>
+                <div className="settings-color-grid">
                 <ColorField
                   id="chart-bg"
                   label="Background"
@@ -588,9 +595,11 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   presets={PRESET_SWATCHES.accent}
                   onCustomize={markChartCustom}
                 />
+                </div>
               </SettingsAccordionSection>
 
               <SettingsAccordionSection value="candle-colors" title="Candle colors">
+                <div className="settings-color-grid">
                 <ColorField
                   id="chart-bullish"
                   label="Bullish candle"
@@ -605,6 +614,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   onChange={(v) => updateSettings({ chart: { ...settings.chart, bearishColor: v } })}
                   presets={PRESET_SWATCHES.bearish}
                 />
+                </div>
               </SettingsAccordionSection>
 
               <SettingsAccordionSection
@@ -612,13 +622,14 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 title="Chart overlays"
                 hint="Toggle trade markers, position lines, and analyst levels on the chart."
               >
+                <div className="settings-check-grid">
                 {[
                   ['trades', 'Trade markers'],
                   ['positions', 'Position SL/TP'],
                   ['agentLevels', 'Analyst levels'],
                   ['botMarkers', 'Bot markers'],
                 ].map(([key, label]) => (
-                  <div key={key} className="flex items-center justify-between gap-2">
+                  <div key={key} className="settings-check-row">
                     <Label htmlFor={`overlay-${key}`} className="cursor-pointer text-xs font-normal">
                       {label}
                     </Label>
@@ -631,6 +642,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     />
                   </div>
                 ))}
+                </div>
               </SettingsAccordionSection>
             </Accordion>
           </TabsContent>
@@ -701,10 +713,10 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 </Button>
               </div>
               {settings.workspacePresets.length > 0 ? (
-                <ul className="mt-2 flex flex-col gap-1">
+                <ul className="settings-list">
                   {settings.workspacePresets.map((p) => (
-                    <li key={p.id} className="flex items-center justify-between gap-2 rounded-md border border-border/50 px-2 py-1.5 text-xs">
-                      <span className="truncate font-medium">{p.name}</span>
+                    <li key={p.id} className="settings-list__item">
+                      <span className="settings-list__label truncate font-medium">{p.name}</span>
                       <div className="flex shrink-0 gap-1">
                         <Button
                           variant="outline"
@@ -781,175 +793,6 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   />
                 </label>
               </div>
-              </SettingsAccordionSection>
-
-              <SettingsAccordionSection
-                value="alerts"
-                title="Price & signal alerts"
-                hint="Toast notifications when price crosses a level or analyst signal matches."
-                badge={(settings.alerts || []).length > 0 ? (
-                  <Badge variant="secondary" className="shrink-0 text-xs">
-                    {(settings.alerts || []).length}
-                  </Badge>
-                ) : null}
-              >
-              <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 p-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="col-span-2 sm:col-span-1">
-                    <Label className="text-xs text-muted-foreground">Symbol</Label>
-                    <Input
-                      className="mt-1 h-8 text-xs"
-                      value={alertDraft.symbol}
-                      onChange={(e) => setAlertDraft((d) => ({ ...d, symbol: e.target.value.toUpperCase() }))}
-                      placeholder="BTCUSDT"
-                    />
-                  </div>
-                  <div className="col-span-2 sm:col-span-1">
-                    <Label className="text-xs text-muted-foreground">Type</Label>
-                    <Select
-                      value={alertDraft.type}
-                      onValueChange={(type) => setAlertDraft((d) => ({ ...d, type }))}
-                    >
-                      <SelectTrigger className="mt-1 h-8 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="price_above" className="text-xs">Price above</SelectItem>
-                        <SelectItem value="price_below" className="text-xs">Price below</SelectItem>
-                        <SelectItem value="signal_change" className="text-xs">Signal change</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {(alertDraft.type === 'price_above' || alertDraft.type === 'price_below') && (
-                    <div className="col-span-2 sm:col-span-1">
-                      <Label className="text-xs text-muted-foreground">Threshold</Label>
-                      <Input
-                        className="mt-1 h-8 text-xs num-mono"
-                        type="number"
-                        step="any"
-                        value={alertDraft.threshold}
-                        onChange={(e) => setAlertDraft((d) => ({ ...d, threshold: e.target.value }))}
-                        placeholder="0.00"
-                      />
-                    </div>
-                  )}
-                  {alertDraft.type === 'signal_change' && (
-                    <div className="col-span-2 sm:col-span-1">
-                      <Label className="text-xs text-muted-foreground">Signal</Label>
-                      <Select
-                        value={alertDraft.signal}
-                        onValueChange={(signal) => setAlertDraft((d) => ({ ...d, signal }))}
-                      >
-                        <SelectTrigger className="mt-1 h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="BUY" className="text-xs">BUY</SelectItem>
-                          <SelectItem value="SELL" className="text-xs">SELL</SelectItem>
-                          <SelectItem value="NONE" className="text-xs">NONE</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs"
-                    onClick={() => {
-                      const sym = (alertDraft.symbol || activeSymbol || '').trim().toUpperCase();
-                      if (!sym) {
-                        toast.error('Enter a symbol');
-                        return;
-                      }
-                      const needsThreshold = alertDraft.type === 'price_above' || alertDraft.type === 'price_below';
-                      const threshold = alertDraft.threshold === '' ? undefined : Number(alertDraft.threshold);
-                      if (needsThreshold && (threshold == null || Number.isNaN(threshold))) {
-                        toast.error('Enter a valid threshold');
-                        return;
-                      }
-                      const rule = {
-                        id: editingAlertId || `alert-${Date.now()}`,
-                        symbol: sym,
-                        type: alertDraft.type,
-                        enabled: true,
-                        ...(needsThreshold ? { threshold } : {}),
-                        ...(alertDraft.type === 'signal_change' ? { signal: alertDraft.signal || 'BUY' } : {}),
-                      };
-                      const existing = settings.alerts || [];
-                      if (editingAlertId) {
-                        setAlerts(existing.map((a) => (a.id === editingAlertId ? rule : a)));
-                        toast.success('Alert updated');
-                      } else {
-                        setAlerts([...existing, rule]);
-                        toast.success(`Alert added for ${sym}`);
-                      }
-                      setEditingAlertId(null);
-                      setAlertDraft({
-                        symbol: activeSymbol,
-                        type: 'price_above',
-                        threshold: '',
-                        signal: 'BUY',
-                      });
-                    }}
-                  >
-                    {editingAlertId ? 'Update alert' : 'Add alert'}
-                  </Button>
-                  {editingAlertId && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-xs"
-                      onClick={() => {
-                        setEditingAlertId(null);
-                        setAlertDraft({
-                          symbol: activeSymbol,
-                          type: 'price_above',
-                          threshold: '',
-                          signal: 'BUY',
-                        });
-                      }}
-                    >
-                      Cancel edit
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {(settings.alerts || []).length > 0 && (
-                <ul className="mt-2 flex flex-col gap-1">
-                  {settings.alerts.map((a) => (
-                    <li key={a.id} className="flex items-center justify-between rounded border border-border/50 px-2 py-1 text-xs">
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 truncate text-left hover:text-foreground"
-                        onClick={() => {
-                          setEditingAlertId(a.id);
-                          setAlertDraft({
-                            symbol: a.symbol,
-                            type: a.type,
-                            threshold: a.threshold != null ? String(a.threshold) : '',
-                            signal: a.signal || 'BUY',
-                          });
-                        }}
-                      >
-                        {a.symbol} · {a.type.replace('_', ' ')}
-                        {a.threshold != null ? ` ${a.threshold}` : ''}
-                        {a.signal ? ` → ${a.signal}` : ''}
-                        {a.enabled === false ? ' (off)' : ''}
-                      </button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-trading-down shrink-0"
-                        onClick={() => setAlerts(settings.alerts.filter((x) => x.id !== a.id))}
-                      >
-                        Remove
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
               </SettingsAccordionSection>
 
               <SettingsAccordionSection value="display-density" title="Display density">
@@ -1084,7 +927,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </SettingsAccordionSection>
 
               <SettingsAccordionSection value="saved-layout" title="Saved layout">
-                <dl className="settings-defaults-list num-mono text-xs">
+                <dl className="settings-defaults-list settings-defaults-list--grid num-mono text-xs">
                   <div><dt>Link mode</dt><dd>{settings.workspace?.chartLinkMode ?? 'all'}</dd></div>
                   <div><dt>Dock height</dt><dd>{settings.workspace?.dockHeight ?? '—'}px</dd></div>
                   <div><dt>Sidebar</dt><dd>{settings.workspace?.sidebarWidth ?? '—'}px</dd></div>
@@ -1096,8 +939,199 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
             </Accordion>
           </TabsContent>
 
+          <TabsContent value="alerts" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
+            <Accordion type="multiple" defaultValue={['notifications']} className="settings-accordion">
+              <SettingsAccordionSection
+                value="notifications"
+                title="Notification channels"
+                hint="Webhook, Telegram, email digest, and browser push when the tab is closed."
+                badge={<Bell size={13} className="text-muted-foreground" aria-hidden />}
+              >
+                <NotificationSettingsSection />
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="alert-rules"
+                title="Bar-close alert rules"
+                hint="RSI, price, and MACD conditions routed through your notification channels."
+                badge={<BellRing size={13} className="text-muted-foreground" aria-hidden />}
+              >
+                <AlertRulesSection activeSymbol={activeSymbol} />
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="price-alerts"
+                title="In-app price & signal alerts"
+                hint="Toast notifications when price crosses a level or analyst signal matches."
+                badge={(settings.alerts || []).length > 0 ? (
+                  <Badge variant="secondary" className="shrink-0 text-xs">
+                    {(settings.alerts || []).length}
+                  </Badge>
+                ) : null}
+              >
+              <div className="settings-form-card">
+                <div className="settings-form-grid">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Symbol</Label>
+                    <Input
+                      className="mt-1 h-8 text-xs"
+                      value={alertDraft.symbol}
+                      onChange={(e) => setAlertDraft((d) => ({ ...d, symbol: e.target.value.toUpperCase() }))}
+                      placeholder="BTCUSDT"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Type</Label>
+                    <Select
+                      value={alertDraft.type}
+                      onValueChange={(type) => setAlertDraft((d) => ({ ...d, type }))}
+                    >
+                      <SelectTrigger className="mt-1 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="price_above" className="text-xs">Price above</SelectItem>
+                        <SelectItem value="price_below" className="text-xs">Price below</SelectItem>
+                        <SelectItem value="signal_change" className="text-xs">Signal change</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {(alertDraft.type === 'price_above' || alertDraft.type === 'price_below') && (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Threshold</Label>
+                      <Input
+                        className="mt-1 h-8 text-xs num-mono"
+                        type="number"
+                        step="any"
+                        value={alertDraft.threshold}
+                        onChange={(e) => setAlertDraft((d) => ({ ...d, threshold: e.target.value }))}
+                        placeholder="0.00"
+                      />
+                    </div>
+                  )}
+                  {alertDraft.type === 'signal_change' && (
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Signal</Label>
+                      <Select
+                        value={alertDraft.signal}
+                        onValueChange={(signal) => setAlertDraft((d) => ({ ...d, signal }))}
+                      >
+                        <SelectTrigger className="mt-1 h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="BUY" className="text-xs">BUY</SelectItem>
+                          <SelectItem value="SELL" className="text-xs">SELL</SelectItem>
+                          <SelectItem value="NONE" className="text-xs">NONE</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs"
+                    onClick={() => {
+                      const sym = (alertDraft.symbol || activeSymbol || '').trim().toUpperCase();
+                      if (!sym) {
+                        toast.error('Enter a symbol');
+                        return;
+                      }
+                      const needsThreshold = alertDraft.type === 'price_above' || alertDraft.type === 'price_below';
+                      const threshold = alertDraft.threshold === '' ? undefined : Number(alertDraft.threshold);
+                      if (needsThreshold && (threshold == null || Number.isNaN(threshold))) {
+                        toast.error('Enter a valid threshold');
+                        return;
+                      }
+                      const rule = {
+                        id: editingAlertId || `alert-${Date.now()}`,
+                        symbol: sym,
+                        type: alertDraft.type,
+                        enabled: true,
+                        ...(needsThreshold ? { threshold } : {}),
+                        ...(alertDraft.type === 'signal_change' ? { signal: alertDraft.signal || 'BUY' } : {}),
+                      };
+                      const existing = settings.alerts || [];
+                      if (editingAlertId) {
+                        setAlerts(existing.map((a) => (a.id === editingAlertId ? rule : a)));
+                        toast.success('Alert updated');
+                      } else {
+                        setAlerts([...existing, rule]);
+                        toast.success(`Alert added for ${sym}`);
+                      }
+                      setEditingAlertId(null);
+                      setAlertDraft({
+                        symbol: activeSymbol,
+                        type: 'price_above',
+                        threshold: '',
+                        signal: 'BUY',
+                      });
+                    }}
+                  >
+                    {editingAlertId ? 'Update alert' : 'Add alert'}
+                  </Button>
+                  {editingAlertId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => {
+                        setEditingAlertId(null);
+                        setAlertDraft({
+                          symbol: activeSymbol,
+                          type: 'price_above',
+                          threshold: '',
+                          signal: 'BUY',
+                        });
+                      }}
+                    >
+                      Cancel edit
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {(settings.alerts || []).length > 0 && (
+                <ul className="settings-list">
+                  {settings.alerts.map((a) => (
+                    <li key={a.id} className="settings-list__item">
+                      <button
+                        type="button"
+                        className="settings-list__label"
+                        onClick={() => {
+                          setEditingAlertId(a.id);
+                          setAlertDraft({
+                            symbol: a.symbol,
+                            type: a.type,
+                            threshold: a.threshold != null ? String(a.threshold) : '',
+                            signal: a.signal || 'BUY',
+                          });
+                        }}
+                      >
+                        {a.symbol} · {a.type.replace('_', ' ')}
+                        {a.threshold != null ? ` ${a.threshold}` : ''}
+                        {a.signal ? ` → ${a.signal}` : ''}
+                        {a.enabled === false ? ' (off)' : ''}
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-trading-down shrink-0"
+                        onClick={() => setAlerts(settings.alerts.filter((x) => x.id !== a.id))}
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              </SettingsAccordionSection>
+            </Accordion>
+          </TabsContent>
+
           <TabsContent value="system" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <Accordion type="multiple" defaultValue={['terminal-status', 'memory-observability', 'llm-narrator']} className="settings-accordion">
+            <Accordion type="multiple" defaultValue={['terminal-status']} className="settings-accordion">
               <SettingsAccordionSection
                 value="terminal-status"
                 title="Terminal status"
@@ -1113,7 +1147,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   </Badge>
                 )}
               >
-                <dl className="settings-defaults-list num-mono text-xs">
+                <dl className="settings-defaults-list settings-defaults-list--grid num-mono text-xs">
                   <div>
                     <dt className="flex items-center gap-1"><Wifi aria-hidden data-icon="inline-start" /> Feed</dt>
                     <dd className={cn(
@@ -1234,29 +1268,11 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </SettingsAccordionSection>
 
               <SettingsAccordionSection
-                value="notifications"
-                title="Notifications"
-                hint="External alerts (webhook, Telegram, email, browser push) when the tab is closed."
-                badge={<Bell size={13} className="text-muted-foreground" aria-hidden />}
-              >
-                <NotificationSettingsSection />
-              </SettingsAccordionSection>
-
-              <SettingsAccordionSection
-                value="alert-rules"
-                title="Alert rules"
-                hint="Bar-close conditions (RSI, price, MACD) routed through notification channels."
-                badge={<BellRing size={13} className="text-muted-foreground" aria-hidden />}
-              >
-                <AlertRulesSection activeSymbol={activeSymbol} />
-              </SettingsAccordionSection>
-
-              <SettingsAccordionSection
                 value="operator-env"
                 title="Operator / environment"
                 hint="Server-controlled, read-only. Set via environment variables on the backend."
               >
-                <dl className="settings-defaults-list num-mono text-xs">
+                <dl className="settings-defaults-list settings-defaults-list--grid num-mono text-xs">
                   <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
                   {terminalMode === 'LIVE_MASSIVE' && (
                     <div><dt>Paper bots</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Sim OMS fills' : 'Disabled'}</dd></div>
@@ -1337,7 +1353,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
 
               {obsMetrics && (
                 <SettingsAccordionSection value="metrics-snapshot" title="Metrics snapshot">
-                  <dl className="settings-defaults-list num-mono text-xs">
+                  <dl className="settings-defaults-list settings-defaults-list--grid num-mono text-xs">
                     <div><dt>Orders placed</dt><dd>{obsMetrics.orders_place_total ?? 0}</dd></div>
                     <div><dt>Preview allowed</dt><dd>{obsMetrics.orders_preview_allowed_total ?? 0}</dd></div>
                     <div><dt>Preview blocked</dt><dd>{obsMetrics.orders_preview_blocked_total ?? 0}</dd></div>

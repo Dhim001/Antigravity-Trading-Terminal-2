@@ -3,6 +3,7 @@
  */
 import React, { useMemo } from 'react';
 import { cn } from '@/lib/utils';
+import { formatMetricDelta, formatSignedValue, resolveBacktestSummary, TONE_CLASS } from '@/lib/metricComparison';
 import { useStore } from '../store/useStore';
 
 export default function BacktestParityPanel({ results, symbol, strategy }) {
@@ -18,15 +19,13 @@ export default function BacktestParityPanel({ results, symbol, strategy }) {
   }, [activeBots, symbol, strategy, results]);
 
   const liveStats = botDetail?.bot?.id === bot?.id ? botDetail?.stats : null;
-  const backtestPnl = results?.summary?.total_pnl ?? results?.total_pnl;
+  const backtestPnl = resolveBacktestSummary(results).total_pnl;
   const livePnl = liveStats?.total_pnl;
   const runId = results?.run_id ?? bot?.config?.backtest_run_id;
 
   if (backtestPnl == null && livePnl == null) return null;
 
-  const delta = livePnl != null && backtestPnl != null
-    ? Number(livePnl) - Number(backtestPnl)
-    : null;
+  const drift = formatMetricDelta(livePnl, backtestPnl, { prefix: '$', higherIsBetter: true });
 
   return (
     <section className="algo-backtest-parity">
@@ -38,7 +37,7 @@ export default function BacktestParityPanel({ results, symbol, strategy }) {
             'num-mono',
             (backtestPnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
           )}>
-            {backtestPnl != null ? `$${Number(backtestPnl).toFixed(2)}` : '—'}
+            {formatSignedValue(backtestPnl, { prefix: '$' })}
           </strong>
         </div>
         <div className="algo-backtest-parity__cell">
@@ -47,16 +46,13 @@ export default function BacktestParityPanel({ results, symbol, strategy }) {
             'num-mono',
             livePnl == null ? '' : (livePnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
           )}>
-            {livePnl != null ? `$${Number(livePnl).toFixed(2)}` : (bot ? 'No fills yet' : 'No live bot')}
+            {livePnl != null ? formatSignedValue(livePnl, { prefix: '$' }) : (bot ? 'No fills yet' : 'No live bot')}
           </strong>
         </div>
         <div className="algo-backtest-parity__cell">
           <span className="text-muted-foreground">Drift</span>
-          <strong className={cn(
-            'num-mono',
-            delta == null ? '' : (delta >= 0 ? 'text-trading-up' : 'text-trading-down'),
-          )}>
-            {delta != null ? `${delta >= 0 ? '+' : ''}$${delta.toFixed(2)}` : '—'}
+          <strong className={cn('num-mono', TONE_CLASS[drift.tone])}>
+            {drift.text}
           </strong>
         </div>
       </div>

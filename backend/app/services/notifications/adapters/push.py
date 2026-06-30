@@ -7,6 +7,10 @@ import json
 import logging
 
 from app.config import VAPID_PRIVATE_KEY, VAPID_SUBJECT
+from app.services.notifications.adapters.delivery_retry import (
+    is_transient_push,
+    with_delivery_retries,
+)
 from app.services.notifications.events import NotificationEvent
 from app.services.notifications.push_subscriptions import (
     delete_subscription,
@@ -62,7 +66,10 @@ async def deliver_push(event: NotificationEvent, channel: dict) -> None:
 
     for sub in subs:
         try:
-            await asyncio.to_thread(_send_one, sub, data)
+            async def _send_once(subscription=sub) -> None:
+                await asyncio.to_thread(_send_one, subscription, data)
+
+            await with_delivery_retries(_send_once, is_retryable=is_transient_push)
             sent += 1
         except Exception as exc:
             status = getattr(exc, "status_code", None) or getattr(exc, "response", None)

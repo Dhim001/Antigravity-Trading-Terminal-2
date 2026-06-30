@@ -64,7 +64,8 @@ export default function MemoryDevBadge() {
 
   return (
     <div
-      className={`fixed bottom-1 right-1 z-[9999] pointer-events-none select-none rounded px-2 py-1 text-[10px] font-mono opacity-75 bg-black/80 ${colorClass}`}
+      className={`fixed right-1 z-[9999] pointer-events-none select-none rounded px-2 py-1 text-[10px] font-mono opacity-75 bg-black/80 ${colorClass}`}
+      style={{ bottom: 'calc(var(--dock-h, 320px) + 0.35rem)' }}
       aria-hidden
       title={client.pinnedSymbol ? `Pinned: ${client.pinnedSymbol}` : undefined}
     >

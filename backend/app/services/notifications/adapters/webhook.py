@@ -11,12 +11,14 @@ from typing import Any
 
 import httpx
 
-from app.config import NOTIFICATION_DELIVERY_MAX_RETRIES
+from app.services.notifications.adapters.delivery_retry import (
+    is_transient_http,
+    rate_limit_delay,
+    with_delivery_retries,
+)
 from app.services.notifications.events import NotificationEvent
 
 logger = logging.getLogger(__name__)
-
-_RETRY_DELAYS = (1.0, 3.0, 8.0)
 
 
 def _format_slack(event: NotificationEvent) -> dict[str, Any]:
@@ -93,24 +95,15 @@ async def deliver_webhook(event: NotificationEvent, config: dict[str, Any]) -> N
     if hmac_secret:
         headers["X-Terminal-Signature"] = _sign_body(body, hmac_secret)
 
-    last_exc: Exception | None = None
-    for attempt in range(NOTIFICATION_DELIVERY_MAX_RETRIES):
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, content=body, headers=headers)
-                if resp.status_code == 429:
-                    delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                    await _async_sleep(delay * 2)
-                    continue
+    async def _post_once() -> None:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, content=body, headers=headers)
+            if resp.status_code == 429:
                 resp.raise_for_status()
-                return
-        except Exception as exc:
-            last_exc = exc
-            if attempt < NOTIFICATION_DELIVERY_MAX_RETRIES - 1:
-                await _async_sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
-    raise last_exc or RuntimeError("Webhook delivery failed")
+            resp.raise_for_status()
 
-
-async def _async_sleep(sec: float) -> None:
-    import asyncio
-    await asyncio.sleep(sec)
+    await with_delivery_retries(
+        _post_once,
+        is_retryable=is_transient_http,
+        delay_for=rate_limit_delay,
+    )

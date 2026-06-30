@@ -12,7 +12,7 @@ export const ANALYTICS_PERIODS = [
 export function fmtUsd(n, d = 2) {
   if (n == null || Number.isNaN(Number(n))) return '—';
   const v = Number(n);
-  const sign = v > 0 ? '+' : '';
+  const sign = v < 0 ? '-' : (v > 0 ? '+' : '');
   return `${sign}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 }
 

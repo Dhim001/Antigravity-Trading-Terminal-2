@@ -55,9 +55,9 @@ async def evaluate_rules_for_bar(
             "bar_time": metrics.get("bar_time"),
             "metrics": metrics,
         }
-        channel_ids = rule.get("notify_channels") or None
-        if channel_ids:
-            channel_ids = [c for c in channel_ids if c]
+        channel_ids = rule.get("notify_channels")
+        if channel_ids is not None and not channel_ids:
+            continue
 
         queued = await emit_notification(
             NotificationEvent(
@@ -68,7 +68,7 @@ async def evaluate_rules_for_bar(
                 symbol=symbol.upper(),
                 payload=payload,
             ),
-            channel_ids=channel_ids or None,
+            channel_ids=channel_ids,
         )
         if queued:
             store.mark_triggered(rule["id"])

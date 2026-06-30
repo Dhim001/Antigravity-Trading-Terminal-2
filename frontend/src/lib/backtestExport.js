@@ -1,6 +1,11 @@
 /**
- * Export backtest report as printable PDF (browser Print → Save as PDF).
+ * Export backtest report as downloadable PDF.
  */
+
+import {
+  buildChartSectionHtml,
+  resolveBacktestPdfCandles,
+} from './backtestPdfChart';
 
 function escHtml(s) {
   return String(s ?? '')
@@ -38,7 +43,15 @@ function resolveSummary(results) {
   };
 }
 
-function buildReportHtml({ results, symbol, strategy, days, timeframe, trades = [] }) {
+function buildReportHtml({
+  results,
+  symbol,
+  strategy,
+  days,
+  timeframe,
+  trades = [],
+  chartSection = '',
+}) {
   const summary = resolveSummary(results);
   const meta = results?.meta ?? {};
   const rows = (trades.length ? trades : results?.trades ?? []).slice(0, 250);
@@ -119,6 +132,16 @@ function buildReportHtml({ results, symbol, strategy, days, timeframe, trades = 
     .stat { border: 1px solid #ddd; padding: 8px; border-radius: 4px; }
     .stat label { display: block; font-size: 9px; color: #666; text-transform: uppercase; }
     .stat strong { font-size: 13px; }
+    .charts { margin: 16px 0 20px; page-break-inside: avoid; }
+    .charts h3 { font-size: 12px; margin: 0 0 6px; font-weight: 700; }
+    .chart-wrap { border: 1px solid #ddd; border-radius: 6px; overflow: hidden; margin-bottom: 14px; background: #fff; }
+    .chart-wrap--equity { margin-bottom: 0; }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 9px; color: #555; margin-bottom: 6px; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .lg { display: inline-block; width: 10px; height: 10px; }
+    .lg-entry { background: #2563eb; clip-path: polygon(50% 100%, 0 0, 100% 0); }
+    .lg-exit-win { background: #d97706; border-radius: 50%; }
+    .lg-exit-loss { background: #dc2626; border-radius: 50%; }
     @media print {
       body { margin: 12mm; }
       h2 { page-break-before: auto; }
@@ -132,6 +155,7 @@ function buildReportHtml({ results, symbol, strategy, days, timeframe, trades = 
   <div class="stats">
     ${statRows.map(([k, v]) => `<div class="stat"><label>${escHtml(k)}</label><strong>${escHtml(v)}</strong></div>`).join('')}
   </div>
+  ${chartSection}
   <h2>Trades (${rows.length}${results?.trades_total > rows.length ? ` of ${results.trades_total}` : ''})</h2>
   <table>
     <thead><tr><th>Time</th><th>Side</th><th>Qty</th><th>Price</th><th>PnL</th><th>Reason</th></tr></thead>
@@ -142,52 +166,147 @@ function buildReportHtml({ results, symbol, strategy, days, timeframe, trades = 
 </html>`;
 }
 
-/**
- * Open system print dialog (user chooses Save as PDF).
- * Uses a hidden iframe to avoid popup blockers.
- * @returns {{ ok: boolean, error?: string }}
- */
-export function exportBacktestPdf({ results, symbol, strategy, days, timeframe, trades = [] }) {
-  if (!results) {
-    return { ok: false, error: 'No backtest results to export' };
+function backtestPdfFilename({ symbol, strategy, results }) {
+  const sym = String(symbol ?? results?.meta?.symbol ?? 'sym').replace(/[^\w.-]+/g, '_');
+  const strat = String(strategy ?? results?.meta?.strategy ?? 'strategy').replace(/[^\w.-]+/g, '_');
+  const date = new Date().toISOString().slice(0, 10);
+  return `backtest_${sym}_${strat}_${date}.pdf`;
+}
+
+async function buildBacktestReportHtml({
+  results,
+  symbol,
+  strategy,
+  days,
+  timeframe,
+  trades = [],
+}) {
+  const sym = symbol ?? results?.meta?.symbol;
+  const tf = timeframe ?? results?.meta?.timeframe ?? '1m';
+  const chartTrades = (trades.length ? trades : results?.trades ?? []);
+
+  let chartSection = '';
+  try {
+    const { candles, bucketSecs } = await resolveBacktestPdfCandles(sym, results?.meta, tf);
+    if (candles.length) {
+      chartSection = buildChartSectionHtml({
+        candles,
+        trades: chartTrades,
+        equityCurve: results?.equity_curve ?? [],
+        bucketSecs,
+        symbol: sym,
+        timeframe: tf,
+        escHtml,
+      });
+    }
+  } catch (err) {
+    console.warn('[exportBacktestPdf] chart section skipped:', err);
   }
 
-  const html = buildReportHtml({ results, symbol, strategy, days, timeframe, trades });
+  return buildReportHtml({
+    results,
+    symbol: sym,
+    strategy,
+    days,
+    timeframe: tf,
+    trades,
+    chartSection,
+  });
+}
+
+async function renderHtmlToPdf(html) {
+  const [{ jsPDF }, { default: html2canvas }] = await Promise.all([
+    import('jspdf'),
+    import('html2canvas'),
+  ]);
 
   const iframe = document.createElement('iframe');
-  iframe.setAttribute('title', 'Backtest PDF export');
-  iframe.style.cssText = 'position:fixed;width:0;height:0;border:0;visibility:hidden';
+  iframe.setAttribute('title', 'Backtest PDF render');
+  iframe.style.cssText = 'position:fixed;left:-10000px;top:0;width:794px;border:0;visibility:hidden';
   document.body.appendChild(iframe);
 
-  const win = iframe.contentWindow;
-  const doc = iframe.contentDocument ?? win?.document;
-  if (!doc || !win) {
+  const doc = iframe.contentDocument ?? iframe.contentWindow?.document;
+  if (!doc) {
     iframe.remove();
-    return { ok: false, error: 'Could not create print frame' };
+    throw new Error('Could not create PDF render frame');
   }
 
   doc.open();
   doc.write(html);
   doc.close();
 
-  const cleanup = () => {
-    setTimeout(() => iframe.remove(), 1500);
-  };
+  await new Promise((resolve) => setTimeout(resolve, 500));
 
-  const triggerPrint = () => {
-    try {
-      win.focus();
-      win.print();
-    } catch (err) {
-      iframe.remove();
-      console.error('[exportBacktestPdf]', err);
-    } finally {
-      cleanup();
-    }
-  };
+  const body = doc.body;
+  const canvas = await html2canvas(body, {
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: '#ffffff',
+    width: body.scrollWidth,
+    height: body.scrollHeight,
+    windowWidth: body.scrollWidth,
+    windowHeight: body.scrollHeight,
+  });
 
-  setTimeout(triggerPrint, 300);
-  return { ok: true };
+  iframe.remove();
+
+  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const imgWidth = pageWidth;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+  const imgData = canvas.toDataURL('image/jpeg', 0.92);
+
+  let heightLeft = imgHeight;
+  let position = 0;
+
+  pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+
+  while (heightLeft > 0) {
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+
+  return pdf;
+}
+
+/**
+ * Build report HTML and download as PDF.
+ * @returns {Promise<{ ok: boolean, error?: string, filename?: string }>}
+ */
+export async function exportBacktestPdf({
+  results,
+  symbol,
+  strategy,
+  days,
+  timeframe,
+  trades = [],
+}) {
+  if (!results) {
+    return { ok: false, error: 'No backtest results to export' };
+  }
+
+  try {
+    const html = await buildBacktestReportHtml({
+      results,
+      symbol,
+      strategy,
+      days,
+      timeframe,
+      trades,
+    });
+    const pdf = await renderHtmlToPdf(html);
+    const filename = backtestPdfFilename({ symbol, strategy, results });
+    pdf.save(filename);
+    return { ok: true, filename };
+  } catch (err) {
+    console.error('[exportBacktestPdf]', err);
+    return { ok: false, error: err?.message || 'Could not generate PDF' };
+  }
 }
 
 const SWEEP_CSV_COLUMNS = [

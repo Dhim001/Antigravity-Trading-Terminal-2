@@ -20,7 +20,7 @@ const GLOSSARY = [
   { term: 'Backtest sweep', def: 'Grid search over strategy parameters in Backtest Lab Optimizer tab — pick an objective (PnL, Sharpe, or profit factor) and optional min-trades filter.' },
   { term: 'Walk-forward', def: 'Out-of-sample validation in Backtest Lab Optimizer: single 70/30 split by default, or rolling mode (2–5 folds) that optimizes on each in-sample slice and aggregates OOS metrics.' },
   { term: 'Research mode', def: 'Backtest sim_mode that allows short positions (SELL opens shorts) without live risk gates — use for hypothesis testing only.' },
-  { term: 'PDF export', def: 'Download a formatted backtest report (metrics, equity chart, trade log) from Backtest Lab via the PDF button.' },
+  { term: 'PDF export', def: 'Download a formatted backtest report (metrics, price chart with trade markers, equity curve, trade log) from Backtest Lab via the PDF button.' },
   { term: 'Persistent backtest jobs', def: 'Long runs are stored server-side; after refresh or restart the UI resumes polling the active job automatically.' },
   { term: 'Multi-chart link groups', def: 'In multi-chart view, link All syncs symbol/timeframe across panes; Focused links only the active pane you change.' },
   { term: 'VWAP session', def: 'Volume-weighted average price indicator resets at UTC midnight each day — one session per calendar day.' },

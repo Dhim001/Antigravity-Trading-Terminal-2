@@ -7,6 +7,10 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from app.services.notifications.adapters.delivery_retry import (
+    is_transient_smtp,
+    with_delivery_retries,
+)
 from app.services.notifications.events import NotificationEvent
 
 logger = logging.getLogger(__name__)
@@ -65,16 +69,19 @@ async def deliver_email(event: NotificationEvent, config: dict) -> None:
     if event.bot_id:
         body_text += f"\nBot: {event.bot_id}"
 
-    await asyncio.to_thread(
-        _send_smtp,
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        use_tls=use_tls,
-        from_addr=from_addr,
-        to_addrs=to_addrs,
-        subject=event.title,
-        body_text=body_text,
-        body_html=(event.payload or {}).get("html_body"),
-    )
+    async def _send_once() -> None:
+        await asyncio.to_thread(
+            _send_smtp,
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            use_tls=use_tls,
+            from_addr=from_addr,
+            to_addrs=to_addrs,
+            subject=event.title,
+            body_text=body_text,
+            body_html=(event.payload or {}).get("html_body"),
+        )
+
+    await with_delivery_retries(_send_once, is_retryable=is_transient_smtp)

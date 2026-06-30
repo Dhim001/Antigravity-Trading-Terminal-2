@@ -44,9 +44,10 @@ class AlertRuleStoreTests(unittest.TestCase):
             threshold=70.0,
             signal=None,
             cooldown_sec=600,
-            notify_channels=[],
+            notify_channels=None,
         )
         self.assertEqual(row["symbol"], "BTCUSDT")
+        self.assertIsNone(row["notify_channels"])
         self.assertEqual(row["timeframe"], "1h")
         rules = store.list_rules(symbol="BTCUSDT")
         self.assertEqual(len(rules), 1)
@@ -63,7 +64,7 @@ class AlertRuleStoreTests(unittest.TestCase):
             threshold=100.0,
             signal=None,
             cooldown_sec=300,
-            notify_channels=[],
+            notify_channels=None,
         )
         self.assertFalse(store.is_in_cooldown(row))
         store.mark_triggered(row["id"])
@@ -122,7 +123,7 @@ class AlertRuleEngineTests(unittest.IsolatedAsyncioTestCase):
             threshold=1.0,
             signal=None,
             cooldown_sec=60,
-            notify_channels=[],
+            notify_channels=None,
         )
 
         with patch.object(engine, "evaluate_rules_for_bar", new_callable=AsyncMock) as mock_eval:
@@ -166,7 +167,7 @@ class AlertRuleDispatchTests(unittest.IsolatedAsyncioTestCase):
             threshold=100.0,
             signal=None,
             cooldown_sec=60,
-            notify_channels=[],
+            notify_channels=None,
         )
         candles = make_trending_candles(80)
 
@@ -182,6 +183,94 @@ class AlertRuleDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         store.delete_rule(rule["id"])
         notify_store.delete_channel(ch["id"])
+
+    async def test_empty_notify_channels_skips_emit(self):
+        from app.services.notifications import store as notify_store
+        from app.services.notifications.alert_rules.engine import evaluate_rules_for_bar
+
+        notify_store.upsert_channel(
+            channel_id=None,
+            channel_type="webhook",
+            name="Alerts",
+            enabled=True,
+            event_types=["alert_rule"],
+            config={"url": "https://example.com/hook", "preset": "generic"},
+        )
+        rule = store.upsert_rule(
+            rule_id=None,
+            name="Muted",
+            enabled=True,
+            symbol="TEST",
+            timeframe="1m",
+            condition_type=atypes.RSI_BELOW,
+            threshold=100.0,
+            signal=None,
+            cooldown_sec=60,
+            notify_channels=[],
+        )
+        candles = make_trending_candles(80)
+
+        with patch(
+            "app.services.notifications.adapters.webhook.deliver_webhook",
+            new_callable=AsyncMock,
+        ) as mock_deliver:
+            count = await evaluate_rules_for_bar("TEST", "1m", candles)
+            self.assertEqual(count, 0)
+            mock_deliver.assert_not_called()
+
+        store.delete_rule(rule["id"])
+        for ch in notify_store.list_channels():
+            notify_store.delete_channel(ch["id"])
+
+
+class AlertRuleChannelTargetTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+
+    def test_notify_channels_encoding(self):
+        row = store.upsert_rule(
+            rule_id=None,
+            name="Targeted",
+            enabled=True,
+            symbol="ETHUSDT",
+            timeframe="1m",
+            condition_type=atypes.PRICE_ABOVE,
+            threshold=1.0,
+            signal=None,
+            cooldown_sec=60,
+            notify_channels=["ch-1", "ch-2"],
+        )
+        self.assertEqual(row["notify_channels"], ["ch-1", "ch-2"])
+        none_row = store.upsert_rule(
+            rule_id=None,
+            name="All",
+            enabled=True,
+            symbol="ETHUSDT",
+            timeframe="1m",
+            condition_type=atypes.PRICE_ABOVE,
+            threshold=1.0,
+            signal=None,
+            cooldown_sec=60,
+            notify_channels=None,
+        )
+        self.assertIsNone(none_row["notify_channels"])
+        empty_row = store.upsert_rule(
+            rule_id=None,
+            name="None",
+            enabled=True,
+            symbol="ETHUSDT",
+            timeframe="1m",
+            condition_type=atypes.PRICE_ABOVE,
+            threshold=1.0,
+            signal=None,
+            cooldown_sec=60,
+            notify_channels=[],
+        )
+        self.assertEqual(empty_row["notify_channels"], [])
+        store.delete_rule(row["id"])
+        store.delete_rule(none_row["id"])
+        store.delete_rule(empty_row["id"])
 
 
 if __name__ == "__main__":

@@ -5,11 +5,18 @@ import {
   calendarHeatmapData,
   calendarPnlRange,
   correlationStrengthLabel,
+  fmtUsd,
   nextSortState,
   sortBreakdownRows,
 } from './helpers';
 
 describe('analytics helpers', () => {
+  it('fmtUsd keeps negative sign', () => {
+    expect(fmtUsd(-1234.5)).toBe('-$1,234.50');
+    expect(fmtUsd(1234.5)).toBe('+$1,234.50');
+    expect(fmtUsd(0)).toBe('$0.00');
+  });
+
   it('buildPortfolioInvalidateKey changes when trades or symbols update', () => {
     const base = buildPortfolioInvalidateKey({
       tradeHistory: [],

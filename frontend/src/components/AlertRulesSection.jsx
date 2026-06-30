@@ -39,10 +39,21 @@ const EMPTY_FORM = {
   signal: 'BUY',
   cooldown_sec: '300',
   enabled: true,
+  notify_all_channels: true,
+  notify_channels: [],
 };
 
 function conditionLabel(type) {
   return CONDITIONS.find((c) => c.id === type)?.label || type;
+}
+
+function channelTargetLabel(rule, channelList) {
+  const ids = rule.notify_channels;
+  if (ids == null) return 'All channels';
+  if (!ids.length) return 'No channels';
+  return ids
+    .map((id) => channelList.find((c) => c.id === id)?.name || id.slice(0, 8))
+    .join(', ');
 }
 
 export default function AlertRulesSection({ activeSymbol = '' }) {
@@ -101,6 +112,10 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
         return;
       }
     }
+    if (!form.notify_all_channels && form.notify_channels.length === 0) {
+      toast.error('Select at least one channel or enable “All channels”');
+      return;
+    }
     try {
       const res = await invokeHttpAction(Action.ALERT_RULE_UPSERT, {
         id: form.id,
@@ -110,6 +125,8 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
         condition_type: form.condition_type,
         enabled: form.enabled,
         cooldown_sec: parseInt(form.cooldown_sec, 10) || 300,
+        notify_all_channels: form.notify_all_channels,
+        notify_channels: form.notify_all_channels ? undefined : form.notify_channels,
         ...(selectedCondition.needsThreshold ? { threshold: Number(form.threshold) } : {}),
         ...(selectedCondition.needsSignal ? { signal: form.signal } : {}),
       });
@@ -141,6 +158,7 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
   };
 
   const startEdit = (rule) => {
+    const allChannels = rule.notify_channels == null;
     setEditing(true);
     setForm({
       id: rule.id,
@@ -152,6 +170,19 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
       signal: rule.signal || 'BUY',
       cooldown_sec: String(rule.cooldown_sec || 300),
       enabled: rule.enabled !== false,
+      notify_all_channels: allChannels,
+      notify_channels: allChannels ? [] : (rule.notify_channels || []),
+    });
+  };
+
+  const alertChannels = channels.filter((c) => (c.event_types || []).includes('alert_rule'));
+
+  const toggleNotifyChannel = (channelId) => {
+    setForm((f) => {
+      const set = new Set(f.notify_channels);
+      if (set.has(channelId)) set.delete(channelId);
+      else set.add(channelId);
+      return { ...f, notify_channels: [...set] };
     });
   };
 
@@ -192,6 +223,9 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
               <Badge variant="outline">{rule.symbol}</Badge>
               <Badge variant="secondary">{formatBarTimeframeLabel(rule.timeframe)}</Badge>
               {!rule.enabled && <Badge variant="secondary">Off</Badge>}
+              <span className="text-muted-foreground truncate max-w-[160px]">
+                {channelTargetLabel(rule, channels)}
+              </span>
               <span className="text-muted-foreground truncate max-w-[200px]">
                 {conditionLabel(rule.condition_type)}
                 {rule.threshold != null ? ` ${rule.threshold}` : ''}
@@ -276,6 +310,37 @@ export default function AlertRulesSection({ activeSymbol = '' }) {
         <div className="space-y-1.5">
           <Label className="text-xs">Cooldown (seconds)</Label>
           <Input className="h-8 text-xs font-mono w-32" value={form.cooldown_sec} onChange={(e) => setForm((f) => ({ ...f, cooldown_sec: e.target.value }))} />
+        </div>
+        <div className="space-y-2">
+          <Label className="text-xs">Notification channels</Label>
+          <label className="flex items-center gap-2 text-xs cursor-pointer">
+            <Checkbox
+              checked={form.notify_all_channels}
+              onCheckedChange={(v) => setForm((f) => ({
+                ...f,
+                notify_all_channels: Boolean(v),
+                notify_channels: v ? [] : f.notify_channels,
+              }))}
+            />
+            All channels with &quot;Alert rules&quot; enabled
+          </label>
+          {!form.notify_all_channels && (
+            <div className="flex flex-wrap gap-2 pl-1">
+              {alertChannels.length === 0 ? (
+                <span className="text-xs text-muted-foreground">No channels subscribe to alert rules.</span>
+              ) : (
+                alertChannels.map((ch) => (
+                  <label key={ch.id} className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <Checkbox
+                      checked={form.notify_channels.includes(ch.id)}
+                      onCheckedChange={() => toggleNotifyChannel(ch.id)}
+                    />
+                    {ch.name}
+                  </label>
+                ))
+              )}
+            </div>
+          )}
         </div>
         <label className="flex items-center gap-2 text-xs cursor-pointer">
           <Checkbox checked={form.enabled} onCheckedChange={(v) => setForm((f) => ({ ...f, enabled: Boolean(v) }))} />

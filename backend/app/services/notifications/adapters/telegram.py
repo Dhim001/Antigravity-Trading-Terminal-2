@@ -6,6 +6,11 @@ import logging
 
 import httpx
 
+from app.services.notifications.adapters.delivery_retry import (
+    is_transient_http,
+    rate_limit_delay,
+    with_delivery_retries,
+)
 from app.services.notifications.events import NotificationEvent
 
 logger = logging.getLogger(__name__)
@@ -52,9 +57,24 @@ async def deliver_telegram(event: NotificationEvent, config: dict) -> None:
     if parse_mode:
         payload["parse_mode"] = parse_mode
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(url, json=payload)
-        data = resp.json()
-        if not resp.is_success or not data.get("ok"):
-            desc = data.get("description") or resp.text
-            raise RuntimeError(f"Telegram API error: {desc}")
+    async def _send_once() -> None:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload)
+            data = resp.json()
+            if resp.status_code == 429:
+                resp.raise_for_status()
+            if not resp.is_success or not data.get("ok"):
+                desc = data.get("description") or resp.text
+                if resp.status_code in (500, 502, 503, 504):
+                    raise httpx.HTTPStatusError(
+                        desc,
+                        request=resp.request,
+                        response=resp,
+                    )
+                raise RuntimeError(f"Telegram API error: {desc}")
+
+    await with_delivery_retries(
+        _send_once,
+        is_retryable=is_transient_http,
+        delay_for=rate_limit_delay,
+    )

@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { StatCard } from '@/components/StatCard';
 import BacktestMiniChart from './BacktestMiniChart';
+import BacktestPriceChart from './BacktestPriceChart';
 import BacktestComparePanel from './BacktestComparePanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
@@ -462,9 +463,18 @@ export default function BacktestResultsPanel({
     );
   }, [displayTrades, results, symbol, strategy]);
 
-  const onExportPdf = useCallback(() => {
-    const exportTrades = fullTrades ?? previewTrades;
-    const outcome = exportBacktestPdf({
+  const onExportPdf = useCallback(async () => {
+    let exportTrades = fullTrades ?? previewTrades;
+    if (results?.run_id && (results.trades_total ?? 0) > exportTrades.length) {
+      try {
+        exportTrades = await fetchBacktestTrades(results.run_id);
+      } catch {
+        /* use preview trades */
+      }
+    }
+
+    const toastId = toast.loading('Preparing PDF with chart…');
+    const outcome = await exportBacktestPdf({
       results,
       symbol: symbol ?? results?.meta?.symbol,
       strategy: strategy ?? results?.meta?.strategy,
@@ -472,11 +482,13 @@ export default function BacktestResultsPanel({
       timeframe: backtestTimeframe ?? results?.meta?.timeframe,
       trades: exportTrades,
     });
+    toast.dismiss(toastId);
+
     if (!outcome?.ok) {
-      toast.error(outcome?.error || 'Could not open PDF export');
+      toast.error(outcome?.error || 'Could not download PDF');
       return;
     }
-    toast.message('Print dialog opened — choose Save as PDF');
+    toast.success(outcome.filename ? `Downloaded ${outcome.filename}` : 'PDF downloaded');
   }, [fullTrades, previewTrades, results, symbol, strategy, backtestDays, backtestTimeframe]);
 
   const loadSavedRun = useCallback(async (runId) => {
@@ -610,7 +622,7 @@ export default function BacktestResultsPanel({
             size="xs"
             className="h-6 text-[0.62rem]"
             onClick={onExportPdf}
-            title="Print / save as PDF"
+            title="Download PDF report with price chart and trades"
           >
             <FileText data-icon="inline-start" />
             PDF
@@ -657,13 +669,20 @@ export default function BacktestResultsPanel({
       {isFull && (
         <div className="algo-backtest-lab__tools-grid">
           <BacktestComparePanel
-            currentRun={{ run_id: results.run_id, summary }}
+            currentRun={{ run_id: results.run_id, results }}
             recentRuns={recentRuns}
           />
         </div>
       )}
 
       <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
+        <BacktestPriceChart
+          symbol={symbol ?? results?.meta?.symbol}
+          meta={results?.meta}
+          timeframe={backtestTimeframe ?? results?.meta?.timeframe ?? '1m'}
+          trades={displayTrades}
+          className={isFull ? 'backtest-price-chart-wrap--lab' : undefined}
+        />
         <BacktestMiniChart
           equityCurve={results.equity_curve}
           drawdownCurve={results.drawdown_curve}

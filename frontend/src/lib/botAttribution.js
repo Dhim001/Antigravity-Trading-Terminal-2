@@ -1,4 +1,5 @@
 import { toUnixSeconds } from '../services/candleBuffer';
+import { getStrategyMeta } from '../config/strategies';
 
 /** Short bot id for table badges. */
 export function shortBotId(id) {
@@ -6,12 +7,35 @@ export function shortBotId(id) {
   return String(id).slice(0, 8);
 }
 
-/** Index active bots by id and by symbol (prefers RUNNING over PAUSED). */
-export function buildBotLookup(activeBots = []) {
+const BOT_STATUS_LABEL = {
+  RUNNING: 'Running',
+  PAUSED: 'Paused',
+  STOPPED: 'Stopped',
+};
+
+/** Index bots by id and by symbol (prefers RUNNING over PAUSED). */
+export function buildBotLookup(activeBots = [], botHistory = []) {
   const byId = {};
   const bySymbol = {};
-  for (const bot of activeBots) {
+  const seen = new Set();
+  const all = [...(activeBots || []), ...(botHistory || [])];
+
+  for (const bot of all) {
     if (!bot?.id) continue;
+    if (seen.has(bot.id)) {
+      const prev = byId[bot.id];
+      const statusRank = (s) => (s === 'RUNNING' ? 3 : s === 'PAUSED' ? 2 : 1);
+      const primary = statusRank(bot.status) > statusRank(prev.status) ? bot : prev;
+      const secondary = primary === bot ? prev : bot;
+      byId[bot.id] = {
+        ...secondary,
+        ...primary,
+        strategy: primary.strategy || secondary.strategy,
+        timeframe: primary.timeframe || secondary.timeframe,
+      };
+      continue;
+    }
+    seen.add(bot.id);
     byId[bot.id] = bot;
     if (bot.status === 'STOPPED') continue;
     const prev = bySymbol[bot.symbol];
@@ -37,6 +61,107 @@ export function parseSignalBarTime(trade) {
   if (parts.length < 3 || parts[1] === 'sltp') return null;
   const sec = Number(parts[1]);
   return Number.isFinite(sec) && sec > 1e9 ? Math.floor(sec) : null;
+}
+
+/**
+ * Classify how a bot trade was triggered from signal_id + side.
+ * @returns {{ type: 'risk'|'close'|'entry'|'unknown', label: string }}
+ */
+export function parseTradeTrigger(signalId, side) {
+  if (!signalId || typeof signalId !== 'string') {
+    if (side === 'SELL') return { type: 'close', label: 'Exit' };
+    if (side === 'BUY') return { type: 'entry', label: 'Entry' };
+    return { type: 'unknown', label: 'Bot order' };
+  }
+
+  const parts = signalId.split(':');
+  if (parts.length >= 3 && parts[1] === 'sltp') {
+    return { type: 'risk', label: 'Stop / TP' };
+  }
+
+  const kind = String(parts[2] || '').toUpperCase();
+  if (kind === 'CLOSE') return { type: 'close', label: 'Strategy exit' };
+  if (kind === 'BUY' || kind === 'SELL' || kind.startsWith('ENTRY')) {
+    return { type: 'entry', label: 'Signal entry' };
+  }
+  if (side === 'SELL') return { type: 'close', label: 'Exit' };
+  if (side === 'BUY') return { type: 'entry', label: 'Entry' };
+  return { type: 'unknown', label: 'Bot order' };
+}
+
+/**
+ * Rich attribution for a blotter row — strategy, trigger, bot lifecycle.
+ * @returns {{
+ *   category: 'manual'|'bot_signal'|'bot_close'|'bot_risk'|'bot_unknown',
+ *   kind: 'manual'|'bot',
+ *   label: string,
+ *   sublabel: string,
+ *   trigger: string,
+ *   strategy: string|null,
+ *   botId: string|null,
+ *   botStatus: string|null,
+ *   timeframe: string|null,
+ * }}
+ */
+export function tradeSourceDetail(trade, botLookup) {
+  if (!trade?.bot_id) {
+    return {
+      category: 'manual',
+      kind: 'manual',
+      label: 'Manual',
+      sublabel: 'User-placed order',
+      trigger: 'Manual',
+      strategy: null,
+      botId: null,
+      botStatus: null,
+      timeframe: null,
+    };
+  }
+
+  const bot = botLookup?.byId?.[trade.bot_id];
+  const strategy = bot?.strategy || null;
+  const meta = getStrategyMeta(strategy);
+  const trigger = parseTradeTrigger(trade.signal_id, trade.side);
+  const timeframe = bot?.timeframe || null;
+  const status = bot?.status || null;
+  const statusLabel = BOT_STATUS_LABEL[status] || null;
+
+  const category = trigger.type === 'risk'
+    ? 'bot_risk'
+    : trigger.type === 'close'
+      ? 'bot_close'
+      : trigger.type === 'entry'
+        ? 'bot_signal'
+        : 'bot_unknown';
+
+  const sublabel = [
+    trigger.label,
+    timeframe,
+    statusLabel,
+    shortBotId(trade.bot_id),
+  ].filter(Boolean).join(' · ');
+
+  return {
+    category,
+    kind: 'bot',
+    label: meta.label,
+    sublabel,
+    trigger: trigger.label,
+    strategy,
+    botId: trade.bot_id,
+    botStatus: status,
+    timeframe,
+  };
+}
+
+/** @deprecated Prefer tradeSourceDetail — kept for CSV and legacy callers. */
+export function tradeSourceLabel(trade, botLookup) {
+  const detail = tradeSourceDetail(trade, botLookup);
+  return {
+    kind: detail.kind,
+    label: detail.kind === 'bot' ? (detail.strategy || detail.label) : detail.label,
+    botId: detail.botId,
+  };
 }
 
 function resolveOwnerBot(botId, symbol, size, activeBots) {
@@ -89,13 +214,6 @@ export function getPositionBot(symbol, position, { activeBots = [], tradeHistory
     .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
   if (!recent.length) return null;
   return resolveOwnerBot(recent[0].bot_id, symbol, null, activeBots);
-}
-
-export function tradeSourceLabel(trade, botLookup) {
-  if (!trade?.bot_id) return { kind: 'manual', label: 'Manual' };
-  const bot = botLookup.byId[trade.bot_id];
-  const strat = bot?.strategy || 'Bot';
-  return { kind: 'bot', label: strat, botId: trade.bot_id };
 }
 
 /** Parse ISO / epoch / naive UTC timestamps from backend. */

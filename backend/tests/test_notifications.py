@@ -72,6 +72,60 @@ class DigestStateTests(unittest.TestCase):
         self.assertEqual(system_state.get_last_digest_date(), "2026-06-29")
 
 
+class EmitNotificationTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        init_db()
+
+    async def test_empty_channel_ids_returns_zero(self):
+        from app.services.notifications.dispatcher import emit_notification
+
+        notify_store.upsert_channel(
+            channel_id=None,
+            channel_type="webhook",
+            name="Hook",
+            enabled=True,
+            event_types=["trade_fill"],
+            config={"url": "https://example.com/hook", "preset": "generic"},
+        )
+        queued = await emit_notification(
+            NotificationEvent(
+                event_type="trade_fill",
+                title="Fill",
+                body="Test",
+                severity="info",
+            ),
+            channel_ids=[],
+        )
+        self.assertEqual(queued, 0)
+        for ch in notify_store.list_channels():
+            notify_store.delete_channel(ch["id"])
+
+
+class DeliveryRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retries_transient_http(self):
+        from app.services.notifications.adapters.delivery_retry import (
+            is_transient_http,
+            with_delivery_retries,
+        )
+
+        attempts = {"n": 0}
+
+        async def flaky() -> str:
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                import httpx
+
+                req = httpx.Request("POST", "https://example.com")
+                resp = httpx.Response(503, request=req)
+                raise httpx.HTTPStatusError("down", request=req, response=resp)
+            return "ok"
+
+        result = await with_delivery_retries(flaky, is_retryable=is_transient_http, max_retries=3)
+        self.assertEqual(result, "ok")
+        self.assertEqual(attempts["n"], 2)
+
+
 class NotificationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

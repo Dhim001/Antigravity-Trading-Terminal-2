@@ -4,41 +4,20 @@
 import React, { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import {
+  BACKTEST_COMPARE_METRICS,
+  formatMetricDelta,
+  formatSignedValue,
+  metricValue,
+  resolveBacktestSummary,
+  TONE_CLASS,
+} from '@/lib/metricComparison';
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-function fmtDelta(current, baseline, { prefix = '', suffix = '', higherIsBetter = true } = {}) {
-  if (current == null || baseline == null) return '—';
-  const delta = Number(current) - Number(baseline);
-  if (!Number.isFinite(delta) || Math.abs(delta) < 1e-9) return '±0';
-  const sign = delta > 0 ? '+' : '';
-  const tone = higherIsBetter
-    ? (delta > 0 ? 'text-trading-up' : 'text-trading-down')
-    : (delta < 0 ? 'text-trading-up' : 'text-trading-down');
-  return (
-    <span className={cn('num-mono', tone)}>
-      {sign}{prefix}{delta.toFixed(2)}{suffix}
-    </span>
-  );
-}
-
-const METRICS = [
-  { key: 'total_pnl', label: 'PnL', prefix: '$', higherIsBetter: true },
-  { key: 'return_pct', label: 'Return', suffix: '%', higherIsBetter: true },
-  { key: 'win_rate', label: 'Win rate', suffix: '%', higherIsBetter: true },
-  { key: 'max_drawdown', label: 'Max DD', suffix: '%', higherIsBetter: false },
-  { key: 'profit_factor', label: 'Profit factor', higherIsBetter: true },
-  { key: 'sharpe_ratio', label: 'Sharpe', higherIsBetter: true },
-];
-
-function metricValue(summary, key) {
-  const v = summary?.[key];
-  return v == null ? null : Number(v);
-}
 
 export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
   const candidates = useMemo(
@@ -53,9 +32,17 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
     [candidates, compareId],
   );
 
-  if (!currentRun || candidates.length === 0) return null;
+  const currentSummary = useMemo(
+    () => resolveBacktestSummary(currentRun?.results ?? currentRun),
+    [currentRun],
+  );
 
-  const currentSummary = currentRun.summary ?? {};
+  const baselineSummary = useMemo(
+    () => resolveBacktestSummary(baseline),
+    [baseline],
+  );
+
+  if (!currentRun || candidates.length === 0) return null;
 
   return (
     <div className="algo-backtest-compare">
@@ -82,24 +69,32 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
               <th>Metric</th>
               <th className="text-right">Current</th>
               <th className="text-right">Baseline</th>
-              <th className="text-right">Δ</th>
+              <th className="text-right">Δ vs baseline</th>
             </tr>
           </thead>
           <tbody>
-            {METRICS.map(({ key, label, prefix = '', suffix = '', higherIsBetter }) => {
+            {BACKTEST_COMPARE_METRICS.map(({ key, label, prefix = '', suffix = '', higherIsBetter }) => {
               const cur = metricValue(currentSummary, key);
-              const base = metricValue(baseline.summary, key);
+              const base = metricValue(baselineSummary, key);
+              const { text, tone } = formatMetricDelta(cur, base, {
+                prefix,
+                suffix,
+                higherIsBetter,
+              });
+              const curTone = (key === 'total_pnl' || key === 'return_pct')
+                ? ((cur ?? 0) >= 0 ? 'up' : 'down')
+                : 'neutral';
               return (
                 <tr key={key}>
                   <td>{label}</td>
-                  <td className="num-mono text-right">
-                    {cur != null ? `${prefix}${cur.toFixed(2)}${suffix}` : '—'}
+                  <td className={cn('num-mono text-right', TONE_CLASS[curTone] ?? TONE_CLASS.neutral)}>
+                    {formatSignedValue(cur, { prefix, suffix })}
                   </td>
                   <td className="num-mono text-right text-muted-foreground">
-                    {base != null ? `${prefix}${base.toFixed(2)}${suffix}` : '—'}
+                    {formatSignedValue(base, { prefix, suffix })}
                   </td>
-                  <td className="text-right">
-                    {fmtDelta(cur, base, { prefix, suffix, higherIsBetter })}
+                  <td className={cn('num-mono text-right', TONE_CLASS[tone])}>
+                    {text}
                   </td>
                 </tr>
               );
@@ -107,6 +102,9 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
           </tbody>
         </table>
       )}
+      <p className="algo-backtest-compare__hint text-[0.58rem] text-muted-foreground">
+        Δ is current minus baseline — green means better on that metric (e.g. −$200 vs −$800 is +$600).
+      </p>
     </div>
   );
 }

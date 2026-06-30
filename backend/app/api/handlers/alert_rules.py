@@ -8,13 +8,27 @@ from app.api.responses import send_order_result
 from app.api.router import route
 from app.services.notifications.alert_rules import store as alert_store
 from app.services.notifications.alert_rules import types as atypes
+from app.services.notifications.alert_rules.store import _UNSET
 
 
-def _parse_channels(raw) -> list[str]:
+def _parse_notify_channels(msg: dict, existing_rule: dict | None) -> list[str] | None | object:
+    """Return channel ids, None for all channels, or _UNSET to preserve on update."""
+    if "notify_channels" not in msg and "notify_all_channels" not in msg:
+        return _UNSET if existing_rule else None
+
+    if msg.get("notify_all_channels") is True:
+        return None
+    if msg.get("notify_all_channels") is False:
+        raw = msg.get("notify_channels")
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+        return []
+
+    raw = msg.get("notify_channels")
+    if raw is None:
+        return None
     if isinstance(raw, list):
         return [str(x) for x in raw if x]
-    if isinstance(raw, str) and raw.strip():
-        return [raw.strip()]
     return []
 
 
@@ -44,6 +58,7 @@ async def alert_rule_upsert(ctx: RequestContext) -> None:
     condition_type = (msg.get("condition_type") or atypes.PRICE_ABOVE).strip()
     threshold_raw = msg.get("threshold")
     threshold = float(threshold_raw) if threshold_raw not in (None, "") else None
+    existing = alert_store.get_rule(msg.get("id")) if msg.get("id") else None
 
     try:
         row = alert_store.upsert_rule(
@@ -56,7 +71,7 @@ async def alert_rule_upsert(ctx: RequestContext) -> None:
             threshold=threshold,
             signal=(msg.get("signal") or "").strip().upper() or None,
             cooldown_sec=int(msg.get("cooldown_sec") or 300),
-            notify_channels=_parse_channels(msg.get("notify_channels")),
+            notify_channels=_parse_notify_channels(msg, existing),
         )
         await send_order_result(ctx, {
             "status": "success",

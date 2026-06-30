@@ -3,10 +3,10 @@
  * Trade blotter — embedded dock tab or expanded via Sheet (ResizableDock).
  */
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
-import { cn } from '@/lib/utils';
 import {
   X, Download, RefreshCw,
   TrendingUp, TrendingDown, BarChart2, Award, Target, Activity,
@@ -21,7 +21,8 @@ import {
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
-import { buildBotLookup, parseTradeTimestamp, tradeSourceLabel } from '@/lib/botAttribution';
+import { buildBotLookup, parseTradeTimestamp, tradeSourceDetail } from '@/lib/botAttribution';
+import TradeOriginCell from './TradeOriginCell';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   DataTableRoot,
@@ -64,13 +65,18 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
   const tradeHistory = useStore((state) => state.tradeHistory);
   const tradeStats = useStore((state) => state.tradeStats);
   const activeBots = useStore((state) => state.activeBots);
-  const botLookup = useMemo(() => buildBotLookup(activeBots), [activeBots]);
+  const botHistory = useStore((state) => state.botHistory);
+  const botLookup = useMemo(
+    () => buildBotLookup(activeBots, botHistory),
+    [activeBots, botHistory],
+  );
 
   const [loading, setLoading] = useState(false);
   const [symFilter, setSymFilter] = useState('ALL');
   const [sideFilter, setSide] = useState('ALL');
   const [statFilter, setStat] = useState('ALL');
   const [sourceFilter, setSourceFilter] = useState('ALL');
+  const [originFilter, setOriginFilter] = useState('ALL');
   const [dateRange, setDateRange] = useState('All');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'timestamp', dir: 'desc' });
@@ -81,6 +87,10 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
   }, []);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
+
+  useEffect(() => {
+    sendAction(Action.BOT_LIST_ALL, { limit: 200 });
+  }, []);
 
   useEffect(() => {
     if (tradeHistory.length > 0 || tradeStats) setLoading(false);
@@ -109,13 +119,29 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     if (statFilter !== 'ALL') rows = rows.filter(t => t.status === statFilter);
     if (sourceFilter === 'BOT') rows = rows.filter(t => t.bot_id);
     if (sourceFilter === 'MANUAL') rows = rows.filter(t => !t.bot_id);
+    if (originFilter !== 'ALL') {
+      rows = rows.filter((t) => {
+        const cat = tradeSourceDetail(t, botLookup).category;
+        if (originFilter === 'SIGNAL') return cat === 'bot_signal' || cat === 'bot_close';
+        if (originFilter === 'RISK') return cat === 'bot_risk';
+        if (originFilter === 'MANUAL') return cat === 'manual';
+        return true;
+      });
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      rows = rows.filter(t =>
-        t.symbol.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q) ||
-        t.type.toLowerCase().includes(q),
-      );
+      rows = rows.filter(t => {
+        const origin = tradeSourceDetail(t, botLookup);
+        return (
+          t.symbol.toLowerCase().includes(q) ||
+          t.id.toLowerCase().includes(q) ||
+          t.type.toLowerCase().includes(q) ||
+          (origin.label || '').toLowerCase().includes(q) ||
+          (origin.trigger || '').toLowerCase().includes(q) ||
+          (origin.strategy || '').toLowerCase().includes(q) ||
+          (origin.botId || '').toLowerCase().includes(q)
+        );
+      });
     }
     return [...rows].sort((a, b) => {
       let av = a[sort.field], bv = b[sort.field];
@@ -124,20 +150,24 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
       if (typeof av === 'string') av = av.toLowerCase(), bv = String(bv).toLowerCase();
       return sort.dir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
     });
-  }, [tradeHistory, cutoff, symFilter, sideFilter, statFilter, sourceFilter, search, sort]);
+  }, [tradeHistory, cutoff, symFilter, sideFilter, statFilter, sourceFilter, originFilter, search, sort, botLookup]);
 
   const { onScroll: onHistoryScroll, window: rowWindow } = useVirtualRows(filtered, {
-    rowHeight: 34,
+    rowHeight: 42,
     overscan: 12,
   });
 
   const exportCSV = () => {
-    const headers = ['Time', 'ID', 'Symbol', 'Source', 'Type', 'Side', 'Status', 'Qty', 'Fill Price', 'Value', 'Cost Basis', 'Realized P&L'];
+    const headers = [
+      'Time', 'ID', 'Symbol', 'Origin', 'Strategy', 'Trigger', 'Bot ID',
+      'Type', 'Side', 'Status', 'Qty', 'Fill Price', 'Value', 'Cost Basis', 'Realized P&L',
+    ];
     const rows = filtered.map(t => {
-      const src = tradeSourceLabel(t, botLookup);
+      const origin = tradeSourceDetail(t, botLookup);
       return [
       new Date(t.timestamp).toISOString(),
-      t.id, t.symbol, src.label, t.type, t.side, t.status,
+      t.id, t.symbol, origin.label, origin.strategy || '', origin.trigger,
+      origin.botId || '', t.type, t.side, t.status,
       t.filled_quantity ?? t.quantity,
       t.average_fill_price ?? t.price ?? '',
       t.trade_value ?? '', t.cost_basis ?? '', t.realized_pnl ?? '',
@@ -163,6 +193,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     sideFilter !== 'ALL',
     statFilter !== 'ALL',
     sourceFilter !== 'ALL',
+    originFilter !== 'ALL',
     Boolean(search.trim()),
   ].filter(Boolean).length;
 
@@ -277,7 +308,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
           <div className="history-filter-bar__search">
             <Input
               type="text"
-              placeholder="Search symbol, ID, type…"
+              placeholder="Search symbol, strategy, bot…"
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="terminal-search-input"
@@ -378,6 +409,28 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               ))}
             </ToggleGroup>
           </div>
+          <div className="history-filter-group">
+            <span className="history-filter-group__label">Origin</span>
+            <ToggleGroup
+              type="single"
+              size="sm"
+              spacing={1}
+              value={originFilter}
+              onValueChange={v => v && setOriginFilter(v)}
+              className="history-filter-group__controls"
+            >
+              {[
+                { value: 'ALL', label: 'All' },
+                { value: 'SIGNAL', label: 'Strategy' },
+                { value: 'RISK', label: 'Stop/TP' },
+                { value: 'MANUAL', label: 'Manual' },
+              ].map(({ value, label }) => (
+                <ToggleGroupItem key={value} value={value} className="history-filter-chip">
+                  {label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
         </div>
       </div>
 
@@ -395,7 +448,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               <tr className="border-b border-border hover:bg-transparent">
                 <SortableDataTableHead field="timestamp" sort={sort} onSort={handleSort} label="Time" />
                 <SortableDataTableHead field="symbol" sort={sort} onSort={handleSort} label="Symbol" />
-                <DataTableHead>Source</DataTableHead>
+                <DataTableHead className="min-w-[9.5rem]">Origin</DataTableHead>
                 <SortableDataTableHead field="side" sort={sort} onSort={handleSort} label="Side" />
                 <SortableDataTableHead field="type" sort={sort} onSort={handleSort} label="Type" />
                 <SortableDataTableHead field="status" sort={sort} onSort={handleSort} label="Status" />
@@ -410,7 +463,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
               {rowWindow.slice.map(trade => {
                 const meta = STATUS_META[trade.status] || STATUS_META.PENDING;
                 const StatusIcon = meta.icon;
-                const src = tradeSourceLabel(trade, botLookup);
+                const origin = tradeSourceDetail(trade, botLookup);
                 const qty = trade.filled_quantity ?? trade.quantity;
                 const fp = trade.average_fill_price || trade.price;
                 const pdec = (
@@ -434,10 +487,8 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
                       </span>
                     </DataTableCell>
                     <DataTableCell><span className="font-bold">{trade.symbol}</span></DataTableCell>
-                    <DataTableCell>
-                      <Badge variant={src.kind === 'bot' ? 'secondary' : 'outline'} className="text-[0.58rem]">
-                        {src.label}
-                      </Badge>
+                    <DataTableCell className="align-top py-1.5">
+                      <TradeOriginCell detail={origin} />
                     </DataTableCell>
                     <DataTableCell>
                       <Badge variant={trade.side === 'BUY' ? 'buy' : 'sell'}>{trade.side}</Badge>
