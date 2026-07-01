@@ -87,20 +87,66 @@ function Stop-ListenerOnPort {
             $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
             if ($proc) {
                 Write-Host "  Stopping $($proc.ProcessName) (PID $procId) on port $Port" -ForegroundColor DarkYellow
-                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                # Prefer graceful close so the backend can flush checkpoints (avoid safe-mode churn).
+                Stop-Process -Id $procId -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 800
+                if (Get-Process -Id $procId -ErrorAction SilentlyContinue) {
+                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                }
             }
         } catch {
             # best-effort
         }
     }
+    # Wait until the port is actually released (Windows can hold TIME_WAIT briefly).
+    for ($i = 0; $i -lt 20; $i++) {
+        if (Test-BackendPortFree -Port $Port) { return }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+function Test-BackendHealth {
+    param(
+        [int]$HttpPort,
+        [int]$TimeoutSec = 3
+    )
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$HttpPort/health" -UseBasicParsing -TimeoutSec $TimeoutSec
+        return $resp.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
+function Stop-ProfileBackend {
+    param(
+        [ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey,
+        [int]$GraceSec = 2
+    )
+    $ports = Get-ProfilePorts -ProfileKey $ProfileKey
+    $http = [int]$ports.Http
+    $ws = [int]$ports.Ws
+    if (Test-BackendHealth -HttpPort $http) {
+        Write-Host "  Requesting graceful backend shutdown on :$http..." -ForegroundColor DarkGray
+        try {
+            Invoke-WebRequest -Uri "http://127.0.0.1:$http/api/v1/admin/shutdown" -Method POST -UseBasicParsing -TimeoutSec 5 | Out-Null
+        } catch {
+            # Process may exit before the response completes — that is fine.
+        }
+        for ($i = 0; $i -lt ($GraceSec * 4); $i++) {
+            if (Test-BackendPortFree -Port $ws -and (Test-BackendPortFree -Port $http)) { return }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    Stop-ListenerOnPort -Port $ws
+    Stop-ListenerOnPort -Port $http
 }
 
 function Stop-TerminalProfileListeners {
     param([ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey)
     $ports = Get-ProfilePorts -ProfileKey $ProfileKey
     Write-Host "Stopping $($ports.Label) listeners (WS :$($ports.Ws), HTTP :$($ports.Http), UI :$($ports.Dev))..." -ForegroundColor Yellow
-    Stop-ListenerOnPort -Port ([int]$ports.Ws)
-    Stop-ListenerOnPort -Port ([int]$ports.Http)
+    Stop-ProfileBackend -ProfileKey $ProfileKey
     Stop-ListenerOnPort -Port ([int]$ports.Dev)
     Start-Sleep -Seconds 1
 }

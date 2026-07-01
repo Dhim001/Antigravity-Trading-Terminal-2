@@ -14,7 +14,7 @@ from app.config import (
     DATA_QUALITY_ACTIVE_PAUSE,
     ARCHIVE_ENABLED,
 )
-from app.db.connection import get_connection
+from app.db.connection import db_session
 from app.observability.metrics import inc, observe
 from app.services.data_quality import registry
 
@@ -29,9 +29,8 @@ _STARTUP_GRACE_SEC = 30.0
 def _count_candle_gaps(symbol: str, *, lookback_bars: int = 120) -> int:
     if not ARCHIVE_ENABLED:
         return 0
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT time FROM market_bars_1m
@@ -42,8 +41,6 @@ def _count_candle_gaps(symbol: str, *, lookback_bars: int = 120) -> int:
             (symbol, lookback_bars),
         )
         times = sorted(int(r[0] if not isinstance(r, dict) else r["time"]) for r in cursor.fetchall())
-    finally:
-        conn.close()
 
     if len(times) < 2:
         return 0

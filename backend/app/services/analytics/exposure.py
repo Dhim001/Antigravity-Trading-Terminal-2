@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from app.database import get_connection
+from app.db.connection import db_session
 from app.services.analytics.portfolio import MANUAL_STRATEGY
 from app.services.bots.correlation import is_crypto_symbol
 from app.services.bots.portfolio_risk import build_portfolio_snapshot, list_bot_exposures, symbol_correlation_group
@@ -51,21 +51,20 @@ def collect_position_exposures(oms) -> list[dict]:
     snapshot = build_portfolio_snapshot(oms)
     bot_rows = list_bot_exposures()
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT bp.bot_id, bp.symbol, bp.size, bp.avg_price, b.strategy
-        FROM bot_positions bp
-        JOIN bots b ON b.id = bp.bot_id
-        WHERE ABS(bp.size) > 1e-8
-        """
-    )
-    bot_meta = {
-        (row["bot_id"], row["symbol"]): dict(row)
-        for row in cursor.fetchall()
-    }
-    conn.close()
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT bp.bot_id, bp.symbol, bp.size, bp.avg_price, b.strategy
+            FROM bot_positions bp
+            JOIN bots b ON b.id = bp.bot_id
+            WHERE ABS(bp.size) > 1e-8
+            """
+        )
+        bot_meta = {
+            (row["bot_id"], row["symbol"]): dict(row)
+            for row in cursor.fetchall()
+        }
 
     marks = _mark_prices(snapshot, bot_rows, oms)
     rows: list[dict] = []

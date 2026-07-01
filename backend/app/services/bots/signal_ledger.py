@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from app.db.connection import get_connection, is_postgres
+from app.db.connection import db_session, is_postgres
 
 _INCOMPLETE_STATUSES = ("claimed", "submitted")
 _TERMINAL_STATUSES = ("filled", "failed", "ambiguous")
@@ -22,9 +22,8 @@ def claim_signal(signal_id: str, bot_id: str, bar_time, signal_kind: str) -> boo
         return False
 
     bar_time_val = int(bar_time) if bar_time is not None else None
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         if is_postgres():
             cursor.execute(
                 """
@@ -43,10 +42,7 @@ def claim_signal(signal_id: str, bot_id: str, bar_time, signal_kind: str) -> boo
                 """,
                 (signal_id, bot_id, bar_time_val, signal_kind, _now_iso()),
             )
-        conn.commit()
         return cursor.rowcount > 0
-    finally:
-        conn.close()
 
 
 def mark_signal_submitted(
@@ -58,9 +54,8 @@ def mark_signal_submitted(
 ) -> None:
     if not signal_id:
         return
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE bot_signal_ledger
@@ -79,17 +74,13 @@ def mark_signal_submitted(
                 signal_id,
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def mark_signal_filled(signal_id: str, *, order_id: str | None = None) -> None:
     if not signal_id:
         return
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE bot_signal_ledger
@@ -100,17 +91,13 @@ def mark_signal_filled(signal_id: str, *, order_id: str | None = None) -> None:
             """,
             (order_id, _now_iso(), signal_id),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def mark_signal_failed(signal_id: str, message: str = "") -> None:
     if not signal_id:
         return
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE bot_signal_ledger
@@ -119,17 +106,13 @@ def mark_signal_failed(signal_id: str, message: str = "") -> None:
             """,
             (message[:500] if message else None, _now_iso(), signal_id),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def mark_signal_ambiguous(signal_id: str, message: str = "", *, order_id: str | None = None) -> None:
     if not signal_id:
         return
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE bot_signal_ledger
@@ -141,31 +124,23 @@ def mark_signal_ambiguous(signal_id: str, message: str = "", *, order_id: str | 
             """,
             (message[:500] if message else None, order_id, _now_iso(), signal_id),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def release_signal(signal_id: str) -> None:
     """Allow retry after explicit pre-submit failure (removes ledger row)."""
     if not signal_id:
         return
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             "DELETE FROM bot_signal_ledger WHERE signal_id = ? AND status = 'claimed'",
             (signal_id,),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def list_incomplete_signals(limit: int = 100) -> list[dict[str, Any]]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         placeholders = ",".join("?" for _ in _INCOMPLETE_STATUSES)
         cursor.execute(
             f"""
@@ -179,33 +154,30 @@ def list_incomplete_signals(limit: int = 100) -> list[dict[str, Any]]:
             (*_INCOMPLETE_STATUSES, limit),
         )
         rows = cursor.fetchall()
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            if isinstance(row, dict):
-                out.append(dict(row))
-            else:
-                out.append({
-                    "signal_id": row[0],
-                    "bot_id": row[1],
-                    "bar_time": row[2],
-                    "signal_kind": row[3],
-                    "status": row[4],
-                    "order_id": row[5],
-                    "broker": row[6],
-                    "message": row[7],
-                    "created_at": row[8],
-                    "updated_at": row[9],
-                })
-        return out
-    finally:
-        conn.close()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append(dict(row))
+        else:
+            out.append({
+                "signal_id": row[0],
+                "bot_id": row[1],
+                "bar_time": row[2],
+                "signal_kind": row[3],
+                "status": row[4],
+                "order_id": row[5],
+                "broker": row[6],
+                "message": row[7],
+                "created_at": row[8],
+                "updated_at": row[9],
+            })
+    return out
 
 
 def reconcile_orphaned_claims() -> int:
     """Mark never-submitted claims as failed after crash recovery."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE bot_signal_ledger
@@ -216,17 +188,10 @@ def reconcile_orphaned_claims() -> int:
             """,
             (_now_iso(),),
         )
-        conn.commit()
         return cursor.rowcount
-    finally:
-        conn.close()
 
 
 def clear_signal_ledger() -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM bot_signal_ledger")
-        conn.commit()
-    finally:
-        conn.close()

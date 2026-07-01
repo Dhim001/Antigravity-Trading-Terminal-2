@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.db.connection import get_connection
+from app.db.connection import db_session
 
 
 def _now_iso() -> str:
@@ -22,9 +22,8 @@ def save_backtest_run(
     results: dict,
 ) -> str:
     run_id = str(uuid.uuid4())
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO backtest_runs (id, symbol, strategy, config, days, results, created_at)
@@ -40,9 +39,6 @@ def save_backtest_run(
                 _now_iso(),
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
     return run_id
 
 
@@ -89,9 +85,8 @@ def _summary_from_results(results: dict) -> dict[str, Any]:
 
 
 def get_backtest_run(run_id: str) -> dict[str, Any] | None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT id, symbol, strategy, config, days, results, created_at
@@ -106,8 +101,6 @@ def get_backtest_run(run_id: str) -> dict[str, Any] | None:
         item = _parse_run_row(row)
         item["summary"] = _summary_from_results(item["results"])
         return item
-    finally:
-        conn.close()
 
 
 def get_backtest_trades(run_id: str) -> list[dict[str, Any]]:
@@ -119,9 +112,8 @@ def get_backtest_trades(run_id: str) -> list[dict[str, Any]]:
 
 def list_backtest_runs(*, limit: int = 50, symbol: str | None = None) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 200))
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         if symbol:
             cursor.execute(
                 """
@@ -144,11 +136,9 @@ def list_backtest_runs(*, limit: int = 50, symbol: str | None = None) -> list[di
                 (limit,),
             )
         rows = cursor.fetchall()
-        out = []
-        for row in rows:
-            item = _parse_run_row(row)
-            item["summary"] = _summary_from_results(item["results"])
-            out.append(item)
-        return out
-    finally:
-        conn.close()
+    out = []
+    for row in rows:
+        item = _parse_run_row(row)
+        item["summary"] = _summary_from_results(item["results"])
+        out.append(item)
+    return out

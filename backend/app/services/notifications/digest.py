@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import NOTIFICATION_DIGEST_TZ
-from app.database import get_connection
+from app.db.connection import db_session
 from app.services.notifications import types as ntypes
 from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
@@ -17,19 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 def _bot_status_counts() -> dict[str, int]:
-    conn = get_connection()
-    cursor = conn.cursor()
     counts: dict[str, int] = {}
     try:
-        cursor.execute("SELECT status, COUNT(*) FROM bots GROUP BY status")
-        for row in cursor.fetchall():
-            status = row[0] if not isinstance(row, dict) else row["status"]
-            n = row[1] if not isinstance(row, dict) else list(row.values())[1]
-            counts[str(status)] = int(n)
+        with db_session(commit=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT status, COUNT(*) FROM bots GROUP BY status")
+            for row in cursor.fetchall():
+                status = row[0] if not isinstance(row, dict) else row["status"]
+                n = row[1] if not isinstance(row, dict) else list(row.values())[1]
+                counts[str(status)] = int(n)
     except Exception:
         pass
-    finally:
-        conn.close()
     return counts
 
 

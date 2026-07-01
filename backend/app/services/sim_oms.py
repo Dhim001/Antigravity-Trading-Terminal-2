@@ -539,8 +539,12 @@ class SimulatedOMSService(BaseOMSService):
 
         current_atrs = {}
 
+        seeded_symbols = getattr(self.feed, "_seeded", None)
+
         for symbol in symbols:
             if symbol not in self.feed._symbols:
+                continue
+            if seeded_symbols is not None and symbol not in seeded_symbols:
                 continue
 
             market_price = self.feed._symbols[symbol]["price"]
@@ -611,22 +615,28 @@ class SimulatedOMSService(BaseOMSService):
                     continue
 
                 side = "SELL" if osize > 0 else "BUY"
-                sl_ref = owner.get("stop_loss_price")
+                sl_ref = trailing_sl if trailing_sl is not None else owner.get("stop_loss_price")
                 tp_ref = owner.get("take_profit_price")
+                fill_price = bot_positions.sl_tp_limit_fill_price(
+                    trigger_type,
+                    market_price=market_price,
+                    stop_loss_price=sl_ref,
+                    take_profit_price=tp_ref,
+                )
                 if trigger_type == "SL":
                     triggered_logs.append(
-                        f"🚨 BOT STOP LOSS ({owner['bot_id'][:8]}) for {symbol} at ${market_price:.2f} "
-                        f"(SL limit: ${sl_ref:.2f}). Exiting slice..."
+                        f"🚨 BOT STOP LOSS ({owner['bot_id'][:8]}) for {symbol} — filled at ${fill_price:.2f} "
+                        f"(market ${market_price:.2f}, SL limit: ${sl_ref:.2f}). Exiting slice..."
                     )
                 else:
                     triggered_logs.append(
-                        f"🎯 BOT TAKE PROFIT ({owner['bot_id'][:8]}) for {symbol} at ${market_price:.2f} "
-                        f"(TP limit: ${tp_ref:.2f}). Exiting slice..."
+                        f"🎯 BOT TAKE PROFIT ({owner['bot_id'][:8]}) for {symbol} — filled at ${fill_price:.2f} "
+                        f"(market ${market_price:.2f}, TP limit: ${tp_ref:.2f}). Exiting slice..."
                     )
                 exit_plans.append({
                     "symbol": symbol,
                     "side": side,
-                    "market_price": market_price,
+                    "fill_price": fill_price,
                     "quote": quote,
                     "avg_price": float(owner["avg_price"]),
                     "trigger_type": trigger_type,
@@ -672,20 +682,28 @@ class SimulatedOMSService(BaseOMSService):
 
             side = "SELL" if acc_size > 0 else "BUY"
             avg_price = float(account.get("avg_price") or 0)
+            fill_price = bot_positions.sl_tp_limit_fill_price(
+                trigger_type,
+                market_price=market_price,
+                stop_loss_price=sl_price,
+                take_profit_price=tp_price,
+            )
             if trigger_type == "SL":
                 triggered_logs.append(
-                    f"🚨 STOP LOSS TRIGGERED for {symbol} at ${market_price:.2f} "
-                    f"(Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting manual slice..."
+                    f"🚨 STOP LOSS TRIGGERED for {symbol} — filled at ${fill_price:.2f} "
+                    f"(market ${market_price:.2f}, Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). "
+                    f"Exiting manual slice..."
                 )
             else:
                 triggered_logs.append(
-                    f"🎯 TAKE PROFIT TRIGGERED for {symbol} at ${market_price:.2f} "
-                    f"(Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting manual slice..."
+                    f"🎯 TAKE PROFIT TRIGGERED for {symbol} — filled at ${fill_price:.2f} "
+                    f"(market ${market_price:.2f}, Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). "
+                    f"Exiting manual slice..."
                 )
             exit_plans.append({
                 "symbol": symbol,
                 "side": side,
-                "market_price": market_price,
+                "fill_price": fill_price,
                 "quote": quote,
                 "avg_price": avg_price,
                 "trigger_type": trigger_type,
@@ -736,7 +754,7 @@ class SimulatedOMSService(BaseOMSService):
             for plan in exit_plans:
                 symbol = plan["symbol"]
                 side = plan["side"]
-                market_price = plan["market_price"]
+                fill_price = plan["fill_price"]
                 quote = plan["quote"]
                 trigger_type = plan["trigger_type"]
                 avg_price = plan["avg_price"]
@@ -750,10 +768,10 @@ class SimulatedOMSService(BaseOMSService):
                 cursor.execute("""
                     INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, bot_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price, bot_id))
+                """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, fill_price, bot_id))
 
                 bot_fill = self._process_fill(
-                    cursor, symbol, side, market_price, qty, quote,
+                    cursor, symbol, side, fill_price, qty, quote,
                     bot_id=bot_id,
                     order_id=order_id,
                 )
@@ -764,7 +782,7 @@ class SimulatedOMSService(BaseOMSService):
                     "id": order_id,
                     "symbol": symbol,
                     "side": side,
-                    "price": market_price,
+                    "price": fill_price,
                     "quantity": qty,
                 })
 
@@ -775,7 +793,7 @@ class SimulatedOMSService(BaseOMSService):
                         "symbol": symbol,
                         "side": side,
                         "quantity": qty,
-                        "price": market_price,
+                        "price": fill_price,
                         "entry_price": avg_price,
                         "trigger_type": trigger_type,
                         "signal_id": f"{bot_id}:sltp:{order_id}",

@@ -4,12 +4,13 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Radar, Brain, GripVertical } from 'lucide-react';
+import { Radar, Brain, GripVertical, Newspaper } from 'lucide-react';
 import { WidgetEmpty } from './WidgetShell';
 import { cn } from '@/lib/utils';
 
 const ScannerTab = lazy(() => import('./ScannerTab'));
 const AnalystTab = lazy(() => import('./AnalystTab'));
+const NewsTab = lazy(() => import('./NewsTab'));
 
 const HUB_WIDTH_KEY = 'terminal_insights_hub_width';
 const HUB_TAB_KEY = 'terminal_insights_hub_tab';
@@ -28,7 +29,7 @@ function readHubWidth() {
 function readHubTab() {
   try {
     const t = localStorage.getItem(HUB_TAB_KEY);
-    if (t === 'scanner' || t === 'analyst') return t;
+    if (t === 'scanner' || t === 'analyst' || t === 'news') return t;
   } catch (_) {}
   return 'scanner';
 }
@@ -65,7 +66,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
   useEffect(() => {
     const onTab = (e) => {
       const next = e.detail;
-      if (next === 'scanner' || next === 'analyst') setHubTab(next);
+      if (next === 'scanner' || next === 'analyst' || next === 'news') setHubTab(next);
     };
     window.addEventListener('insights-hub-tab', onTab);
     return () => window.removeEventListener('insights-hub-tab', onTab);
@@ -149,7 +150,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             Insights Hub
           </SheetTitle>
           <SheetDescription className="insights-hub__description">
-            Resizable scanner + analyst workspace (⌘I). Dock intelligence tabs are for quick peek while trading; use this hub for extended review and wider layout.
+            Resizable scanner, analyst, and news workspace (⌘I). Dock intelligence tabs are for quick peek while trading; use this hub for extended review and wider layout.
           </SheetDescription>
         </SheetHeader>
 
@@ -162,6 +163,10 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             <TabsTrigger value="analyst" className="insights-hub__tab">
               <Brain data-icon="inline-start" />
               Analyst
+            </TabsTrigger>
+            <TabsTrigger value="news" className="insights-hub__tab">
+              <Newspaper data-icon="inline-start" />
+              News
             </TabsTrigger>
           </TabsList>
 
@@ -182,6 +187,15 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             >
               <Suspense fallback={<TabFallback />}>
                 <AnalystTab />
+              </Suspense>
+            </TabsContent>
+            <TabsContent
+              value="news"
+              forceMount
+              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+            >
+              <Suspense fallback={<TabFallback />}>
+                <NewsTab />
               </Suspense>
             </TabsContent>
           </div>

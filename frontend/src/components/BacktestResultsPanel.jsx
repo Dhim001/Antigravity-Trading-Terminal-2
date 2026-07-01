@@ -4,7 +4,8 @@
 import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText, Sparkles } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { openBacktestLabResults } from '../lib/backtestLab';
+import { useStore } from '../store/useStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -12,9 +13,10 @@ import { StatCard } from '@/components/StatCard';
 import BacktestMiniChart from './BacktestMiniChart';
 import BacktestPriceChart from './BacktestPriceChart';
 import BacktestComparePanel from './BacktestComparePanel';
+import StrategySuggestPanel from './StrategySuggestPanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
-import { useStore } from '../store/useStore';
+import { cn } from '@/lib/utils';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
@@ -292,14 +294,15 @@ export default function BacktestResultsPanel({
   oosPct = null,
   reasoningPending = false,
   showReasoningSection = false,
+  advisorBotId = null,
+  agentLlmAvailable = false,
 }) {
-  const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
-  const setBacktestLabTab = useStore((s) => s.setBacktestLabTab);
   const setBacktestResults = useStore((s) => s.setBacktestResults);
   const setBacktestOverlay = useStore((s) => s.setBacktestOverlay);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
   const backtestOverlay = useStore((s) => s.backtestOverlay);
   const botConfig = useStore((s) => s.botConfig);
+  const activeBots = useStore((s) => s.activeBots);
   const activeSymbol = useStore((s) => s.activeSymbol);
   const botStrategy = useStore((s) => s.botStrategy);
   const botTimeframe = useStore((s) => s.botTimeframe);
@@ -609,11 +612,11 @@ export default function BacktestResultsPanel({
               variant="ghost"
               size="xs"
               className="h-6 text-[0.62rem]"
-              onClick={() => setBacktestLabOpen(true)}
-              title="Open full backtest report"
+              onClick={() => openBacktestLabResults()}
+              title="Open Backtest Lab → Results"
             >
               <Maximize2 data-icon="inline-start" />
-              Report
+              Lab
             </Button>
           )}
           <Button
@@ -645,6 +648,18 @@ export default function BacktestResultsPanel({
       <div className="algo-backtest-lab__body">
       <BacktestSummaryCards summary={summary} results={results} isFull={isFull} />
 
+      <section className="algo-backtest-lab__section algo-backtest-lab__section--advisor">
+        <StrategySuggestPanel
+          botId={advisorBotId}
+          candidateBots={activeBots}
+          backtestDays={backtestDays}
+          recentResults={results}
+          agentLlmAvailable={agentLlmAvailable}
+          symbol={symbol ?? results?.meta?.symbol}
+          compact={!isFull}
+        />
+      </section>
+
       {isFull && <PortfolioResultsSection results={results} />}
       {isFull && <MonteCarloSection monteCarlo={results?.monte_carlo} />}
       {isFull && <FilterRejectsSection summary={summary} />}
@@ -657,10 +672,7 @@ export default function BacktestResultsPanel({
         <button
           type="button"
           className="algo-backtest-sweep-teaser text-[0.62rem] text-primary hover:underline text-left px-1 py-1"
-          onClick={() => {
-            setBacktestLabTab('optimizer');
-            setBacktestLabOpen(true);
-          }}
+          onClick={() => useStore.getState().openBacktestLab('optimizer')}
         >
           {results.sweep.configs_tested ?? results.sweep.results.length} configs tested → Open optimizer
         </button>

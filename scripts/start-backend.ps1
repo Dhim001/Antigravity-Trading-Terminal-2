@@ -11,10 +11,18 @@ $key = $Profile.ToLower()
 $ports = Get-ProfilePorts -ProfileKey $key
 
 if (-not (Test-BackendPortFree -Port $ports.Ws)) {
+    if (Test-BackendHealth -HttpPort $ports.Http) {
+        Write-Host "Backend already running on WS :$($ports.Ws), HTTP :$($ports.Http)." -ForegroundColor Yellow
+        exit 0
+    }
     Write-Host "Port $($ports.Ws) (WS) is already in use - is another backend running?" -ForegroundColor Red
     exit 1
 }
 if (-not (Test-BackendPortFree -Port $ports.Http)) {
+    if (Test-BackendHealth -HttpPort $ports.Http) {
+        Write-Host "Backend already running on HTTP :$($ports.Http)." -ForegroundColor Yellow
+        exit 0
+    }
     Write-Host "Port $($ports.Http) (HTTP) is already in use - is another backend running?" -ForegroundColor Red
     exit 1
 }

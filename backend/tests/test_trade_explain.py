@@ -3,23 +3,57 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from app.database import init_db
-from app.db.connection import get_connection
-from app.services.agent.trade_explain import explain_trade, _find_insight, _fetch_trade_relevant_logs
+os.environ.setdefault("TERMINAL_MODE", "SIMULATED")
+os.environ["DATABASE_URL"] = ""
+os.environ["RISK_DYNAMIC_CORRELATION_ENABLED"] = "false"
+
+_TEST_DIR = tempfile.mkdtemp()
+import app.config as app_config  # noqa: E402
+import app.db.connection as db_conn  # noqa: E402
+
+db_conn.DB_PATH = os.path.join(_TEST_DIR, "trade_explain_test.db")
+db_conn.DB_DRIVER = "sqlite"
+db_conn._DATABASE_URL = ""
+app_config.DB_PATH = db_conn.DB_PATH
+
+from app.database import init_db  # noqa: E402
+from app.db.connection import get_connection  # noqa: E402
+from app.services.agent.trade_explain import (
+    explain_trade,
+    _find_insight,
+    _fetch_trade_relevant_logs,
+    _fetch_regime_context,
+    _fetch_correlated_context,
+)
+from app.services.altdata.store import get_events_near_trade, upsert_corporate_events
 
 
 class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self._dyn_corr_patch = patch(
+            "app.services.bots.correlation.RISK_DYNAMIC_CORRELATION_ENABLED",
+            False,
+        )
+        self._dyn_corr_patch.start()
+        db_conn._pool = None
         init_db()
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM bot_trades")
         cursor.execute("DELETE FROM agent_insights")
-        cursor.execute("DELETE FROM bots WHERE id = 'bot-explain-1'")
+        cursor.execute("DELETE FROM bots")
+        cursor.execute("DELETE FROM corporate_events")
+        cursor.execute("DELETE FROM economic_events")
         conn.commit()
         conn.close()
+
+    def tearDown(self):
+        self._dyn_corr_patch.stop()
 
     async def test_find_insight_matches_timeframe(self):
         conn = get_connection()
@@ -186,6 +220,112 @@ class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["trade"]["is_exit"])
         self.assertEqual(result["insight"]["signal"], "BUY")
         self.assertIn("Entry reason", result["summary"])
+
+    def test_fetch_regime_context(self):
+        insight = {
+            "sub_reports": {
+                "risk": {"atr_regime": "elevated", "suggested_size_factor": 0.75},
+            },
+        }
+        ctx = _fetch_regime_context(insight)
+        self.assertEqual(ctx["atr_regime"], "elevated")
+        self.assertEqual(ctx["suggested_size_factor"], 0.75)
+
+    def test_fetch_correlated_context_static_group(self):
+        ctx = _fetch_correlated_context("BTCUSDT", 1_700_000_000)
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["group"], "CRYPTO_MAJOR")
+        self.assertIn("ETHUSDT", ctx["peers"])
+
+    async def test_explain_includes_regime_and_events(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM corporate_events")
+        cursor.execute(
+            """
+            INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config, execution_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("bot-ctx-1", "CHART_AGENT", "AAPL", "1m", "STOPPED", 1000, "{}", "BAR_CLOSE"),
+        )
+        snapshot = {
+            "signal": "BUY",
+            "confidence": 0.72,
+            "sub_reports": {"risk": {"atr_regime": "elevated", "suggested_size_factor": 0.8}},
+        }
+        trade_ts = "2026-06-01T14:00:00+00:00"
+        cursor.execute(
+            """
+            INSERT INTO bot_trades
+            (bot_id, order_id, symbol, side, quantity, price, signal_bar_time, is_exit, insight_snapshot, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bot-ctx-1", "o-ctx", "AAPL", "BUY", 1.0, 200.0, 1_749_000_000, 0,
+                json.dumps(snapshot), trade_ts,
+            ),
+        )
+        conn.commit()
+        cursor.execute("SELECT id FROM bot_trades WHERE bot_id = 'bot-ctx-1'")
+        trade_id = str(cursor.fetchone()[0])
+        conn.close()
+
+        upsert_corporate_events([{
+            "id": "evt-earnings-1",
+            "symbol": "AAPL",
+            "event_type": "earnings",
+            "event_date": "2026-06-01",
+            "title": "Q2 earnings release",
+            "source": "test",
+        }])
+
+        result = await explain_trade("bot-ctx-1", trade_id)
+        self.assertEqual(result["regime"]["atr_regime"], "elevated")
+        self.assertEqual(result["correlated_context"]["group"], "TECH")
+        self.assertTrue(result["events"]["corporate"])
+        self.assertIn("regime", result["sources"])
+        self.assertIn("correlated_context", result["sources"])
+        self.assertIn("events", result["sources"])
+
+
+class TestAltdataEventsNear(unittest.TestCase):
+    def setUp(self):
+        db_conn._pool = None
+        init_db()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM corporate_events")
+        cursor.execute("DELETE FROM economic_events")
+        conn.commit()
+        conn.close()
+
+    def test_get_events_near_trade(self):
+        upsert_corporate_events([{
+            "id": "c1",
+            "symbol": "MSFT",
+            "event_type": "earnings",
+            "event_date": "2026-06-01T10:00:00+00:00",
+            "title": "MSFT earnings",
+            "source": "test",
+        }])
+        from app.services.altdata.store import upsert_economic_events
+
+        upsert_economic_events([{
+            "event_id": "e1",
+            "event_type": "cpi",
+            "title": "US CPI",
+            "scheduled_at": "2026-06-01T12:00:00+00:00",
+            "impact": "high",
+            "country": "US",
+            "source": "test",
+        }])
+        events = get_events_near_trade(
+            "MSFT",
+            timestamp="2026-06-01T11:00:00+00:00",
+            window_hours=24,
+        )
+        self.assertEqual(len(events["corporate"]), 1)
+        self.assertEqual(len(events["economic"]), 1)
 
 
 if __name__ == "__main__":

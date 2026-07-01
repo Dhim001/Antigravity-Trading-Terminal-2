@@ -63,6 +63,24 @@ async def health_live(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "service": "trading-terminal"})
 
 
+async def admin_shutdown_handler(request: Request) -> JSONResponse:
+    """Local dev helper — request graceful shutdown (used by start-*.ps1 scripts)."""
+    client = request.client.host if request.client else ""
+    if client not in ("127.0.0.1", "::1", "localhost"):
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+
+    state: AppState = request.app.state.terminal
+    event = getattr(state, "shutdown_event", None)
+    if event is None:
+        return JSONResponse({"ok": False, "error": "shutdown not configured"}, status_code=503)
+
+    import asyncio
+
+    if not event.is_set():
+        asyncio.get_running_loop().call_soon(event.set)
+    return JSONResponse({"ok": True, "message": "shutdown requested"})
+
+
 async def health(request: Request) -> JSONResponse:
     import asyncio
     import time
@@ -106,6 +124,14 @@ async def health(request: Request) -> JSONResponse:
         body["agent_vision_enabled"] = False
         body["agent_enabled"] = False
         body["scanner_enabled"] = False
+
+    try:
+        from app.db.connection import check_db_health
+
+        body["database"] = await asyncio.to_thread(check_db_health)
+    except Exception as exc:
+        body["database"] = {"ok": False, "error": str(exc)}
+        body["ok"] = False
 
     try:
         stats = await asyncio.to_thread(get_db_stats)
@@ -374,6 +400,102 @@ async def get_filter_rejects_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "filter_rejects": data})
 
 
+async def get_symbol_news_handler(request: Request) -> JSONResponse:
+    symbol = str(request.path_params.get("symbol") or "").upper().strip()
+    if not symbol:
+        return JSONResponse({"ok": False, "error": "symbol is required"}, status_code=400)
+
+    refresh = str(request.query_params.get("refresh", "true")).lower() in ("1", "true", "yes")
+    try:
+        limit = int(request.query_params.get("limit", "40"))
+    except (TypeError, ValueError):
+        limit = 40
+    try:
+        lookback_hours = float(request.query_params.get("lookback_hours", "72"))
+    except (TypeError, ValueError):
+        lookback_hours = 72.0
+
+    sources_param = request.query_params.get("sources")
+    sources = [s.strip() for s in sources_param.split(",") if s.strip()] if sources_param else None
+
+    from app.services.altdata.news_provider import get_symbol_news_feed
+    import asyncio
+
+    try:
+        feed = await asyncio.to_thread(
+            get_symbol_news_feed,
+            symbol,
+            refresh=refresh,
+            lookback_hours=lookback_hours,
+            limit=max(1, min(limit, 100)),
+            sources=sources,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    return JSONResponse({"ok": True, "news": feed})
+
+
+def _parse_json_body(raw: object) -> dict:
+    """Normalize Starlette request.json() — tolerate double-encoded JSON strings."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+async def strategy_suggest_handler(request: Request) -> JSONResponse:
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id is required"}, status_code=400)
+    try:
+        body = _parse_json_body(await request.json())
+    except json.JSONDecodeError:
+        body = {}
+
+    try:
+        days = int(body.get("days", 30))
+    except (TypeError, ValueError):
+        days = 30
+    run_backtest = bool(body.get("run_backtest", True))
+    use_llm = bool(body.get("use_llm", True))
+
+    state: AppState = request.app.state.terminal
+    backtester = state.backtester
+    feed = getattr(state.oms, "feed", None) if state.oms else None
+
+    recent_run = None
+    if body.get("recent_results") and isinstance(body["recent_results"], dict):
+        recent_run = {"results": body["recent_results"]}
+
+    try:
+        from app.services.bots.strategy_advisor import advise_bot_strategy
+
+        result = await advise_bot_strategy(
+            str(bot_id),
+            backtester=backtester,
+            feed=feed,
+            days=max(7, min(days, 90)),
+            run_backtest=run_backtest and backtester is not None and feed is not None,
+            use_llm=use_llm,
+            recent_run=recent_run,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    try:
+        return JSONResponse({"ok": True, "advisor": result})
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"Response serialization failed: {exc}"}, status_code=500)
+
+
 async def apply_calibration_suggestions_handler(request: Request) -> JSONResponse:
     try:
         body = await request.json()
@@ -598,10 +720,12 @@ def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health/live", health_live, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
+        Route("/api/v1/admin/shutdown", admin_shutdown_handler, methods=["POST"]),
         Route("/api/v1/session", session_handler, methods=["GET"]),
         Route("/metrics", metrics, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
+        Route("/api/v1/news/{symbol}", get_symbol_news_handler, methods=["GET"]),
         Route("/api/v1/llm/models", list_llm_models, methods=["GET"]),
         Route("/api/v1/llm/ops", llm_ops_status_handler, methods=["GET"]),
         Route("/api/v1/llm/pull", pull_llm_model_handler, methods=["POST"]),
@@ -616,6 +740,7 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/optimizations/{run_id}", get_optimization_run_handler, methods=["GET"]),
         Route("/api/v1/bots/calibration", get_bot_calibration_handler, methods=["GET"]),
         Route("/api/v1/bots/calibration/apply", apply_calibration_suggestions_handler, methods=["POST"]),
+        Route("/api/v1/bots/{bot_id}/strategy-suggest", strategy_suggest_handler, methods=["POST"]),
         Route("/api/v1/bots/filter-rejects", get_filter_rejects_handler, methods=["GET"]),
         Route("/api/v1/agent/pipeline/scan-deploy", agent_pipeline_scan_deploy_handler, methods=["POST"]),
         Route("/api/v1/agent/pipeline/status", agent_pipeline_status_handler, methods=["GET"]),

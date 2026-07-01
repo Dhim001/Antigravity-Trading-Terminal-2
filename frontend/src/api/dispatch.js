@@ -136,7 +136,12 @@ export function applyServerMessage(type, data, storeActions, meta) {
           ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
           : '—';
         const explainSuffix = explained > 0 ? ` · ${explained} LLM explained` : '';
-        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`);
+        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
+          action: {
+            label: 'Open Lab',
+            onClick: () => useStore.getState().openBacktestLab('results'),
+          },
+        });
         if (data.results?.meta?.symbol && data.results?.run_id) {
           storeActions.setBacktestOverlay({
             runId: data.results.run_id,

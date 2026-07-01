@@ -2,6 +2,7 @@ import uuid
 import time
 from app.database import get_connection
 from app.config import MAX_ORDER_VALUE
+from app.services.bots.positions import sl_tp_limit_fill_price
 
 class OrderManager:
     def __init__(self, simulator):
@@ -536,29 +537,43 @@ class OrderManager:
                     order_id = str(uuid.uuid4())
                     side = "SELL" if size > 0 else "BUY"
                     qty = abs(size)
-                    
+                    fill_price = sl_tp_limit_fill_price(
+                        trigger_type,
+                        market_price=market_price,
+                        stop_loss_price=sl_price,
+                        take_profit_price=tp_price,
+                    )
+
                     # Log trigger action
                     if trigger_type == 'SL':
-                        log_msg = f"🚨 STOP LOSS TRIGGERED for {symbol} at ${market_price:.2f} (Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). Exiting..."
+                        log_msg = (
+                            f"🚨 STOP LOSS TRIGGERED for {symbol} — filled at ${fill_price:.2f} "
+                            f"(market ${market_price:.2f}, Avg Entry: ${avg_price:.2f}, SL limit: ${sl_price:.2f}). "
+                            f"Exiting..."
+                        )
                     else:
-                        log_msg = f"🎯 TAKE PROFIT TRIGGERED for {symbol} at ${market_price:.2f} (Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). Exiting..."
-                        
+                        log_msg = (
+                            f"🎯 TAKE PROFIT TRIGGERED for {symbol} — filled at ${fill_price:.2f} "
+                            f"(market ${market_price:.2f}, Avg Entry: ${avg_price:.2f}, TP limit: ${tp_price:.2f}). "
+                            f"Exiting..."
+                        )
+
                     triggered_logs.append(log_msg)
-                    
+
                     # Create Order Record as FILLED MARKET
                     cursor.execute("""
                         INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, market_price))
-                    
+                    """, (order_id, symbol, "MARKET", side, None, qty, "FILLED", qty, fill_price))
+
                     # Process fill balances and positions
-                    self._process_fill(cursor, symbol, side, market_price, qty, quote)
-                    
+                    self._process_fill(cursor, symbol, side, fill_price, qty, quote)
+
                     filled_exits.append({
                         "id": order_id,
                         "symbol": symbol,
                         "side": side,
-                        "price": market_price,
+                        "price": fill_price,
                         "quantity": qty
                     })
                     

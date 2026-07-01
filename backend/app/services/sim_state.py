@@ -7,7 +7,7 @@ import logging
 import time
 from typing import Any
 
-from app.db.connection import get_connection, is_postgres
+from app.db.connection import db_session, is_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -15,28 +15,25 @@ MAX_PERSISTED_CANDLES = 500
 
 
 def load_sim_market_state() -> dict[str, dict[str, Any]]:
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        # Table also created in init_db(); keep for older DB files opened before migrate.
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sim_market_state (
-                symbol TEXT PRIMARY KEY,
-                price REAL NOT NULL,
-                candles_json TEXT NOT NULL,
-                target_json TEXT,
-                updated_at REAL NOT NULL
+        with db_session(commit=False) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sim_market_state (
+                    symbol TEXT PRIMARY KEY,
+                    price REAL NOT NULL,
+                    candles_json TEXT NOT NULL,
+                    target_json TEXT,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            cursor.execute(
+                "SELECT symbol, price, candles_json, target_json FROM sim_market_state"
             )
-        """)
-        cursor.execute(
-            "SELECT symbol, price, candles_json, target_json FROM sim_market_state"
-        )
-        rows = cursor.fetchall()
+            rows = cursor.fetchall()
     except Exception as exc:
         logger.warning("Could not load sim market state: %s", exc)
-        conn.close()
         return {}
-    conn.close()
 
     out: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -61,56 +58,50 @@ def save_sim_market_state(feed) -> None:
     if not hasattr(feed, "_symbols") or not hasattr(feed, "candles"):
         return
 
-    conn = get_connection()
-    cursor = conn.cursor()
     now = time.time()
     try:
-        for symbol, info in feed._symbols.items():
-            candles = feed.candles.get(symbol, [])
-            if not candles:
-                continue
-            trimmed = candles[-MAX_PERSISTED_CANDLES:]
-            target = feed._target_candles.get(symbol) if hasattr(feed, "_target_candles") else None
-            candles_json = json.dumps(trimmed)
-            target_json = json.dumps(target) if target else None
-            price = info.get("price", trimmed[-1]["close"])
+        with db_session() as conn:
+            cursor = conn.cursor()
+            for symbol, info in feed._symbols.items():
+                candles = feed.candles.get(symbol, [])
+                if not candles:
+                    continue
+                trimmed = candles[-MAX_PERSISTED_CANDLES:]
+                target = feed._target_candles.get(symbol) if hasattr(feed, "_target_candles") else None
+                candles_json = json.dumps(trimmed)
+                target_json = json.dumps(target) if target else None
+                price = info.get("price", trimmed[-1]["close"])
 
-            if is_postgres():
-                cursor.execute(
-                    """
-                    INSERT INTO sim_market_state (symbol, price, candles_json, target_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT (symbol) DO UPDATE SET
-                        price = EXCLUDED.price,
-                        candles_json = EXCLUDED.candles_json,
-                        target_json = EXCLUDED.target_json,
-                        updated_at = EXCLUDED.updated_at
-                    """,
-                    (symbol, price, candles_json, target_json, now),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO sim_market_state
-                    (symbol, price, candles_json, target_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (symbol, price, candles_json, target_json, now),
-                )
-        conn.commit()
+                if is_postgres():
+                    cursor.execute(
+                        """
+                        INSERT INTO sim_market_state (symbol, price, candles_json, target_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (symbol) DO UPDATE SET
+                            price = EXCLUDED.price,
+                            candles_json = EXCLUDED.candles_json,
+                            target_json = EXCLUDED.target_json,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (symbol, price, candles_json, target_json, now),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO sim_market_state
+                        (symbol, price, candles_json, target_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (symbol, price, candles_json, target_json, now),
+                    )
     except Exception as exc:
         logger.warning("Could not persist sim market state: %s", exc)
-    finally:
-        conn.close()
 
 
 def clear_sim_market_state() -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM sim_market_state")
-        conn.commit()
+        with db_session() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sim_market_state")
     except Exception as exc:
         logger.warning("Could not clear sim market state: %s", exc)
-    finally:
-        conn.close()

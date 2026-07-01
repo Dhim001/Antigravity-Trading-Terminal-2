@@ -56,11 +56,23 @@ BACKTEST_JSON_SYSTEM_PROMPT = (
 TRADE_EXPLAIN_JSON_SYSTEM_PROMPT = (
     "You explain ONE live or sim bot trade fill using ONLY fields in DATA. "
     "Use insight sub_reports (trend, indicator, risk), trade_context, recent_logs, "
-    "related_insights, and related_trades when present. "
+    "related_insights, related_trades, regime, correlated_context, and events when present. "
     "Do not invent prices, signals, or events not in DATA. "
     "Respond with valid JSON only: "
     '{"explanation": "2-4 sentences: why this entry/exit happened and how context supports it"}. '
-    "Mention risk regime or size factor when risk sub_report is present. "
+    "Mention risk regime or size factor when regime is present. "
+    "Reference correlated peer behavior when correlated_context is present. "
+    "Mention nearby corporate or economic events when events block is present. "
+    "No chain-of-thought or text outside JSON."
+)
+
+STRATEGY_ADVISOR_JSON_SYSTEM_PROMPT = (
+    "You suggest trading bot parameter adjustments using ONLY fields in DATA. "
+    "Consider recent backtest metrics, current config, market sentiment, and filter rejects. "
+    "Respond with valid JSON only: "
+    '{"rationale": "2-4 sentences", "suggested_params": {key: value, ...}, "confidence": 0.0-1.0}. '
+    "Only use keys listed in allowable_params. Respect param_bounds. "
+    "Suggest small, safe changes (1-3 params). Do not invent backtest numbers. "
     "No chain-of-thought or text outside JSON."
 )
 

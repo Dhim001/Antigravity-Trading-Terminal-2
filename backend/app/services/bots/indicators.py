@@ -81,6 +81,8 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "elevated_block_entries": False,
         "compressed_min_confidence": 0.55,
         "block_ranging_markets": False,  # 3.4-A: default disabled
+        "sentiment_filter_enabled": False,
+        "min_sentiment_score": 0.0,
     },
 }
 

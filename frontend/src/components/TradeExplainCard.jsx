@@ -98,7 +98,11 @@ export default function TradeExplainCard({
     || insight?.sub_reports
     || (explain?.related_insights?.length > 0)
     || (explain?.related_trades?.length > 0)
-    || (explain?.recent_logs?.length > 0),
+    || (explain?.recent_logs?.length > 0)
+    || explain?.regime?.atr_regime
+    || explain?.correlated_context?.group
+    || (explain?.events?.corporate?.length > 0)
+    || (explain?.events?.economic?.length > 0),
   );
 
   if (!trade) return null;
@@ -188,6 +192,71 @@ export default function TradeExplainCard({
               {explain.related_trades.slice(0, 4).map((t, i) => (
                 <li key={i}>
                   {t.is_exit ? 'Exit' : 'Entry'} {t.side} @ {Number(t.price).toFixed(2)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {explain?.regime?.atr_regime && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Market regime</p>
+            <p className="bot-trade-explain__regime">
+              {explain.regime.atr_regime}
+              {explain.regime.suggested_size_factor != null
+                ? ` · size factor ${explain.regime.suggested_size_factor}`
+                : ''}
+              {explain.regime.note ? ` — ${explain.regime.note}` : ''}
+            </p>
+          </div>
+        )}
+        {explain?.anomaly?.is_anomaly && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Bar anomaly</p>
+            <p className="bot-trade-explain__regime">
+              {(explain.anomaly.kinds || []).join(', ') || 'unusual activity'}
+              {explain.anomaly.volume_z != null ? ` · vol z=${explain.anomaly.volume_z}` : ''}
+              {explain.anomaly.return_z != null ? ` · return z=${explain.anomaly.return_z}` : ''}
+            </p>
+          </div>
+        )}
+        {explain?.correlated_context?.group && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Correlated group</p>
+            <p className="bot-trade-explain__regime">
+              {explain.correlated_context.group}
+              {explain.correlated_context.symbol_return_pct_1h != null
+                ? ` · ${explain.correlated_context.symbol} 1h ${explain.correlated_context.symbol_return_pct_1h >= 0 ? '+' : ''}${explain.correlated_context.symbol_return_pct_1h}%`
+                : ''}
+              {explain.correlated_context.group_median_return_pct_1h != null
+                ? ` · peers median ${explain.correlated_context.group_median_return_pct_1h >= 0 ? '+' : ''}${explain.correlated_context.group_median_return_pct_1h}%`
+                : ''}
+            </p>
+            {explain.correlated_context.peer_returns?.length > 0 && (
+              <ul className="bot-trade-explain__logs-list">
+                {explain.correlated_context.peer_returns.slice(0, 4).map((p, i) => (
+                  <li key={i}>
+                    {p.symbol}
+                    {p.return_pct_1h != null
+                      ? ` ${p.return_pct_1h >= 0 ? '+' : ''}${p.return_pct_1h}% (1h)`
+                      : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {(explain?.events?.corporate?.length > 0 || explain?.events?.economic?.length > 0) && (
+          <div className="bot-trade-explain__logs">
+            <p className="bot-trade-explain__logs-title">Events near fill</p>
+            <ul className="bot-trade-explain__logs-list">
+              {(explain.events.corporate || []).slice(0, 3).map((ev, i) => (
+                <li key={`c-${i}`}>
+                  {ev.event_type || 'Corporate'}: {ev.title || ev.event_date}
+                </li>
+              ))}
+              {(explain.events.economic || []).slice(0, 2).map((ev, i) => (
+                <li key={`e-${i}`}>
+                  {ev.impact ? `[${ev.impact}] ` : ''}{ev.title || ev.event_type}
                 </li>
               ))}
             </ul>

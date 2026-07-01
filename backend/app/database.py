@@ -1,7 +1,7 @@
 import sqlite3
 
 from app.config import EQUITY_SYMBOLS, CRYPTO_SYMBOLS
-from app.db.connection import get_connection, is_postgres
+from app.db.connection import get_connection, is_postgres, db_session
 
 
 def _row_val(row, idx: int = 0):
@@ -64,12 +64,6 @@ def _ensure_performance_indexes(cursor) -> None:
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
-
-    if not is_postgres():
-        cursor.execute("PRAGMA foreign_keys = ON;")
-        cursor.execute("PRAGMA journal_mode = WAL;")
-        cursor.execute("PRAGMA busy_timeout = 5000;")
-        cursor.execute("PRAGMA synchronous = NORMAL;")
     
     # Create accounts table
     cursor.execute("""
@@ -532,6 +526,9 @@ def init_db():
     conn.commit()
         
     conn.close()
+
+    from app.db.migrations import record_baseline_if_needed
+    record_baseline_if_needed()
 
 def reset_db():
     conn = get_connection()

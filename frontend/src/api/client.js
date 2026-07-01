@@ -33,15 +33,27 @@ export async function apiRequest(path, options = {}) {
     }
 
     const response = await fetch(joinUrl(path), init);
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`Invalid JSON from ${path}`);
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        if (response.status === 404 && path.startsWith('/api/v1/news/')) {
+          throw new Error('News API not found — restart the backend to load the latest server code');
+        }
+        const preview = text.trim().slice(0, 100).replace(/\s+/g, ' ');
+        throw new Error(
+          `Invalid JSON from ${path} (HTTP ${response.status}${preview ? `: ${preview}` : ''})`,
+        );
+      }
     }
 
     if (!response.ok) {
       throw new Error(payload?.error || payload?.message || `HTTP ${response.status}`);
+    }
+    if (payload == null && response.ok) {
+      throw new Error(`Empty response from ${path} (HTTP ${response.status})`);
     }
     return payload;
   } finally {

@@ -8,7 +8,7 @@ from app.config import (
     PORTFOLIO_MAX_GROSS_EXPOSURE_PCT,
     PORTFOLIO_MAX_GROUP_EXPOSURE_PCT,
 )
-from app.database import get_connection
+from app.db.connection import db_session
 
 
 @dataclass
@@ -45,9 +45,8 @@ def _mark_prices(oms, symbols: set[str]) -> dict[str, float]:
 
 
 def list_bot_exposures() -> list[dict]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT bot_id, symbol, size, avg_price
@@ -64,8 +63,6 @@ def list_bot_exposures() -> list[dict]:
             }
             for row in cursor.fetchall()
         ]
-    finally:
-        conn.close()
 
 
 def build_portfolio_snapshot(oms) -> PortfolioSnapshot:

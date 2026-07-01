@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("TERMINAL_MODE", "SIMULATED")
 os.environ["DATABASE_URL"] = ""
@@ -153,7 +153,8 @@ class PendingFillReconcileTests(unittest.IsolatedAsyncioTestCase):
 
         self.manager = BotManagerService(self.oms, MagicMock(), AsyncMock())
 
-    async def test_reconcile_confirms_pending_by_order_id(self):
+    @patch("app.services.bots.manager.uses_paper_oms", return_value=False)
+    async def test_reconcile_confirms_pending_by_order_id(self, _paper):
         bot_analytics.record_pending_fill(
             self.bot_id,
             "broker-123",

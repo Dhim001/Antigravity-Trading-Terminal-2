@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Cpu, GripVertical } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { openBacktestLabResults } from '../lib/backtestLab';
 import { fetchBots } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
 import { AlgoTab } from './ResizableDock';
@@ -34,7 +35,6 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
 
   const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
   const backtestResults = useStore((s) => s.backtestResults);
-  const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
 
   useEffect(() => {
     try { localStorage.setItem(STUDIO_WIDTH_KEY, String(panelWidth)); } catch (_) {}
@@ -142,9 +142,9 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
                   variant="outline"
                   size="xs"
                   className="h-6 text-[0.62rem]"
-                  onClick={() => setBacktestLabOpen(true)}
-                >
-                  Open backtest report
+                onClick={() => openBacktestLabResults()}
+              >
+                Open Backtest Lab (Results)
                 </Button>
               </div>
             )}

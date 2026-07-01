@@ -31,3 +31,13 @@ export function openScannerHub() {
   window.dispatchEvent(new CustomEvent('insights-hub-open'));
   window.dispatchEvent(new CustomEvent('insights-hub-tab', { detail: 'scanner' }));
 }
+
+/** Open Insights Hub on news tab for a symbol. */
+export function openNewsHub(symbol) {
+  if (symbol) {
+    useStore.getState().setActiveSymbol(symbol);
+    window.dispatchEvent(new CustomEvent('news-focus', { detail: { symbol } }));
+  }
+  window.dispatchEvent(new CustomEvent('insights-hub-open'));
+  window.dispatchEvent(new CustomEvent('insights-hub-tab', { detail: 'news' }));
+}

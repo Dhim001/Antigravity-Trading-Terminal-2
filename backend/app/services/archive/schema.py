@@ -107,3 +107,20 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_corporate_events_sym ON corporate_events (symbol, event_date)"
     )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_events (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            source TEXT NOT NULL,
+            score REAL NOT NULL,
+            mention_count INTEGER NOT NULL DEFAULT 1,
+            headline TEXT,
+            published_at TEXT,
+            raw_json TEXT,
+            updated_at REAL NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_updated ON sentiment_events (symbol, updated_at DESC)"
+    )

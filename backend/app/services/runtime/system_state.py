@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from app.config import TERMINAL_ROLE
-from app.db.connection import get_connection
+from app.db.connection import db_session
 
 KEY_SHUTDOWN_CLEAN = "shutdown_clean"
 KEY_UNCLEAN_BOOT = "unclean_boot_detected"
@@ -30,22 +30,18 @@ def _now() -> float:
 
 
 def _get_text(key: str) -> str | None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         cursor.execute("SELECT value FROM system_runtime WHERE key = ?", (key,))
         row = cursor.fetchone()
         if not row:
             return None
         return row["value"] if isinstance(row, dict) else row[0]
-    finally:
-        conn.close()
 
 
 def _set_text(key: str, value: str) -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO system_runtime (key, value, updated_at)
@@ -56,19 +52,12 @@ def _set_text(key: str, value: str) -> None:
             """,
             (key, value, _now()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _delete_key(key: str) -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM system_runtime WHERE key = ?", (key,))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def mark_process_starting() -> bool:

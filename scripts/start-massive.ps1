@@ -2,11 +2,13 @@
 # Massive:  WS 8785, HTTP 8786, UI http://127.0.0.1:5175
 #
 # Usage:
-#   .\scripts\start-massive.ps1           # restart backend; keep UI if already running
-#   .\scripts\start-massive.ps1 -Restart  # restart backend + frontend
+#   .\scripts\start-massive.ps1           # start backend if down; keep running backend if healthy
+#   .\scripts\start-massive.ps1 -Recycle  # force restart backend (code changes)
+#   .\scripts\start-massive.ps1 -Restart  # force restart backend + frontend
 
 param(
-    [switch]$Restart
+    [switch]$Restart,
+    [switch]$Recycle
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,14 +23,21 @@ $http = [int]$ports.Http
 & (Join-Path $here 'preflight-massive.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-if ($Restart) {
+$backendHealthy = Test-BackendHealth -HttpPort $http
+$needsBackendStart = $true
+
+if ($Restart -or $Recycle) {
     Stop-TerminalProfileListeners -ProfileKey 'massive'
+    $backendHealthy = $false
+} elseif ($backendHealthy) {
+    Write-Host "Massive backend already healthy on :$http - skipping restart." -ForegroundColor DarkGray
+    $needsBackendStart = $false
+} elseif (Test-TcpPort -HostName '127.0.0.1' -Port $ws) {
+    Write-Host "Recycling unhealthy Massive backend (WS :$ws, HTTP :$http)..." -ForegroundColor DarkYellow
+    Stop-ProfileBackend -ProfileKey 'massive'
+    $backendHealthy = $false
 } else {
-    # Always recycle backend so code changes and clean shutdown apply (WS + HTTP only).
-    Write-Host "Recycling Massive backend (WS :$ws, HTTP :$http)..." -ForegroundColor DarkGray
-    Stop-ListenerOnPort -Port $ws
-    Stop-ListenerOnPort -Port $http
-    Start-Sleep -Seconds 1
+    Write-Host "Starting Massive backend (WS :$ws, HTTP :$http)..." -ForegroundColor DarkGray
 }
 
 Write-Host @"
@@ -41,11 +50,13 @@ Write-Host @"
 Opening backend and frontend windows...
 "@ -ForegroundColor Green
 
-Start-Process powershell -ArgumentList @(
-    '-NoExit', '-ExecutionPolicy', 'Bypass',
-    '-File', (Join-Path $here 'start-backend.ps1'), '-Profile', 'Massive'
-)
-Start-Sleep -Seconds 2
+if ($needsBackendStart) {
+    Start-Process powershell -ArgumentList @(
+        '-NoExit', '-ExecutionPolicy', 'Bypass',
+        '-File', (Join-Path $here 'start-backend.ps1'), '-Profile', 'Massive'
+    )
+    Start-Sleep -Seconds 2
+}
 
 if ($Restart) {
     if (Test-DevPortInUse -Port $dev) {
@@ -66,4 +77,4 @@ if ($Restart) {
 }
 
 Write-Host 'Done. Sim (:5173) and IB (:5174) can keep running in parallel.' -ForegroundColor DarkGray
-Write-Host 'Tip: use -Restart to also recycle the Vite UI on :5175.' -ForegroundColor DarkGray
+Write-Host 'Tip: use -Recycle to restart backend after code changes; -Restart also recycles the UI.' -ForegroundColor DarkGray

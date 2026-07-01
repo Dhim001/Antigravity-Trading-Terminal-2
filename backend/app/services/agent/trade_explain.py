@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from app.db.connection import get_connection
+from app.services.agent.regime_routing import current_atr_regime
 from app.services.market.timeframes import normalize_timeframe, timeframe_to_secs
 
 
@@ -360,10 +361,157 @@ def _fetch_vision_report(symbol: str, bar_time: int | None) -> dict | None:
     return lookup_vision_near_bar(symbol, bar_time)
 
 
-def _template_summary(trade: dict, insight: dict | None, bot: dict, vision: dict | None = None) -> str:
+def _fetch_regime_context(insight: dict | None) -> dict | None:
+    """Volatility regime and size factor from analyst risk sub-report."""
+    if not insight:
+        return None
+    sub = insight.get("sub_reports") or {}
+    risk = sub.get("risk") or {}
+    regime = current_atr_regime(insight)
+    out: dict[str, Any] = {"atr_regime": regime}
+    size_factor = risk.get("suggested_size_factor")
+    if size_factor is not None:
+        out["suggested_size_factor"] = size_factor
+    notes = {
+        "elevated": "Elevated volatility — entries typically require higher confidence.",
+        "compressed": "Compressed volatility — range-bound conditions; breakouts may be muted.",
+        "normal": "Normal volatility regime.",
+    }
+    out["note"] = notes.get(regime, notes["normal"])
+    return out
+
+
+def _peer_symbols(symbol: str, group: str) -> list[str]:
+    """Other symbols in the same correlation group (static or dynamic)."""
+    from app.config import CORRELATION_GROUPS
+    from app.services.bots.correlation import get_correlation_store
+
+    sym = str(symbol or "").upper()
+    peers: list[str] = []
+    snap = get_correlation_store().get_snapshot()
+    for members in (snap.groups or {}).values():
+        if sym in members:
+            peers = [s for s in members if s != sym]
+            break
+    if not peers:
+        for gname, members in CORRELATION_GROUPS.items():
+            if sym in members or group == gname:
+                peers = [s for s in members if s != sym]
+                if sym in members:
+                    break
+    return peers[:5]
+
+
+def _return_pct_near_bar(symbol: str, bar_time: int, window_secs: int = 3600) -> float | None:
+    """1h return % ending at bar_time from archived 1m bars (when available)."""
+    try:
+        from app.services.archive.query import query_1m
+
+        bars = query_1m(symbol, int(bar_time) - window_secs, int(bar_time))
+        if len(bars) < 2:
+            return None
+        first = float(bars[0]["close"])
+        last = float(bars[-1]["close"])
+        if first <= 0:
+            return None
+        return round((last / first - 1.0) * 100.0, 2)
+    except Exception:
+        return None
+
+
+def _fetch_correlated_context(symbol: str, bar_time: int | None) -> dict | None:
+    """Correlation group label and peer return behavior around the trade bar."""
+    from app.services.bots.correlation import resolve_correlation_group
+
+    sym = str(symbol or "").upper()
+    if not sym:
+        return None
+    group = resolve_correlation_group(sym)
+    peers = _peer_symbols(sym, group)
+    out: dict[str, Any] = {
+        "group": group,
+        "symbol": sym,
+        "peers": peers,
+    }
+    if bar_time is not None:
+        sym_ret = _return_pct_near_bar(sym, int(bar_time))
+        if sym_ret is not None:
+            out["symbol_return_pct_1h"] = sym_ret
+        peer_rows: list[dict[str, Any]] = []
+        returns: list[float] = []
+        for peer in peers:
+            ret = _return_pct_near_bar(peer, int(bar_time))
+            row: dict[str, Any] = {"symbol": peer}
+            if ret is not None:
+                row["return_pct_1h"] = ret
+                returns.append(ret)
+            peer_rows.append(row)
+        if peer_rows:
+            out["peer_returns"] = peer_rows
+        if returns:
+            returns.sort()
+            mid = len(returns) // 2
+            median = returns[mid] if len(returns) % 2 else (returns[mid - 1] + returns[mid]) / 2
+            out["group_median_return_pct_1h"] = round(median, 2)
+    return out
+
+
+def _fetch_anomaly_context(insight: dict | None) -> dict | None:
+    if not insight:
+        return None
+    anomaly = (insight.get("sub_reports") or {}).get("anomaly")
+    if not isinstance(anomaly, dict) or not anomaly.get("is_anomaly"):
+        return None
+    return {
+        k: anomaly[k]
+        for k in ("is_anomaly", "kinds", "volume_z", "return_z", "gap_pct", "summary")
+        if anomaly.get(k) is not None
+    }
+
+
+def _fetch_events_context(
+    symbol: str,
+    *,
+    timestamp: Any = None,
+    bar_time: int | None = None,
+) -> dict | None:
+    from app.services.altdata.store import get_events_near_trade
+
+    events = get_events_near_trade(symbol, timestamp=timestamp, bar_time=bar_time, window_hours=24.0)
+    if not events.get("corporate") and not events.get("economic"):
+        return events if events.get("trade_time") else None
+    return events
+
+
+def _template_summary(
+    trade: dict,
+    insight: dict | None,
+    bot: dict,
+    vision: dict | None = None,
+    *,
+    regime: dict | None = None,
+    correlated: dict | None = None,
+    events: dict | None = None,
+) -> str:
     side = trade.get("side", "?")
     sym = trade.get("symbol", "?")
     tf = (insight or {}).get("timeframe") or bot.get("timeframe") or "1m"
+    regime_bit = ""
+    if regime and regime.get("atr_regime") and regime["atr_regime"] != "normal":
+        regime_bit = f" Vol regime: {regime['atr_regime']}."
+    corr_bit = ""
+    if correlated and correlated.get("group_median_return_pct_1h") is not None:
+        med = correlated["group_median_return_pct_1h"]
+        corr_bit = f" {correlated.get('group', 'Group')} peers median 1h: {med:+.1f}%."
+    event_bit = ""
+    corp = (events or {}).get("corporate") or []
+    macro = (events or {}).get("economic") or []
+    if corp:
+        title = corp[0].get("title") or corp[0].get("event_type") or "corporate event"
+        event_bit = f" Near event: {title[:60]}."
+    elif macro:
+        title = macro[0].get("title") or macro[0].get("event_type") or "macro event"
+        event_bit = f" Near macro: {title[:60]}."
     if trade.get("is_exit"):
         if insight:
             signal = insight.get("signal", "NONE")
@@ -373,9 +521,9 @@ def _template_summary(trade: dict, insight: dict | None, bot: dict, vision: dict
             top = reasons[0] if reasons else "prior entry context"
             return (
                 f"Exit {side} on {sym} ({tf}) — closed position opened on "
-                f"{signal} setup ({conf_pct} conf): {top}."
+                f"{signal} setup ({conf_pct} conf): {top}.{regime_bit}{corr_bit}{event_bit}"
             )
-        return f"Exit {side} on {sym} — position close."
+        return f"Exit {side} on {sym} — position close.{regime_bit}{corr_bit}{event_bit}"
     if not insight:
         return f"Entry {side} on {sym} — no matching analyst insight for bar {trade.get('signal_bar_time')}."
     signal = insight.get("signal", "NONE")
@@ -387,7 +535,8 @@ def _template_summary(trade: dict, insight: dict | None, bot: dict, vision: dict
     if vision and vision.get("structure"):
         vision_bit = f" Structure ({vision.get('timeframe', '4h')}): {str(vision['structure'])[:120]}."
     return (
-        f"Entry {side} on {sym} ({tf}): analyst {signal} at {conf_pct} confidence — {top}.{vision_bit}"
+        f"Entry {side} on {sym} ({tf}): analyst {signal} at {conf_pct} confidence — {top}."
+        f"{vision_bit}{regime_bit}{corr_bit}{event_bit}"
     )
 
 
@@ -450,11 +599,26 @@ async def explain_trade(
             related = search_vision_semantic(symbol, query, limit=1)
             if related:
                 vision_report = slim_vision_payload(related[0])
-    summary = _template_summary(trade, insight, bot, vision_report)
+
+    regime_context = _fetch_regime_context(insight)
+    anomaly_context = _fetch_anomaly_context(insight)
+    correlated_context = _fetch_correlated_context(symbol, bar_for_vision or trade.get("signal_bar_time"))
+    events_context = _fetch_events_context(
+        symbol,
+        timestamp=trade.get("timestamp"),
+        bar_time=bar_for_vision or trade.get("signal_bar_time"),
+    )
+
+    summary = _template_summary(
+        trade, insight, bot, vision_report,
+        regime=regime_context,
+        correlated=correlated_context,
+        events=events_context,
+    )
 
     narrative = None
     llm_provider = None
-    if use_llm and (insight or logs or related_insights):
+    if use_llm and (insight or logs or related_insights or regime_context or correlated_context):
         try:
             from app.services.agent.llm.router import summarize_trade_explain
 
@@ -476,6 +640,10 @@ async def explain_trade(
                 "related_insights": related_insights,
                 "related_trades": related_trades,
                 "vision_report": vision_report,
+                "regime": regime_context,
+                "anomaly": anomaly_context,
+                "correlated_context": correlated_context,
+                "events": events_context,
             }
             narrative, _model, llm_provider = await summarize_trade_explain(bundle, model=llm_model)
         except Exception:
@@ -499,6 +667,10 @@ async def explain_trade(
         "related_insights": related_insights,
         "related_trades": related_trades,
         "vision_report": vision_report,
+        "regime": regime_context,
+        "anomaly": anomaly_context,
+        "correlated_context": correlated_context,
+        "events": events_context,
         "narrative": narrative,
         "llm_provider": llm_provider,
         "sources": [
@@ -509,6 +681,12 @@ async def explain_trade(
                 ("related_insights", bool(related_insights)),
                 ("related_trades", bool(related_trades)),
                 ("vision_report", bool(vision_report)),
+                ("regime", bool(regime_context)),
+                ("anomaly", bool(anomaly_context)),
+                ("correlated_context", bool(correlated_context and correlated_context.get("group"))),
+                ("events", bool(events_context and (
+                    events_context.get("corporate") or events_context.get("economic")
+                ))),
             ] if ok
         ],
     }

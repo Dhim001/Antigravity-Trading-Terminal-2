@@ -28,7 +28,7 @@ def sub_reports_summary(sub_reports: dict | None) -> dict:
     if not sub_reports:
         return {}
     out: dict[str, Any] = {}
-    for key in ("trend", "momentum", "risk"):
+    for key in ("trend", "momentum", "risk", "sentiment"):
         block = sub_reports.get(key)
         if not block:
             continue
@@ -40,6 +40,8 @@ def sub_reports_summary(sub_reports: dict | None) -> dict:
                 entry["atr_regime"] = block["atr_regime"]
             if block.get("suggested_size_factor") is not None:
                 entry["suggested_size_factor"] = block["suggested_size_factor"]
+        if key == "sentiment" and block.get("aggregate_score") is not None:
+            entry["aggregate_score"] = block["aggregate_score"]
         if entry:
             out[key] = entry
     return out
@@ -84,6 +86,20 @@ def check_entry_filters(
         if trend_reg == "ranging":
             return "ranging market blocks entry"
 
+    if cfg.get("sentiment_filter_enabled"):
+        sent = sub.get("sentiment") or {}
+        agg = sent.get("aggregate_score")
+        if agg is not None:
+            try:
+                min_sent = float(cfg.get("min_sentiment_score", 0.0))
+            except (TypeError, ValueError):
+                min_sent = 0.0
+            agg_f = float(agg)
+            if signal == "BUY" and agg_f < min_sent:
+                return f"sentiment {agg_f:+.2f} below min {min_sent} for BUY"
+            if signal == "SELL" and agg_f > -min_sent:
+                return f"sentiment {agg_f:+.2f} above -{min_sent} for SELL"
+
     confirm_tf = (cfg.get("confirm_timeframe") or "").strip()
     if confirm_tf:
         if not confirm_insight:
@@ -118,6 +134,8 @@ def classify_filter_reject(reason: str | None) -> str | None:
         return "confidence"
     if "calibration gate" in text:
         return "calibration"
+    if "sentiment" in text:
+        return "sentiment"
     return "other"
 
 

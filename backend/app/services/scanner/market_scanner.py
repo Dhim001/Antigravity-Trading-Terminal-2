@@ -60,6 +60,7 @@ class MarketScannerService:
                     "bar_time": insight.bar_time,
                     "insight_id": insight.insight_id,
                     "atr_regime": (insight.sub_reports or {}).get("risk", {}).get("atr_regime"),
+                    "sentiment_score": (insight.sub_reports or {}).get("sentiment", {}).get("aggregate_score"),
                 })
             except Exception as exc:
                 logger.debug("Scan skip %s: %s", sym, exc)

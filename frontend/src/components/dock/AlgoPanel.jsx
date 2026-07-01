@@ -46,6 +46,7 @@ import {
   formatBacktestTimeoutLabel,
 } from '../../lib/backtestTimeouts';
 import { cn } from '@/lib/utils';
+import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
@@ -59,7 +60,7 @@ export function AlgoTab({ hideToolbar = false }) {
     activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
     setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
-    setBacktestRunning, setBacktestProgress, setBacktestSnapshot, setBacktestLabOpen,
+    setBacktestRunning, setBacktestProgress, setBacktestSnapshot,
     openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
     setChartInteractionMode,
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
@@ -89,7 +90,6 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestRunning: s.setBacktestRunning,
     setBacktestProgress: s.setBacktestProgress,
     setBacktestSnapshot: s.setBacktestSnapshot,
-    setBacktestLabOpen: s.setBacktestLabOpen,
     openBacktestLab: s.openBacktestLab,
     setStoreBacktestDays: s.setBacktestDays,
     setStoreBacktestOos: s.setBacktestOos,
@@ -227,6 +227,7 @@ export function AlgoTab({ hideToolbar = false }) {
         sim_mode: backtestSimMode,
         risk_base_mode: backtestRiskBaseMode,
         ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
+        ...(selectedBotId ? { backtest_bot_id: selectedBotId } : {}),
       },
       days,
       timeframe: isTick ? 'tick' : botTimeframe,
@@ -890,6 +891,8 @@ export function AlgoTab({ hideToolbar = false }) {
                 oosPct={backtestOos ? 30 : null}
                 reasoningPending={backtestReasoning && backtestRunning}
                 showReasoningSection={agentLlmAvailable}
+                advisorBotId={selectedBotId}
+                agentLlmAvailable={agentLlmAvailable}
               />
             )}
           </div>
@@ -936,10 +939,11 @@ export function AlgoTab({ hideToolbar = false }) {
                 variant="ghost"
                 size="sm"
                 className="algo-deploy-actions__btn algo-deploy-actions__btn--utility"
-                onClick={() => setBacktestLabOpen(true)}
-                title="Open full backtest report"
+                onClick={() => openBacktestLabResults()}
+                title="Open Backtest Lab → Results tab"
               >
-                <Maximize2 size={14} />
+                <Maximize2 size={14} data-icon="inline-start" />
+                LAB
               </Button>
             )}
             <Button

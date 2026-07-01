@@ -6,6 +6,7 @@ import { selectAgentInsight } from '../lib/agentInsights';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { openNewsHub } from '../lib/intelligenceEvents';
 import { cn } from '@/lib/utils';
 
 export default function ChartContextStrip() {
@@ -64,6 +65,15 @@ export default function ChartContextStrip() {
           </Button>
         </>
       )}
+      <span className="chart-context-strip__dot" aria-hidden>·</span>
+      <Button
+        variant="ghost"
+        size="xs"
+        className="chart-context-strip__action"
+        onClick={() => openNewsHub(activeSymbol)}
+      >
+        News
+      </Button>
       {(isBotRunning || runningBot) && (
         <>
           <span className="chart-context-strip__dot" aria-hidden>·</span>

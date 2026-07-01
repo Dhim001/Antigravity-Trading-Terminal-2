@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from app.database import get_connection
+from app.db.connection import db_session
 from app.services.journal.storage import get_screenshot_storage, resolve_screenshot_url
 
 MAX_NOTE_LEN = 8000
@@ -49,8 +49,6 @@ def list_entries(
     symbol: str | None = None,
     limit: int = 100,
 ) -> list[dict]:
-    conn = get_connection()
-    cursor = conn.cursor()
     sql = "SELECT * FROM trade_journal WHERE 1=1"
     params: list = []
     if symbol:
@@ -65,9 +63,10 @@ def list_entries(
         params.extend([q, q, q, q])
     sql += " ORDER BY updated_at DESC LIMIT ?"
     params.append(min(max(limit, 1), 500))
-    cursor.execute(sql, params)
-    rows = [_row_to_entry(dict(r)) for r in cursor.fetchall()]
-    conn.close()
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = [_row_to_entry(dict(r)) for r in cursor.fetchall()]
     return rows
 
 
@@ -86,53 +85,48 @@ def upsert_entry(payload: dict) -> dict:
     if screenshot is not None:
         screenshot = get_screenshot_storage().save(screenshot)
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM trade_journal WHERE id = ?", (entry_id,))
-    exists = cursor.fetchone()
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM trade_journal WHERE id = ?", (entry_id,))
+        exists = cursor.fetchone()
 
-    if exists:
-        if screenshot is not None:
-            cursor.execute(
-                """
-                UPDATE trade_journal
-                SET trade_ref=?, order_id=?, bot_id=?, symbol=?, tags=?, note=?, lesson=?,
-                    screenshot_url=?, updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
-                """,
-                (trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, screenshot, entry_id),
-            )
+        if exists:
+            if screenshot is not None:
+                cursor.execute(
+                    """
+                    UPDATE trade_journal
+                    SET trade_ref=?, order_id=?, bot_id=?, symbol=?, tags=?, note=?, lesson=?,
+                        screenshot_url=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, screenshot, entry_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE trade_journal
+                    SET trade_ref=?, order_id=?, bot_id=?, symbol=?, tags=?, note=?, lesson=?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, entry_id),
+                )
         else:
             cursor.execute(
                 """
-                UPDATE trade_journal
-                SET trade_ref=?, order_id=?, bot_id=?, symbol=?, tags=?, note=?, lesson=?,
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                INSERT INTO trade_journal
+                (id, trade_ref, order_id, bot_id, symbol, tags, note, lesson, screenshot_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, entry_id),
+                (entry_id, trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, screenshot),
             )
-    else:
-        cursor.execute(
-            """
-            INSERT INTO trade_journal
-            (id, trade_ref, order_id, bot_id, symbol, tags, note, lesson, screenshot_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (entry_id, trade_ref, order_id, bot_id, symbol, tags_json, note, lesson, screenshot),
-        )
-    conn.commit()
-    cursor.execute("SELECT * FROM trade_journal WHERE id = ?", (entry_id,))
-    row = dict(cursor.fetchone())
-    conn.close()
+        cursor.execute("SELECT * FROM trade_journal WHERE id = ?", (entry_id,))
+        row = dict(cursor.fetchone())
     return _row_to_entry(row)
 
 
 def delete_entry(entry_id: str) -> bool:
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM trade_journal WHERE id = ?", (entry_id,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return deleted
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM trade_journal WHERE id = ?", (entry_id,))
+        return cursor.rowcount > 0

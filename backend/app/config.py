@@ -192,6 +192,19 @@ DATA_QUALITY_ACTIVE_PAUSE = os.environ.get("DATA_QUALITY_ACTIVE_PAUSE", "true").
 ALTDATA_ENABLED = os.environ.get("ALTDATA_ENABLED", "true").lower() in ("1", "true", "yes")
 ALTDATA_REFRESH_INTERVAL_SEC = float(os.environ.get("ALTDATA_REFRESH_INTERVAL_SEC", "3600"))
 
+# News/social sentiment feed (lexicon-scored headlines → sentiment_events)
+SENTIMENT_ENABLED = os.environ.get("SENTIMENT_ENABLED", "true").lower() in ("1", "true", "yes")
+SENTIMENT_LOOKBACK_HOURS = float(os.environ.get("SENTIMENT_LOOKBACK_HOURS", "24"))
+SENTIMENT_SCORE_THRESHOLD = float(os.environ.get("SENTIMENT_SCORE_THRESHOLD", "0.2"))
+
+# Finnhub.io — company news + news-sentiment (https://finnhub.io/docs/api)
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
+FINNHUB_API_URL = os.environ.get("FINNHUB_API_URL", "https://finnhub.io/api/v1").strip().rstrip("/")
+
+# Strategy advisor — LLM-suggested bot params with optional shadow backtest
+STRATEGY_ADVISOR_ENABLED = os.environ.get("STRATEGY_ADVISOR_ENABLED", "true").lower() in ("1", "true", "yes")
+STRATEGY_ADVISOR_DEFAULT_DAYS = int(os.environ.get("STRATEGY_ADVISOR_DEFAULT_DAYS", "30"))
+
 # External notifications (webhooks, Telegram, email digest)
 NOTIFICATIONS_ENABLED = os.environ.get("NOTIFICATIONS_ENABLED", "true").lower() in (
     "1", "true", "yes"

@@ -342,6 +342,9 @@ async def _execute_backtest(
             meta["strategy"] = strategy
             meta["portfolio"] = True
             meta["portfolio_symbols"] = portfolio_symbols
+            bot_id = str(config.get("backtest_bot_id") or config.get("_bot_id") or "").strip()
+            if bot_id:
+                meta["bot_id"] = bot_id
             portfolio_result["meta"] = meta
             from app.services.bots.backtest_store import save_backtest_run
 
@@ -687,6 +690,9 @@ async def _execute_backtest(
         enqueue_progress({"pct": 98, "phase": "save", "message": "Saving run…"})
 
         meta["strategy"] = strategy
+        bot_id = str(config.get("backtest_bot_id") or config.get("_bot_id") or "").strip()
+        if bot_id:
+            meta["bot_id"] = bot_id
         if sweep_objective:
             meta["sweep_objective"] = sweep_objective
         if min_trades:

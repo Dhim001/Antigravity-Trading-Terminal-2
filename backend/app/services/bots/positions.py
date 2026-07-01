@@ -156,6 +156,26 @@ def evaluate_risk_trigger(
     return trigger_type, trailing_sl, updated_high, updated_low
 
 
+def sl_tp_limit_fill_price(
+    trigger_type: str,
+    *,
+    market_price: float,
+    stop_loss_price: float | None = None,
+    take_profit_price: float | None = None,
+) -> float:
+    """
+    Fill price for SL/TP exits — limit-style at the stored trigger level.
+
+    Matches backtester intra-bar logic: when price gaps through TP/SL, fill at
+    the limit level rather than the current (gapped) market quote.
+    """
+    if trigger_type == "TP" and take_profit_price is not None:
+        return float(take_profit_price)
+    if trigger_type == "SL" and stop_loss_price is not None:
+        return float(stop_loss_price)
+    return float(market_price)
+
+
 def get_bot_position(bot_id: str, symbol: str) -> dict:
     """Return bot-local size/avg/risk for risk and snapshot math."""
     if not bot_id or not symbol:

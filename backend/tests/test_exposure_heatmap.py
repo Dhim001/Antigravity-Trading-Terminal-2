@@ -1,6 +1,7 @@
 """Exposure heatmap analytics tests."""
 
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
 from app.services.analytics.exposure import (
@@ -49,13 +50,18 @@ class ExposureHeatmapTests(unittest.TestCase):
             {"bot_id": "b2", "symbol": "BTCUSDT", "size": 0.1, "avg_price": 100_000},
         ]
 
-        conn_patch = mock.patch("app.services.analytics.exposure.get_connection")
-        with conn_patch as mock_conn:
-            cursor = mock_conn.return_value.cursor.return_value
-            cursor.fetchall.return_value = [
-                {"bot_id": "b1", "symbol": "AAPL", "size": 50, "avg_price": 300, "strategy": "MACD_RSI"},
-                {"bot_id": "b2", "symbol": "BTCUSDT", "size": 0.1, "avg_price": 100_000, "strategy": "TICK_MOMENTUM"},
-            ]
+        mock_conn = mock.MagicMock()
+        cursor = mock_conn.cursor.return_value
+        cursor.fetchall.return_value = [
+            {"bot_id": "b1", "symbol": "AAPL", "size": 50, "avg_price": 300, "strategy": "MACD_RSI"},
+            {"bot_id": "b2", "symbol": "BTCUSDT", "size": 0.1, "avg_price": 100_000, "strategy": "TICK_MOMENTUM"},
+        ]
+
+        @contextmanager
+        def _fake_db_session(*, commit=True):
+            yield mock_conn
+
+        with mock.patch("app.services.analytics.exposure.db_session", _fake_db_session):
             result = get_exposure_heatmap(_FakeOms())
 
         self.assertGreater(result["total_notional"], 0)
@@ -74,7 +80,16 @@ class ExposureHeatmapTests(unittest.TestCase):
             group_exposure={},
             symbol_exposure={},
         )
-        result = get_exposure_heatmap(_FakeOms())
+
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor.return_value.fetchall.return_value = []
+
+        @contextmanager
+        def _fake_db_session(*, commit=True):
+            yield mock_conn
+
+        with mock.patch("app.services.analytics.exposure.db_session", _fake_db_session):
+            result = get_exposure_heatmap(_FakeOms())
         self.assertEqual(result["position_count"], 0)
         self.assertEqual(result["by_sector"], [])
 

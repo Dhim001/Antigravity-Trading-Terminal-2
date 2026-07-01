@@ -5,6 +5,7 @@ const DOMAIN_META = {
   indicator: { label: 'Indicator', color: 'text-trading-accent' },
   momentum: { label: 'Indicator', color: 'text-trading-accent' },
   risk: { label: 'Risk', color: 'text-trading-warn' },
+  sentiment: { label: 'Sentiment', color: 'text-emerald-500' },
 };
 
 function resolveDomainData(subReports, domain) {
@@ -31,6 +32,11 @@ function DomainCard({ domain, data }) {
         )}
         {domain === 'risk' && data.atr_regime && (
           <span className="text-[0.62rem] capitalize text-muted-foreground">{data.atr_regime}</span>
+        )}
+        {domain === 'sentiment' && data.aggregate_score != null && (
+          <span className="text-[0.62rem] text-muted-foreground">
+            {data.aggregate_score >= 0 ? '+' : ''}{Number(data.aggregate_score).toFixed(2)}
+          </span>
         )}
       </div>
       {domain === 'risk' && data.suggested_size_factor != null && (
@@ -59,10 +65,12 @@ function DomainCard({ domain, data }) {
  */
 export default function SubReportCards({ subReports, compact = false }) {
   if (!subReports) return null;
-  const domains = ['trend', 'indicator', 'risk'];
+  const domains = ['trend', 'indicator', 'risk', 'sentiment'];
+  const visible = domains.filter((d) => resolveDomainData(subReports, d));
+  if (!visible.length) return null;
   return (
-    <div className={cn('grid gap-2', compact ? 'grid-cols-1' : 'sm:grid-cols-3')}>
-      {domains.map((domain) => (
+    <div className={cn('grid gap-2', compact ? 'grid-cols-1' : 'sm:grid-cols-2 lg:grid-cols-4')}>
+      {visible.map((domain) => (
         <DomainCard key={domain} domain={domain} data={resolveDomainData(subReports, domain)} />
       ))}
     </div>

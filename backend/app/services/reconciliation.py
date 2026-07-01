@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.db.connection import get_connection
+from app.db.connection import db_session
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +26,8 @@ def record_ambiguous_order(
 ) -> str:
     """Persist an ambiguous order for operator review."""
     row_id = str(uuid.uuid4())
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO ambiguous_orders
@@ -48,17 +47,13 @@ def record_ambiguous_order(
                 _now_iso(),
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
     logger.warning("Ambiguous order recorded: %s %s", row_id, order_req.get("symbol"))
     return row_id
 
 
 def list_ambiguous_orders(*, include_resolved: bool = False) -> list[dict[str, Any]]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         if include_resolved:
             cursor.execute(
                 """
@@ -81,23 +76,20 @@ def list_ambiguous_orders(*, include_resolved: bool = False) -> list[dict[str, A
                 """
             )
         rows = cursor.fetchall()
-        out = []
-        for row in rows:
-            item = dict(row) if isinstance(row, dict) else {
-                "id": row[0], "symbol": row[1], "side": row[2], "quantity": row[3],
-                "order_type": row[4], "bot_id": row[5], "broker": row[6], "message": row[7],
-                "status": row[8], "resolution": row[9], "created_at": row[10], "resolved_at": row[11],
-            }
-            out.append(item)
-        return out
-    finally:
-        conn.close()
+    out = []
+    for row in rows:
+        item = dict(row) if isinstance(row, dict) else {
+            "id": row[0], "symbol": row[1], "side": row[2], "quantity": row[3],
+            "order_type": row[4], "bot_id": row[5], "broker": row[6], "message": row[7],
+            "status": row[8], "resolution": row[9], "created_at": row[10], "resolved_at": row[11],
+        }
+        out.append(item)
+    return out
 
 
 def resolve_ambiguous_order(order_id: str, resolution: str, note: str = "") -> bool:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE ambiguous_orders
@@ -106,10 +98,7 @@ def resolve_ambiguous_order(order_id: str, resolution: str, note: str = "") -> b
             """,
             (f"{resolution}:{note}" if note else resolution, _now_iso(), order_id),
         )
-        conn.commit()
         return cursor.rowcount > 0
-    finally:
-        conn.close()
 
 
 def auto_reconcile_with_portfolio(oms) -> dict[str, Any]:

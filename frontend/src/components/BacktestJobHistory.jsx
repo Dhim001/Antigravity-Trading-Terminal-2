@@ -6,6 +6,7 @@ import { Loader2, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { openBacktestLabJobs, openBacktestLabResults } from '../lib/backtestLab';
 import { useStore } from '../store/useStore';
 import { getStoreActions } from '../api/dispatch';
 import { sendAction } from '../api/transport';
@@ -32,7 +33,6 @@ function fmtCreated(ts) {
 export default function BacktestJobHistory() {
   const backtestRunning = useStore((s) => s.backtestRunning);
   const backtestJobId = useStore((s) => s.backtestJobId);
-  const setBacktestLabOpen = useStore((s) => s.setBacktestLabOpen);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -51,12 +51,12 @@ export default function BacktestJobHistory() {
   const handleClick = async (job) => {
     const storeActions = getStoreActions();
     if (['pending', 'running'].includes(job.status)) {
-      setBacktestLabOpen(true);
+      openBacktestLabJobs();
       watchBacktestJob(job.id, storeActions, { progress: job.progress });
       return;
     }
     if (job.status === 'completed' && job.run_id) {
-      setBacktestLabOpen(true);
+      openBacktestLabResults();
       try {
         await fetchBacktestRun(job.run_id, storeActions);
       } catch (_) {
@@ -65,7 +65,7 @@ export default function BacktestJobHistory() {
       return;
     }
     if (job.status === 'completed' && job.results) {
-      setBacktestLabOpen(true);
+      openBacktestLabResults();
       storeActions.setBacktestResults({
         ...job.results,
         run_id: job.run_id ?? job.results.run_id,
@@ -81,7 +81,7 @@ export default function BacktestJobHistory() {
     }
     const req = job.request || {};
     const action = req.sweep ? Action.RUN_BACKTEST_SWEEP : Action.RUN_BACKTEST;
-    setBacktestLabOpen(true);
+    openBacktestLabJobs();
     const { ok, error } = await sendAction(action, withLlmModel(req));
     if (!ok && error) toast.error(error);
     else toast.message('Retrying backtest…');

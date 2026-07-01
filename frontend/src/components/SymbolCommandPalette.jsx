@@ -14,8 +14,9 @@ import {
   CommandShortcut,
 } from '@/components/ui/command';
 import {
-  BarChart2, Brain, Bot, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert, LayoutTemplate,
+  BarChart2, Brain, Bot, LayoutGrid, Search, Sparkles, SlidersHorizontal, ShieldAlert, LayoutTemplate, Activity,
 } from 'lucide-react';
+import { openBacktestLabResults } from '../lib/backtestLab';
 import { LAYOUT_MODE_CONFIG } from '../settings/layoutModes';
 
 function assetKind(sym) {
@@ -174,6 +175,14 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
               <LayoutGrid aria-hidden />
               <span>Multi-Chart Grid</span>
               <CommandShortcut>⌘2</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="backtest lab results optimizer jobs"
+              className="command-palette__item"
+              onSelect={() => run(() => openBacktestLabResults())}
+            >
+              <Activity aria-hidden />
+              <span>Backtest Lab</span>
             </CommandItem>
             <CommandItem
               value="insights hub scanner analyst"

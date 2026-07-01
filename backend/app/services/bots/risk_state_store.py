@@ -4,31 +4,27 @@ from __future__ import annotations
 
 import time
 
-from app.database import get_connection
+from app.db.connection import db_session
 
 KEY_EQUITY_PEAK = "equity_peak"
 KEY_KILL_SWITCH_TRIPPED_AT = "kill_switch_tripped_at"
 
 
 def _get_float(key: str) -> float | None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
         cursor.execute("SELECT value FROM risk_state WHERE key = ?", (key,))
         row = cursor.fetchone()
         if not row:
             return None
         val = row["value"] if isinstance(row, dict) else row[0]
         return float(val)
-    finally:
-        conn.close()
 
 
 def _set_float(key: str, value: float) -> None:
     now = time.time()
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO risk_state (key, value, updated_at)
@@ -39,19 +35,12 @@ def _set_float(key: str, value: float) -> None:
             """,
             (key, float(value), now),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _delete_key(key: str) -> None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
+    with db_session() as conn:
+        cursor = conn.cursor()
         cursor.execute("DELETE FROM risk_state WHERE key = ?", (key,))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def get_equity_peak() -> float | None:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from app.services.agent.models import ChartAgentInsight, SignalType
+from app.services.agent.anomaly_detector import detect_bar_anomaly
 from app.services.bots.indicators import atr_col
 
 RSI_LEN = 14
@@ -47,6 +48,35 @@ def _bot_signal(score: int) -> SignalType:
 def _confidence(score: int) -> float:
     """Sigmoid-mapped confidence: score 2→~0.62, 3→~0.73, 4→~0.82, 5→~0.88."""
     return round(1.0 / (1.0 + math.exp(-0.8 * (abs(score) - 3))), 3)
+
+
+def _score_sentiment(symbol: str) -> DomainScore:
+    """News/social aggregate sentiment from persisted sentiment_events."""
+    from app.config import SENTIMENT_ENABLED, SENTIMENT_LOOKBACK_HOURS, SENTIMENT_SCORE_THRESHOLD
+    from app.services.altdata.store import get_aggregate_sentiment
+
+    if not SENTIMENT_ENABLED:
+        return DomainScore(score=0, reasons=[])
+
+    agg = get_aggregate_sentiment(symbol, lookback_hours=SENTIMENT_LOOKBACK_HOURS)
+    score_val = float(agg.get("aggregate_score") or 0.0)
+    mentions = int(agg.get("mention_count") or 0)
+    if mentions == 0:
+        return DomainScore(score=0, reasons=[])
+
+    threshold = float(SENTIMENT_SCORE_THRESHOLD)
+    domain_score = 0
+    reasons: list[str] = []
+    if score_val >= threshold:
+        domain_score = 1
+        reasons.append(f"News sentiment bullish ({score_val:+.2f}, {mentions} items)")
+    elif score_val <= -threshold:
+        domain_score = -1
+        reasons.append(f"News sentiment bearish ({score_val:+.2f}, {mentions} items)")
+    else:
+        reasons.append(f"News sentiment neutral ({score_val:+.2f}, {mentions} items)")
+
+    return DomainScore(score=domain_score, reasons=reasons)
 
 
 def _score_trend(row: pd.Series, price: float) -> DomainScore:
@@ -242,13 +272,36 @@ def _classify_trend_regime(row: pd.Series, df: pd.DataFrame, idx: int) -> str:
     return "trending" if float(adx_val) > 25 else "ranging"
 
 
-def _build_sub_reports(row: pd.Series, prev: pd.Series | None, price: float, df: pd.DataFrame, idx: int) -> dict:
+def _build_sub_reports(
+    row: pd.Series,
+    prev: pd.Series | None,
+    price: float,
+    df: pd.DataFrame,
+    idx: int,
+    *,
+    symbol: str = "",
+) -> dict:
     trend = _score_trend(row, price)
     momentum = _score_momentum(row, prev)
     volume = _score_volume(row, df, idx)
     risk = _risk_report(row, df, idx)
+    sentiment = _score_sentiment(symbol)
     trend_regime = _classify_trend_regime(row, df, idx)
     indicator = {"score": momentum.score, "reasons": list(momentum.reasons)}
+    anomaly = detect_bar_anomaly(df, idx)
+    from app.config import SENTIMENT_LOOKBACK_HOURS
+    from app.services.altdata.store import get_aggregate_sentiment
+
+    agg = get_aggregate_sentiment(symbol, lookback_hours=SENTIMENT_LOOKBACK_HOURS) if symbol else {}
+    sentiment_block: dict = {
+        "score": sentiment.score,
+        "reasons": sentiment.reasons,
+        "aggregate_score": agg.get("aggregate_score", 0.0),
+        "mention_count": agg.get("mention_count", 0),
+        "sources": agg.get("sources") or [],
+    }
+    if agg.get("sample_headlines"):
+        sentiment_block["sample_headlines"] = agg["sample_headlines"]
     return {
         "trend": {
             "score": trend.score,
@@ -261,6 +314,8 @@ def _build_sub_reports(row: pd.Series, prev: pd.Series | None, price: float, df:
         # 3.1-A: Volume conviction domain.
         "volume": {"score": volume.score, "reasons": volume.reasons},
         "risk": risk,
+        "anomaly": anomaly,
+        "sentiment": sentiment_block,
     }
 
 
@@ -308,16 +363,18 @@ def score_dataframe(
         return None
 
     price = float(row.get("close", 0))
-    sub_reports = _build_sub_reports(row, prev, price, df, idx)
+    sub_reports = _build_sub_reports(row, prev, price, df, idx, symbol=symbol)
     trend_score = sub_reports["trend"]["score"]
     momentum_score = sub_reports["momentum"]["score"]
     volume_score = sub_reports["volume"]["score"]
+    sentiment_score = sub_reports["sentiment"]["score"]
     # 3.1-A: Include volume conviction in total score.
-    score = trend_score + momentum_score + volume_score
+    score = trend_score + momentum_score + volume_score + sentiment_score
     reasons = (
         sub_reports["trend"]["reasons"]
         + sub_reports["momentum"]["reasons"]
         + sub_reports["volume"]["reasons"]
+        + sub_reports["sentiment"]["reasons"]
     )
     bot_sig = _bot_signal(score)
 

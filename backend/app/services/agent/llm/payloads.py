@@ -34,6 +34,14 @@ def _slim_sub_reports(sub: dict[str, Any]) -> dict[str, Any]:
         for key in ("score", "reasons", "atr_regime", "suggested_size_factor"):
             if report.get(key) is not None:
                 slim[key] = report[key]
+        if name == "sentiment":
+            for key in ("aggregate_score", "mention_count", "sources", "sample_headlines"):
+                if report.get(key) is not None:
+                    slim[key] = report[key]
+        if name == "anomaly":
+            for key in ("is_anomaly", "kinds", "volume_z", "return_z", "gap_pct", "summary"):
+                if report.get(key) is not None:
+                    slim[key] = report[key]
         if slim.get("reasons"):
             slim["reasons"] = list(slim["reasons"])[:4]
         if slim:
@@ -116,6 +124,38 @@ def slim_trade_explain_payload(bundle: dict[str, Any]) -> dict[str, Any]:
             for k in ("timeframe", "structure", "patterns", "notes", "rag_text", "report_id", "bar_time")
             if vision.get(k) is not None
         }
+    regime = bundle.get("regime")
+    if isinstance(regime, dict) and regime.get("atr_regime"):
+        out["regime"] = {
+            k: regime[k]
+            for k in ("atr_regime", "suggested_size_factor", "note")
+            if regime.get(k) is not None
+        }
+    correlated = bundle.get("correlated_context")
+    if isinstance(correlated, dict) and correlated.get("group"):
+        out["correlated_context"] = {
+            k: correlated[k]
+            for k in (
+                "group", "symbol", "symbol_return_pct_1h",
+                "group_median_return_pct_1h", "peer_returns", "peers",
+            )
+            if correlated.get(k) is not None
+        }
+    events = bundle.get("events")
+    if isinstance(events, dict) and (events.get("corporate") or events.get("economic")):
+        out["events"] = {
+            "window_hours": events.get("window_hours"),
+            "trade_time": events.get("trade_time"),
+            "corporate": (events.get("corporate") or [])[:4],
+            "economic": (events.get("economic") or [])[:3],
+        }
+    anomaly = bundle.get("anomaly")
+    if isinstance(anomaly, dict) and anomaly.get("is_anomaly"):
+        out["anomaly"] = {
+            k: anomaly[k]
+            for k in ("is_anomaly", "kinds", "volume_z", "return_z", "gap_pct", "summary")
+            if anomaly.get(k) is not None
+        }
     return out
 
 
@@ -134,10 +174,25 @@ def template_trade_explain_narrative(bundle: dict[str, Any]) -> str | None:
     risk_bit = ""
     if risk.get("atr_regime"):
         risk_bit = f" Vol regime: {risk['atr_regime']}."
+    regime = bundle.get("regime") or {}
+    if not risk_bit and regime.get("atr_regime"):
+        risk_bit = f" Vol regime: {regime['atr_regime']}."
+    corr = bundle.get("correlated_context") or {}
+    corr_bit = ""
+    if corr.get("group_median_return_pct_1h") is not None:
+        corr_bit = f" {corr.get('group', 'Group')} median 1h: {corr['group_median_return_pct_1h']:+.1f}%."
+    events = bundle.get("events") or {}
+    event_bit = ""
+    corp = events.get("corporate") or []
+    macro = events.get("economic") or []
+    if corp:
+        event_bit = f" Event: {(corp[0].get('title') or corp[0].get('event_type') or '')[:50]}."
+    elif macro:
+        event_bit = f" Macro: {(macro[0].get('title') or macro[0].get('event_type') or '')[:50]}."
     logs = bundle.get("recent_logs") or []
     log_bit = f" Bot log: {logs[0][:80]}." if logs else ""
     return (
-        f"Entry {side} on {sym}: analyst {signal} at {conf_pct} — {top}.{risk_bit}{log_bit}"
+        f"Entry {side} on {sym}: analyst {signal} at {conf_pct} — {top}.{risk_bit}{corr_bit}{event_bit}{log_bit}"
     ).strip()
 
 

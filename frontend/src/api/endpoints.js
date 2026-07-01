@@ -338,6 +338,59 @@ export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
   return body.filter_rejects;
 }
 
+/** GET /api/v1/news/{symbol} — financial headlines (Finnhub, yfinance, Polygon). */
+export async function fetchSymbolNews(symbol, {
+  refresh = true,
+  limit = 40,
+  lookbackHours = 72,
+  sources = null,
+} = {}) {
+  const qs = new URLSearchParams();
+  qs.set('refresh', refresh ? 'true' : 'false');
+  qs.set('limit', String(limit));
+  qs.set('lookback_hours', String(lookbackHours));
+  if (sources?.length) qs.set('sources', sources.join(','));
+  const body = await apiRequest(`/api/v1/news/${encodeURIComponent(symbol)}?${qs}`, {
+    timeoutMs: 30000,
+  });
+  if (!body?.ok) throw new Error(body?.error || 'News feed unavailable');
+  return body;
+}
+
+function slimBacktestResultsForAdvisor(results) {
+  if (!results || typeof results !== 'object') return null;
+  return {
+    run_id: results.run_id,
+    meta: results.meta,
+    summary: results.summary,
+    total_pnl: results.total_pnl,
+    win_rate: results.win_rate,
+    trade_count: results.trade_count,
+    max_drawdown: results.max_drawdown,
+  };
+}
+
+/** POST /api/v1/bots/{botId}/strategy-suggest — LLM/heuristic param suggestions + shadow backtest. */
+export async function fetchStrategySuggestion(botId, {
+  days = 30,
+  runBacktest = true,
+  useLlm = true,
+  recentResults = null,
+} = {}) {
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/strategy-suggest`, {
+    method: 'POST',
+    timeoutMs: 180_000,
+    body: {
+      days,
+      run_backtest: runBacktest,
+      use_llm: useLlm,
+      recent_results: slimBacktestResultsForAdvisor(recentResults),
+    },
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Strategy advisor unavailable');
+  return body;
+}
+
 /** POST /api/v1/bots/calibration/apply — merge threshold suggestions into bot config. */
 export async function applyCalibrationSuggestions({
   botId,
