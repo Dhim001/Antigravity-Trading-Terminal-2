@@ -9,6 +9,7 @@ const PHASE_LABELS = {
   resolve: 'Loading candles',
   indicators: 'Indicators',
   simulate: 'Simulating',
+  meta_label_wf: 'Meta-label walk-forward',
   reasoning: 'LLM explanations',
   save: 'Saving',
   done: 'Complete',

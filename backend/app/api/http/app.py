@@ -449,6 +449,18 @@ def _parse_json_body(raw: object) -> dict:
     return {}
 
 
+def _bot_record_from_detail(detail: dict | None) -> dict | None:
+    """Normalize get_bot_detail() — returns nested {bot: {...}} or flat bot dict."""
+    if not detail:
+        return None
+    bot = detail.get("bot")
+    if isinstance(bot, dict):
+        return bot
+    if detail.get("id") or detail.get("symbol"):
+        return detail
+    return None
+
+
 async def strategy_suggest_handler(request: Request) -> JSONResponse:
     bot_id = request.path_params.get("bot_id")
     if not bot_id:
@@ -494,6 +506,239 @@ async def strategy_suggest_handler(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "advisor": result})
     except (TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": f"Response serialization failed: {exc}"}, status_code=500)
+
+
+async def meta_label_status_handler(request: Request) -> JSONResponse:
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id is required"}, status_code=400)
+    import asyncio
+    from app.services.bots.meta_label_model import get_meta_label_status
+
+    try:
+        status = await asyncio.to_thread(get_meta_label_status, str(bot_id))
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    state: AppState = request.app.state.terminal
+    if state.bot_manager:
+        detail = state.bot_manager.get_bot_detail(str(bot_id))
+        bot = _bot_record_from_detail(detail)
+        if bot:
+            from app.services.bots.meta_label_operational import operational_status
+            status["operational"] = operational_status(bot.get("config") or {})
+
+    return JSONResponse({"ok": True, "meta_label": status})
+
+
+async def meta_label_retrain_handler(request: Request) -> JSONResponse:
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id is required"}, status_code=400)
+    import asyncio
+    from app.services.bots.meta_label_model import train_meta_label_model
+
+    try:
+        body = _parse_json_body(await request.json())
+    except json.JSONDecodeError:
+        body = {}
+    try:
+        min_samples = int(body.get("min_samples", 0)) or None
+    except (TypeError, ValueError):
+        min_samples = None
+
+    try:
+        result = await asyncio.to_thread(
+            train_meta_label_model,
+            str(bot_id),
+            min_samples=min_samples,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    status = 200 if result.get("ok") else 400
+    return JSONResponse({"ok": bool(result.get("ok")), "result": result}, status_code=status)
+
+
+async def meta_label_walk_forward_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/backtest/meta-label-walk-forward — OOS GBM gate evaluation only."""
+    import asyncio
+
+    try:
+        body = _parse_json_body(await request.json())
+    except json.JSONDecodeError:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+
+    state: AppState = request.app.state.terminal
+    backtester = state.backtester
+    feed = getattr(state.oms, "feed", None) if state.oms else None
+
+    bot_id = str(body.get("bot_id") or "").strip()
+    symbol = str(body.get("symbol") or "").strip().upper()
+    strategy = str(body.get("strategy") or "CHART_AGENT").strip().upper()
+    config = dict(body.get("config") or {})
+
+    if bot_id and state.bot_manager:
+        detail = state.bot_manager.get_bot_detail(bot_id)
+        bot = _bot_record_from_detail(detail)
+        if not bot:
+            return JSONResponse({"ok": False, "error": f"Bot {bot_id} not found"}, status_code=404)
+        symbol = symbol or str(bot.get("symbol") or "").upper()
+        strategy = strategy or str(bot.get("strategy") or "CHART_AGENT").upper()
+        bot_cfg = dict(bot.get("config") or {})
+        if not body.get("timeframe") and bot.get("timeframe"):
+            bot_cfg.setdefault("timeframe", bot.get("timeframe"))
+        config = {**bot_cfg, **config}
+        config["backtest_bot_id"] = bot_id
+
+    if not symbol:
+        return JSONResponse({"ok": False, "error": "symbol or bot_id is required"}, status_code=400)
+
+    try:
+        days = int(body.get("days", 30))
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        rolling_folds = int(body.get("rolling_folds", body.get("meta_label_wf_folds", 2)))
+    except (TypeError, ValueError):
+        rolling_folds = 2
+    try:
+        train_pct = float(body.get("train_pct", body.get("meta_label_wf_train_pct", 70)))
+    except (TypeError, ValueError):
+        train_pct = 70.0
+    min_train_samples = body.get("min_train_samples")
+    if min_train_samples is not None:
+        try:
+            min_train_samples = int(min_train_samples)
+        except (TypeError, ValueError):
+            min_train_samples = None
+
+    timeframe = body.get("timeframe") or config.get("timeframe")
+    interval = body.get("interval")
+
+    account_balance = None
+    if state.bot_manager:
+        account_balance = state.bot_manager.get_account_balance()
+
+    from app.services.bots.meta_label_operational import run_meta_label_walk_forward_sync
+
+    try:
+        result = await asyncio.to_thread(
+            run_meta_label_walk_forward_sync,
+            backtester.run_backtest if backtester else None,
+            feed,
+            symbol=symbol,
+            strategy=strategy,
+            config=config,
+            days=days,
+            timeframe=timeframe,
+            interval=interval,
+            rolling_folds=rolling_folds,
+            train_pct=train_pct,
+            min_train_samples=min_train_samples,
+            account_balance=account_balance,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    return JSONResponse({
+        "ok": bool(result.get("ok")),
+        "walk_forward": result,
+        "symbol": symbol,
+        "strategy": strategy,
+    })
+
+
+async def meta_label_operational_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/bots/{bot_id}/meta-label/operational — shadow / promote / rollback."""
+    import asyncio
+
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id is required"}, status_code=400)
+
+    try:
+        body = _parse_json_body(await request.json())
+    except json.JSONDecodeError:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+
+    stage = str(body.get("stage") or "").strip().lower()
+    if not stage:
+        return JSONResponse({"ok": False, "error": "stage is required (shadow, promote, rollback)"}, status_code=400)
+
+    state: AppState = request.app.state.terminal
+    if not state.bot_manager:
+        return JSONResponse({"ok": False, "error": "Bot manager not available"}, status_code=503)
+
+    detail = state.bot_manager.get_bot_detail(str(bot_id))
+    bot = _bot_record_from_detail(detail)
+    if not bot:
+        return JSONResponse({"ok": False, "error": f"Bot {bot_id} not found"}, status_code=404)
+
+    if str(bot.get("strategy") or "").upper() != "CHART_AGENT":
+        return JSONResponse(
+            {"ok": False, "error": "Meta-label operational rollout requires CHART_AGENT"},
+            status_code=400,
+        )
+
+    from app.services.bots.meta_label_operational import build_operational_patch, operational_status
+    from app.services.bots.meta_label_model import train_meta_label_model
+
+    walk_forward = body.get("walk_forward")
+    if walk_forward is not None and not isinstance(walk_forward, dict):
+        return JSONResponse({"ok": False, "error": "walk_forward must be an object"}, status_code=400)
+
+    require_positive_oos = bool(body.get("require_positive_oos", True))
+    retrain = bool(body.get("retrain", stage == "promote"))
+
+    try:
+        patch = build_operational_patch(
+            stage,
+            walk_forward=walk_forward,
+            require_positive_oos=require_positive_oos,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    retrain_result = None
+    if retrain and stage in ("shadow", "promote"):
+        cfg = {**(bot.get("config") or {}), **patch}
+        min_n = int(cfg.get("meta_label_min_train_samples") or 30)
+        try:
+            retrain_result = await asyncio.to_thread(
+                train_meta_label_model,
+                str(bot_id),
+                min_samples=min_n,
+            )
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Retrain failed: {exc}"}, status_code=500)
+
+        if stage == "promote" and not retrain_result.get("ok"):
+            return JSONResponse({
+                "ok": False,
+                "error": retrain_result.get("error") or "Model not trained — need more closed trades",
+                "retrain": retrain_result,
+            }, status_code=400)
+
+    try:
+        updated = await state.bot_manager.update_bot_config(str(bot_id), patch)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+    prior = operational_status(bot.get("config") or {})
+    current = operational_status(updated.get("config") or patch)
+
+    return JSONResponse({
+        "ok": True,
+        "stage": stage,
+        "patch": patch,
+        "prior": prior,
+        "current": current,
+        "retrain": retrain_result,
+        "bot": updated,
+    })
 
 
 async def apply_calibration_suggestions_handler(request: Request) -> JSONResponse:
@@ -738,9 +983,13 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/jobs/{job_id}", get_backtest_job_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations", list_optimization_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations/{run_id}", get_optimization_run_handler, methods=["GET"]),
+        Route("/api/v1/backtest/meta-label-walk-forward", meta_label_walk_forward_handler, methods=["POST"]),
         Route("/api/v1/bots/calibration", get_bot_calibration_handler, methods=["GET"]),
         Route("/api/v1/bots/calibration/apply", apply_calibration_suggestions_handler, methods=["POST"]),
         Route("/api/v1/bots/{bot_id}/strategy-suggest", strategy_suggest_handler, methods=["POST"]),
+        Route("/api/v1/bots/{bot_id}/meta-label/status", meta_label_status_handler, methods=["GET"]),
+        Route("/api/v1/bots/{bot_id}/meta-label/retrain", meta_label_retrain_handler, methods=["POST"]),
+        Route("/api/v1/bots/{bot_id}/meta-label/operational", meta_label_operational_handler, methods=["POST"]),
         Route("/api/v1/bots/filter-rejects", get_filter_rejects_handler, methods=["GET"]),
         Route("/api/v1/agent/pipeline/scan-deploy", agent_pipeline_scan_deploy_handler, methods=["POST"]),
         Route("/api/v1/agent/pipeline/status", agent_pipeline_status_handler, methods=["GET"]),

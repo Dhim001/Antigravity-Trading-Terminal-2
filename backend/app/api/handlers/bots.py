@@ -21,6 +21,7 @@ from app.services.bots.backtest_job_store import (
     update_job_progress,
 )
 from app.services.bots.backtest_sweep import expand_sweep_grid, sweep_label
+from app.services.bots.strategies import normalize_strategy_name
 from app.services.bots.backtest_walk_forward import (
     pick_best_config,
     row_objective_value,
@@ -653,6 +654,65 @@ async def _execute_backtest(
         if best_result is None:
             await _finish("error", message="Sweep produced no valid runs")
             return
+
+        if (
+            not is_sweep
+            and config.get("meta_label_walk_forward")
+            and normalize_strategy_name(strategy) == "CHART_AGENT"
+        ):
+            from app.services.bots.meta_label_walk_forward import evaluate_meta_label_walk_forward
+
+            wf_folds = int(config.get("meta_label_wf_folds") or 2)
+            wf_train_pct = float(config.get("meta_label_wf_train_pct") or 70.0)
+
+            def wf_progress(fold: int, total: int, message: str) -> None:
+                pct = 90 + int((fold / max(total, 1)) * 6)
+                enqueue_progress({
+                    "pct": min(pct, 96),
+                    "phase": "meta_label_wf",
+                    "message": message,
+                    "fold": fold,
+                    "folds": total,
+                })
+
+            enqueue_progress({
+                "pct": 90,
+                "phase": "meta_label_wf",
+                "message": "Meta-label walk-forward: training GBM on in-sample windows…",
+            })
+            try:
+                from app.config import META_LABEL_MIN_TRAIN_SAMPLES
+
+                wf_result = await asyncio.to_thread(
+                    partial(
+                        evaluate_meta_label_walk_forward,
+                        ctx.backtester.run_backtest,
+                        symbol,
+                        strategy,
+                        config,
+                        candles,
+                        meta=meta,
+                        rolling_folds=wf_folds,
+                        train_pct=wf_train_pct,
+                        min_train_samples=int(
+                            config.get("meta_label_min_train_samples") or META_LABEL_MIN_TRAIN_SAMPLES
+                        ),
+                        progress_cb=wf_progress,
+                        cancel_cb=is_cancelled,
+                    ),
+                )
+            except Exception as exc:
+                wf_result = {"ok": False, "error": str(exc), "folds": []}
+
+            if wf_result.get("error") == "cancelled":
+                await _finish("cancelled")
+                return
+
+            best_result["meta_label_walk_forward"] = wf_result
+            if isinstance(meta, dict):
+                meta["meta_label_walk_forward"] = True
+                meta["meta_label_wf_folds"] = wf_folds
+                meta["meta_label_wf_train_pct"] = wf_train_pct
 
         if reasoning:
             from app.services.bots.backtest_reasoning import generate_backtest_reasoning

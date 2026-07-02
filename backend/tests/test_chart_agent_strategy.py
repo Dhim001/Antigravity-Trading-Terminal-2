@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import patch
 
-from app.database import init_db
-from app.services.agent.chart_analyst import init_chart_analyst
+from app.services.agent.chart_analyst import ChartAnalystService, init_chart_analyst
 from app.services.agent.models import insight_cache_key
 from app.services.bots.screener import MarketScreenerService
 from app.services.bots.strategies_chart_agent import ChartAgentStrategy
@@ -14,7 +15,6 @@ from tests.test_chart_agent_rules import make_trending_candles
 
 class TestChartAgentStrategy(unittest.TestCase):
     def setUp(self):
-        init_db()
         self.analyst = init_chart_analyst(screener=MarketScreenerService(), feed=None, broadcast_fn=None)
         self.candles = make_trending_candles(220)
         self.strategy = ChartAgentStrategy({"symbol": "BTCUSDT", "timeframe": "1m", "min_confidence": 0.55})
@@ -25,11 +25,16 @@ class TestChartAgentStrategy(unittest.TestCase):
         self.assertEqual(result["signal"], "NONE")
 
     def test_evaluate_maps_cached_buy_sell(self):
-        import asyncio
+        async def _run():
+            with patch.object(ChartAnalystService, "persist", lambda self, insight: None):
+                with patch.object(ChartAnalystService, "_audit", lambda *a, **k: None):
+                    return await self.analyst.analyze(
+                        "BTCUSDT",
+                        candles=self.candles,
+                        broadcast=False,
+                    )
 
-        insight = asyncio.run(
-            self.analyst.analyze("BTCUSDT", candles=self.candles, broadcast=False)
-        )
+        insight = asyncio.run(_run())
         self.assertIsNotNone(insight)
 
         eval_row = {"time": insight.bar_time, "close": 100}

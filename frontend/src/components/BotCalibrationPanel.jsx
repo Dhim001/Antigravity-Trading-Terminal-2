@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Loader2, Play, Shield, ShieldCheck, ShieldOff, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import FilterRejectsDashboard from './FilterRejectsDashboard';
+import BacktestMetaLabelWalkForwardPanel from './BacktestMetaLabelWalkForwardPanel';
 import {
   applyCalibrationSuggestions,
+  applyMetaLabelOperational,
   fetchBotCalibration,
   fetchFilterRejects,
+  fetchMetaLabelStatus,
+  fetchMetaLabelWalkForward,
+  retrainMetaLabelModel,
 } from '../api/endpoints';
 
 function pct(value) {
@@ -74,21 +79,34 @@ export default function BotCalibrationPanel({
   const [loading, setLoading] = useState(true);
   const [calibration, setCalibration] = useState(null);
   const [filterData, setFilterData] = useState(null);
+  const [metaLabel, setMetaLabel] = useState(null);
+  const [metaLabelError, setMetaLabelError] = useState(null);
   const [error, setError] = useState(null);
   const [applying, setApplying] = useState(null);
+  const [retraining, setRetraining] = useState(false);
+  const [wfLoading, setWfLoading] = useState(false);
+  const [wfResult, setWfResult] = useState(null);
+  const [operationalBusy, setOperationalBusy] = useState(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [cal, fr] = await Promise.all([
+      const [cal, fr, ml] = await Promise.all([
         fetchBotCalibration({ botId, symbol, minSamples: 3 }),
         fetchFilterRejects({ botId, symbol, strategy }),
+        fetchMetaLabelStatus(botId),
       ]);
       setCalibration(cal);
       setFilterData(fr);
+      setMetaLabel(ml?.meta_label ?? null);
+      setMetaLabelError(null);
     } catch (e) {
-      setError(e?.message || 'Failed to load calibration');
+      const msg = e?.message || 'Failed to load calibration';
+      setError(msg);
+      if (/meta-label/i.test(msg)) {
+        setMetaLabelError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -127,6 +145,77 @@ export default function BotCalibrationPanel({
     }
   };
 
+  const handleRetrainMetaLabel = async () => {
+    if (!botId || retraining) return;
+    setRetraining(true);
+    try {
+      const result = await retrainMetaLabelModel(botId);
+      const metrics = result?.result?.metrics;
+      toast.success(
+        metrics?.val_auc != null
+          ? `Meta-label model trained (val AUC ${(metrics.val_auc * 100).toFixed(1)}%)`
+          : 'Meta-label model trained',
+      );
+      await loadData();
+    } catch (e) {
+      toast.error(e?.message || 'Meta-label retrain failed');
+    } finally {
+      setRetraining(false);
+    }
+  };
+
+  const handleRunWalkForward = async () => {
+    if (!botId || wfLoading || strategy !== 'CHART_AGENT') return;
+    setWfLoading(true);
+    setWfResult(null);
+    try {
+      const result = await fetchMetaLabelWalkForward({
+        botId,
+        symbol,
+        strategy,
+        days: 30,
+      });
+      const wf = result?.walk_forward ?? result;
+      setWfResult(wf);
+      if (wf?.ok) {
+        toast.success('Walk-forward OOS evaluation complete');
+      } else {
+        toast.error(wf?.error || 'Walk-forward did not complete');
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Walk-forward failed');
+    } finally {
+      setWfLoading(false);
+    }
+  };
+
+  const handleOperational = async (stage) => {
+    if (!botId || operationalBusy) return;
+    setOperationalBusy(stage);
+    try {
+      const result = await applyMetaLabelOperational(botId, {
+        stage,
+        walkForward: wfResult?.ok ? wfResult : undefined,
+        requirePositiveOos: stage === 'promote',
+        retrain: stage !== 'rollback',
+      });
+      const label = {
+        shadow: 'Shadow gate enabled — blocks logged, not enforced',
+        promote: 'Live GBM gate enabled',
+        rollback: 'Meta-label gate rolled back to Wilson/off',
+      }[stage] || stage;
+      toast.success(label);
+      if (result?.retrain && !result.retrain.ok && stage === 'shadow') {
+        toast.message(result.retrain.error || 'Retrain skipped — accumulate more closed trades');
+      }
+      await loadData();
+    } catch (e) {
+      toast.error(e?.message || 'Operational update failed');
+    } finally {
+      setOperationalBusy(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className={cn('flex items-center gap-2 text-xs text-muted-foreground py-3', className)}>
@@ -149,6 +238,15 @@ export default function BotCalibrationPanel({
   const symbolThresholds = calibration?.symbol_thresholds ?? {};
   const liveRejects = filterData?.live;
   const backtestRejects = filterData?.backtest;
+  const operational = metaLabel?.operational;
+  const opStage = operational?.stage ?? 'off';
+  const wfImproved = wfResult?.ok && (() => {
+    const d = wfResult?.aggregate?.gbm_vs_baseline_avg || {};
+    const pnl = Number(d.total_pnl ?? 0);
+    const exp = Number(d.expectancy ?? 0);
+    const trades = Number(d.total_trades ?? 0);
+    return pnl > 0 || (exp > 0 && trades <= 0);
+  })();
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
@@ -173,6 +271,133 @@ export default function BotCalibrationPanel({
             </strong>
           </div>
         </div>
+      )}
+
+      {metaLabel && strategy === 'CHART_AGENT' && (
+        <section className="rounded-md border border-primary/20 bg-primary/5 p-2.5 space-y-2">
+          {metaLabel.load_error && (
+            <p className="text-[0.65rem] text-amber-600 dark:text-amber-400 m-0">{metaLabel.load_error}</p>
+          )}
+          {metaLabelError && (
+            <p className="text-[0.65rem] text-destructive m-0">{metaLabelError}</p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium">Meta-label rollout</span>
+                <Badge variant="outline" className="text-[0.62rem] capitalize">
+                  {opStage}
+                </Badge>
+              </div>
+              <p className="text-[0.65rem] text-muted-foreground m-0 mt-0.5">
+                1) Walk-forward OOS → 2) Shadow gate → 3) Promote live after validation.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                disabled={wfLoading}
+                onClick={handleRunWalkForward}
+              >
+                {wfLoading ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
+                Walk-forward OOS
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                disabled={retraining}
+                onClick={handleRetrainMetaLabel}
+              >
+                {retraining ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                Retrain
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 text-xs">
+            <div>
+              <span className="text-muted-foreground">Model</span>
+              <strong className="block num-mono">{metaLabel.model_loaded ? 'Loaded' : 'Not trained'}</strong>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Closed trades</span>
+              <strong className="block num-mono">{metaLabel.dataset?.sample_count ?? 0}</strong>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Val AUC</span>
+              <strong className="block num-mono">
+                {metaLabel.metadata?.metrics?.val_auc != null
+                  ? pct(metaLabel.metadata.metrics.val_auc)
+                  : '—'}
+              </strong>
+            </div>
+          </div>
+
+          {metaLabel.metadata?.top_features?.length > 0 && (
+            <p className="text-[0.62rem] text-muted-foreground m-0">
+              Top features:{' '}
+              {metaLabel.metadata.top_features.slice(0, 4).map((f) => f.name).join(', ')}
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-1.5 pt-0.5">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              disabled={Boolean(operationalBusy) || opStage === 'shadow'}
+              onClick={() => handleOperational('shadow')}
+            >
+              {operationalBusy === 'shadow' ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <Shield className="size-3" />
+              )}
+              Enable shadow
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              disabled={Boolean(operationalBusy) || opStage === 'live' || !wfImproved}
+              title={!wfImproved ? 'Run walk-forward OOS with positive GBM delta first' : undefined}
+              onClick={() => handleOperational('promote')}
+            >
+              {operationalBusy === 'promote' ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <ShieldCheck className="size-3" />
+              )}
+              Promote live
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              disabled={Boolean(operationalBusy) || opStage === 'off'}
+              onClick={() => handleOperational('rollback')}
+            >
+              {operationalBusy === 'rollback' ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <ShieldOff className="size-3" />
+              )}
+              Rollback
+            </Button>
+          </div>
+
+          {wfResult && (
+            <BacktestMetaLabelWalkForwardPanel walkForward={wfResult} className="mt-1" />
+          )}
+        </section>
       )}
 
       {suggestions.length > 0 && (

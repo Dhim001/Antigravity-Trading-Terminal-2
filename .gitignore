@@ -80,6 +80,7 @@ backend/trading-*.db-*
 backend/data/*.parquet
 backend/data/*.json
 backend/data/archive_wal/
+backend/data/meta_label_models/
 
 # Optional Parquet archive export (ARCHIVE_PARQUET_DIR)
 backend/archive_parquet/

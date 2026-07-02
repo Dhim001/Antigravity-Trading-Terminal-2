@@ -4,7 +4,10 @@ import {
   collectClientMemoryStats,
   memoryPressureLevel,
 } from '../services/memoryObservability';
+import { RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { Button } from '@/components/ui/button';
+import { refreshFrontend } from '../lib/refreshFrontend';
 
 const LEVEL_LABEL = {
   ok: 'Normal',
@@ -95,9 +98,25 @@ export function MemoryObservabilityBody({ client, health }) {
           </div>
         )}
       </dl>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1.5"
+          onClick={() => refreshFrontend()}
+        >
+          <RefreshCw className="size-3.5" aria-hidden />
+          Refresh UI
+        </Button>
+        <span className="text-[11px] text-muted-foreground">
+          Reloads this window after frontend changes — same as the header ↻ button.
+        </span>
+      </div>
       <p className="mt-2 text-[11px] text-muted-foreground leading-snug">
         If heap stays above 70% or the tab crashes, run one profile only (Massive on :5175),
-        hard-refresh, and use <code className="text-xs">.\scripts\start-massive.ps1 -Restart</code>.
+        use <strong className="font-medium text-foreground/80">Refresh UI</strong>, or
+        {' '}<code className="text-xs">.\scripts\start-massive.ps1 -Restart</code>.
         See <code className="text-xs">docs/MEMORY_16GB.md</code>.
       </p>
     </>

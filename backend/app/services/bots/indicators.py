@@ -75,6 +75,12 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "calibration_gate_enabled": False,
         "calibration_min_samples": 5,
         "calibration_min_wilson": 0.45,
+        "meta_label_model_mode": "wilson",
+        "meta_label_min_prob": 0.52,
+        "meta_label_min_train_samples": 30,
+        "meta_label_shadow_mode": False,
+        "use_meta_label_sizing": False,
+        "use_confidence_sizing": True,
         "regime_routing_enabled": False,
         "elevated_min_confidence": 0.65,
         "elevated_min_score": 3,
@@ -176,6 +182,7 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
         out["open_prev"] = out["open"].shift(1)
         # FVG detection needs bar[-2] high and low
         out["prev2_high"] = out["high"].shift(2)
+        out["prev2_low"] = out["low"].shift(2)
         out["prev2_low"] = out["low"].shift(2)
         # Liquidity sweep needs rolling high/low
         sweep_lb = int(cfg.get("sweep_lookback", 20))

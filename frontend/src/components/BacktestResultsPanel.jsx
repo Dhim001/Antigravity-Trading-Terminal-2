@@ -16,6 +16,7 @@ import BacktestComparePanel from './BacktestComparePanel';
 import StrategySuggestPanel from './StrategySuggestPanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
+import BacktestMetaLabelWalkForwardPanel from './BacktestMetaLabelWalkForwardPanel';
 import { cn } from '@/lib/utils';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
@@ -541,7 +542,7 @@ export default function BacktestResultsPanel({
   return (
     <div className={cn(
       'algo-backtest-lab',
-      isFull && 'algo-backtest-lab--full',
+      isFull && 'algo-backtest-lab--full backtest-lab__report',
       !isFull && 'algo-backtest-lab--compact',
       pnl < 0 && 'algo-backtest-lab--down',
     )}>
@@ -662,6 +663,9 @@ export default function BacktestResultsPanel({
 
       {isFull && <PortfolioResultsSection results={results} />}
       {isFull && <MonteCarloSection monteCarlo={results?.monte_carlo} />}
+      {isFull && (
+        <BacktestMetaLabelWalkForwardPanel walkForward={results?.meta_label_walk_forward} />
+      )}
       {isFull && <FilterRejectsSection summary={summary} />}
 
       {isFull && (

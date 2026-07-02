@@ -19,12 +19,21 @@ export const FIELD_META = {
   min_confidence: { label: 'Min confidence', group: 'agent', kind: 'confidence', hint: 'Agent only trades when signal confidence meets this threshold.' },
   use_vol_sizing: { label: 'Vol sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by risk sub-report suggested_size_factor.' },
   require_trend_alignment: { label: 'Trend alignment', group: 'agent', kind: 'boolean', hint: 'BUY only when trend score ≥ +1; SELL when ≤ −1.' },
-  block_elevated_vol: { label: 'Block elevated vol', group: 'agent', kind: 'boolean', hint: 'Skip entries when ATR regime is elevated.' },
+  use_rsi_confirmation: { label: 'RSI confirmation', group: 'indicators', kind: 'boolean', hint: 'Require RSI not overbought/oversold on VWAP cross entries.' },
+  rsi_overbought_gate: { label: 'RSI overbought gate', group: 'indicators', kind: 'integer', hint: 'Block VWAP buy when RSI above this (default 60).' },
+  rsi_oversold_gate: { label: 'RSI oversold gate', group: 'indicators', kind: 'integer', hint: 'Block VWAP sell when RSI below this (default 40).' },
+  block_elevated_vol: { label: 'Block elevated vol', group: 'indicators', kind: 'boolean', hint: 'Skip entries when ATR is ≥1.5× its 20-bar median.' },
   min_score: { label: 'Min score', group: 'agent', kind: 'integer', hint: 'Require |composite score| ≥ this value.' },
   confirm_timeframe: { label: 'Confirm TF', group: 'agent', kind: 'text', hint: 'Higher timeframe trend must confirm entry.' },
   calibration_gate_enabled: { label: 'Calibration gate', group: 'agent', kind: 'boolean', hint: 'Block entries when the setup bucket underperforms in closed-trade history.' },
   calibration_min_samples: { label: 'Gate min samples', group: 'agent', kind: 'integer', hint: 'Minimum closed trades in a bucket before the gate can block.' },
   calibration_min_wilson: { label: 'Gate min Wilson', group: 'agent', kind: 'confidence', hint: 'Wilson lower-bound win rate required to allow entry (0–1).' },
+  meta_label_model_mode: { label: 'Meta-label mode', group: 'agent', kind: 'meta_label_mode', hint: 'wilson = bucket stats only; gbm = gradient-boosted P(win); hybrid = GBM when trained else Wilson.' },
+  meta_label_min_prob: { label: 'Meta-label min P(win)', group: 'agent', kind: 'confidence', hint: 'Block entries when the GBM win probability is below this (0–1).' },
+  meta_label_min_train_samples: { label: 'Meta-label min trades', group: 'agent', kind: 'integer', hint: 'Minimum closed trades before training the GBM classifier.' },
+  meta_label_shadow_mode: { label: 'Meta-label shadow', group: 'agent', kind: 'boolean', hint: 'Log GBM blocks without rejecting entries (evaluate before going live).' },
+  use_meta_label_sizing: { label: 'Meta-label sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by GBM P(win) when a model is loaded.' },
+  use_confidence_sizing: { label: 'Confidence sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by signal confidence.' },
   regime_routing_enabled: { label: 'Regime routing', group: 'agent', kind: 'boolean', hint: 'Apply stricter thresholds in elevated/compressed ATR regimes.' },
   elevated_min_confidence: { label: 'Elevated min conf', group: 'agent', kind: 'confidence', hint: 'Minimum confidence when ATR regime is elevated.' },
   elevated_min_score: { label: 'Elevated min score', group: 'agent', kind: 'integer', hint: 'Minimum |score| when ATR regime is elevated.' },
@@ -71,13 +80,15 @@ const COMMON_FIELD_KEYS = ['trailing_stop_percent', 'tp_mode', 'take_profit_perc
 
 export const STRATEGY_FIELD_KEYS = {
   MACD_RSI: ['rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
-  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold', 'direction_mode'],
+  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold', 'atr_length', 'block_elevated_vol', 'direction_mode'],
   BRS_SCALPING: [
     'bb_length', 'bb_std', 'rsi_length', 'stoch_k', 'stoch_d', 'stoch_smooth',
     'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length', 'direction_mode',
   ],
-  VWAP_PULLBACK: ['atr_length', 'direction_mode'],
-  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
+  VWAP_PULLBACK: [
+    'atr_length', 'rsi_length', 'use_rsi_confirmation', 'rsi_overbought_gate', 'rsi_oversold_gate', 'direction_mode',
+  ],
+  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'use_confidence_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'meta_label_model_mode', 'meta_label_min_prob', 'meta_label_min_train_samples', 'meta_label_shadow_mode', 'use_meta_label_sizing', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
   TICK_MOMENTUM: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_MEAN_REVERT: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_BREAKOUT: ['lookback_ticks', 'tick_cooldown_sec'],
@@ -105,7 +116,7 @@ function humanizeKey(key) {
 
 function inferGroup(key) {
   if (/^(trailing_stop|stop_loss|take_profit|tp_)/.test(key)) return 'risk';
-  if (/^(min_confidence|use_llm|use_vol_sizing|require_trend|block_elevated|confirm_timeframe|min_score|calibration_|regime_|elevated_|compressed_)/.test(key)) return 'agent';
+  if (/^(min_confidence|use_llm|use_vol_sizing|use_confidence|use_meta_label|require_trend|block_elevated|confirm_timeframe|min_score|calibration_|meta_label_|regime_|elevated_|compressed_)/.test(key)) return 'agent';
   if (/^(lookback_ticks|tick_)/.test(key)) return 'tick';
   if (/^(rsi|macd|atr|bb_|stoch|st_|adx)/.test(key)) return 'indicators';
   return 'other';
@@ -115,6 +126,7 @@ function getInputType(key, meta) {
   if (meta?.readOnly) return 'readonly';
   if (key === 'tp_mode') return 'select';
   if (key === 'direction_mode') return 'select';
+  if (key === 'meta_label_model_mode') return 'select';
   if (meta?.kind === 'boolean') return 'checkbox';
   if (meta?.kind === 'confidence') return 'range';
   if (['percent', 'integer', 'decimal', 'seconds', 'price'].includes(meta?.kind)) return 'number';
@@ -249,7 +261,11 @@ export function buildConfigDraft(config, fields) {
     if (f.input === 'checkbox') {
       draft[f.key] = Boolean(v);
     } else if (f.input === 'select') {
-      const selectDefault = f.key === 'direction_mode' ? 'LONG_ONLY' : 'percent';
+      const selectDefault = f.key === 'direction_mode'
+        ? 'LONG_ONLY'
+        : f.key === 'meta_label_model_mode'
+          ? 'wilson'
+          : 'percent';
       draft[f.key] = v ?? selectDefault;
     } else if (f.input === 'number' || f.input === 'range') {
       draft[f.key] = v != null && v !== '' ? String(v) : '';
@@ -334,6 +350,10 @@ export function formatBotConfigValue(key, value, meta = fieldMeta(key)) {
   if (kind === 'direction_mode') {
     const DIRECTION_LABELS = { LONG_ONLY: 'Long only', SHORT_ONLY: 'Short only', BOTH: 'Both' };
     return { text: DIRECTION_LABELS[String(value).toUpperCase()] ?? String(value), tone: 'default' };
+  }
+  if (kind === 'meta_label_mode') {
+    const MODE_LABELS = { wilson: 'Wilson buckets', gbm: 'GBM classifier', hybrid: 'Hybrid (GBM + Wilson)' };
+    return { text: MODE_LABELS[String(value).toLowerCase()] ?? String(value), tone: 'default' };
   }
   if (kind === 'confidence' && typeof value === 'number') {
     return { text: `${Math.round(value * 100)}%`, tone: 'default' };

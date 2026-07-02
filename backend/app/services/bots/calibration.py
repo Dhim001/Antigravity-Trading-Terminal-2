@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 from collections import defaultdict
@@ -12,6 +13,8 @@ from typing import Any
 from app.database import get_connection
 from app.services.bots.analytics import _parse_insight_snapshot
 from app.services.bots.strategies_chart_agent import classify_filter_reject
+
+logger = logging.getLogger(__name__)
 
 FILTER_REJECT_BUCKETS = ("min_score", "trend", "vol", "htf", "confidence", "calibration", "other")
 
@@ -121,24 +124,25 @@ def pair_closed_trades(
     *,
     bot_timeframes: dict[str, str] | None = None,
 ) -> list[ClosedTrade]:
-    """Match long-only entry rows to the next exit with realized pnl."""
+    """Match entry rows to the next opposing exit with realized pnl (long and short)."""
     tf_map = bot_timeframes or {}
     sorted_trades = sorted(trades, key=lambda t: (t.get("timestamp") or "", t.get("id") or 0))
-    pending: dict[tuple[str, str], dict] = {}
+    pending: dict[tuple[str, str, str], dict] = {}
     closed: list[ClosedTrade] = []
 
     for row in sorted_trades:
         bot_id = str(row.get("bot_id") or "")
         symbol = str(row.get("symbol") or "").upper()
-        key = (bot_id, symbol)
+        side = str(row.get("side") or "").upper()
         is_exit = bool(row.get("is_exit"))
 
         if not is_exit:
-            if str(row.get("side", "")).upper() == "BUY":
-                pending[key] = row
+            if side in ("BUY", "SELL"):
+                pending[(bot_id, symbol, side)] = row
             continue
 
-        entry = pending.pop(key, None)
+        entry_side = "BUY" if side == "SELL" else "SELL"
+        entry = pending.pop((bot_id, symbol, entry_side), None)
         pnl = row.get("pnl")
         if pnl is None or entry is None:
             continue
@@ -712,24 +716,32 @@ def refresh_calibration_cache(*, invalidate_first: bool = True) -> dict[str, int
         store.invalidate()
     bot_ids = list_active_bot_ids_for_calibration()
     warmed = store.warm_all(bot_ids)
-    return {"bots": len(bot_ids), "warmed": warmed}
+
+    ml_stats: dict[str, Any] = {}
+    try:
+        from app.services.bots.meta_label_model import refresh_meta_label_models
+
+        ml_stats = refresh_meta_label_models(bot_ids=bot_ids)
+    except Exception as exc:
+        logger.warning("Meta-label refresh skipped: %s", exc)
+
+    return {
+        "bots": len(bot_ids),
+        "warmed": warmed,
+        "meta_label_trained": ml_stats.get("trained", 0),
+        "meta_label_skipped": ml_stats.get("skipped", 0),
+    }
 
 
-def check_meta_label_gate(
+def _check_wilson_meta_label_gate(
     insight: dict,
     cfg: dict,
     *,
     symbol: str,
     timeframe: str,
     signal: str,
-    bot_id: str | None = None,
+    bot_id: str,
 ) -> str | None:
-    """Block entries when the setup bucket underperforms in closed-trade history."""
-    if not cfg.get("calibration_gate_enabled"):
-        return None
-    if not bot_id:
-        return None
-
     try:
         min_samples = int(cfg.get("calibration_min_samples", 5))
     except (TypeError, ValueError):
@@ -758,6 +770,76 @@ def check_meta_label_gate(
             f"below {min_wilson:.2%} (n={n})"
         )
     return None
+
+
+def check_meta_label_gate(
+    insight: dict,
+    cfg: dict,
+    *,
+    symbol: str,
+    timeframe: str,
+    signal: str,
+    bot_id: str | None = None,
+) -> str | None:
+    """Block entries via Wilson buckets and/or gradient-boosted P(win) classifier."""
+    if not cfg.get("calibration_gate_enabled"):
+        return None
+    if not bot_id:
+        return None
+
+    mode = str(cfg.get("meta_label_model_mode") or "wilson").lower()
+    if cfg.get("meta_label_model_enabled") and mode == "wilson":
+        mode = "hybrid"
+
+    gbm_reason: str | None = None
+    gbm_cold = False
+    if mode in ("gbm", "hybrid"):
+        from app.services.bots.meta_label_model import (
+            check_gbm_meta_label_gate,
+            predict_meta_label_prob,
+        )
+
+        prob = predict_meta_label_prob(
+            bot_id,
+            insight,
+            symbol=symbol,
+            side=signal,
+            timeframe=timeframe,
+            bar_time=insight.get("bar_time") or insight.get("time"),
+        )
+        gbm_cold = prob is None
+        gbm_reason = check_gbm_meta_label_gate(
+            insight,
+            cfg,
+            symbol=symbol,
+            timeframe=timeframe,
+            signal=signal,
+            bot_id=bot_id,
+            prob=prob,
+        )
+        if mode == "gbm":
+            if gbm_cold:
+                return _check_wilson_meta_label_gate(
+                    insight,
+                    cfg,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    signal=signal,
+                    bot_id=bot_id,
+                )
+            return gbm_reason
+
+    if mode == "hybrid" and not gbm_cold:
+        return gbm_reason
+
+    return _check_wilson_meta_label_gate(
+        insight,
+        cfg,
+        symbol=symbol,
+        timeframe=timeframe,
+        signal=signal,
+        bot_id=bot_id,
+    )
 
 
 def build_config_patch_from_suggestions(

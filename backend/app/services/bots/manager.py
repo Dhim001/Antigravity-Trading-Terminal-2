@@ -12,11 +12,13 @@ from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_u
 from app.observability.metrics import inc
 from app.observability.json_log import log_event
 from app.services.bots.indicators import prepare_strategy_df, config_cache_key, merge_strategy_config
+from app.services.bots.strategies import normalize_strategy_name
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.take_profit import format_tp_summary, merge_tp_config, resolve_take_profit
 from app.services.bots.tick_strategies import get_tick_strategy, is_tick_strategy, merge_tick_config
 from app.services.bots.tick_screener import TickScreener
 from app.services.bots.bar_events import BarCloseTracker
+from app.services.agent.bar_time import coerce_bar_time
 from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
 from app.services.bots.risk_gate import RiskGate
@@ -61,7 +63,6 @@ def _record_order_blocked(bot: dict, reason: str) -> None:
         bot_id=bot.get("id"),
         symbol=bot.get("symbol"),
         action="bot_order",
-        event="bot_order_blocked",
     )
 
 
@@ -511,7 +512,12 @@ class BotManagerService:
         ):
             return
 
-        await self._warm_chart_agent_caches(symbol, ohlcv_1m, feed=feed)
+        await self._warm_chart_agent_caches(
+            symbol,
+            ohlcv_1m,
+            feed=feed,
+            timeframes=None if not is_live_massive() else {"1m"},
+        )
 
         timeframes = {
             _bot_bar_timeframe(bot)
@@ -571,7 +577,29 @@ class BotManagerService:
                 continue
             if not self._bar_tracker.check(symbol, ohlcv, timeframe=timeframe):
                 continue
-            await self._warm_chart_agent_caches(symbol, None, feed=feed)
+            warm_tfs = {timeframe}
+            for bot in self.active_bots.values():
+                if bot.get("status") != "RUNNING":
+                    continue
+                if bot["symbol"] != symbol:
+                    continue
+                if normalize_strategy_name(bot.get("strategy", "")) != "CHART_AGENT":
+                    continue
+                if _bot_bar_timeframe(bot) != timeframe:
+                    continue
+                confirm_tf = (bot.get("config", {}) or {}).get("confirm_timeframe", "").strip()
+                if not confirm_tf:
+                    continue
+                try:
+                    warm_tfs.add(normalize_timeframe(confirm_tf))
+                except ValueError:
+                    continue
+            await self._warm_chart_agent_caches(
+                symbol,
+                None,
+                feed=feed,
+                timeframes=warm_tfs,
+            )
             await self._evaluate_bar_close_bots(symbol, timeframe, ohlcv)
             try:
                 from app.services.notifications.alert_rules.engine import evaluate_rules_for_bar
@@ -586,8 +614,9 @@ class BotManagerService:
         ohlcv_1m: list | None,
         *,
         feed=None,
+        timeframes: set[str] | None = None,
     ) -> None:
-        """Prefetch analyst cache for all active CHART_AGENT symbol+TF pairs on this symbol."""
+        """Prefetch analyst cache for active CHART_AGENT symbol+TF pairs on this symbol."""
         try:
             from app.services.agent.chart_analyst import get_chart_analyst
 
@@ -597,6 +626,9 @@ class BotManagerService:
                 for sym, tf in analyst.chart_agent_targets(self)
                 if sym == symbol
             ]
+            if timeframes is not None:
+                allowed = {normalize_timeframe(tf) for tf in timeframes}
+                targets = [(sym, tf) for sym, tf in targets if tf in allowed]
             if not targets:
                 return
 
@@ -611,7 +643,7 @@ class BotManagerService:
                 if not ohlcv or len(ohlcv) < 2:
                     continue
 
-                bar_time = ohlcv[-2]["time"]
+                bar_time = coerce_bar_time(ohlcv[-2].get("time"))
                 force_llm = any(
                     b.get("config", {}).get("use_llm")
                     for b in self.active_bots.values()
@@ -655,7 +687,7 @@ class BotManagerService:
                         continue
                     if not cf_candles or len(cf_candles) < 2:
                         continue
-                    cf_bar = cf_candles[-2]["time"]
+                    cf_bar = coerce_bar_time(cf_candles[-2].get("time"))
                     await analyst.ensure_for_bar(
                         sym,
                         cf_candles,
@@ -708,6 +740,14 @@ class BotManagerService:
                     continue
 
                 bot_df = prepare_strategy_df(df.copy(), bot_strategy, bot_config)
+                filter_name = str((bot_config or {}).get("filter_strategy") or "").strip()
+                if filter_name:
+                    filt_key = normalize_strategy_name(filter_name)
+                    filt_cfg = merge_strategy_config(
+                        filt_key,
+                        (bot_config or {}).get("filter_config") or {},
+                    )
+                    bot_df = prepare_strategy_df(bot_df, filt_key, filt_cfg)
                 eval_row = bot_df.iloc[-2].to_dict()
                 bar_time = eval_row.get("time")
                 eval_price = eval_row.get("close")
@@ -973,6 +1013,27 @@ class BotManagerService:
                 conf_scale = max(0.5, min(1.5, conf_scale))
                 quantity *= conf_scale
 
+            if bot_cfg.get("use_meta_label_sizing"):
+                snap = signal_data.get("insight_snapshot") or {
+                    "score": signal_data.get("score"),
+                    "confidence": signal_data.get("confidence"),
+                    "sub_reports": signal_data.get("sub_reports"),
+                }
+                from app.services.bots.meta_label_model import predict_meta_label_prob
+
+                prob = predict_meta_label_prob(
+                    bot_id,
+                    snap,
+                    symbol=symbol,
+                    side=side,
+                    timeframe=str(bot_cfg.get("timeframe") or bot.get("timeframe") or "1m"),
+                    bar_time=bar_time,
+                )
+                if prob is not None:
+                    ml_scale = 0.7 + (0.6 * prob)
+                    ml_scale = max(0.5, min(1.5, ml_scale))
+                    quantity *= ml_scale
+
         pos_size = self._get_bot_position_size(bot_id, symbol)
         decision = self._risk_gate.validate_trade(
             bot,
@@ -1201,7 +1262,6 @@ class BotManagerService:
                     bot_id=bot_id,
                     symbol=symbol,
                     action="bot_order",
-                    event="bot_order_filled",
                     insight_id=signal_data.get("insight_id"),
                 )
             else:

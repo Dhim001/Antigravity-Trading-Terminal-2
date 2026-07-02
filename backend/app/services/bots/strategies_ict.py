@@ -33,8 +33,8 @@ class IctSmcStrategy(BaseStrategy):
             # A bullish OB: the last bearish candle before a strong bullish impulse
             # A bearish OB: the last bullish candle before a strong bearish impulse
             ob_lookback = int(cfg.get("ob_lookback", 10))
-            bullish_ob = self._detect_bullish_ob(df_row, atr)
-            bearish_ob = self._detect_bearish_ob(df_row, atr)
+            bullish_ob = self._detect_bullish_ob(df_row, atr, ob_lookback)
+            bearish_ob = self._detect_bearish_ob(df_row, atr, ob_lookback)
 
             # ── Fair Value Gap detection ──
             fvg_min = float(cfg.get("fvg_min_gap_pct", 0.0005))
@@ -81,7 +81,7 @@ class IctSmcStrategy(BaseStrategy):
 
     # ── Order Block helpers ────────────────────────────────────────
 
-    def _detect_bullish_ob(self, row: dict, atr: float) -> bool:
+    def _detect_bullish_ob(self, row: dict, atr: float, ob_lookback: int = 10) -> bool:
         """Bullish OB: prior bearish candle followed by a strong bullish impulse.
 
         We use lookback _prev columns to check if the prior bar was bearish
@@ -97,13 +97,13 @@ class IctSmcStrategy(BaseStrategy):
 
         # Prior bar was bearish (down candle)
         prior_bearish = prev_close < prev_open
-        # Current bar is a strong bullish impulse
         current_range = close - open_
-        impulse = current_range > 1.5 * atr
+        impulse_mult = 1.5 * max(0.75, min(2.5, 10.0 / max(1, ob_lookback)))
+        impulse = current_range > impulse_mult * atr
 
         return prior_bearish and impulse
 
-    def _detect_bearish_ob(self, row: dict, atr: float) -> bool:
+    def _detect_bearish_ob(self, row: dict, atr: float, ob_lookback: int = 10) -> bool:
         """Bearish OB: prior bullish candle followed by a strong bearish impulse."""
         close = row.get("close", 0)
         open_ = row.get("open", 0)
@@ -115,7 +115,8 @@ class IctSmcStrategy(BaseStrategy):
 
         prior_bullish = prev_close > prev_open
         current_range = open_ - close
-        impulse = current_range > 1.5 * atr
+        impulse_mult = 1.5 * max(0.75, min(2.5, 10.0 / max(1, ob_lookback)))
+        impulse = current_range > impulse_mult * atr
 
         return prior_bullish and impulse
 

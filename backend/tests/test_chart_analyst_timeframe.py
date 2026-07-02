@@ -6,7 +6,6 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from app.database import init_db
 from app.services.agent.chart_analyst import ChartAnalystService, init_chart_analyst
 from app.services.agent.models import insight_cache_key
 from app.services.bots.candle_source import candles_for_timeframe
@@ -17,7 +16,6 @@ from tests.test_chart_agent_rules import make_trending_candles
 
 class TestChartAnalystTimeframe(unittest.TestCase):
     def setUp(self):
-        init_db()
         self.raw_1m = make_trending_candles(600)
         self.candles_5m = candles_for_timeframe(self.raw_1m, "5m", min_bars=50)
         self.analyst = init_chart_analyst(

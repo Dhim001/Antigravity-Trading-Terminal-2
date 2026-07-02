@@ -585,6 +585,9 @@ class BacktesterService:
                 "reason": "ENTRY_SHORT",
                 "fee": round(entry_fee, 4),
             })
+            snap = signal_data.get("insight_snapshot")
+            if snap:
+                trade_log[-1]["insight_snapshot"] = snap
             last_signal_bar_time = bar_time
 
         eval_bars = max(len(df) - start_i, 1)
@@ -646,7 +649,9 @@ class BacktesterService:
                         signal = None
 
             if not position and signal == "BUY":
-                _try_entry(signal, signal_data, row, bar_time)
+                direction_mode = str(cfg.get("direction_mode", "LONG_ONLY")).upper()
+                if research or direction_mode in ("BOTH", "LONG_ONLY"):
+                    _try_entry(signal, signal_data, row, bar_time)
             elif not position and signal == "SELL":
                 direction_mode = str(cfg.get("direction_mode", "LONG_ONLY")).upper()
                 if research or direction_mode in ("BOTH", "SHORT_ONLY"):
@@ -706,7 +711,7 @@ class BacktesterService:
             starting_equity=starting_equity,
         )
 
-        return {
+        result = {
             "win_rate": summary["win_rate"],
             "total_pnl": summary["total_pnl"],
             "max_drawdown": summary["max_drawdown"],
@@ -728,3 +733,5 @@ class BacktesterService:
             },
             "monte_carlo": monte_carlo,
         }
+
+        return result

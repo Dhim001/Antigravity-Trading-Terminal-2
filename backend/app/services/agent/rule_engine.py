@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from app.services.agent.bar_time import coerce_bar_time, find_bar_index
 from app.services.agent.models import ChartAgentInsight, SignalType
 from app.services.agent.anomaly_detector import detect_bar_anomaly
 from app.services.bots.indicators import atr_col
@@ -346,13 +347,23 @@ def score_dataframe(
     symbol: str,
     *,
     eval_index: int | None = None,
+    expected_bar_time: int | None = None,
     timeframe: str = "1m",
 ) -> ChartAgentInsight | None:
     """Score the closed bar at eval_index (default: second-to-last row, bot convention)."""
     if df is None or df.empty or len(df) < 3:
         return None
 
-    idx = eval_index if eval_index is not None else len(df) - 2
+    if expected_bar_time is not None:
+        matched = find_bar_index(df, expected_bar_time)
+        if matched is not None:
+            idx = matched
+        elif eval_index is not None:
+            idx = eval_index
+        else:
+            return None
+    else:
+        idx = eval_index if eval_index is not None else len(df) - 2
     if idx < 1 or idx >= len(df):
         return None
 
@@ -380,7 +391,7 @@ def score_dataframe(
 
     return ChartAgentInsight(
         symbol=symbol,
-        bar_time=int(bar_time),
+        bar_time=coerce_bar_time(bar_time) or 0,
         timeframe=timeframe,
         signal=bot_sig,
         confidence=_confidence(score),  # 3.1-A: now sigmoid-mapped

@@ -29,6 +29,12 @@ const DIRECTION_MODE_OPTIONS = [
   { value: 'BOTH', label: 'Both (long & short)' },
 ];
 
+const META_LABEL_MODE_OPTIONS = [
+  { value: 'wilson', label: 'Wilson buckets (default)' },
+  { value: 'gbm', label: 'GBM P(win) classifier' },
+  { value: 'hybrid', label: 'Hybrid — GBM when trained, else Wilson' },
+];
+
 function ConfigField({ field, value, strategy, disabled, onChange }) {
   const id = `bot-config-${field.key}`;
 
@@ -39,6 +45,9 @@ function ConfigField({ field, value, strategy, disabled, onChange }) {
     if (field.key === 'direction_mode') {
       options = DIRECTION_MODE_OPTIONS;
       defaultValue = 'LONG_ONLY';
+    } else if (field.key === 'meta_label_model_mode') {
+      options = META_LABEL_MODE_OPTIONS;
+      defaultValue = 'wilson';
     } else {
       options = TP_MODE_OPTIONS.filter(
         (opt) => !opt.strategies || opt.strategies.includes(strat),

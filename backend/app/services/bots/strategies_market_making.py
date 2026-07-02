@@ -61,11 +61,11 @@ class MarketMakingStrategy(BaseStrategy):
             # Positive skew = we're long, need to sell
             # Negative skew = we're short, need to buy
             if current_side == "BUY":
-                inventory_skew = 1.0  # long inventory
+                inventory_skew = 1.0 - inventory_target
             elif current_side == "SELL":
-                inventory_skew = -1.0  # short inventory
+                inventory_skew = -1.0 - inventory_target
             else:
-                inventory_skew = 0.0  # flat
+                inventory_skew = 0.0 - inventory_target
 
             # ── Signal logic ──
             # If we're too long (skew > max), only issue SELL signals

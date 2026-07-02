@@ -67,6 +67,7 @@ class MarketScreenerService:
             return pd.DataFrame()
 
         try:
+            self._ensure_atr(df, cfg)
             self._compute_for_strategy(df, strat_key, cfg)
         except Exception as e:
             self.logger.error(f"Error calculating indicators for {symbol}: {e}")
@@ -79,16 +80,22 @@ class MarketScreenerService:
 
         return df
 
+    def _ensure_atr(self, df: pd.DataFrame, cfg: dict) -> None:
+        """ATR + rolling median for any strategy (Donchian ATR filter, MM vol shutdown, stops)."""
+        atr_len = int(cfg.get("atr_length", 14))
+        atr_name = atr_col(atr_len)
+        if atr_name not in df.columns:
+            df[atr_name] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
+        median_col = f"{atr_name}_median_20"
+        if median_col not in df.columns:
+            df[median_col] = df[atr_name].rolling(window=20, min_periods=1).median()
+
     def _compute_for_strategy(self, df: pd.DataFrame, strategy: str, cfg: dict) -> None:
         """Compute indicator columns needed by the given strategy."""
         strat = strategy.upper()
 
         if strat in ("MACD_RSI", "BRS_SCALPING", "VWAP_PULLBACK", "SUPERTREND_ADX"):
-            atr_len = cfg.get("atr_length", 14)
-            atr_name = atr_col(atr_len)
-            df[atr_name] = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
-            # 3.2-B: compute rolling median ATR to support regime-aware exit and sizing gates in any strategy
-            df[f"{atr_name}_median_20"] = df[atr_name].rolling(window=20, min_periods=1).median()
+            pass  # ATR handled by _ensure_atr
 
         if strat in ("MACD_RSI",):
             macd = ta.macd(
@@ -171,9 +178,21 @@ class MarketScreenerService:
                 for col in adx.columns:
                     df[col] = adx[col]
 
-        # Full suite for unknown / backtest-all path
+        # Full suite for ICT / Donchian / MM and legacy paths
         if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK", "CHART_AGENT"):
             self._compute_all(df, cfg)
+
+        filter_name = str((cfg or {}).get("filter_strategy") or "").strip()
+        if filter_name:
+            from app.services.bots.strategies import normalize_strategy_name
+            from app.services.bots.indicators import merge_strategy_config
+
+            fk = normalize_strategy_name(filter_name)
+            if fk != strat:
+                fc = merge_strategy_config(fk, (cfg or {}).get("filter_config") or {})
+                # Avoid infinite recursion — filter config must not chain another filter
+                fc = {**fc, "filter_strategy": ""}
+                self._compute_for_strategy(df, fk, fc)
 
     def _compute_all(self, df: pd.DataFrame, cfg: dict) -> None:
         """Compute every indicator (legacy / multi-strategy backtests)."""
@@ -190,7 +209,9 @@ class MarketScreenerService:
         if bb is not None:
             for col in bb.columns:
                 df[col] = bb[col]
-        df[atr_col(14)] = ta.atr(df["high"], df["low"], df["close"], length=14)
+        atr_name = atr_col(int((cfg or {}).get("atr_length", 14)))
+        if atr_name not in df.columns:
+            df[atr_name] = ta.atr(df["high"], df["low"], df["close"], length=int((cfg or {}).get("atr_length", 14)))
         st = ta.supertrend(df["high"], df["low"], df["close"], length=14, multiplier=3.0)
         if st is not None:
             for col in st.columns:

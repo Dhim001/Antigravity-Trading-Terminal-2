@@ -198,7 +198,6 @@ async def explain_trade_handler(ctx: RequestContext) -> None:
         "trade_explain",
         bot_id=bot_id,
         action="explain_trade",
-        event="trade_explain",
         insight_id=(result.get("insight") or {}).get("insight_id"),
     )
     await send_to(ctx, {"type": "trade_explain", "data": result})

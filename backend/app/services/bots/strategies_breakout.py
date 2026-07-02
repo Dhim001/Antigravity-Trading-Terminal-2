@@ -70,7 +70,11 @@ class DonchianBreakoutStrategy(BaseStrategy):
                 }
 
             # ── Entry signals (full channel + ATR confirmation) ──
-            if high >= dc_high and atr_expanding:
+            buy_break = high >= dc_high and atr_expanding
+            sell_break = low <= dc_low and atr_expanding
+            if buy_break and sell_break:
+                return {"signal": "NONE"}
+            if buy_break:
                 return {
                     "signal": "BUY",
                     "stop_loss_distance": 2.0 * atr,
@@ -80,7 +84,7 @@ class DonchianBreakoutStrategy(BaseStrategy):
                     ],
                 }
 
-            if low <= dc_low and atr_expanding:
+            if sell_break:
                 return {
                     "signal": "SELL",
                     "stop_loss_distance": 2.0 * atr,

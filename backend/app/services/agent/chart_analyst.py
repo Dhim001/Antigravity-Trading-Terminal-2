@@ -19,6 +19,11 @@ from app.config import (
     TERMINAL_MODE,
 )
 from app.db.connection import get_connection
+from app.services.agent.bar_time import (
+    bar_times_match,
+    candles_match_timeframe,
+    coerce_bar_time,
+)
 from app.services.agent.candle_source import get_agent_candles
 from app.services.agent.feature_builder import FeatureBuilder
 from app.services.agent.llm.router import is_llm_available, summarize_insight
@@ -273,6 +278,7 @@ class ChartAnalystService:
         candles: list[dict] | None = None,
         force_llm: bool = False,
         timeframe: str = "1m",
+        bar_time: int | None = None,
         llm_model: str | None = None,
         broadcast: bool = True,
     ) -> ChartAgentInsight | None:
@@ -282,9 +288,25 @@ class ChartAnalystService:
         t0 = time.monotonic()
         sym = symbol.upper()
         tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
+        target_bar = coerce_bar_time(bar_time)
 
         if candles is None:
             candles = await get_agent_candles(sym, self.feed, timeframe=tf)
+        elif not candles_match_timeframe(candles, tf):
+            logger.warning(
+                "Chart analyst %s %s: candle spacing looks like 1m — refetching native series",
+                sym,
+                tf,
+            )
+            candles = await get_agent_candles(sym, self.feed, timeframe=tf)
+
+        if candles and not candles_match_timeframe(candles, tf):
+            logger.warning(
+                "Chart analyst %s %s: candle series does not match timeframe — skipping analyze",
+                sym,
+                tf,
+            )
+            return None
 
         if not candles or len(candles) < 50:
             logger.info(
@@ -296,7 +318,12 @@ class ChartAnalystService:
             return None
 
         df = await asyncio.to_thread(self.feature_builder.build, sym, candles)
-        insight = score_dataframe(df, sym, timeframe=tf)
+        insight = score_dataframe(
+            df,
+            sym,
+            timeframe=tf,
+            expected_bar_time=target_bar,
+        )
         if insight is None:
             return None
 
@@ -352,18 +379,36 @@ class ChartAnalystService:
     ) -> ChartAgentInsight | None:
         """Populate cache for the closed bar if missing or stale."""
         tf = normalize_timeframe(timeframe) if timeframe and timeframe != "tick" else "1m"
+        target = coerce_bar_time(bar_time)
         cached = self.get_cached(symbol, timeframe=tf)
-        if cached and bar_time is not None and cached.get("bar_time") == bar_time:
-            if normalize_timeframe(cached.get("timeframe", "1m")) == tf:
-                return ChartAgentInsight.from_dict(cached)
-        return await self.analyze(
+        if (
+            cached
+            and target is not None
+            and bar_times_match(cached.get("bar_time"), target)
+            and normalize_timeframe(cached.get("timeframe", "1m")) == tf
+        ):
+            return ChartAgentInsight.from_dict(cached)
+        insight = await self.analyze(
             symbol,
             candles=candles,
             force_llm=force_llm,
             llm_model=llm_model,
             timeframe=tf,
+            bar_time=target,
             broadcast=False,
         )
+        if insight is None or target is None:
+            return insight
+        if not bar_times_match(insight.bar_time, target):
+            logger.warning(
+                "Chart analyst ensure_for_bar %s %s: insight bar_time %s != target %s",
+                symbol.upper(),
+                tf,
+                insight.bar_time,
+                target,
+            )
+            return None
+        return insight
 
     def symbols_to_analyze(self, bot_manager, connection_manager) -> set[str]:
         """Symbols needing 1m watchlist analysis on bar close (legacy hook)."""

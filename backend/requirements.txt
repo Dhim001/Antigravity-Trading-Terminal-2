@@ -34,3 +34,5 @@ cryptography>=42.0.0
 pywebpush>=2.0.0
 # Interactive Brokers market data (LIVE_IB feed-only)
 ib_async>=2.0.0
+# Meta-label classifier (HistGradientBoosting)
+scikit-learn>=1.3.0

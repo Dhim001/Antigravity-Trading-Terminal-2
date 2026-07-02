@@ -49,8 +49,9 @@ import { cn } from '@/lib/utils';
 import { brokerLabel } from '@/lib/operator';
 import {
   TrendingUp, LayoutGrid, BarChart2, SlidersHorizontal, Search, OctagonX,
-  CircleHelp, Bell, Activity,
+  CircleHelp, Bell, Activity, RefreshCw,
 } from 'lucide-react';
+import { refreshFrontend } from './lib/refreshFrontend';
 import { sendAction } from './api/transport';
 import { Action } from './api/protocol';
 import { fetchHealth } from './api/endpoints';
@@ -516,6 +517,22 @@ export default function App() {
                 </AlertDialog>
               </>
             )}
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => refreshFrontend()}
+                  className="header-icon-btn text-muted-foreground hover:text-trading-accent"
+                  title="Refresh UI — reload app"
+                >
+                  <RefreshCw aria-hidden />
+                  <span className="sr-only">Refresh UI</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Refresh UI</TooltipContent>
+            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>

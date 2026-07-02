@@ -391,6 +391,78 @@ export async function fetchStrategySuggestion(botId, {
   return body;
 }
 
+/** GET /api/v1/bots/{botId}/meta-label/status — GBM model status + dataset stats. */
+export async function fetchMetaLabelStatus(botId) {
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/meta-label/status`);
+  if (!body?.ok) throw new Error(body?.error || 'Meta-label status unavailable');
+  return body;
+}
+
+/** POST /api/v1/bots/{botId}/meta-label/retrain — train GBM classifier from closed trades. */
+export async function retrainMetaLabelModel(botId, { minSamples } = {}) {
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/meta-label/retrain`, {
+    method: 'POST',
+    timeoutMs: 120_000,
+    body: minSamples != null ? { min_samples: minSamples } : {},
+  });
+  if (!body?.ok) throw new Error(body?.error || body?.result?.error || 'Meta-label retrain failed');
+  return body;
+}
+
+/** POST /api/v1/backtest/meta-label-walk-forward — OOS GBM gate evaluation (no full backtest). */
+export async function fetchMetaLabelWalkForward({
+  botId,
+  symbol,
+  strategy = 'CHART_AGENT',
+  config,
+  days = 30,
+  timeframe,
+  rollingFolds = 2,
+  trainPct = 70,
+  minTrainSamples,
+} = {}) {
+  const body = await apiRequest('/api/v1/backtest/meta-label-walk-forward', {
+    method: 'POST',
+    timeoutMs: 300_000,
+    body: {
+      bot_id: botId || undefined,
+      symbol: symbol || undefined,
+      strategy,
+      config: config || undefined,
+      days,
+      timeframe: timeframe || undefined,
+      rolling_folds: rollingFolds,
+      train_pct: trainPct,
+      min_train_samples: minTrainSamples,
+    },
+  });
+  if (!body?.ok && !body?.walk_forward) {
+    throw new Error(body?.error || body?.walk_forward?.error || 'Walk-forward evaluation failed');
+  }
+  return body;
+}
+
+/** POST /api/v1/bots/{botId}/meta-label/operational — shadow / promote / rollback rollout. */
+export async function applyMetaLabelOperational(botId, {
+  stage,
+  walkForward,
+  requirePositiveOos = true,
+  retrain,
+} = {}) {
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/meta-label/operational`, {
+    method: 'POST',
+    timeoutMs: 180_000,
+    body: {
+      stage,
+      walk_forward: walkForward || undefined,
+      require_positive_oos: requirePositiveOos,
+      retrain: retrain ?? stage === 'promote',
+    },
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Operational rollout failed');
+  return body;
+}
+
 /** POST /api/v1/bots/calibration/apply — merge threshold suggestions into bot config. */
 export async function applyCalibrationSuggestions({
   botId,

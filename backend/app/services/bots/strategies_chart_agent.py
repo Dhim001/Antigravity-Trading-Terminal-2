@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.agent.bar_time import bar_times_match, coerce_bar_time
 from app.services.agent.chart_analyst import get_chart_analyst
 from app.services.agent.regime_routing import resolve_regime_config
 from app.services.bots.indicators import merge_strategy_config
@@ -134,6 +135,8 @@ def classify_filter_reject(reason: str | None) -> str | None:
         return "confidence"
     if "calibration gate" in text:
         return "calibration"
+    if "meta-label gate" in text:
+        return "calibration"
     if "sentiment" in text:
         return "sentiment"
     return "other"
@@ -222,7 +225,7 @@ class ChartAgentStrategy:
             tf = normalize_timeframe(timeframe)
         except ValueError:
             tf = "1m"
-        bar_time = df_row.get("time")
+        bar_time = coerce_bar_time(df_row.get("time"))
 
         try:
             analyst = get_chart_analyst()
@@ -233,7 +236,7 @@ class ChartAgentStrategy:
         if not insight:
             return {"signal": "NONE", "reject_reason": "no cached insight"}
 
-        if insight.get("bar_time") != bar_time:
+        if not bar_times_match(insight.get("bar_time"), bar_time):
             return {
                 "signal": "NONE",
                 "reject_reason": (

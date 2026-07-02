@@ -46,6 +46,12 @@ MARKET_CANDLE_SNAPSHOT_MAX = int(os.environ.get("MARKET_CANDLE_SNAPSHOT_MAX", "1
 CALIBRATION_CACHE_TTL_SEC = int(os.environ.get("CALIBRATION_CACHE_TTL_SEC", "300"))
 # Background recomputation interval for meta-label calibration index (0 = disabled).
 CALIBRATION_REFRESH_SEC = int(os.environ.get("CALIBRATION_REFRESH_SEC", "600"))
+# Meta-label GBM artifacts (per-bot joblib + metadata.json)
+META_LABEL_MODEL_DIR = os.environ.get(
+    "META_LABEL_MODEL_DIR",
+    os.path.join(BASE_DIR, "data", "meta_label_models"),
+)
+META_LABEL_MIN_TRAIN_SAMPLES = int(os.environ.get("META_LABEL_MIN_TRAIN_SAMPLES", "30"))
 # Emit JSON logs on trade/agent paths when true (default off in dev).
 LOG_JSON = os.environ.get("LOG_JSON", "false").lower() in ("1", "true", "yes")
 # Simulated feed — lightweight startup (defer yfinance SBBS until after listen)

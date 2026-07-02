@@ -32,10 +32,18 @@ class MacdRsiStrategy(BaseStrategy):
         try:
             cfg = merge_strategy_config("MACD_RSI", self.config)
             hist_col = macd_hist_col(cfg["macd_fast"], cfg["macd_slow"], cfg["macd_signal"])
-            macd_hist = df_row.get(hist_col, 0)
-            macd_hist_prev = df_row.get(f"{hist_col}_prev", 0)
-            rsi = df_row.get(rsi_col(cfg["rsi_length"]), 50)
-            atr = df_row.get(atr_col(cfg["atr_length"]), 0)
+            macd_hist = df_row.get(hist_col)
+            macd_hist_prev = df_row.get(f"{hist_col}_prev")
+            rsi = df_row.get(rsi_col(cfg["rsi_length"]))
+            atr = df_row.get(atr_col(cfg["atr_length"]))
+
+            if None in (macd_hist, macd_hist_prev, rsi, atr) or atr <= 0:
+                return {"signal": "NONE"}
+
+            macd_hist = float(macd_hist)
+            macd_hist_prev = float(macd_hist_prev)
+            rsi = float(rsi)
+            atr = float(atr)
 
             # 3.2-A: Exit via CLOSE signal when MACD reverses (MACD histogram crosses zero)
             current_side = df_row.get("_current_side", "NONE")
@@ -70,7 +78,7 @@ class BrsScalpingStrategy(BaseStrategy):
             close = df_row.get("close")
             atr = df_row.get(atr_col(cfg["atr_length"]))
 
-            if None in (bbl, bbu, rsi, stoch_k, close):
+            if None in (bbl, bbu, rsi, stoch_k, close, atr) or atr <= 0:
                 return {"signal": "NONE"}
 
             if (

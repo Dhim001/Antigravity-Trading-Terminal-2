@@ -172,7 +172,7 @@ export default function BacktestLabSheet() {
           </SheetDescription>
         </SheetHeader>
 
-        <div className="backtest-lab__tabs border-b border-border/50 px-3 pt-2 pb-2">
+        <div className="backtest-lab__tabs">
           <Tabs value={labTab} onValueChange={setBacktestLabTab}>
             <TabsList className="w-full">
               {LAB_TABS.map((tab) => (
@@ -206,7 +206,7 @@ export default function BacktestLabSheet() {
             {labTab === 'results' && (
               <>
                 {backtestRunning && !backtestResults && (
-                  <p className="backtest-lab__loading text-sm text-muted-foreground px-3 pt-2">
+                  <p className="backtest-lab__loading px-3 pt-2">
                     Running backtest…
                   </p>
                 )}
@@ -228,14 +228,14 @@ export default function BacktestLabSheet() {
                     />
                   </ErrorBoundary>
                 ) : !backtestRunning && (
-                  <div className="backtest-lab__empty px-3 pt-4 space-y-3">
-                    <p className="text-sm text-muted-foreground">
+                  <div className="backtest-lab__empty">
+                    <p>
                       No backtest loaded yet. Run one from the bottom dock, then return here for the full report.
                     </p>
-                    <ol className="list-decimal list-inside space-y-1 text-xs text-muted-foreground">
-                      <li>Open the bottom dock → <strong className="text-foreground">Algo</strong> tab</li>
-                      <li>Configure symbol/strategy and click <strong className="text-foreground">BACKTEST</strong></li>
-                      <li>Click <strong className="text-foreground">LAB</strong> in the footer, or use header <strong className="text-foreground">Lab</strong></li>
+                    <ol>
+                      <li>Open the bottom dock → <strong>Algo</strong> tab</li>
+                      <li>Configure symbol/strategy and click <strong>BACKTEST</strong></li>
+                      <li>Click <strong>LAB</strong> in the footer, or use header <strong>Lab</strong></li>
                     </ol>
                     <Button
                       type="button"

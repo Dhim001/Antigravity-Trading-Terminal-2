@@ -43,7 +43,7 @@ import {
 import {
   scheduleBacktestClientTimeout,
   clearBacktestClientTimeout,
-  formatBacktestTimeoutLabel,
+  backtestTimeoutHint,
 } from '../../lib/backtestTimeouts';
 import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
@@ -126,6 +126,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
   const [backtestRiskBaseMode, setBacktestRiskBaseMode] = useState('account_snapshot');
   const [portfolioBacktest, setPortfolioBacktest] = useState(false);
+  const [metaLabelWalkForward, setMetaLabelWalkForward] = useState(false);
   const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
@@ -201,15 +202,18 @@ export function AlgoTab({ hideToolbar = false }) {
 
     scheduleBacktestClientTimeout({
       reasoning: backtestReasoning,
+      metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
       days,
       onTimeout: (timeoutMs) => {
         if (useStore.getState().backtestRunning) {
           setBacktestRunning(false);
           setBacktestProgress(null);
           toast.error(
-            backtestReasoning
-              ? `Backtest timed out after ${formatBacktestTimeoutLabel(timeoutMs)} — increase VITE_BACKTEST_REASONING_TIMEOUT_MS, reduce days, or lower BACKTEST_REASONING_MAX_TRADES`
-              : `Backtest timed out after ${formatBacktestTimeoutLabel(timeoutMs)} — try a shorter range or increase VITE_BACKTEST_TIMEOUT_MS`,
+            backtestTimeoutHint({
+              reasoning: backtestReasoning,
+              metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+              timeoutMs,
+            }),
           );
         }
       },
@@ -228,6 +232,9 @@ export function AlgoTab({ hideToolbar = false }) {
         risk_base_mode: backtestRiskBaseMode,
         ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
         ...(selectedBotId ? { backtest_bot_id: selectedBotId } : {}),
+        ...(botStrategy === 'CHART_AGENT' && metaLabelWalkForward
+          ? { meta_label_walk_forward: true }
+          : {}),
       },
       days,
       timeframe: isTick ? 'tick' : botTimeframe,
@@ -791,10 +798,36 @@ export function AlgoTab({ hideToolbar = false }) {
                 type="checkbox"
                 className="size-3.5 accent-primary"
                 checked={backtestOos}
-                onChange={(e) => setBacktestOos(e.target.checked)}
+                disabled={metaLabelWalkForward}
+                onChange={(e) => {
+                  setBacktestOos(e.target.checked);
+                  if (e.target.checked) setMetaLabelWalkForward(false);
+                }}
               />
               Hold-out test (last 30%) — test on last 30% of range only
             </label>
+
+            {botStrategy === 'CHART_AGENT' && (
+              <label
+                className={cn(
+                  'flex items-center gap-2 text-[0.62rem] cursor-pointer',
+                  backtestOos ? 'text-muted-foreground/50' : 'text-muted-foreground',
+                )}
+                title={backtestOos ? 'Disable hold-out test first — walk-forward needs the full candle range' : undefined}
+              >
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  checked={metaLabelWalkForward}
+                  disabled={backtestOos}
+                  onChange={(e) => {
+                    setMetaLabelWalkForward(e.target.checked);
+                    if (e.target.checked) setBacktestOos(false);
+                  }}
+                />
+                Meta-label walk-forward — train GBM on in-sample, compare OOS vs baseline
+              </label>
+            )}
 
             <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
               <input

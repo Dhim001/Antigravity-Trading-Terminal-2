@@ -3,6 +3,7 @@
 import unittest
 
 from app.services.bots.indicators import (
+    atr_col,
     first_eval_index,
     macd_hist_col,
     merge_strategy_config,
@@ -65,6 +66,7 @@ class TestStrategyEvaluate(unittest.TestCase):
             hist: 0.5,
             f"{hist}_prev": -0.1,
             rsi_col(cfg["rsi_length"]): 40,
+            atr_col(cfg["atr_length"]): 1.0,
             "close": 100,
         }
         result = MacdRsiStrategy(cfg).evaluate(row)
@@ -77,6 +79,7 @@ class TestStrategyEvaluate(unittest.TestCase):
             hist: 0.5,
             f"{hist}_prev": -0.1,
             rsi_col(cfg["rsi_length"]): 60,
+            atr_col(cfg["atr_length"]): 1.0,
             "close": 100,
         }
         result = MacdRsiStrategy(cfg).evaluate(row)
@@ -123,6 +126,40 @@ class TestScreenerAndBacktest(unittest.TestCase):
         self.assertIn("win_rate", result)
         self.assertIn("equity_curve", result)
         self.assertIn("summary", result)
+
+    def test_donchian_screener_has_atr_median(self):
+        config = {"atr_length": 14, "breakout_length": 20, "exit_length": 10}
+        df = self.screener.process_candles("TEST", self.candles, config, "DONCHIAN_BREAKOUT")
+        self.assertIn("ATR_14_median_20", df.columns)
+
+    def test_donchian_skips_dual_breakout_bar(self):
+        from app.services.bots.strategies_breakout import DonchianBreakoutStrategy
+
+        cfg = merge_strategy_config("DONCHIAN_BREAKOUT", {"breakout_length": 20, "exit_length": 10})
+        row = {
+            "close": 100,
+            "high": 110,
+            "low": 90,
+            "ATR_14": 2.0,
+            "ATR_14_median_20": 1.5,
+            "dc_high_20": 105,
+            "dc_low_20": 95,
+            "dc_high_10": 108,
+            "dc_low_10": 92,
+        }
+        result = DonchianBreakoutStrategy(cfg).evaluate(row)
+        self.assertEqual(result["signal"], "NONE")
+
+    def test_backtest_short_only_blocks_long(self):
+        backtester = BacktesterService(self.screener)
+        result = backtester.run_backtest(
+            "TEST",
+            "MACD_RSI",
+            {"direction_mode": "SHORT_ONLY"},
+            self.candles,
+        )
+        long_entries = [t for t in result.get("trades", []) if not t.get("is_exit") and t.get("side") == "BUY"]
+        self.assertEqual(len(long_entries), 0)
 
 
 if __name__ == "__main__":
