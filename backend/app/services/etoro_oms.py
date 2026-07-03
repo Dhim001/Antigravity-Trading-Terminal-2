@@ -451,6 +451,7 @@ class EtoroOMSService(BaseOMSService):
         sl_pct = order_req.get("stop_loss_percent")
         tp_pct = order_req.get("take_profit_percent")
         tp_price_abs = order_req.get("take_profit_price")
+        sl_price_abs = order_req.get("stop_loss_price")
 
         if symbol not in self.feed._symbols:
             return {"status": "error", "message": f"Invalid symbol: {symbol}"}
@@ -477,11 +478,19 @@ class EtoroOMSService(BaseOMSService):
             pos = self._find_position(symbol, portfolio)
             if not pos:
                 return {"status": "error", "message": f"No open eToro position for {symbol}"}
+            pos_units = float(pos.get("units") or 0)
+            if quantity > pos_units + 1e-8:
+                return {
+                    "status": "error",
+                    "message": f"Cannot sell {quantity} — open size is {pos_units}",
+                }
             payload = {
                 "action": "close",
                 "transaction": "sell",
                 "positionIds": [int(pos["positionID"])],
             }
+            if quantity < pos_units - 1e-8:
+                payload["UnitsToDeduct"] = quantity
             result = await self._post_order(payload)
             if result.get("status") == "ambiguous":
                 from app.config import TERMINAL_MODE
@@ -494,7 +503,10 @@ class EtoroOMSService(BaseOMSService):
                     bot_id=order_req.get("bot_id"),
                 )
             if result.get("status") == "success":
-                result["message"] = f"eToro close submitted: SELL {symbol}"
+                if quantity < pos_units - 1e-8:
+                    result["message"] = f"eToro partial close submitted: SELL {quantity} {symbol}"
+                else:
+                    result["message"] = f"eToro close submitted: SELL {symbol}"
             return result
 
         if side != "BUY":
@@ -527,7 +539,10 @@ class EtoroOMSService(BaseOMSService):
                 "units": quantity,
             }
 
-        if sl_pct is not None:
+        if sl_price_abs is not None:
+            payload["stopLossRate"] = float(sl_price_abs)
+            payload["stopLossType"] = "fixed"
+        elif sl_pct is not None:
             payload["stopLossRate"] = mid * (1 - sl_pct / 100.0)
             payload["stopLossType"] = "fixed"
         if tp_price_abs is not None:

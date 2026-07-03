@@ -639,6 +639,81 @@ def get_price_correlation_matrix(
     }
 
 
+def summarize_basket_correlation(
+    symbols: list[str],
+    *,
+    feed=None,
+    threshold: float | None = None,
+) -> dict:
+    """High-correlation pairs and shared dynamic groups for a symbol basket."""
+    from app.config import RISK_CORRELATION_THRESHOLD
+
+    thresh = threshold if threshold is not None else RISK_CORRELATION_THRESHOLD
+    syms = []
+    seen: set[str] = set()
+    for raw in symbols:
+        sym = str(raw or "").upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        syms.append(sym)
+
+    if len(syms) < 2:
+        return {
+            "symbols": syms,
+            "threshold": thresh,
+            "high_pairs": [],
+            "shared_groups": {},
+            "warning": False,
+            "message": "Select at least 2 symbols for correlation analysis.",
+        }
+
+    matrix_data = get_price_correlation_matrix(symbols=syms, feed=feed)
+    filtered = matrix_data.get("symbols") or syms
+    matrix = matrix_data.get("matrix") or []
+
+    high_pairs: list[dict] = []
+    for i, sym_a in enumerate(filtered):
+        for j in range(i + 1, len(filtered)):
+            corr = matrix[i][j] if i < len(matrix) and j < len(matrix[i]) else 0.0
+            if abs(corr) >= thresh:
+                high_pairs.append({
+                    "a": sym_a,
+                    "b": filtered[j],
+                    "correlation": round(float(corr), 3),
+                })
+
+    groups: dict[str, list[str]] = {}
+    for sym in filtered:
+        grp = resolve_correlation_group(sym)
+        groups.setdefault(grp, []).append(sym)
+    shared_groups = {g: members for g, members in groups.items() if len(members) > 1}
+
+    warning = bool(high_pairs or shared_groups)
+    if high_pairs:
+        top = high_pairs[0]
+        message = (
+            f"{top['a']}/{top['b']} correlation {top['correlation']:.2f} "
+            f"≥ threshold {thresh:.2f}."
+        )
+    elif shared_groups:
+        g, members = next(iter(shared_groups.items()))
+        message = f"{len(members)} symbols share correlation group '{g}'."
+    else:
+        message = "No high-correlation pairs in basket."
+
+    return {
+        "symbols": filtered,
+        "threshold": thresh,
+        "high_pairs": high_pairs,
+        "shared_groups": shared_groups,
+        "warning": warning,
+        "message": message,
+        "lookback_days": matrix_data.get("period"),
+        "source": matrix_data.get("source"),
+    }
+
+
 def _day_key_from_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 

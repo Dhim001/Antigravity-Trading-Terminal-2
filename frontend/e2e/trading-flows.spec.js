@@ -5,6 +5,9 @@ import { test, expect } from '@playwright/test';
 import {
   gotoDashboard,
   openAlgoTab,
+  openPositionsTab,
+  placeMarketOrder,
+  fillBracketSlTp,
   waitForBootstrap,
 } from './helpers.js';
 
@@ -13,6 +16,56 @@ const API = process.env.E2E_API_URL || 'http://127.0.0.1:8766';
 test.describe.configure({ mode: 'serial' });
 
 test.describe('SIM trading flows (UI)', () => {
+  test('market order via order entry opens position', async ({ page }) => {
+    await gotoDashboard(page);
+    await waitForBootstrap(page);
+
+    await placeMarketOrder(page, { presetPct: 25 });
+
+    await expect(
+      page.locator('[data-sonner-toast]').filter({ hasText: /success|filled|placed|executed/i }).first(),
+    ).toBeVisible({ timeout: 20_000 });
+
+    await openPositionsTab(page);
+    await expect(page.locator('.dock-panel-tab--positions').getByText('BTCUSDT')).toBeVisible({
+      timeout: 15_000,
+    });
+  });
+
+  test('bracket SL/TP shows badge and pre-trade preview costs', async ({ page }) => {
+    await gotoDashboard(page);
+    await waitForBootstrap(page);
+
+    await page.locator('.order-entry-type-toggle').getByRole('button', { name: 'MARKET' }).click();
+    await page.locator('.order-entry-qty-presets').getByRole('button', { name: '25%' }).click();
+    await fillBracketSlTp(page, { slPct: 2, tpPct: 4 });
+
+    await expect(page.getByText('Bracket', { exact: true })).toBeVisible();
+    await expect(page.getByText('Pre-trade preview')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Fee ~\$/)).toBeVisible();
+    await expect(page.getByText(/R:R 1:/)).toBeVisible();
+  });
+
+  test('positions row exposes quick-trade actions', async ({ page }) => {
+    await gotoDashboard(page);
+    await waitForBootstrap(page);
+    await openPositionsTab(page);
+
+    const panel = page.locator('.dock-panel-tab--positions');
+    const hasPosition = await panel.getByText('BTCUSDT').isVisible().catch(() => false);
+    if (!hasPosition) {
+      await placeMarketOrder(page, { presetPct: 25 });
+      await expect(
+        page.locator('[data-sonner-toast]').filter({ hasText: /success|filled|placed|executed/i }).first(),
+      ).toBeVisible({ timeout: 20_000 });
+      await openPositionsTab(page);
+    }
+
+    await expect(panel.getByRole('button', { name: '50%' }).first()).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Close' }).first()).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Rev' }).first()).toBeVisible();
+  });
+
   test('deploy MACD bot increases active bot count', async ({ page }) => {
     await gotoDashboard(page);
     await waitForBootstrap(page);
@@ -33,6 +86,40 @@ test.describe('SIM trading flows (UI)', () => {
 
 test.describe('REST transport (WS fallback path)', () => {
   test.describe.configure({ mode: 'serial' });
+
+  test('session exposes order_capabilities', async ({ request }) => {
+    const resp = await request.get(`${API}/api/v1/session`);
+    expect(resp.ok()).toBeTruthy();
+    const body = await resp.json();
+    const caps = body.session?.terminal?.order_capabilities;
+    expect(caps).toBeDefined();
+    expect(caps.partial_close).toBe(true);
+    expect(caps.order_preview_costs).toBe(true);
+    expect(caps.broker).toBeDefined();
+  });
+
+  test('bracket preview includes SL/TP and cost estimates', async ({ request }) => {
+    const resp = await request.post(`${API}/api/v1/orders/preview`, {
+      data: {
+        symbol: 'BTCUSDT',
+        type: 'MARKET',
+        side: 'BUY',
+        quantity: 0.01,
+        stop_loss_percent: 2,
+        take_profit_percent: 4,
+        bracket: true,
+      },
+    });
+    expect(resp.ok()).toBeTruthy();
+    const body = await resp.json();
+    expect(body.ok).toBe(true);
+    const data = body.data ?? body.messages?.find((m) => m.type === 'order_preview')?.data;
+    expect(data?.allowed).toBe(true);
+    expect(data?.stop_loss_price).toBeGreaterThan(0);
+    expect(data?.take_profit_price).toBeGreaterThan(0);
+    expect(data?.costs?.estimated_fee).toBeGreaterThanOrEqual(0);
+    expect(data?.risk_reward_ratio).toBeDefined();
+  });
 
   test('place order via POST /api/v1/orders', async ({ request }) => {
     const resp = await request.post(`${API}/api/v1/orders`, {

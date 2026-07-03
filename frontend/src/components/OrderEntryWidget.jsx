@@ -1,18 +1,30 @@
 /**
  * OrderEntryWidget.jsx — order ticket with unified terminal tokens
  */
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { previewOrder } from '../api/endpoints';
 import { Action } from '../api/protocol';
+import { needsOrderConfirm, normalizeOrderCapabilities } from '../lib/positionActions';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { WidgetShell } from './WidgetShell';
 import { cn } from '@/lib/utils';
 import { PlusCircle, ShieldAlert, Target, TrendingDown, TrendingUp, ChevronDown } from 'lucide-react';
@@ -27,6 +39,12 @@ export default function OrderEntryWidget() {
   const orderResult  = useStore(state => state.orderResult);
   const orderPrefill = useStore(state => state.orderPrefill);
   const clearOrderPrefill = useStore(state => state.clearOrderPrefill);
+  const orderCapabilities = useStore(state => state.orderCapabilities);
+  const capabilities = normalizeOrderCapabilities(orderCapabilities);
+  const chartSlTpDraft = useStore(state => state.chartSlTpDraft);
+  const setChartSlTpDraft = useStore(state => state.setChartSlTpDraft);
+  const clearChartSlTpDraft = useStore(state => state.clearChartSlTpDraft);
+  const draftFromChartRef = useRef(false);
 
   const [side,      setSide]      = useState('BUY');
   const [orderType, setOrderType] = useState('LIMIT');
@@ -36,10 +54,12 @@ export default function OrderEntryWidget() {
   const [tpPrice,   setTpPrice]   = useState('');
   const [slMode,    setSlMode]    = useState('%');
   const [tpMode,    setTpMode]    = useState('%');
+  const [slKind,    setSlKind]    = useState('fixed');
   const [errorMsg,  setErrorMsg]  = useState(null);
   const [showSLTP,  setShowSLTP]  = useState(false);
   const [preview,   setPreview]   = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [lastFillExplain, setLastFillExplain] = useState(null);
   const buyBtnRef  = useRef(null);
   const sellBtnRef = useRef(null);
@@ -79,6 +99,8 @@ export default function OrderEntryWidget() {
     if (ticker) setPrice(ticker.price.toString());
     else setPrice('');
     setSlPrice(''); setTpPrice(''); setQuantity('');
+    setSlKind('fixed');
+    setShowSLTP(false);
     setErrorMsg(null);
   }, [activeSymbol, ticker === undefined]);
 
@@ -131,16 +153,67 @@ export default function OrderEntryWidget() {
     return side === 'BUY' ? orderPrice * (1 + pct / 100) : orderPrice * (1 - pct / 100);
   };
 
-  const slAbs = computeSlAbs();
+  const slAbs = slKind === 'trailing' ? null : computeSlAbs();
+  const trailingPct = slKind === 'trailing' && slPrice ? parseFloat(slPrice) : null;
   const tpAbs = computeTpAbs();
+  const isBracket = showSLTP && capabilities.bracket_orders && (slAbs || trailingPct || tpAbs);
+
+  const effectiveSlForRr = useMemo(() => {
+    if (slKind === 'trailing' && trailingPct && orderPrice) {
+      return side === 'BUY'
+        ? orderPrice * (1 - trailingPct / 100)
+        : orderPrice * (1 + trailingPct / 100);
+    }
+    return slAbs;
+  }, [slKind, trailingPct, orderPrice, side, slAbs]);
 
   const rrRatio = useMemo(() => {
-    if (!slAbs || !tpAbs || !orderPrice) return null;
-    const risk   = Math.abs(orderPrice - slAbs);
+    if (!effectiveSlForRr || !tpAbs || !orderPrice) return null;
+    const risk   = Math.abs(orderPrice - effectiveSlForRr);
     const reward = Math.abs(tpAbs - orderPrice);
     if (risk === 0) return null;
     return (reward / risk).toFixed(2);
-  }, [slAbs, tpAbs, orderPrice]);
+  }, [effectiveSlForRr, tpAbs, orderPrice]);
+
+  useEffect(() => {
+    if (draftFromChartRef.current) {
+      draftFromChartRef.current = false;
+      return;
+    }
+    if (!showSLTP || slKind === 'trailing') {
+      clearChartSlTpDraft();
+      return;
+    }
+    if (!slAbs && !tpAbs) {
+      clearChartSlTpDraft();
+      return;
+    }
+    setChartSlTpDraft({
+      symbol: activeSymbol,
+      side,
+      ref_price: orderPrice || undefined,
+      stop_loss_price: slAbs ?? undefined,
+      take_profit_price: tpAbs ?? undefined,
+      source: 'ticket',
+    });
+  }, [activeSymbol, side, showSLTP, slAbs, tpAbs, orderPrice, slKind, setChartSlTpDraft, clearChartSlTpDraft]);
+
+  useEffect(() => {
+    if (!chartSlTpDraft || chartSlTpDraft.symbol !== activeSymbol) return;
+    if (chartSlTpDraft.source !== 'chart') return;
+    draftFromChartRef.current = true;
+    setShowSLTP(true);
+    if (chartSlTpDraft.side) setSide(chartSlTpDraft.side);
+    if (chartSlTpDraft.stop_loss_price != null) {
+      setSlKind('fixed');
+      setSlMode('$');
+      setSlPrice(String(chartSlTpDraft.stop_loss_price));
+    }
+    if (chartSlTpDraft.take_profit_price != null) {
+      setTpMode('$');
+      setTpPrice(String(chartSlTpDraft.take_profit_price));
+    }
+  }, [chartSlTpDraft, activeSymbol]);
 
   useEffect(() => {
     const q = parseFloat(quantity);
@@ -161,7 +234,11 @@ export default function OrderEntryWidget() {
         if (!isNaN(lp) && lp > 0) payload.price = lp;
       }
       if (showSLTP && slAbs) payload.stop_loss_price = parseFloat(slAbs.toFixed(8));
+      if (showSLTP && trailingPct && capabilities.trailing_stop_manual) {
+        payload.trailing_stop_percent = trailingPct;
+      }
       if (showSLTP && tpAbs) payload.take_profit_price = parseFloat(tpAbs.toFixed(8));
+      if (showSLTP && isBracket) payload.bracket = true;
       try {
         const result = await previewOrder(payload);
         setPreview(result);
@@ -172,7 +249,7 @@ export default function OrderEntryWidget() {
       }
     }, 350);
     return () => clearTimeout(timer);
-  }, [activeSymbol, side, orderType, quantity, price, showSLTP, slAbs, tpAbs]);
+  }, [activeSymbol, side, orderType, quantity, price, showSLTP, slAbs, tpAbs, slKind, trailingPct, isBracket, capabilities.trailing_stop_manual]);
 
   useEffect(() => {
     previewRef.current = preview;
@@ -218,10 +295,23 @@ export default function OrderEntryWidget() {
       return;
     }
 
+    if (preview && needsOrderConfirm(preview)) {
+      setConfirmOpen(true);
+      return;
+    }
+    await submitOrder(lp, q);
+  };
+
+  const submitOrder = useCallback(async (lp, q) => {
+    setConfirmOpen(false);
     const payload = { symbol: activeSymbol, type: orderType, side, price: lp, quantity: q };
     if (showSLTP) {
       if (slAbs) payload.stop_loss_price = parseFloat(slAbs.toFixed(8));
+      if (trailingPct && capabilities.trailing_stop_manual) {
+        payload.trailing_stop_percent = trailingPct;
+      }
       if (tpAbs) payload.take_profit_price = parseFloat(tpAbs.toFixed(8));
+      if (isBracket) payload.bracket = true;
     }
     const { ok } = await sendAction(Action.PLACE_ORDER, payload);
     if (ok) { setQuantity(''); setSlPrice(''); setTpPrice(''); }
@@ -229,7 +319,7 @@ export default function OrderEntryWidget() {
       setErrorMsg('Order dispatch failed — backend unreachable.');
       toast.error('Order dispatch failed — backend unreachable.');
     }
-  };
+  }, [activeSymbol, orderType, side, showSLTP, slAbs, tpAbs, trailingPct, isBracket, capabilities.trailing_stop_manual]);
 
   const priceDec  = ticker ? ((activeSymbol.includes('XRP') || activeSymbol.includes('ADA') || activeSymbol.includes('DOGE') || ticker.price < 2) ? 4 : 2) : 2;
   const isBuy = side === 'BUY';
@@ -373,19 +463,32 @@ export default function OrderEntryWidget() {
                 <span className="icon-label">
                   <Target data-icon="inline-start" />
                   Stop Loss / Take Profit
+                  {isBracket && (
+                    <Badge variant="outline" className="ml-1 text-[0.6rem] uppercase tracking-wide">
+                      Bracket
+                    </Badge>
+                  )}
                 </span>
                 <ChevronDown className={cn('size-3.5 transition-transform', showSLTP && 'rotate-180')} />
               </Button>
             </CollapsibleTrigger>
             <CollapsibleContent className="mb-2 flex flex-col gap-2 rounded-md border border-border bg-muted/20 p-2">
               <Field>
-                <div className="mb-1 flex items-center justify-between">
+                <div className="mb-1 flex items-center justify-between gap-2">
                   <FieldLabel className="text-trading-down">Stop Loss</FieldLabel>
-                  <ToggleGroup type="single" value={slMode} onValueChange={(v) => { if (v) { setSlMode(v); setSlPrice(''); } }} spacing={0} className="h-6">
-                    {['%', '$'].map(m => (
-                      <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-xs font-bold">{m}</ToggleGroupItem>
-                    ))}
-                  </ToggleGroup>
+                  <div className="flex items-center gap-1">
+                    {capabilities.trailing_stop_manual && (
+                      <ToggleGroup type="single" value={slKind} onValueChange={(v) => { if (v) { setSlKind(v); setSlPrice(''); } }} spacing={0} className="h-6">
+                        <ToggleGroupItem value="fixed" size="sm" className="px-2 text-[0.62rem] font-bold">Fixed</ToggleGroupItem>
+                        <ToggleGroupItem value="trailing" size="sm" className="px-2 text-[0.62rem] font-bold">Trail</ToggleGroupItem>
+                      </ToggleGroup>
+                    )}
+                    <ToggleGroup type="single" value={slMode} onValueChange={(v) => { if (v) { setSlMode(v); setSlPrice(''); } }} spacing={0} className="h-6">
+                      {['%', '$'].map(m => (
+                        <ToggleGroupItem key={m} value={m} size="sm" className="px-2 text-xs font-bold" disabled={slKind === 'trailing'}>{m}</ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
+                  </div>
                 </div>
                 <div className="relative">
                   <Input
@@ -393,14 +496,19 @@ export default function OrderEntryWidget() {
                     step="any"
                     value={slPrice}
                     onChange={e => setSlPrice(e.target.value)}
-                    placeholder={slMode === '%' ? '1.5' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
+                    placeholder={slKind === 'trailing' ? '2.0' : slMode === '%' ? '1.5' : orderPrice ? orderPrice.toFixed(priceDec) : '0'}
                     className="num-mono border-[color-mix(in_srgb,var(--color-down)_30%,transparent)] pr-10"
                   />
                   <span className="order-entry-input-suffix order-entry-input-suffix--down">
-                    {slMode === '%' ? '%' : quote}
+                    {slKind === 'trailing' || slMode === '%' ? '%' : quote}
                   </span>
                 </div>
-                {slAbs && (
+                {slKind === 'trailing' && trailingPct && orderPrice > 0 && (
+                  <FieldDescription className="num-mono text-trading-down">
+                    → initial trail {trailingPct}% below entry (~${(orderPrice * (1 - trailingPct / 100)).toFixed(priceDec)})
+                  </FieldDescription>
+                )}
+                {slKind !== 'trailing' && slAbs && (
                   <FieldDescription className="num-mono text-trading-down">→ ${slAbs.toFixed(priceDec)}</FieldDescription>
                 )}
               </Field>
@@ -443,6 +551,11 @@ export default function OrderEntryWidget() {
                   </span>
                 </div>
               )}
+              <FieldDescription className="text-[0.68rem] leading-snug text-muted-foreground">
+                Fixed SL/TP appear on the chart — drag the handles on the right edge to adjust.
+                {capabilities.trailing_stop_manual && ' Trail % applies after fill.'}
+                {' '}Use Positions quick actions (50% / Close / Rev) to manage open size.
+              </FieldDescription>
             </CollapsibleContent>
           </Collapsible>
         </form>
@@ -479,16 +592,41 @@ export default function OrderEntryWidget() {
                 )}
                 <p className="mt-1 num-mono text-muted-foreground">
                   Notional {preview.notional?.toLocaleString()} {preview.quote}
+                  {preview.costs?.estimated_fill_price != null && (
+                    <> · Est. fill {preview.costs.estimated_fill_price}</>
+                  )}
+                  {preview.costs?.estimated_fee > 0 && (
+                    <> · Fee ~${preview.costs.estimated_fee}</>
+                  )}
+                  {preview.costs?.estimated_slippage > 0 && (
+                    <> · Slip ~${preview.costs.estimated_slippage}</>
+                  )}
                   {preview.stop_loss_price != null && (
                     <> · SL {preview.stop_loss_price}</>
                   )}
                   {preview.take_profit_price != null && (
                     <> · TP {preview.take_profit_price}</>
                   )}
+                  {preview.trailing_stop_percent != null && (
+                    <> · Trail {preview.trailing_stop_percent}%</>
+                  )}
+                  {preview.bracket && capabilities.oco && (
+                    <> · OCO legs on fill</>
+                  )}
                   {preview.risk_reward_ratio != null && (
                     <> · R:R 1:{preview.risk_reward_ratio}</>
                   )}
                 </p>
+                {preview.margin?.enabled && side === 'BUY' && (
+                  <p className="mt-1 num-mono text-[0.68rem] text-muted-foreground">
+                    Margin req ${preview.margin.margin_required?.toLocaleString()}
+                    {' · '}
+                    Util {preview.margin.utilization_pct_before}% → {preview.margin.utilization_pct_after}%
+                    {preview.margin.message && (
+                      <span className="text-trading-warn"> · {preview.margin.message}</span>
+                    )}
+                  </p>
+                )}
                 {preview.warnings?.length > 0 && (
                   <p className="mt-1 text-trading-warn">{preview.warnings.join(' · ')}</p>
                 )}
@@ -515,6 +653,53 @@ export default function OrderEntryWidget() {
           </Alert>
         )}
       </div>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm order</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm">
+                <p>
+                  {side} {quantity} {activeSymbol} ({orderType})
+                  {preview?.notional != null && (
+                    <> · ~{preview.notional.toLocaleString()} {preview.quote}</>
+                  )}
+                </p>
+                {preview?.costs && (
+                  <p className="num-mono text-xs text-muted-foreground">
+                    Est. fee ${preview.costs.estimated_fee}
+                    {preview.costs.estimated_slippage > 0 && (
+                      <> · slip ${preview.costs.estimated_slippage}</>
+                    )}
+                    {preview.costs.estimated_fill_price != null && (
+                      <> · fill ~{preview.costs.estimated_fill_price}</>
+                    )}
+                  </p>
+                )}
+                {preview?.margin?.enabled && (
+                  <p className="num-mono text-xs text-muted-foreground">
+                    Margin utilization → {preview.margin.utilization_pct_after}%
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={preview && !preview.allowed}
+              onClick={() => {
+                const q = parseFloat(quantity);
+                const lp = orderType === 'LIMIT' ? parseFloat(price) : null;
+                submitOrder(lp, q);
+              }}
+            >
+              Place order
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </WidgetShell>
   );
 }

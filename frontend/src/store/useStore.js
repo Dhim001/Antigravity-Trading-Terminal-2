@@ -46,6 +46,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   activeSymbol: getLocal('terminal_active_symbol', 'BTCUSDT'),
   viewMode: getLocal('terminal_view_mode', 'single'),
   terminalMode: 'SIMULATED',
+  orderCapabilities: null,
   terminalRole: 'all',
   distributed: false,
   executionMode: 'broker',
@@ -145,6 +146,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   analyticsLoading: false,
   journalEntries: [],
   orderPrefill: null,
+  /** Draft SL/TP dragged on chart or mirrored from order ticket — { symbol, side, stop_loss_price?, take_profit_price?, source } */
+  chartSlTpDraft: null,
 
   setScanResults: (data) => set({ scanResults: data }),
   setVisionReport: (key, report) => set((state) => ({
@@ -177,6 +180,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setOrderPrefill: (prefill) => set({ orderPrefill: prefill }),
   clearOrderPrefill: () => set({ orderPrefill: null }),
+  setChartSlTpDraft: (draft) => set({ chartSlTpDraft: draft }),
+  clearChartSlTpDraft: () => set({ chartSlTpDraft: null }),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setApiStatus: (status) => set({ apiStatus: status }),
@@ -308,10 +313,11 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
 
-  setTerminalConfig: ({ terminalMode, executionMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled }) => set((state) => ({
+  setTerminalConfig: ({ terminalMode, executionMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled, orderCapabilities }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     executionMode: executionMode ?? state.executionMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
+    orderCapabilities: orderCapabilities ?? state.orderCapabilities,
     allowLiveBots: allowLiveBots ?? state.allowLiveBots,
     allowCustomStrategies: allowCustomStrategies ?? state.allowCustomStrategies,
     terminalRole: terminalRole ?? state.terminalRole,

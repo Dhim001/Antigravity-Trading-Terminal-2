@@ -698,6 +698,8 @@ class BacktesterService:
             equity_curve=equity_curve,
             candles=candles,
             starting_equity=starting_equity,
+            feed=getattr(self.screener, "feed", None),
+            symbol=symbol,
         )
         if summary.get("max_drawdown") and float(summary["max_drawdown"]) > 0:
             ret = float(summary.get("return_pct") or 0)
@@ -726,6 +728,8 @@ class BacktesterService:
             "trades_total": len(trade_log),
             "summary": summary,
             "sim_mode": sim_mode,
+            "regime": summary.get("regime"),
+            "benchmark_overlays": summary.get("benchmark_overlays"),
             "costs": {
                 "slippage_bps": slippage_bps,
                 "fee_bps": fee_bps,

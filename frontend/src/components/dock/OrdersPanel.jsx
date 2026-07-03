@@ -1,8 +1,5 @@
 /**
  * OrdersPanel.jsx — Orders dock tab (extracted from ResizableDock).
- *
- * Displays pending orders with type, side, price, quantity, bot attribution,
- * and cancel controls. Includes toolbar stats and footer totals.
  */
 import React, { useMemo } from 'react';
 import { useStore } from '../../store/useStore';
@@ -25,11 +22,20 @@ import StrategyBadge from '../StrategyBadge';
 import { WidgetEmpty } from '../WidgetShell';
 import { buildBotLookup } from '@/lib/botAttribution';
 
+const ACTIVE_STATUSES = new Set(['PENDING', 'OCO_ACTIVE']);
+
+function legLabel(ord) {
+  if (ord.leg_type === 'SL') return 'Stop';
+  if (ord.leg_type === 'TP') return 'Take profit';
+  if (ord.leg_type === 'ENTRY' && ord.order_group_id) return 'Entry · bracket';
+  return null;
+}
+
 export default function OrdersTab() {
   const orders = useStore(state => state.orders);
   const activeBots = useStore(state => state.activeBots);
   const { byId } = buildBotLookup(activeBots);
-  const active = orders.filter(o => o.status === 'PENDING');
+  const active = orders.filter(o => ACTIVE_STATUSES.has(o.status));
 
   const stats = useMemo(() => {
     let buyCount = 0;
@@ -51,7 +57,7 @@ export default function OrdersTab() {
             <List size={14} />
           </div>
           <div className="dock-panel-tab__toolbar-copy">
-            <span className="dock-panel-tab__toolbar-title">Pending Orders</span>
+            <span className="dock-panel-tab__toolbar-title">Open Orders</span>
             <span className="dock-panel-tab__toolbar-subtitle num-mono">
               {active.length} order{active.length === 1 ? '' : 's'}
               {active.length > 0 && (
@@ -77,7 +83,7 @@ export default function OrdersTab() {
       ) : (
         <>
           <div className="dock-panel-tab__table-wrap scroll-panel-y scroll-panel-y-0">
-            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[640px]">
+            <DataTableRoot variant="dock" className="dock-panel-tab__table min-w-[720px]">
               <DataTableHeader>
                 <tr>
                   <DataTableHead>Symbol</DataTableHead>
@@ -96,9 +102,20 @@ export default function OrdersTab() {
                   const isBuy = ord.side === 'BUY';
                   const value = (ord.price || 0) * ord.quantity;
                   const bot = ord.bot_id ? byId[ord.bot_id] : null;
+                  const leg = legLabel(ord);
+                  const isOco = ord.status === 'OCO_ACTIVE';
                   return (
-                    <DataTableRow key={ord.id} rowVariant="dock" deferred>
-                      <DataTableCell className="font-bold">{ord.symbol}</DataTableCell>
+                    <DataTableRow key={ord.id} rowVariant="dock" deferred className={cn(isOco && 'opacity-90')}>
+                      <DataTableCell className="font-bold">
+                        {ord.symbol}
+                        {leg && (
+                          <div className="mt-0.5">
+                            <Badge variant="outline" className="text-[0.58rem] uppercase tracking-wide">
+                              {leg}
+                            </Badge>
+                          </div>
+                        )}
+                      </DataTableCell>
                       <DataTableCell className="text-xs">
                         {bot ? (
                           <StrategyBadge strategy={bot.strategy} compact />
@@ -106,7 +123,9 @@ export default function OrdersTab() {
                           <span className="text-muted-foreground">Manual</span>
                         )}
                       </DataTableCell>
-                      <DataTableCell className="text-xs text-secondary-foreground">{ord.type}</DataTableCell>
+                      <DataTableCell className="text-xs text-secondary-foreground">
+                        {isOco ? ord.type.replace('_', ' ') : ord.type}
+                      </DataTableCell>
                       <DataTableCell>
                         <Badge variant={isBuy ? 'buy' : 'sell'}>{ord.side}</Badge>
                       </DataTableCell>
@@ -124,7 +143,7 @@ export default function OrdersTab() {
                           variant="ghost"
                           size="icon-sm"
                           onClick={() => sendAction(Action.CANCEL_ORDER, { order_id: ord.id })}
-                          title="Cancel order"
+                          title={isOco ? 'Cancel OCO leg (cancels linked leg)' : 'Cancel order'}
                           className="text-trading-down hover:text-trading-down"
                         >
                           <XSquare />
@@ -139,7 +158,7 @@ export default function OrdersTab() {
 
           <footer className="dock-panel-tab__footer">
             <span>
-              {active.length} pending · {stats.buyCount} buy · {stats.sellCount} sell
+              {active.length} open · {stats.buyCount} buy · {stats.sellCount} sell
             </span>
             <span className="dock-panel-tab__footer-highlight">
               Total notional:{' '}

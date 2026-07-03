@@ -63,4 +63,7 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("POST", "/api/v1/notifications/push/subscribe", Action.NOTIFY_PUSH_SUBSCRIBE, None),
     ("POST", "/api/v1/notifications/push/unsubscribe", Action.NOTIFY_PUSH_UNSUBSCRIBE, None),
     ("GET", "/api/v1/notifications/push/subscriptions", Action.NOTIFY_PUSH_LIST, None),
+    ("GET", "/api/v1/risk/config", Action.RISK_GET_CONFIG, None),
+    ("POST", "/api/v1/risk/preview", Action.RISK_PREVIEW_ENTRY, None),
+    ("POST", "/api/v1/risk/basket-correlation", Action.RISK_BASKET_CORRELATION, None),
 ]

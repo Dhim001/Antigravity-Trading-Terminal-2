@@ -23,6 +23,7 @@ async def preview_order_handler(ctx: RequestContext) -> None:
         "take_profit_price": msg.get("take_profit_price"),
         "stop_loss_percent": msg.get("stop_loss_percent"),
         "take_profit_percent": msg.get("take_profit_percent"),
+        "trailing_stop_percent": msg.get("trailing_stop_percent"),
     })
     if result.get("allowed"):
         inc("orders_preview_allowed_total")
@@ -50,6 +51,8 @@ async def place_order(ctx: RequestContext) -> None:
     take_profit_percent = msg.get("take_profit_percent")
     stop_loss_price = msg.get("stop_loss_price")
     take_profit_price = msg.get("take_profit_price")
+    trailing_stop_percent = msg.get("trailing_stop_percent")
+    bracket = msg.get("bracket")
 
     ref_price = price if price is not None and price > 0 else None
     if ref_price is None and hasattr(ctx.oms, "feed") and symbol in ctx.oms.feed._symbols:
@@ -81,6 +84,10 @@ async def place_order(ctx: RequestContext) -> None:
         "quantity": quantity,
         "stop_loss_percent": stop_loss_percent,
         "take_profit_percent": take_profit_percent,
+        "stop_loss_price": float(stop_loss_price) if stop_loss_price is not None else None,
+        "take_profit_price": float(take_profit_price) if take_profit_price is not None else None,
+        "trailing_stop_percent": float(trailing_stop_percent) if trailing_stop_percent is not None else None,
+        "bracket": bracket if bracket is not None else True,
     })
     if result.get("status") == "ambiguous":
         from app.config import TERMINAL_MODE

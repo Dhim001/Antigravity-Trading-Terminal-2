@@ -147,6 +147,10 @@ RISK_MARGIN_ENABLED = os.environ.get("RISK_MARGIN_ENABLED", "true").lower() in (
 RISK_MAX_MARGIN_UTILIZATION_PCT = float(os.environ.get("RISK_MAX_MARGIN_UTILIZATION_PCT", "85"))
 RISK_MAX_LEVERAGE = float(os.environ.get("RISK_MAX_LEVERAGE", "1"))
 
+# Pre-trade preview — estimated execution costs (not broker-confirmed)
+ORDER_PREVIEW_FEE_BPS = float(os.environ.get("ORDER_PREVIEW_FEE_BPS", "10"))
+ORDER_PREVIEW_SLIPPAGE_BPS = float(os.environ.get("ORDER_PREVIEW_SLIPPAGE_BPS", "5"))
+
 # Static correlation buckets for group exposure caps
 CORRELATION_GROUPS = {
     "TECH": ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL", "AMZN", "META", "NFLX"],

@@ -112,15 +112,20 @@ After reviewing the full backend (38+ service modules, 78 test files, agent pipe
 - **Performance optimization:** At 82KB, `ChartWidget.jsx` should be split into sub-components (indicator overlays, drawing layer, signal layer, tooltip layer) using composition
 
 ### 10. Order Entry & Execution UX
-**Current state:** [OrderEntryWidget.jsx](file:///c:/Users/Dhimeji01/.gemini/antigravity/scratch/trading-terminal/frontend/src/components/OrderEntryWidget.jsx) supports market/limit with SL/TP. No advanced order types.
+**Current state:** [OrderEntryWidget.jsx](file:///c:/Users/Dhimeji01/.gemini/antigravity/scratch/trading-terminal/frontend/src/components/OrderEntryWidget.jsx) supports market/limit with bracket SL/TP, trailing stop (SIM), pre-trade preview (fees/slippage/margin), quick-trade position actions, and draggable chart SL/TP lines. See [ORDER_EXECUTION.md](ORDER_EXECUTION.md).
 
-**Suggestions:**
-- **OCO (One-Cancels-Other) orders:** Place SL and TP as linked orders that cancel each other
-- **Bracket orders:** Entry + SL + TP as a single atomic group
-- **Trailing stop orders:** Configurable in the manual order entry UI (not just bot-level)
-- **Quick-trade buttons:** One-click "Close 50%" / "Close All" / "Reverse Position" buttons on the position row
-- **Position P&L target lines:** Draw SL/TP levels directly on the chart as draggable lines
-- **Order preview improvements:** Show estimated fees, slippage impact, and margin impact before confirmation
+**Implemented (Phases 0–7):**
+- **OCO (One-Cancels-Other) orders:** SIM linked SL/TP exit legs; sibling cancels on fill
+- **Bracket orders:** Entry + SL + TP as atomic group (SIM, Alpaca, eToro)
+- **Trailing stop orders:** Fixed / Trail toggle in manual order entry (SIM)
+- **Quick-trade buttons:** 50% / Close / Rev on position rows (capability-gated)
+- **Position P&L target lines:** Draggable SL/TP on chart with ticket sync
+- **Order preview improvements:** Estimated fees, slippage, margin impact before submit
+- **E2E coverage:** `frontend/e2e/trading-flows.spec.js` — UI order → position, bracket preview, capabilities session
+
+**Remaining ideas:**
+- Advanced order types beyond bracket/OCO (e.g. iceberg, TWAP)
+- Broker-native OCO on eToro (currently entry bracket only)
 
 ### 11. Dashboard & Analytics
 **Current state:** Equity curve in [EquityCurveTab.jsx](file:///c:/Users/Dhimeji01/.gemini/antigravity/scratch/trading-terminal/frontend/src/components/EquityCurveTab.jsx), per-bot analytics in [BotDetailDrawer.jsx](file:///c:/Users/Dhimeji01/.gemini/antigravity/scratch/trading-terminal/frontend/src/components/BotDetailDrawer.jsx).

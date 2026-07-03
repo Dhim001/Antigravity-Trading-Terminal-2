@@ -26,6 +26,7 @@ from app.database import get_db_stats
 from app.services.bots.backtest_job_store import get_active_backtest_job
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.execution_mode import execution_mode_label
+from app.services.order_capabilities import get_order_capabilities
 
 
 async def session_handler(request: Request) -> JSONResponse:
@@ -63,6 +64,7 @@ async def session_handler(request: Request) -> JSONResponse:
                 "agent_vision_enabled": AGENT_VISION_ENABLED,
                 "agent_enabled": AGENT_ENABLED,
                 "scanner_enabled": SCANNER_ENABLED,
+                "order_capabilities": get_order_capabilities(state.oms),
             },
             "llm": llm,
             "account": state.oms.get_account_data(),

@@ -63,6 +63,9 @@ class Action(StrEnum):
     NOTIFY_PUSH_SUBSCRIBE = "notify_push_subscribe"
     NOTIFY_PUSH_UNSUBSCRIBE = "notify_push_unsubscribe"
     NOTIFY_PUSH_LIST = "notify_push_list"
+    RISK_GET_CONFIG = "risk_get_config"
+    RISK_PREVIEW_ENTRY = "risk_preview_entry"
+    RISK_BASKET_CORRELATION = "risk_basket_correlation"
 
 
 class MessageType(StrEnum):

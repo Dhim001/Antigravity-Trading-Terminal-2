@@ -6,6 +6,15 @@ from app.config import MAX_ORDER_VALUE
 from app.services.base_oms import BaseOMSService
 from app.services.bots import positions as bot_positions
 from app.services.fifo_pnl import backfill_missing_order_pnl, enrich_orders_with_pnl, record_order_fifo_pnl
+from app.services.order_bracket import (
+    bracket_result_fields,
+    cancel_oco_for_symbol,
+    cancel_oco_group,
+    create_oco_exit_orders,
+    is_bracket_request,
+    new_group_id,
+    resolve_bracket_levels,
+)
 
 class SimulatedOMSService(BaseOMSService):
     def __init__(self, feed):
@@ -26,7 +35,7 @@ class SimulatedOMSService(BaseOMSService):
         cursor.execute("SELECT asset, balance, locked FROM accounts")
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
         
-        cursor.execute("SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price FROM positions WHERE size != 0.0")
+        cursor.execute("SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price, trailing_stop_percent, high_watermark, low_watermark FROM positions WHERE size != 0.0")
         position_rows = cursor.fetchall()
 
         cursor.execute(
@@ -56,11 +65,22 @@ class SimulatedOMSService(BaseOMSService):
                 "take_profit_percent": row["take_profit_percent"],
                 "stop_loss_price": row["stop_loss_price"],
                 "take_profit_price": row["take_profit_price"],
+                "trailing_stop_percent": row["trailing_stop_percent"],
+                "high_watermark": row["high_watermark"],
+                "low_watermark": row["low_watermark"],
                 "bot_id": owners[0]["bot_id"] if len(owners) == 1 else None,
                 "bot_owners": owners,
             }
         
-        cursor.execute("SELECT id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, timestamp, bot_id, signal_id FROM orders ORDER BY timestamp DESC LIMIT 50")
+        cursor.execute(
+            """
+            SELECT id, symbol, type, side, price, quantity, status, filled_quantity,
+                   average_fill_price, timestamp, bot_id, signal_id,
+                   order_group_id, leg_type, oco_group_id, stop_loss_price, take_profit_price
+            FROM orders
+            ORDER BY timestamp DESC LIMIT 50
+            """
+        )
         orders = [dict(row) for row in cursor.fetchall()]
         
         conn.close()
@@ -130,9 +150,13 @@ class SimulatedOMSService(BaseOMSService):
         quantity = order_req.get("quantity")
         stop_loss_percent = order_req.get("stop_loss_percent")
         take_profit_percent = order_req.get("take_profit_percent")
+        stop_loss_price = order_req.get("stop_loss_price")
         take_profit_price = order_req.get("take_profit_price")
+        trailing_stop_percent = order_req.get("trailing_stop_percent")
         bot_id = order_req.get("bot_id")
         signal_id = order_req.get("signal_id")
+        bracket = is_bracket_request(order_req)
+        order_group_id = new_group_id() if bracket else None
 
         if symbol not in self.feed._symbols:
             return {"status": "error", "message": f"Invalid symbol: {symbol}"}
@@ -146,8 +170,23 @@ class SimulatedOMSService(BaseOMSService):
         if order_type == "LIMIT" and (price is None or price <= 0):
             return {"status": "error", "message": "Limit price must be greater than 0"}
 
+        sl_pct, tp_pct, sl_price, tp_price = resolve_bracket_levels(
+            side,
+            order_price,
+            stop_loss_percent=stop_loss_percent,
+            take_profit_percent=take_profit_percent,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+        )
+        stop_loss_percent = sl_pct
+        take_profit_percent = tp_pct
+        if trailing_stop_percent is not None:
+            trailing_stop_percent = float(trailing_stop_percent)
+            stop_loss_percent = trailing_stop_percent
+            sl_price = None
+
         order_value = order_price * quantity
-        
+
         if order_value > MAX_ORDER_VALUE:
             return {"status": "error", "message": f"Order value exceeds maximum risk limit of ${MAX_ORDER_VALUE}"}
             
@@ -185,11 +224,16 @@ class SimulatedOMSService(BaseOMSService):
             status = "PENDING" if order_type == "LIMIT" else "FILLED"
             
             cursor.execute("""
-                INSERT INTO orders (id, symbol, type, side, price, quantity, status, filled_quantity, average_fill_price, stop_loss_percent, take_profit_percent, bot_id, signal_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO orders (
+                    id, symbol, type, side, price, quantity, status,
+                    filled_quantity, average_fill_price,
+                    stop_loss_percent, take_profit_percent, bot_id, signal_id,
+                    order_group_id, leg_type, stop_loss_price, take_profit_price
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ENTRY', ?, ?)
             """, (
-                order_id, symbol, order_type, side, 
-                price if order_type == "LIMIT" else None, 
+                order_id, symbol, order_type, side,
+                price if order_type == "LIMIT" else None,
                 quantity, status,
                 quantity if order_type == "MARKET" else 0.0,
                 market_price if order_type == "MARKET" else 0.0,
@@ -197,16 +241,36 @@ class SimulatedOMSService(BaseOMSService):
                 take_profit_percent,
                 bot_id,
                 signal_id,
+                order_group_id,
+                sl_price,
+                tp_price,
             ))
-            
+
+            oco_group_id = None
             if order_type == "MARKET":
                 pending_bot_fill = self._process_fill(
                     cursor, symbol, side, market_price, quantity, quote,
                     stop_loss_percent, take_profit_percent,
-                    take_profit_price=take_profit_price,
+                    stop_loss_price=sl_price,
+                    take_profit_price=tp_price,
+                    trailing_stop_percent=trailing_stop_percent,
                     bot_id=bot_id,
                     order_id=order_id,
                 )
+                if bracket and (sl_price is not None or tp_price is not None):
+                    oco_group_id = new_group_id()
+                    pos_size = quantity if side == "BUY" else -quantity
+                    create_oco_exit_orders(
+                        cursor,
+                        symbol=symbol,
+                        quantity=quantity,
+                        position_size=pos_size,
+                        oco_group_id=oco_group_id,
+                        order_group_id=order_group_id,
+                        stop_loss_price=sl_price,
+                        take_profit_price=tp_price,
+                        parent_order_id=order_id,
+                    )
             else:
                 pending_bot_fill = None
                 
@@ -219,13 +283,19 @@ class SimulatedOMSService(BaseOMSService):
             if order_type == "MARKET":
                 self.invalidate_trade_history_cache()
             
-            return {
+            result = {
                 "status": "success",
                 "message": f"Order placed: {side} {quantity} {symbol} @ {order_price}",
                 "order_id": order_id,
                 "average_fill_price": market_price if order_type == "MARKET" else None,
                 "filled_quantity": quantity if order_type == "MARKET" else 0.0,
+                **bracket_result_fields(
+                    order_group_id=order_group_id,
+                    oco_group_id=oco_group_id,
+                    bracket=bracket,
+                ),
             }
+            return result
             
         except Exception as e:
             conn.rollback()
@@ -236,14 +306,17 @@ class SimulatedOMSService(BaseOMSService):
         conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT symbol, type, side, price, quantity, status FROM orders WHERE id = ?", (order_id,))
+        cursor.execute(
+            "SELECT symbol, type, side, price, quantity, status, oco_group_id, leg_type FROM orders WHERE id = ?",
+            (order_id,),
+        )
         order = cursor.fetchone()
         
         if not order:
             conn.close()
             return {"status": "error", "message": "Order not found"}
             
-        if order["status"] != "PENDING":
+        if order["status"] not in ("PENDING", "OCO_ACTIVE"):
             conn.close()
             return {"status": "error", "message": f"Cannot cancel order with status: {order['status']}"}
             
@@ -252,6 +325,8 @@ class SimulatedOMSService(BaseOMSService):
             quote = self.feed._symbols[symbol]["quote"]
             
             cursor.execute("UPDATE orders SET status = 'CANCELED' WHERE id = ?", (order_id,))
+            if order["status"] == "OCO_ACTIVE" and order["oco_group_id"]:
+                cancel_oco_group(cursor, order["oco_group_id"])
             
             if order["side"] == "BUY" and order["type"] == "LIMIT":
                 release_val = order["price"] * order["quantity"]
@@ -270,8 +345,11 @@ class SimulatedOMSService(BaseOMSService):
         cursor = conn.cursor()
         
         cursor.execute(
-            "SELECT id, symbol, side, price, quantity, stop_loss_percent, take_profit_percent, bot_id "
-            "FROM orders WHERE status = 'PENDING'"
+            """
+            SELECT id, symbol, side, price, quantity, stop_loss_percent, take_profit_percent,
+                   bot_id, order_group_id, stop_loss_price, take_profit_price
+            FROM orders WHERE status = 'PENDING'
+            """
         )
         pending_orders = cursor.fetchall()
         
@@ -310,12 +388,36 @@ class SimulatedOMSService(BaseOMSService):
                         locked_val = limit_price * qty
                         cursor.execute("UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?", (locked_val, quote))
                         
+                    sl_pct, tp_pct, sl_px, tp_px = resolve_bracket_levels(
+                        side,
+                        market_price,
+                        stop_loss_percent=order["stop_loss_percent"],
+                        take_profit_percent=order["take_profit_percent"],
+                        stop_loss_price=order["stop_loss_price"],
+                        take_profit_price=order["take_profit_price"],
+                    )
                     bot_fill = self._process_fill(
                         cursor, symbol, side, market_price, qty, quote,
-                        order["stop_loss_percent"], order["take_profit_percent"],
+                        sl_pct, tp_pct,
+                        stop_loss_price=sl_px,
+                        take_profit_price=tp_px,
                         bot_id=order.get("bot_id"),
                         order_id=order["id"],
                     )
+                    if sl_px is not None or tp_px is not None:
+                        oco_group_id = new_group_id()
+                        pos_size = qty if side == "BUY" else -qty
+                        create_oco_exit_orders(
+                            cursor,
+                            symbol=symbol,
+                            quantity=qty,
+                            position_size=pos_size,
+                            oco_group_id=oco_group_id,
+                            order_group_id=order.get("order_group_id"),
+                            stop_loss_price=sl_px,
+                            take_profit_price=tp_px,
+                            parent_order_id=order["id"],
+                        )
                     if bot_fill:
                         pending_bot_fills.append(bot_fill)
                     
@@ -361,7 +463,9 @@ class SimulatedOMSService(BaseOMSService):
         stop_loss_percent=None,
         take_profit_percent=None,
         *,
+        stop_loss_price=None,
         take_profit_price=None,
+        trailing_stop_percent=None,
         bot_id=None,
         order_id=None,
     ):
@@ -381,28 +485,42 @@ class SimulatedOMSService(BaseOMSService):
         
         if not pos_row:
             new_size = quantity if side == "BUY" else -quantity
-            
-            sl_price = None
-            tp_price = None
-            if stop_loss_percent is not None:
+
+            sl_price = float(stop_loss_price) if stop_loss_price is not None else None
+            tp_price = float(take_profit_price) if take_profit_price is not None else None
+            trail_pct = float(trailing_stop_percent) if trailing_stop_percent is not None else None
+            if trail_pct is not None:
+                stop_loss_percent = trail_pct
+            if sl_price is None and stop_loss_percent is not None:
                 sl_price = price * (1 - stop_loss_percent / 100) if new_size > 0 else price * (1 + stop_loss_percent / 100)
-            if take_profit_price is not None:
-                tp_price = float(take_profit_price)
-                take_profit_percent = None
-            elif take_profit_percent is not None:
+            if tp_price is None and take_profit_percent is not None:
                 tp_price = price * (1 + take_profit_percent / 100) if new_size > 0 else price * (1 - take_profit_percent / 100)
-                    
+
+            high_wm = price if new_size > 0 else None
+            low_wm = price if new_size < 0 else None
+
             cursor.execute("""
-                INSERT INTO positions (symbol, size, avg_price, stop_loss_percent, take_profit_percent, stop_loss_price, take_profit_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (symbol, new_size, price, stop_loss_percent, take_profit_percent, sl_price, tp_price))
+                INSERT INTO positions (
+                    symbol, size, avg_price, stop_loss_percent, take_profit_percent,
+                    stop_loss_price, take_profit_price, trailing_stop_percent,
+                    high_watermark, low_watermark
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                symbol, new_size, price, stop_loss_percent, take_profit_percent,
+                sl_price, tp_price, trail_pct, high_wm, low_wm,
+            ))
         else:
             current_size = pos_row["size"]
             current_avg = pos_row["avg_price"]
             
             sl_pct = stop_loss_percent if stop_loss_percent is not None else pos_row["stop_loss_percent"]
             tp_pct = take_profit_percent if take_profit_percent is not None else pos_row["take_profit_percent"]
+            explicit_sl = stop_loss_price
             explicit_tp = take_profit_price
+            trail_pct = float(trailing_stop_percent) if trailing_stop_percent is not None else None
+            if trail_pct is not None:
+                sl_pct = trail_pct
             
             if side == "BUY":
                 new_size = current_size + quantity
@@ -424,22 +542,30 @@ class SimulatedOMSService(BaseOMSService):
                 tp_pct = None
                 sl_price = None
                 tp_price = None
+                trail_pct = None
+                high_wm = None
+                low_wm = None
+                cancel_oco_for_symbol(cursor, symbol)
             else:
-                sl_price = None
-                tp_price = None
-                if sl_pct is not None:
+                sl_price = float(explicit_sl) if explicit_sl is not None else None
+                tp_price = float(explicit_tp) if explicit_tp is not None else None
+                if sl_price is None and sl_pct is not None:
                     sl_price = new_avg * (1 - sl_pct / 100) if new_size > 0 else new_avg * (1 + sl_pct / 100)
-                if explicit_tp is not None:
-                    tp_price = float(explicit_tp)
-                    tp_pct = None
-                elif tp_pct is not None:
+                if tp_price is None and tp_pct is not None:
                     tp_price = new_avg * (1 + tp_pct / 100) if new_size > 0 else new_avg * (1 - tp_pct / 100)
-                
+                high_wm = new_avg if new_size > 0 else None
+                low_wm = new_avg if new_size < 0 else None
+
             cursor.execute("""
-                UPDATE positions 
-                SET size = ?, avg_price = ?, stop_loss_percent = ?, take_profit_percent = ?, stop_loss_price = ?, take_profit_price = ?
+                UPDATE positions
+                SET size = ?, avg_price = ?, stop_loss_percent = ?, take_profit_percent = ?,
+                    stop_loss_price = ?, take_profit_price = ?, trailing_stop_percent = ?,
+                    high_watermark = ?, low_watermark = ?
                 WHERE symbol = ?
-            """, (new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, symbol))
+            """, (
+                new_size, new_avg, sl_pct, tp_pct, sl_price, tp_price, trail_pct,
+                high_wm, low_wm, symbol,
+            ))
 
         if order_id:
             record_order_fifo_pnl(cursor, order_id, symbol, side, price, quantity)
@@ -521,7 +647,8 @@ class SimulatedOMSService(BaseOMSService):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT symbol, size, avg_price, stop_loss_percent, take_profit_percent,
-                   stop_loss_price, take_profit_price
+                   stop_loss_price, take_profit_price, trailing_stop_percent,
+                   high_watermark, low_watermark
             FROM positions
             WHERE size != 0.0
         """)
@@ -655,30 +782,29 @@ class SimulatedOMSService(BaseOMSService):
             if sl_price is None and tp_price is None and sl_pct is None and tp_pct is None:
                 continue
 
-            trigger_type = None
-            if acc_size > 0:
-                if sl_pct is not None:
-                    potential_sl = market_price * (1 - sl_pct / 100)
-                    if sl_price is None or potential_sl > sl_price:
-                        sl_price = potential_sl
-                        trailing_account_updates.append((symbol, sl_price))
-                if sl_price is not None and market_price <= sl_price:
-                    trigger_type = "SL"
-                elif tp_price is not None and market_price >= tp_price:
-                    trigger_type = "TP"
-            elif acc_size < 0:
-                if sl_pct is not None:
-                    potential_sl = market_price * (1 + sl_pct / 100)
-                    if sl_price is None or potential_sl < sl_price:
-                        sl_price = potential_sl
-                        trailing_account_updates.append((symbol, sl_price))
-                if sl_price is not None and market_price >= sl_price:
-                    trigger_type = "SL"
-                elif tp_price is not None and market_price <= tp_price:
-                    trigger_type = "TP"
+            trigger_type, trailing_sl, updated_high, updated_low = bot_positions.evaluate_risk_trigger(
+                acc_size,
+                float(account.get("avg_price") or 0),
+                market_price,
+                stop_loss_percent=sl_pct,
+                take_profit_percent=tp_pct,
+                stop_loss_price=sl_price,
+                take_profit_price=tp_price,
+            )
+
+            if (
+                trailing_sl != sl_price
+                or updated_high != account.get("high_watermark")
+                or updated_low != account.get("low_watermark")
+            ):
+                trailing_account_updates.append((
+                    symbol, trailing_sl, updated_high, updated_low,
+                ))
 
             if not trigger_type:
                 continue
+
+            sl_price = trailing_sl if trailing_sl is not None else sl_price
 
             side = "SELL" if acc_size > 0 else "BUY"
             avg_price = float(account.get("avg_price") or 0)
@@ -732,10 +858,14 @@ class SimulatedOMSService(BaseOMSService):
             conn = get_connection()
             cursor = conn.cursor()
             try:
-                for symbol, sl_price in trailing_account_updates:
+                for symbol, sl_price, high_wm, low_wm in trailing_account_updates:
                     cursor.execute(
-                        "UPDATE positions SET stop_loss_price = ? WHERE symbol = ?",
-                        (sl_price, symbol),
+                        """
+                        UPDATE positions
+                        SET stop_loss_price = ?, high_watermark = ?, low_watermark = ?
+                        WHERE symbol = ?
+                        """,
+                        (sl_price, high_wm, low_wm, symbol),
                     )
                 conn.commit()
             finally:
@@ -763,6 +893,14 @@ class SimulatedOMSService(BaseOMSService):
 
                 if qty <= 1e-8:
                     continue
+
+                cursor.execute(
+                    "SELECT oco_group_id FROM orders WHERE symbol = ? AND status = 'OCO_ACTIVE' LIMIT 1",
+                    (symbol,),
+                )
+                oco_row = cursor.fetchone()
+                if oco_row and oco_row["oco_group_id"]:
+                    cancel_oco_group(cursor, oco_row["oco_group_id"], except_leg=trigger_type)
 
                 order_id = str(uuid.uuid4())
                 cursor.execute("""

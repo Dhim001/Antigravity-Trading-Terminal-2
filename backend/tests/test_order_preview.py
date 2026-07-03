@@ -88,6 +88,20 @@ class OrderPreviewTests(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertIn("Limit price", result["block_reason"])
 
+    def test_preview_includes_cost_estimates(self):
+        oms = _Oms()
+        result = preview_order(oms, {
+            "symbol": "BTCUSDT",
+            "type": "MARKET",
+            "side": "BUY",
+            "quantity": 0.01,
+            "fee_bps": 10,
+            "slippage_bps": 5,
+        })
+        self.assertIn("costs", result)
+        self.assertGreater(result["costs"]["estimated_fee"], 0)
+        self.assertGreater(result["costs"]["estimated_fill_price"], 50_000)
+
 
 if __name__ == "__main__":
     unittest.main()

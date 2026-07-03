@@ -70,6 +70,7 @@ import { fetchHealth, parseMetricsSummary, fetchLlmModels } from '../api/endpoin
 import LlmSettingsSection from './LlmSettingsSection';
 import NotificationSettingsSection from './NotificationSettingsSection';
 import AlertRulesSection from './AlertRulesSection';
+import RiskSettingsSection from './RiskSettingsSection';
 import {
   useMemoryObservability,
   MemoryObservabilityBadge,
@@ -1131,7 +1132,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
           </TabsContent>
 
           <TabsContent value="system" className="terminal-tabs__body terminal-tabs__body--scroll settings-panel__body">
-            <Accordion type="multiple" defaultValue={['terminal-status']} className="settings-accordion">
+            <Accordion type="multiple" defaultValue={['terminal-status', 'risk-controls']} className="settings-accordion">
               <SettingsAccordionSection
                 value="terminal-status"
                 title="Terminal status"
@@ -1244,6 +1245,15 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 badge={<MemoryObservabilityBadge level={memoryObs.level} />}
               >
                 <MemoryObservabilityBody client={memoryObs.client} health={memoryObs.health} />
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
+                value="risk-controls"
+                title="Risk controls"
+                hint="No-trade windows, kill switch, correlation caps, and live entry gate preview."
+                badge={<ShieldAlert size={13} className="text-muted-foreground" aria-hidden />}
+              >
+                <RiskSettingsSection />
               </SettingsAccordionSection>
 
               <SettingsAccordionSection

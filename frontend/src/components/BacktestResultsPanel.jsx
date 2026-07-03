@@ -11,6 +11,8 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { StatCard } from '@/components/StatCard';
 import BacktestMiniChart from './BacktestMiniChart';
+import BacktestEquityChart from './BacktestEquityChart';
+import BacktestRegimeSection from './BacktestRegimeSection';
 import BacktestPriceChart from './BacktestPriceChart';
 import BacktestComparePanel from './BacktestComparePanel';
 import StrategySuggestPanel from './StrategySuggestPanel';
@@ -157,12 +159,34 @@ function MonteCarloSection({ monteCarlo }) {
 function PortfolioResultsSection({ results }) {
   const rows = results?.symbol_results;
   if (!results?.portfolio || !rows?.length) return null;
+  const summary = results.summary ?? {};
+  const pnl = results.total_pnl ?? summary.total_pnl ?? 0;
+  const pnlTone = pnl >= 0 ? 'up' : 'down';
+  const corr = results.correlation_summary;
+
   return (
     <section className="algo-backtest-lab__section mb-3">
       <p className="algo-backtest-table-scroll__caption mb-1.5">
         Portfolio backtest — {results.symbols_tested} symbol{results.symbols_tested === 1 ? '' : 's'}
         {results.symbols_failed > 0 ? ` (${results.symbols_failed} failed)` : ''}
       </p>
+
+      <div className="algo-backtest-stat-grid algo-backtest-stat-grid--compact mb-2">
+        <StatCard label="Aggregate PnL" value={`$${Number(pnl).toFixed(2)}`} tone={pnlTone} />
+        <StatCard label="Total trades" value={String(results.trade_count ?? summary.total_trades ?? 0)} />
+        <StatCard label="Win rate" value={`${Number(results.win_rate ?? summary.win_rate ?? 0).toFixed(1)}%`} />
+        <StatCard label="Symbols OK" value={String(results.symbols_tested ?? 0)} />
+      </div>
+
+      {corr?.warning && (
+        <Alert variant="destructive" className="mb-2 py-1.5 px-2">
+          <AlertTriangle className="size-3.5" />
+          <AlertDescription className="text-[0.58rem] leading-snug">
+            Correlation note: {corr.message}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="algo-backtest-table-scroll">
         <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
           <thead>
@@ -662,6 +686,12 @@ export default function BacktestResultsPanel({
       </section>
 
       {isFull && <PortfolioResultsSection results={results} />}
+      {isFull && (
+        <BacktestRegimeSection
+          regime={results?.regime ?? summary?.regime}
+          benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
+        />
+      )}
       {isFull && <MonteCarloSection monteCarlo={results?.monte_carlo} />}
       {isFull && (
         <BacktestMetaLabelWalkForwardPanel walkForward={results?.meta_label_walk_forward} />
@@ -699,11 +729,12 @@ export default function BacktestResultsPanel({
           trades={displayTrades}
           className={isFull ? 'backtest-price-chart-wrap--lab' : undefined}
         />
-        <BacktestMiniChart
+        <BacktestEquityChart
           equityCurve={results.equity_curve}
           drawdownCurve={results.drawdown_curve}
           totalPnl={results.total_pnl}
           trades={displayTrades}
+          benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
           className={isFull ? 'backtest-mini-chart--lab' : undefined}
         />
       </section>
@@ -729,6 +760,7 @@ export default function BacktestResultsPanel({
                 <th>Days</th>
                 <th className="text-right">PnL</th>
                 <th className="text-right">Win%</th>
+                <th>Regime</th>
                 <th className="text-right">PF</th>
               </tr>
             </thead>
@@ -754,6 +786,9 @@ export default function BacktestResultsPanel({
                   </td>
                   <td className="num-mono text-right whitespace-nowrap">
                     {run.summary?.win_rate != null ? `${Number(run.summary.win_rate).toFixed(1)}%` : '—'}
+                  </td>
+                  <td className="capitalize text-muted-foreground whitespace-nowrap">
+                    {run.summary?.regime?.dominant_regime ?? run.results?.regime?.dominant_regime ?? '—'}
                   </td>
                   <td className="num-mono text-right whitespace-nowrap">
                     {run.summary?.profit_factor != null ? Number(run.summary.profit_factor).toFixed(2) : '—'}

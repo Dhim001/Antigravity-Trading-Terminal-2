@@ -152,6 +152,14 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN signal_id TEXT DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN realized_pnl REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN cost_basis REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN order_group_id TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN leg_type TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN oco_group_id TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN stop_loss_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE orders ADD COLUMN take_profit_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN trailing_stop_percent REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN high_watermark REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE positions ADD COLUMN low_watermark REAL DEFAULT NULL")
 
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS bot_trades (

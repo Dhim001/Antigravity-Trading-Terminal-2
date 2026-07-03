@@ -45,6 +45,8 @@ import {
   clearBacktestClientTimeout,
   backtestTimeoutHint,
 } from '../../lib/backtestTimeouts';
+import PortfolioBacktestPicker from '../PortfolioBacktestPicker';
+import { canRunPortfolioBacktest } from '../../lib/portfolioBacktest';
 import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
@@ -126,6 +128,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
   const [backtestRiskBaseMode, setBacktestRiskBaseMode] = useState('account_snapshot');
   const [portfolioBacktest, setPortfolioBacktest] = useState(false);
+  const [portfolioSymbols, setPortfolioSymbols] = useState([]);
   const [metaLabelWalkForward, setMetaLabelWalkForward] = useState(false);
   const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
@@ -219,8 +222,8 @@ export function AlgoTab({ hideToolbar = false }) {
       },
     });
 
-    const portfolioSymbols = portfolioBacktest
-      ? (symbolsList || []).slice(0, 5).filter(Boolean)
+    const portfolioList = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
+      ? portfolioSymbols
       : undefined;
 
     const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel({
@@ -240,7 +243,7 @@ export function AlgoTab({ hideToolbar = false }) {
       timeframe: isTick ? 'tick' : botTimeframe,
       oos_pct: backtestOos ? 30 : undefined,
       reasoning: backtestReasoning || undefined,
-      portfolio_symbols: portfolioSymbols?.length > 1 ? portfolioSymbols : undefined,
+      portfolio_symbols: portfolioList?.length > 1 ? portfolioList : undefined,
     }));
 
     if (!ok) {
@@ -829,15 +832,16 @@ export function AlgoTab({ hideToolbar = false }) {
               </label>
             )}
 
-            <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                className="size-3.5 accent-primary"
-                checked={portfolioBacktest}
-                onChange={(e) => setPortfolioBacktest(e.target.checked)}
-              />
-              Portfolio backtest — run same strategy on top 5 watchlist symbols
-            </label>
+            <PortfolioBacktestPicker
+              enabled={portfolioBacktest}
+              onEnabledChange={setPortfolioBacktest}
+              selectedSymbols={portfolioSymbols}
+              onSelectedChange={setPortfolioSymbols}
+              watchlist={symbolsList}
+              activeSymbol={activeSymbol}
+              oos={backtestOos}
+              walkForward={botStrategy === 'CHART_AGENT' && metaLabelWalkForward}
+            />
 
             {agentLlmAvailable ? (
               <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">

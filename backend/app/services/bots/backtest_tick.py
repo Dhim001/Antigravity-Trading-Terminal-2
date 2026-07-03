@@ -319,6 +319,8 @@ class TickBacktester:
             equity_curve=equity_curve,
             candles=candles_1m,
             starting_equity=starting_equity,
+            feed=getattr(backtester.screener, "feed", None),
+            symbol=symbol,
         )
 
         return {
@@ -336,6 +338,8 @@ class TickBacktester:
             "trades_total": len(trade_log),
             "summary": summary,
             "sim_mode": sim_mode,
+            "regime": summary.get("regime"),
+            "benchmark_overlays": summary.get("benchmark_overlays"),
             "execution_mode": "TICK",
             "costs": {
                 "slippage_bps": slippage_bps,

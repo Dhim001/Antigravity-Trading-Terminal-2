@@ -162,6 +162,7 @@ export async function waitForBootstrap(page) {
 
 /** Submit a SIM market order from the order entry panel. */
 export async function placeMarketOrder(page, { side = 'BUY', quantity, presetPct = 25 } = {}) {
+  await page.locator('.order-entry-type-toggle').getByRole('button', { name: 'MARKET' }).click();
   if (side === 'SELL') {
     await page.locator('.order-entry-side-toggle').getByRole('button', { name: /SELL/i }).click();
   }
@@ -175,4 +176,23 @@ export async function placeMarketOrder(page, { side = 'BUY', quantity, presetPct
   await expect(submit).toBeEnabled({ timeout: 20_000 });
   await expect(submit).toContainText(new RegExp(`Place ${side}`, 'i'));
   await submit.click();
+}
+
+/** Open Positions dock tab (Portfolio group). */
+export async function openPositionsTab(page) {
+  await openDockTab(page, /Positions/i, 'Portfolio');
+  await expect(page.locator('.dock-panel-tab--positions')).toBeVisible({ timeout: 10_000 });
+}
+
+/** Expand SL/TP on order ticket and set percent bracket levels. */
+export async function fillBracketSlTp(page, { slPct = 2, tpPct = 4 } = {}) {
+  const trigger = page.getByRole('button', { name: /Stop Loss \/ Take Profit/i });
+  const slInput = page.getByPlaceholder('1.5');
+  const isOpen = await slInput.isVisible().catch(() => false);
+  if (!isOpen) {
+    await trigger.click();
+    await expect(slInput).toBeVisible({ timeout: 5_000 });
+  }
+  await slInput.fill(String(slPct));
+  await page.getByPlaceholder('3.0').fill(String(tpPct));
 }

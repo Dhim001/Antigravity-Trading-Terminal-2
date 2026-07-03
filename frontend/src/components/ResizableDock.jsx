@@ -111,7 +111,7 @@ import GlobalDeployDialog from './dock/GlobalDeployDialog';
 // ── Main ResizableDock ────────────────────────────────────────────
 export default function ResizableDock({ setDockHeight: setParentDockHeight, initialDockHeight }) {
   const posCount = useStore((s) => Object.keys(s.positions).length);
-  const pendingOrders = useStore((s) => s.orders.filter((o) => o.status === 'PENDING').length);
+  const pendingOrders = useStore((s) => s.orders.filter((o) => o.status === 'PENDING' || o.status === 'OCO_ACTIVE').length);
   const tradeHistoryCount = useStore((s) => s.tradeHistory.length);
   const botHistoryCount = useStore((s) => s.botHistory.length);
   const ambiguousCount = useStore((s) => (

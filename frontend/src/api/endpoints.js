@@ -5,7 +5,7 @@ import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
-import { CHART_SNAPSHOT_BARS } from '../services/candleBuffer';
+import { normalizeOrderCapabilities } from '../lib/positionActions';
 
 /** GET /api/v1/session — single-round-trip bootstrap snapshot. */
 export async function fetchSession(storeActions) {
@@ -44,6 +44,7 @@ export function applySessionToStore(session, storeActions) {
     agentVisionEnabled: t.agent_vision_enabled,
     agentEnabled: t.agent_enabled,
     scannerEnabled: t.scanner_enabled,
+    orderCapabilities: normalizeOrderCapabilities(t.order_capabilities),
   });
   if (llm.preferred_model) {
     storeActions.setSelectedLlmModel(llm.preferred_model);

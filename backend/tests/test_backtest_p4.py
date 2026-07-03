@@ -4,9 +4,12 @@ import unittest
 
 from app.services.bots.backtest_analytics import (
     buy_and_hold_benchmark,
+    buy_and_hold_equity_curve,
+    classify_backtest_regime,
     drawdown_curve,
     enrich_summary,
     sortino_ratio,
+    align_benchmark_equity_curve,
 )
 from app.services.bots.backtest_walk_forward import (
     aggregate_fold_oos,
@@ -62,6 +65,37 @@ class TestBacktestAnalytics(unittest.TestCase):
         self.assertIn("benchmark", summary)
         self.assertIn("alpha_pnl", summary)
         self.assertIn("alpha_return_pct", summary)
+
+    def test_classify_backtest_regime(self):
+        candles = _make_candles(80, start=100.0, drift=0.002)
+        regime = classify_backtest_regime(candles)
+        self.assertIn(regime["dominant_regime"], ("elevated", "normal", "compressed", "unknown"))
+        self.assertIn("breakdown_pct", regime)
+
+    def test_buy_and_hold_equity_curve(self):
+        candles = _make_candles(10, start=100.0, drift=0.001)
+        curve = buy_and_hold_equity_curve(candles, 1000.0)
+        self.assertEqual(len(curve), len(candles))
+        self.assertGreater(curve[-1]["equity"], 0)
+
+    def test_align_benchmark_equity_curve(self):
+        bench = [{"time": i * 3600, "close": 100 + i} for i in range(10)]
+        equity = [{"time": i * 3600, "equity": 1000 + i * 5} for i in range(10)]
+        aligned = align_benchmark_equity_curve(bench, equity, 1000.0)
+        self.assertEqual(len(aligned), 10)
+
+    def test_enrich_summary_includes_regime(self):
+        candles = _make_candles(80, start=100.0, drift=0.002)
+        curve = [{"time": c["time"], "equity": 1000 + i * 2} for i, c in enumerate(candles)]
+        summary = enrich_summary(
+            {"total_pnl": 40.0, "return_pct": 4.0},
+            equity_curve=curve,
+            candles=candles,
+            starting_equity=1000.0,
+            symbol="TEST",
+        )
+        self.assertIn("regime", summary)
+        self.assertIn("benchmark_overlays", summary)
 
 
 class TestWalkForward(unittest.TestCase):

@@ -24,6 +24,7 @@ export default function BacktestMiniChart({
   drawdownCurve,
   totalPnl,
   trades,
+  benchmarkOverlays,
   className,
 }) {
   const containerRef = useRef(null);
@@ -114,6 +115,44 @@ export default function BacktestMiniChart({
         ]
       : [{ left: 4, right: 4, top: 12, bottom: 4, containLabel: true }];
 
+    const extraSeries = [];
+    if (benchmarkOverlays?.symbolBh?.length) {
+      extraSeries.push({
+        type: 'line',
+        name: 'Symbol B&H',
+        data: benchmarkOverlays.symbolBh,
+        xAxisIndex: hasDrawdown ? 0 : undefined,
+        yAxisIndex: hasDrawdown ? 0 : undefined,
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { width: 1, color: '#94a3b8', type: 'dashed' },
+      });
+    }
+    if (benchmarkOverlays?.spy?.length) {
+      extraSeries.push({
+        type: 'line',
+        name: 'SPY',
+        data: benchmarkOverlays.spy,
+        xAxisIndex: hasDrawdown ? 0 : undefined,
+        yAxisIndex: hasDrawdown ? 0 : undefined,
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { width: 1, color: '#6366f1' },
+      });
+    }
+    if (benchmarkOverlays?.btc?.length) {
+      extraSeries.push({
+        type: 'line',
+        name: 'BTC',
+        data: benchmarkOverlays.btc,
+        xAxisIndex: hasDrawdown ? 0 : undefined,
+        yAxisIndex: hasDrawdown ? 0 : undefined,
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { width: 1, color: '#f59e0b' },
+      });
+    }
+
     chart.setOption({
       backgroundColor: 'transparent',
       grid: grids,
@@ -176,6 +215,7 @@ export default function BacktestMiniChart({
           lineStyle: { width: 1, color: '#f87171' },
           areaStyle: { color: 'rgba(248,113,113,0.15)' },
         }] : []),
+        ...extraSeries,
       ],
       tooltip: {
         trigger: 'axis',
@@ -189,7 +229,7 @@ export default function BacktestMiniChart({
         },
       },
     }, { notMerge: true });
-  }, [equityCurve, drawdownCurve, totalPnl, tradeMarkers, hasDrawdown]);
+  }, [equityCurve, drawdownCurve, totalPnl, tradeMarkers, hasDrawdown, benchmarkOverlays]);
 
   if (!equityCurve?.length) return null;
 

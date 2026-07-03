@@ -45,6 +45,7 @@ from app.api.outbound import (
     trade_history,
 )
 from app.websocket.handlers import handle_client_message
+from app.services.order_capabilities import get_order_capabilities
 from app.services.bots.runtime import (
     bar_publish_loop,
     bot_market_loop,
@@ -328,6 +329,7 @@ async def websocket_handler(websocket):
         "agentVisionEnabled": AGENT_VISION_ENABLED,
         "agentEnabled": AGENT_ENABLED,
         "scannerEnabled": SCANNER_ENABLED,
+        "orderCapabilities": get_order_capabilities(state.oms),
     }))
 
     asyncio.create_task(_send_ws_bootstrap_payloads(websocket))

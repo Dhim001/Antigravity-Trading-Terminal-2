@@ -16,9 +16,26 @@ import {
   emaLineStyle,
 } from '../settings/indicatorThemes';
 import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
+import ChartHeaderPrice from './chart/ChartHeaderPrice';
+import ChartToolbar from './chart/ChartToolbar';
+import { useChartSlTpDrag } from '../hooks/useChartSlTpDrag';
 import {
-  calcSMA, calcEMA, calcBollingerBands, calcRSI, calcMACD, calcATR, buildVwapSeriesValues
-} from '../utils/indicators';
+  TF_CONFIGS, CHART_DISPLAY_BARS, CHART_DISPLAY_MAX, ARCHIVE_LOAD_CHUNK, ARCHIVE_1M_RETENTION_SEC,
+  FUTURE_PADDING, CHART_HISTORY_MIN_BARS, CHART_HISTORY_CACHED_BARS, MASSIVE_CHART_MIN_BARS,
+  CHART_HISTORY_GATE_MS, LOAD_OLDER_MIN_INTERVAL_MS, CONFIGURE_DEBOUNCE_MS, CHART_VISIBLE_BARS,
+  SERIES_ANIM_OFF, sliceRawForTimeframe, chartStructureKey, isChartHistoryReady, withSeriesAnimOff,
+  formatTimeLabel, buildCategoryAxisData, indexOfCategoryKey, lastRealCategoryIndex,
+  defaultDataZoomPercent, dataZoomEndIndex, isDataZoomAtLiveEdge, liveEdgeDataZoomForBars,
+  buildDataZoomOption, preserveDataZoomPercent, hasValidDataZoom, markerYForTrade, categoryAxisLabelFormatter,
+  categoryXAxisOpts, buildMainSeriesData, buildVolumeSeriesData, normalizeEchartsList,
+  aggregateBucket, barMatches, bucketCandles, aggregateCandlesForSymbol,
+  updateLiveSeriesCache, buildLightLiveSeriesPatchesFromCache, buildNewBarSeriesPatches,
+  buildIndicatorSeriesPatches, buildAgentMarkLines, getPriceDecimals, buildMarkLineData,
+  buildBotTradeMarkers, buildBacktestTradeMarkers, mapBacktestEquityLine, buildTradeMarkers,
+  isChartDisposed, formatVol,
+  mapEmaSeries, mapRsiSeries, mapMacdSeries, mapAtrSeries, mapBbSeries, mapVwapSeries,
+} from '../lib/chart/chartHelpers';
+
 import ChartAnalystBadge from './ChartAnalystBadge';
 import {
   AreaChart, TrendingUp, Activity, Maximize2, Minimize2, CandlestickChart, Grid3x3,
@@ -43,7 +60,6 @@ import { onLivePrice } from '../services/livePriceChannel';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
-import { parseTradeTimestamp, parseSignalBarTime } from '@/lib/botAttribution';
 import {
   CHART_DISPLAY_BARS_DEFAULT,
   CHART_DISPLAY_MAX_BARS,
@@ -54,704 +70,15 @@ import { alignComparisonSeries } from '../lib/chart/comparison';
 import {
   createDrawing, drawingsToGraphic, hitTestDrawings, timeToFractionalIndex,
 } from '../lib/chart/drawings';
+import {
+  buildSlTpGraphic,
+  hitTestSlTp,
+  clampSlTpPrice,
+  kindFromTarget,
+  isDraftTarget,
+} from '../lib/chart/slTpOverlay';
+import { sendAction } from '../api/transport';
 import { useChartDrawings } from '../hooks/useChartDrawings';
-
-const TF_CONFIGS = [
-  { label: '1m',  secs: 60    },
-  { label: '5m',  secs: 300   },
-  { label: '15m', secs: 900   },
-  { label: '1H',  secs: 3600  },
-  { label: '4H',  secs: 14400 },
-  { label: '1D',  secs: 86400 },
-];
-
-/** Default visible bars; grows when user scrolls into archived history */
-const CHART_DISPLAY_BARS = CHART_DISPLAY_BARS_DEFAULT;
-const CHART_DISPLAY_MAX = CHART_DISPLAY_MAX_BARS;
-const ARCHIVE_LOAD_CHUNK = 1000;
-const ARCHIVE_1M_RETENTION_SEC = 90 * 86400;
-const FUTURE_PADDING = 15;
-/** Wait for bulk history before first paint (avoids 1-bar → full-history jump). */
-const CHART_HISTORY_MIN_BARS = 3;
-const CHART_HISTORY_CACHED_BARS = 20;
-const MASSIVE_CHART_MIN_BARS = 50;
-const CHART_HISTORY_GATE_MS = 4000;
-const LOAD_OLDER_MIN_INTERVAL_MS = 2000;
-const CONFIGURE_DEBOUNCE_MS = 80;
-const CHART_VISIBLE_BARS = 50;
-
-function sliceRawForTimeframe(raw, intervalSecs, displayLimit) {
-  if (!raw.length) return raw;
-  const barsPerBucket = Math.max(1, Math.ceil(intervalSecs / 60));
-  const tail = Math.min(raw.length, (displayLimit + 4) * barsPerBucket + 32);
-  return tail < raw.length ? raw.slice(-tail) : raw;
-}
-
-function chartStructureKey(chartType, subPanes, showBacktestEquity) {
-  return `${chartType}|${subPanes.join(',')}|${showBacktestEquity ? 1 : 0}`;
-}
-
-const SERIES_ANIM_OFF = {
-  animation: false,
-  animationDuration: 0,
-  animationDurationUpdate: 0,
-};
-
-function isChartHistoryReady(barCount, historyRev, gateForced, terminalMode, useNativeHt = false) {
-  if (barCount <= 0) return false;
-  if (terminalMode === 'LIVE_MASSIVE' && useNativeHt) {
-    if (barCount >= CHART_READY_MIN_BARS) return true;
-    if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
-    return false;
-  }
-  if (terminalMode === 'LIVE_MASSIVE') {
-    if (barCount >= MASSIVE_CHART_MIN_BARS) return true;
-    if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
-    return false;
-  }
-  if (gateForced) return true;
-  if (barCount >= CHART_HISTORY_CACHED_BARS) return true;
-  return historyRev > 0 && barCount >= CHART_HISTORY_MIN_BARS;
-}
-
-function withSeriesAnimOff(series) {
-  return { ...series, ...SERIES_ANIM_OFF };
-}
-
-const pad = (n) => String(n).padStart(2, '0');
-
-function formatTimeLabel(timeSec) {
-  const d = new Date(timeSec * 1000);
-  return `${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-}
-
-function buildCategoryAxisData(bars) {
-  const keys = bars.map((c) => toUnixSeconds(c.time));
-  for (let i = 0; i < FUTURE_PADDING; i++) keys.push(`__pad_${i}__`);
-  return keys;
-}
-
-function indexOfCategoryKey(categoryData, key) {
-  if (key == null || !categoryData.length) return -1;
-  const sec = toUnixSeconds(key);
-  for (let i = 0; i < categoryData.length; i++) {
-    const k = categoryData[i];
-    if (k === key) return i;
-    if (sec != null && toUnixSeconds(k) === sec) return i;
-  }
-  return -1;
-}
-
-function lastRealCategoryIndex(categoryData) {
-  return Math.max(0, categoryData.length - FUTURE_PADDING - 1);
-}
-
-function defaultDataZoomPercent(candleCount, totalCategoryCount, visibleBars = 50) {
-  const liveGap = Math.min(5, FUTURE_PADDING);
-  const endPct = Math.min(100, ((candleCount + liveGap) / totalCategoryCount) * 100);
-  const startPct = Math.max(0, ((candleCount - visibleBars) / totalCategoryCount) * 100);
-  return { start: startPct, end: endPct };
-}
-
-function dataZoomEndIndex(dz, categoryData) {
-  if (!dz || !categoryData.length) return -1;
-  if (dz.endValue != null) {
-    const idx = indexOfCategoryKey(categoryData, dz.endValue);
-    if (idx >= 0) return idx;
-  }
-  if (typeof dz.end === 'number') {
-    return Math.round((dz.end / 100) * categoryData.length);
-  }
-  return -1;
-}
-
-/** True when the viewport right edge is at or past the last real candle. */
-function isDataZoomAtLiveEdge(dz, categoryData) {
-  if (!dz || !categoryData.length) return true;
-  const realEnd = lastRealCategoryIndex(categoryData);
-  const endIdx = dataZoomEndIndex(dz, categoryData);
-  if (endIdx < 0) return true;
-  return endIdx >= realEnd - 1;
-}
-
-function liveEdgeDataZoomForBars(barCount, categoryData, visibleBars = CHART_VISIBLE_BARS) {
-  return defaultDataZoomPercent(barCount, categoryData.length, visibleBars);
-}
-
-function buildDataZoomOption(start, end) {
-  return [
-    { type: 'inside', start, end },
-    { type: 'slider', start, end },
-  ];
-}
-
-function preserveDataZoomPercent(prevCategoryData, nextCategoryData, prevDz, candleCount, nextCandleCount) {
-  if (prevDz?.start == null || prevDz?.end == null) return null;
-
-  const wasAtEnd = isDataZoomAtLiveEdge(prevDz, prevCategoryData);
-  const diff = nextCategoryData.length - prevCategoryData.length;
-
-  if (diff !== 0 && wasAtEnd) {
-    return liveEdgeDataZoomForBars(nextCandleCount, nextCategoryData);
-  }
-
-  return { start: prevDz.start, end: prevDz.end };
-}
-
-/** TOS-style: buys below bar, sells above; exits at fill price. */
-function markerYForTrade(candle, side, { isExit = false, fillPrice } = {}) {
-  if (isExit) return fillPrice ?? candle?.close;
-  if (side === 'BUY') return candle?.low ?? fillPrice;
-  if (side === 'SELL') return candle?.high ?? fillPrice;
-  return fillPrice ?? candle?.close;
-}
-
-function categoryAxisLabelFormatter(val) {
-  if (val == null || val === '' || String(val).startsWith('__pad_')) return '';
-  const sec = toUnixSeconds(val);
-  return sec == null ? '' : formatTimeLabel(sec);
-}
-
-/** Shared x-axis category config — unix keys with human-readable labels. */
-function categoryXAxisOpts(categoryData, gridIndex, { showLabels = true, chartTheme } = {}) {
-  const gridColor = chartTheme?.gridColor ?? 'rgba(255,255,255,0.03)';
-  const axisLineColor = chartTheme?.axisLineColor ?? 'rgba(255,255,255,0.06)';
-  const axisLabelColor = chartTheme?.axisLabelColor ?? '#9ca3af';
-  return {
-    type: 'category',
-    data: categoryData,
-    gridIndex,
-    scale: true,
-    boundaryGap: false,
-    axisLine: { onZero: false, lineStyle: { color: axisLineColor } },
-    splitLine: { show: true, lineStyle: { color: gridColor } },
-    axisLabel: {
-      show: showLabels,
-      color: axisLabelColor,
-      formatter: categoryAxisLabelFormatter,
-    },
-  };
-}
-
-function buildMainSeriesData(bars, chartType) {
-  const data = chartType === 'line'
-    ? bars.map(c => c.close)
-    : bars.map(c => [c.open, c.close, c.low, c.high]);
-  for (let i = 0; i < FUTURE_PADDING; i++) data.push('-');
-  return data;
-}
-
-function buildVolumeSeriesData(bars, indicatorTheme) {
-  const data = bars.map(c => volumeSeriesEntry(c, indicatorTheme));
-  for (let i = 0; i < FUTURE_PADDING; i++) data.push(null);
-  return data;
-}
-
-function normalizeEchartsList(value) {
-  if (value == null) return [];
-  return Array.isArray(value) ? value : [value];
-}
-
-function aggregateBucket(raw, cfg) {
-  if (!raw.length) return null;
-  const lastSec = toUnixSeconds(raw[raw.length - 1].time);
-  if (lastSec == null) return null;
-  const t = Math.floor(lastSec / cfg.secs) * cfg.secs;
-
-  let open = null;
-  let high = null;
-  let low = null;
-  let close = null;
-  let volume = 0;
-  let found = false;
-
-  for (let i = raw.length - 1; i >= 0; i--) {
-    const c = raw[i];
-    const sec = toUnixSeconds(c.time);
-    if (sec == null) continue;
-    const bt = Math.floor(sec / cfg.secs) * cfg.secs;
-    if (bt < t) break;
-    if (bt !== t) continue;
-    if (!found) {
-      open = c.open;
-      high = c.high;
-      low = c.low;
-      close = c.close;
-      volume = c.volume || 0;
-      found = true;
-      continue;
-    }
-    open = c.open;
-    high = Math.max(high, c.high);
-    low = Math.min(low, c.low);
-    volume += c.volume || 0;
-  }
-
-  if (!found) return null;
-  return { time: t, open, high, low, close, volume };
-}
-
-function barMatches(a, b) {
-  if (!a || !b) return false;
-  return a.time === b.time
-    && a.open === b.open
-    && a.high === b.high
-    && a.low === b.low
-    && a.close === b.close
-    && (a.volume || 0) === (b.volume || 0);
-}
-
-function bucketCandles(raw, intervalSecs) {
-  const buckets = new Map();
-  for (const c of raw) {
-    const sec = toUnixSeconds(c.time);
-    if (sec == null) continue;
-    const t = Math.floor(sec / intervalSecs) * intervalSecs;
-    if (!buckets.has(t)) {
-      buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
-    } else {
-      const b = buckets.get(t);
-      b.high = Math.max(b.high, c.high);
-      b.low = Math.min(b.low, c.low);
-      b.close = c.close;
-      b.volume += (c.volume || 0);
-    }
-  }
-  return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
-}
-
-function volumeSeriesEntry(bar, indicatorTheme) {
-  return volumeBarEntry(bar, indicatorTheme);
-}
-
-/** Aggregate a symbol's candles to the active timeframe (shared by primary + comparison). */
-function aggregateCandlesForSymbol(symbol, cfg, limit, useNativeHt) {
-  if (!symbol) return [];
-  if (useNativeHt) {
-    const native = getCandles(symbol, cfg.label, cfg.secs);
-    if (native.length > 0) {
-      return native.length > limit ? native.slice(-limit) : native;
-    }
-    const raw = getCandles(symbol, '1m', 60);
-    if (!raw.length) return [];
-    const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
-    const fallback = bucketCandles(rawSlice, cfg.secs);
-    return fallback.length > limit ? fallback.slice(-limit) : fallback;
-  }
-  const raw = getCandles(symbol, '1m', 60);
-  if (!raw.length) return [];
-  const rawSlice = sliceRawForTimeframe(raw, cfg.secs, limit);
-  const series = bucketCandles(rawSlice, cfg.secs);
-  return series.length > limit ? series.slice(-limit) : series;
-}
-
-const MACD_WARMUP = 33;
-const RSI_WARMUP = 14;
-const ATR_WARMUP = 14;
-const BB_WARMUP = 19;
-
-function padIndicatorValues(data) {
-  const out = [...data];
-  for (let i = 0; i < FUTURE_PADDING; i++) out.push(null);
-  return out;
-}
-
-function mapEmaSeries(candles, period) {
-  const ema = calcEMA(candles, period);
-  const offset = period - 1;
-  return padIndicatorValues(candles.map((_, i) => (i >= offset ? ema[i - offset]?.value : null)));
-}
-
-function mapRsiSeries(candles) {
-  const rsi = calcRSI(candles, 14);
-  return padIndicatorValues(candles.map((_, i) => (i >= RSI_WARMUP ? rsi[i - RSI_WARMUP]?.value : null)));
-}
-
-function mapAtrSeries(candles) {
-  const atr = calcATR(candles, 14);
-  return padIndicatorValues(candles.map((_, i) => (i >= ATR_WARMUP ? atr[i - ATR_WARMUP]?.value : null)));
-}
-
-function mapMacdSeries(candles, indicatorTheme) {
-  const macd = calcMACD(candles, 12, 26, 9);
-  const mapper = (mList) => padIndicatorValues(
-    candles.map((_, i) => (i >= MACD_WARMUP ? mList[i - MACD_WARMUP]?.value : null)),
-  );
-  const hist = padIndicatorValues(
-    candles.map((_, i) => {
-      if (i < MACD_WARMUP) return null;
-      const item = macd.histogram[i - MACD_WARMUP];
-      return item ? {
-        value: item.value,
-        itemStyle: { color: macdHistogramColor(item.value, indicatorTheme) },
-      } : null;
-    }),
-  );
-  return { macd: mapper(macd.macdLine), signal: mapper(macd.signalLine), hist };
-}
-
-function mapBbSeries(candles) {
-  const bb = calcBollingerBands(candles, 20, 2);
-  const mapper = (bbList) => padIndicatorValues(
-    candles.map((_, i) => (i >= BB_WARMUP ? bbList[i - BB_WARMUP]?.value : null)),
-  );
-  return { upper: mapper(bb.upper), middle: mapper(bb.middle), lower: mapper(bb.lower) };
-}
-
-function mapVwapSeries(candles) {
-  return padIndicatorValues(buildVwapSeriesValues(candles));
-}
-
-/** Fast live patch: price (+ volume) only — indicators update on new bar / full rebuild. */
-function updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme, { forceRebuild = false } = {}) {
-  const barCount = bars.length;
-  const needRebuild = forceRebuild
-    || !cache.main
-    || cache.barCount !== barCount
-    || cache.chartType !== chartType;
-
-  if (needRebuild) {
-    cache.barCount = barCount;
-    cache.chartType = chartType;
-    cache.main = buildMainSeriesData(bars, chartType);
-    cache.volume = active.volume ? buildVolumeSeriesData(bars, indicatorTheme) : null;
-    return;
-  }
-
-  const idx = barCount - 1;
-  const bar = bars[idx];
-  const nextMain = cache.main.slice();
-  if (chartType === 'line') {
-    nextMain[idx] = bar.close;
-  } else {
-    nextMain[idx] = [bar.open, bar.close, bar.low, bar.high];
-  }
-  cache.main = nextMain;
-  if (active.volume) {
-    if (!cache.volume) {
-      cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
-    } else {
-      const nextVol = cache.volume.slice();
-      nextVol[idx] = volumeSeriesEntry(bar, indicatorTheme);
-      cache.volume = nextVol;
-    }
-  }
-}
-
-function buildLightLiveSeriesPatchesFromCache(cache, chartType, active) {
-  const patches = [
-    {
-      id: 'main',
-      type: chartType === 'line' ? 'line' : 'candlestick',
-      data: cache.main,
-      ...SERIES_ANIM_OFF,
-    },
-  ];
-  if (active.volume && cache.volume) {
-    patches.push({
-      id: 'volume',
-      data: cache.volume,
-      barCategoryGap: '30%',
-      ...SERIES_ANIM_OFF,
-    });
-  }
-  return patches;
-}
-
-/** Merge live price/volume patches with full indicator recomputation on new bar. */
-function buildNewBarSeriesPatches(bars, chartType, active, indicatorTheme, cache) {
-  updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme, { forceRebuild: true });
-  const liveIds = new Set(['main', 'volume']);
-  const live = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
-  const indicators = buildIndicatorSeriesPatches(bars, active, indicatorTheme)
-    .filter((p) => !liveIds.has(p.id));
-  return [...live, ...indicators];
-}
-
-/** Series patches for live candle updates — keeps sub-panes in sync with price/volume. */
-function buildIndicatorSeriesPatches(bars, active, indicatorTheme) {
-  const patches = [];
-  if (active.ema9) patches.push({ id: 'ema9', data: mapEmaSeries(bars, 9), ...SERIES_ANIM_OFF });
-  if (active.ema21) patches.push({ id: 'ema21', data: mapEmaSeries(bars, 21), ...SERIES_ANIM_OFF });
-  if (active.ema50) patches.push({ id: 'ema50', data: mapEmaSeries(bars, 50), ...SERIES_ANIM_OFF });
-  if (active.bb) {
-    const bb = mapBbSeries(bars);
-    patches.push({ id: 'bb-upper', data: bb.upper, ...SERIES_ANIM_OFF });
-    patches.push({ id: 'bb-mid', data: bb.middle, ...SERIES_ANIM_OFF });
-    patches.push({ id: 'bb-lower', data: bb.lower, ...SERIES_ANIM_OFF });
-  }
-  if (active.vwap) patches.push({ id: 'vwap', data: mapVwapSeries(bars), ...SERIES_ANIM_OFF });
-  if (active.volume) patches.push({ id: 'volume', data: buildVolumeSeriesData(bars, indicatorTheme), ...SERIES_ANIM_OFF });
-  if (active.rsi) patches.push({ id: 'rsi', data: mapRsiSeries(bars), ...SERIES_ANIM_OFF });
-  if (active.macd) {
-    const m = mapMacdSeries(bars, indicatorTheme);
-    patches.push({ id: 'macd', data: m.macd, ...SERIES_ANIM_OFF });
-    patches.push({ id: 'macd-signal', data: m.signal, ...SERIES_ANIM_OFF });
-    patches.push({ id: 'macd-hist', data: m.hist, ...SERIES_ANIM_OFF });
-  }
-  if (active.atr) patches.push({ id: 'atr', data: mapAtrSeries(bars), ...SERIES_ANIM_OFF });
-  return patches;
-}
-
-function buildAgentMarkLines(insight, lastClose, dec) {
-  if (!insight?.levels || !lastClose) return [];
-  const lines = [];
-  const slDist = insight.levels.stop_loss_distance;
-  const tp = insight.levels.take_profit_price;
-  const signal = insight.signal;
-
-  if (slDist > 0 && signal === 'BUY') {
-    lines.push({
-      yAxis: lastClose - slDist,
-      lineStyle: { color: '#f59e0b', width: 1, type: 'dashed' },
-      label: { show: true, position: 'end', formatter: `Agent SL: ${(lastClose - slDist).toFixed(dec)}` },
-    });
-  } else if (slDist > 0 && signal === 'SELL') {
-    lines.push({
-      yAxis: lastClose + slDist,
-      lineStyle: { color: '#f59e0b', width: 1, type: 'dashed' },
-      label: { show: true, position: 'end', formatter: `Agent SL: ${(lastClose + slDist).toFixed(dec)}` },
-    });
-  }
-  if (tp > 0) {
-    lines.push({
-      yAxis: tp,
-      lineStyle: { color: '#fbbf24', width: 1, type: 'dotted' },
-      label: { show: true, position: 'end', formatter: `Agent TP: ${tp.toFixed(dec)}` },
-    });
-  }
-  return lines;
-}
-
-function formatVol(v) {
-  if (!v) return '—';
-  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
-  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
-  return v.toFixed(2);
-}
-
-function getPriceDecimals(price) {
-  if (!price || price <= 0) return 2;
-  if (price < 0.0001)  return 8;
-  if (price < 0.001)   return 6;
-  if (price < 0.1)     return 5;
-  if (price < 1)       return 4;
-  if (price < 10)      return 3;
-  return 2;
-}
-
-function buildMarkLineData(symbolPosition, dec) {
-  const markLineData = [];
-  if (!symbolPosition || symbolPosition.size === 0) return markLineData;
-
-  markLineData.push({
-    yAxis: symbolPosition.avg_price,
-    lineStyle: { color: '#3b82f6', width: 2, type: 'solid' },
-    label: {
-      show: true,
-      position: 'end',
-      formatter: `ENTRY ${symbolPosition.size > 0 ? 'LONG' : 'SHORT'} (${Math.abs(symbolPosition.size).toFixed(4)})`,
-    },
-  });
-  if (symbolPosition.stop_loss_price > 0) {
-    markLineData.push({
-      yAxis: symbolPosition.stop_loss_price,
-      lineStyle: { color: '#ef4444', width: 1, type: 'dashed' },
-      label: { show: true, position: 'end', formatter: `SL: ${symbolPosition.stop_loss_price.toFixed(dec)}` },
-    });
-  }
-  if (symbolPosition.take_profit_price > 0) {
-    markLineData.push({
-      yAxis: symbolPosition.take_profit_price,
-      lineStyle: { color: '#10b981', width: 1, type: 'dashed' },
-      label: { show: true, position: 'end', formatter: `TP: ${symbolPosition.take_profit_price.toFixed(dec)}` },
-    });
-  }
-  return markLineData;
-}
-
-/** Map a bar open-time (unix sec) to the displayed candle index. */
-function findBarIndexForBarTime(candles, barTimeSec, bucketSecs = 60) {
-  if (!candles.length) return -1;
-
-  const tsSec = toUnixSeconds(barTimeSec);
-  if (tsSec == null) return -1;
-
-  const bucketTs = Math.floor(tsSec / bucketSecs) * bucketSecs;
-  const first = toUnixSeconds(candles[0].time);
-  const last = toUnixSeconds(candles[candles.length - 1].time);
-  if (first != null && bucketTs < first) return -1;
-  if (last != null && bucketTs > last) return -1;
-
-  for (let i = 0; i < candles.length; i++) {
-    if (toUnixSeconds(candles[i].time) === bucketTs) return i;
-  }
-
-  for (let i = candles.length - 1; i >= 0; i--) {
-    if (toUnixSeconds(candles[i].time) <= tsSec) return i;
-  }
-  return -1;
-}
-
-/** Resolve marker x/y — bot signals anchor to the closed bar, not fill clock time. */
-function resolveBotMarkerAnchor(trade, candles, bucketSecs) {
-  const isExit = trade.is_exit === 1 || trade.is_exit === true;
-  const signalBar = parseSignalBarTime(trade);
-  if (signalBar != null) {
-    const idx = findBarIndexForBarTime(candles, signalBar, bucketSecs);
-    if (idx < 0) return null;
-    const candle = candles[idx];
-    return {
-      idx,
-      yPrice: markerYForTrade(candle, trade.side, { isExit, fillPrice: trade.price }),
-    };
-  }
-
-  const d = parseTradeTimestamp(trade.timestamp);
-  const tsSec = d ? Math.floor(d.getTime() / 1000) : null;
-  if (tsSec == null) return null;
-  const idx = findBarIndexForBarTime(candles, tsSec, bucketSecs);
-  if (idx < 0) return null;
-  const candle = candles[idx];
-  return {
-    idx,
-    yPrice: markerYForTrade(candle, trade.side, { isExit, fillPrice: trade.price }),
-  };
-}
-
-/** Map a trade timestamp to the candle index that contains it (bucket-aligned). */
-function findBarIndexForTrade(candles, timestamp, bucketSecs = 60) {
-  const d = parseTradeTimestamp(timestamp);
-  const tsSec = d ? Math.floor(d.getTime() / 1000) : null;
-  if (tsSec == null) return -1;
-  return findBarIndexForBarTime(candles, tsSec, bucketSecs);
-}
-
-function toSignalScatterPoint(candles, barIndex, yPrice, { value, symbol, symbolSize, itemStyle }) {
-  if (barIndex < 0) return null;
-  const clamped = Math.max(0, Math.min(barIndex, candles.length - 1));
-  const cat = toUnixSeconds(candles[clamped]?.time);
-  if (cat == null) return null;
-  return {
-    value: [cat, yPrice],
-    name: value,
-    symbol,
-    symbolSize,
-    itemStyle,
-  };
-}
-
-function tradeMarkerPoint(candles, timestamp, price, bucketSecs, marker) {
-  const idx = findBarIndexForTrade(candles, timestamp, bucketSecs);
-  if (idx < 0) return null;
-  const candle = candles[idx];
-  const side = marker.side ?? (String(marker.value).startsWith('BUY') ? 'BUY' : 'SELL');
-  const yPrice = markerYForTrade(candle, side, { fillPrice: price });
-  return toSignalScatterPoint(candles, idx, yPrice, marker);
-}
-
-function buildBotTradeMarkers(botTrades, candles, bucketSecs) {
-  if (!botTrades?.length || !candles.length) return [];
-  return botTrades.map((t) => {
-    const isExit = t.is_exit === 1 || t.is_exit === true;
-    const anchor = resolveBotMarkerAnchor(t, candles, bucketSecs);
-    if (!anchor) return null;
-    return toSignalScatterPoint(candles, anchor.idx, anchor.yPrice, {
-      value: `${t.side}${isExit ? ' exit' : ''}`,
-      symbol: isExit ? 'pin' : (t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z'),
-      symbolSize: isExit ? 14 : 11,
-      itemStyle: { color: isExit ? '#f59e0b' : (t.side === 'BUY' ? '#10b981' : '#ef4444') },
-    });
-  }).filter(Boolean);
-}
-
-function buildBacktestTradeMarkers(backtestTrades, candles, bucketSecs) {
-  if (!backtestTrades?.length || !candles.length) return [];
-  return backtestTrades.map((t) => {
-    const isExit = t.is_exit === 1 || t.is_exit === true;
-    const tsSec = t.time != null ? Number(t.time) : null;
-    if (tsSec == null) return null;
-    const idx = findBarIndexForBarTime(candles, tsSec, bucketSecs);
-    if (idx < 0) return null;
-    const candle = candles[idx];
-    return toSignalScatterPoint(candles, idx, markerYForTrade(candle, t.side, { isExit, fillPrice: t.price }), {
-      value: `BT ${t.side}${isExit ? ` ${t.reason ?? ''}` : ' entry'}`,
-      symbol: isExit ? 'pin' : 'path://M0,10 L5,0 L10,10 Z',
-      symbolSize: isExit ? 11 : 9,
-      itemStyle: {
-        color: isExit
-          ? ((t.pnl ?? 0) >= 0 ? '#f59e0b' : '#ef4444')
-          : '#60a5fa',
-        borderColor: '#1e3a5f',
-        borderWidth: 1,
-      },
-    });
-  }).filter(Boolean);
-}
-
-function mapBacktestEquityLine(equityCurve, candles) {
-  if (!equityCurve?.length || !candles.length) return [];
-  const data = new Array(candles.length).fill(null);
-  let ei = 0;
-  const startTs = toUnixSeconds(equityCurve[0]?.time);
-  for (let i = 0; i < candles.length; i++) {
-    const t = toUnixSeconds(candles[i].time);
-    if (t == null || startTs == null || t < startTs) continue;
-    while (ei < equityCurve.length - 1 && toUnixSeconds(equityCurve[ei + 1].time) <= t) {
-      ei += 1;
-    }
-    data[i] = equityCurve[ei]?.equity ?? null;
-  }
-  return data;
-}
-
-function buildTradeMarkers(tradeHistory, activeSymbol, candles, bucketSecs, { excludeBotId } = {}) {
-  return tradeHistory
-    .filter((t) => t.symbol === activeSymbol && t.status === 'FILLED')
-    .filter((t) => !(excludeBotId && t.bot_id === excludeBotId))
-    .map((t) => {
-      const price = t.average_fill_price || t.price;
-      const qty = (t.filled_quantity ?? t.quantity)?.toFixed(4);
-      return tradeMarkerPoint(candles, t.timestamp, price, bucketSecs, {
-        side: t.side,
-        value: `${t.side} ${qty}`,
-        symbol: t.side === 'BUY' ? 'path://M0,10 L5,0 L10,10 Z' : 'path://M0,0 L5,10 L10,0 Z',
-        symbolSize: 10,
-        itemStyle: { color: t.side === 'BUY' ? '#10b981' : '#ef4444' },
-      });
-    })
-    .filter(Boolean);
-}
-
-// ─── Child Component: Header Ticker ──────────────────────────────────
-function ChartHeaderPrice({ symbol }) {
-  const ticker = useStore(state => state.tickerData[symbol]);
-  const direction = useStore(state => state.priceDirections[symbol]);
-
-  if (!ticker) return null;
-  const dec = getPriceDecimals(ticker.price);
-
-  return (
-    <div className="flex min-w-0 items-center gap-[var(--icon-gap-loose)] overflow-hidden text-sm">
-      <span className={cn(
-        'num-mono shrink-0 text-lg font-extrabold transition-colors',
-        direction === 'up' ? 'text-trading-up' : direction === 'down' ? 'text-trading-down' : 'text-foreground'
-      )}>
-        {ticker.price.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-      </span>
-      <span className={cn('num-mono shrink-0 font-bold', ticker.change_24h >= 0 ? 'text-trading-up' : 'text-trading-down')}>
-        {ticker.change_24h >= 0 ? '+' : ''}{Number(ticker.change_24h).toFixed(2)}%
-      </span>
-      <span className="hidden whitespace-nowrap text-xs text-muted-foreground xl:inline">
-        H:<span className="num-mono"> {ticker.high_24h?.toFixed(dec)}</span>
-        {' '}L:<span className="num-mono"> {ticker.low_24h?.toFixed(dec)}</span>
-        {' '}V:<span className="num-mono"> {ticker.volume_24h ? formatVol(ticker.volume_24h) : '—'}</span>
-      </span>
-    </div>
-  );
-}
-
 // ─── Main Component ──────────────────────────────────────────────────
 export default function ChartWidget() {
   const containerRef = useRef(null);
@@ -782,6 +109,7 @@ export default function ChartWidget() {
   const chartHistoryReadyRef = useRef(false);
   const htFetchRef = useRef(null);
 
+  const [chartMountKey, setChartMountKey] = useState(0);
   const [displayBarLimit, setDisplayBarLimit] = useState(CHART_DISPLAY_BARS);
   const [historyGateForced, setHistoryGateForced] = useState(false);
   const settings = useSettingsStore(state => state.settings);
@@ -801,6 +129,9 @@ export default function ChartWidget() {
     return candles.length > 0 ? candles[candles.length - 1].time : 0;
   }, [activeSymbol, candleRev, oneMinRev, timeframe, useNativeHt]);
   const symbolPosition = useStore(state => state.positions[activeSymbol]);
+  const chartSlTpDraft = useStore(state => state.chartSlTpDraft);
+  const setChartSlTpDraft = useStore(state => state.setChartSlTpDraft);
+  const clearChartSlTpDraft = useStore(state => state.clearChartSlTpDraft);
   const positionOverlayKey = useStore(state => {
     const p = state.positions[activeSymbol];
     if (!p || p.size === 0) return '';
@@ -875,6 +206,20 @@ export default function ChartWidget() {
     [indicatorTheme],
   );
 
+  const slTpHitLinesRef = useRef([]);
+  const slTpDragRef = useRef(null);
+  const slTpDragPricesRef = useRef({});
+  const chartSlTpDraftRef = useRef(chartSlTpDraft);
+  const symbolPositionRef = useRef(symbolPosition);
+  chartSlTpDraftRef.current = chartSlTpDraft;
+  symbolPositionRef.current = symbolPosition;
+
+  const [slTpOverlayTick, setSlTpOverlayTick] = useState(0);
+  const [slTpDragging, setSlTpDragging] = useState(false);
+  const setSlTpDraggingRef = useRef(setSlTpDragging);
+  setSlTpDraggingRef.current = setSlTpDragging;
+  const activeSymbolRef = useRef(activeSymbol);
+  activeSymbolRef.current = activeSymbol;
   const prevConfigRef = useRef({ symbol: activeSymbol, timeframe: timeframe });
   const layoutPushSkipRef = useRef(false);
 
@@ -1040,11 +385,26 @@ export default function ChartWidget() {
     updateChartLayout({ timeframe, chartType, activeIndicators: active });
   }, [timeframe, chartType, active, updateChartLayout]);
 
-  useEffect(() => {
+  const safeChartResize = useCallback(() => {
     const chart = chartRef.current;
-    if (!chart) return;
+    if (isChartDisposed(chart) || !chartReadyRef.current || chartConfiguringRef.current) return false;
+    if (!hasValidDataZoom(chart)) return false;
+    try {
+      chart.resize();
+      return true;
+    } catch (err) {
+      console.warn('[ChartWidget] resize failed:', err);
+      return false;
+    }
+  }, []);
+
+  const safeChartResizeRef = useRef(safeChartResize);
+  safeChartResizeRef.current = safeChartResize;
+
+  useEffect(() => {
+    if (!chartReadyRef.current) return undefined;
     const id = requestAnimationFrame(() => {
-      requestAnimationFrame(() => chart.resize());
+      requestAnimationFrame(() => safeChartResizeRef.current());
     });
     return () => cancelAnimationFrame(id);
   }, [zenMode]);
@@ -1355,6 +715,12 @@ export default function ChartWidget() {
         categoryData,
       );
     }
+    if (!Number.isFinite(zoomStart) || !Number.isFinite(zoomEnd) || zoomEnd <= zoomStart) {
+      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(candles.length, categoryData));
+      pinnedToLiveRef.current = true;
+    }
+    zoomStart = Math.max(0, Math.min(100, zoomStart));
+    zoomEnd = Math.max(0, Math.min(100, zoomEnd));
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
 
     // Heikin-Ashi / Renko render with transformed OHLC on the same category axis;
@@ -1421,9 +787,10 @@ export default function ChartWidget() {
       axisLabel: { color: chartTheme.axisLabelColor, formatter: val => val.toFixed(dec) }
     });
 
-    // Sub grids axes
+    // Sub grids axes — track y-axis index separately from grid index (overlay axes append later).
     const gridCount = grids.length;
-    subPanes.forEach((pane, idx) => {
+    const paneYAxisIndex = {};
+    subPanes.forEach((pane) => {
       const gIdx = paneGridMap[pane];
       const isLowest = gIdx === gridCount - 1;
 
@@ -1434,12 +801,13 @@ export default function ChartWidget() {
       });
 
       let yAxisOpt = {
+        id: `y-${pane}`,
         scale: true,
         gridIndex: gIdx,
         position: 'right',
         splitLine: { show: true, lineStyle: { color: chartTheme.gridColor } },
         axisLine: { lineStyle: { color: chartTheme.axisLineColor } },
-        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9 }
+        axisLabel: { color: chartTheme.axisLabelColor, fontSize: 9 },
       };
 
       if (pane === 'volume') {
@@ -1449,6 +817,7 @@ export default function ChartWidget() {
         yAxisOpt.max = 100;
         yAxisOpt.interval = 30;
       }
+      paneYAxisIndex[pane] = yAxes.length;
       yAxes.push(yAxisOpt);
     });
 
@@ -1462,21 +831,23 @@ export default function ChartWidget() {
     const fullReplace = structureKey !== prevStructureKeyRef.current;
     prevStructureKeyRef.current = structureKey;
 
-    yAxes.push({
-      id: 'backtest-equity-axis',
-      scale: true,
-      gridIndex: 0,
-      position: 'left',
-      show: Boolean(showBacktestEquity),
-      splitLine: { show: false },
-      axisLine: { show: false },
-      axisLabel: {
-        show: Boolean(showBacktestEquity),
-        color: '#60a5fa',
-        fontSize: 9,
-        formatter: (val) => (val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${Number(val).toFixed(0)}`),
-      },
-    });
+    let backtestEquityYIdx = -1;
+    if (showBacktestEquity) {
+      backtestEquityYIdx = yAxes.length;
+      yAxes.push({
+        id: 'backtest-equity-axis',
+        scale: true,
+        gridIndex: 0,
+        position: 'left',
+        splitLine: { show: false },
+        axisLine: { show: false },
+        axisLabel: {
+          color: '#60a5fa',
+          fontSize: 9,
+          formatter: (val) => (val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${Number(val).toFixed(0)}`),
+        },
+      });
+    }
 
     // Comparison overlay axis (percent change, left side).
     let compareAxisIndex = -1;
@@ -1569,18 +940,20 @@ export default function ChartWidget() {
       ? mapBacktestEquityLine(backtestOverlay.equityCurve, candles)
       : [];
 
-    series.push(withSeriesAnimOff({
-      id: 'backtest-equity',
-      name: 'BT Equity',
-      type: 'line',
-      data: equityOverlayData,
-      xAxisIndex: 0,
-      yAxisId: 'backtest-equity-axis',
-      showSymbol: false,
-      silent: true,
-      z: 2,
-      lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed', opacity: 0.85 },
-    }));
+    if (showBacktestEquity) {
+      series.push(withSeriesAnimOff({
+        id: 'backtest-equity',
+        name: 'BT Equity',
+        type: 'line',
+        data: equityOverlayData,
+        xAxisIndex: 0,
+        yAxisIndex: backtestEquityYIdx,
+        showSymbol: false,
+        silent: true,
+        z: 2,
+        lineStyle: { color: '#60a5fa', width: 1.5, type: 'dashed', opacity: 0.85 },
+      }));
+    }
 
     // Overlay indicators
     if (active.ema9) {
@@ -1647,7 +1020,7 @@ export default function ChartWidget() {
         name: 'Volume',
         type: 'bar',
         xAxisIndex: gIdx,
-        yAxisIndex: gIdx,
+        yAxisIndex: paneYAxisIndex.volume,
         barCategoryGap: '30%',
         data: buildVolumeSeriesData(candles, indicatorTheme),
       }));
@@ -1657,7 +1030,7 @@ export default function ChartWidget() {
       const gIdx = paneGridMap.rsi;
       series.push(withSeriesAnimOff({
         id: 'rsi',
-        name: 'RSI', type: 'line', data: mapRsiSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
+        name: 'RSI', type: 'line', data: mapRsiSeries(candles), xAxisIndex: gIdx, yAxisIndex: paneYAxisIndex.rsi,
         showSymbol: false,
         lineStyle: {
           color: indicatorTheme.rsi.line,
@@ -1671,15 +1044,16 @@ export default function ChartWidget() {
       const gIdx = paneGridMap.macd;
       const macd = mapMacdSeries(candles, indicatorTheme);
       const { macd: macdTheme } = indicatorTheme;
+      const macdYIdx = paneYAxisIndex.macd;
       series.push(
         withSeriesAnimOff({
-          id: 'macd', name: 'MACD', type: 'line', data: macd.macd, xAxisIndex: gIdx, yAxisIndex: gIdx,
+          id: 'macd', name: 'MACD', type: 'line', data: macd.macd, xAxisIndex: gIdx, yAxisIndex: macdYIdx,
           showSymbol: false,
           lineStyle: { color: macdTheme.line, width: macdTheme.lineWidth },
           markLine: macdZeroMarkLine(indicatorTheme),
         }),
         withSeriesAnimOff({
-          id: 'macd-signal', name: 'Signal', type: 'line', data: macd.signal, xAxisIndex: gIdx, yAxisIndex: gIdx,
+          id: 'macd-signal', name: 'Signal', type: 'line', data: macd.signal, xAxisIndex: gIdx, yAxisIndex: macdYIdx,
           showSymbol: false,
           lineStyle: { color: macdTheme.signal, width: macdTheme.lineWidth },
         }),
@@ -1688,7 +1062,7 @@ export default function ChartWidget() {
           name: 'Hist',
           type: 'bar',
           xAxisIndex: gIdx,
-          yAxisIndex: gIdx,
+          yAxisIndex: macdYIdx,
           data: macd.hist,
         }),
       );
@@ -1698,7 +1072,7 @@ export default function ChartWidget() {
       const gIdx = paneGridMap.atr;
       series.push(withSeriesAnimOff({
         id: 'atr',
-        name: 'ATR', type: 'line', data: mapAtrSeries(candles), xAxisIndex: gIdx, yAxisIndex: gIdx,
+        name: 'ATR', type: 'line', data: mapAtrSeries(candles), xAxisIndex: gIdx, yAxisIndex: paneYAxisIndex.atr,
         showSymbol: false,
         lineStyle: {
           color: indicatorTheme.atr.line,
@@ -1729,27 +1103,43 @@ export default function ChartWidget() {
       xAxis: xAxes,
       yAxis: yAxes,
       dataZoom: [
-        { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd },
-        { type: 'slider', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: chartTheme.dataZoomFiller, textStyle: { color: chartTheme.axisLabelColor } }
+        { id: 'dz-inside', type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd },
+        { id: 'dz-slider', type: 'slider', xAxisIndex: zoomXIndices, start: zoomStart, end: zoomEnd, bottom: '3%', height: 18, borderColor: 'transparent', fillerColor: chartTheme.dataZoomFiller, textStyle: { color: chartTheme.axisLabelColor } },
       ],
       series: series
     };
 
     suppressDataZoomEventsRef.current += 1;
+    let setOk = false;
+    const chart = chartRef.current;
+    if (fullReplace || layoutChanged) {
+      overlayIdsRef.current = new Set();
+      try { chart.clear(); } catch (_) {}
+    }
     try {
-      chartRef.current.setOption(
-        option,
-        fullReplace
-          ? { notMerge: true }
-          : { replaceMerge: ['grid', 'xAxis', 'yAxis', 'series', 'dataZoom'] },
-      );
+      chart.setOption(option, { notMerge: true, lazyUpdate: false });
+      setOk = true;
     } catch (err) {
       console.warn('[ChartWidget] configureChart setOption failed:', err);
+      try {
+        chart.clear();
+        chart.setOption(option, { notMerge: true, lazyUpdate: false });
+        setOk = true;
+      } catch (retryErr) {
+        console.warn('[ChartWidget] configureChart notMerge retry failed:', retryErr);
+        chartReadyRef.current = false;
+        setChartMountKey((k) => k + 1);
+      }
     } finally {
       requestAnimationFrame(() => {
         suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
       });
       chartConfiguringRef.current = false;
+    }
+
+    if (!setOk) {
+      chartReadyRef.current = false;
+      return;
     }
 
     chartLayoutRef.current = { xAxisCount: xAxes.length, showVolume: showVol };
@@ -1768,8 +1158,14 @@ export default function ChartWidget() {
     updateLegendDOM(lastBar);
 
     requestAnimationFrame(() => {
-      applyOverlayPatchRef.current?.();
-      renderChartGraphicsRef.current?.();
+      if (!chartReadyRef.current || isChartDisposed(chartRef.current)) return;
+      try {
+        safeChartResizeRef.current();
+        applyOverlayPatchRef.current?.();
+        renderChartGraphicsRef.current?.();
+      } catch (err) {
+        console.warn('[ChartWidget] post-configure overlay failed:', err);
+      }
     });
   }, [aggregatedCandles, activeSymbol, timeframe, active, chartType, updateLegendDOM, chartTheme, indicatorTheme, backtestOverlay, backtestOverlayKey, chartHistoryReady, compareSymbol, compareCandles]);
 
@@ -1777,7 +1173,7 @@ export default function ChartWidget() {
   const applyOverlayPatch = useCallback(() => {
     const chart = chartRef.current;
     const bars = candlesRef.current;
-    if (!chart || !bars.length || !chartReadyRef.current || chartConfiguringRef.current) return;
+    if (isChartDisposed(chart) || !bars.length || !chartReadyRef.current || chartConfiguringRef.current) return;
 
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
     const bucketSecs = cfg.secs;
@@ -1826,7 +1222,7 @@ export default function ChartWidget() {
             data: scatterData,
           },
         ],
-      }, { lazyUpdate: true });
+      }, { lazyUpdate: false });
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
@@ -1836,7 +1232,7 @@ export default function ChartWidget() {
   // Recomputed on configure, zoom/pan, resize, and when drawings/VPVR change.
   const renderChartGraphics = useCallback(() => {
     const chart = chartRef.current;
-    if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
+    if (isChartDisposed(chart) || !chartReadyRef.current || chartConfiguringRef.current) return;
     const bars = candlesRef.current;
 
     // Overlay elements are rendered as a FLAT list of ECharts `graphic` elements
@@ -1845,6 +1241,7 @@ export default function ChartWidget() {
     // overlay. Each element carries a stable, type-consistent id so stale ones can
     // be removed by id when the set shrinks.
     const setGraphic = (children) => {
+      if (isChartDisposed(chart)) return;
       try {
         const nextIds = new Set();
         for (const el of children) if (el && el.id != null) nextIds.add(el.id);
@@ -1907,8 +1304,36 @@ export default function ChartWidget() {
       selectedId: selectedDrawingIdRef.current,
     }));
 
+    const pos = symbolPositionRef.current;
+    const draft = chartSlTpDraftRef.current?.symbol === activeSymbol ? chartSlTpDraftRef.current : null;
+    const dragPrices = slTpDragPricesRef.current;
+    const barsDec = getPriceDecimals(bars[bars.length - 1]?.close);
+    const hasLive = pos && Math.abs(pos.size) > 0;
+    const live = hasLive ? {
+      stop_loss_price: dragPrices.sl ?? pos.stop_loss_price,
+      take_profit_price: dragPrices.tp ?? pos.take_profit_price,
+    } : {};
+    const showDraft = draft && (
+      (draft.stop_loss_price != null && draft.stop_loss_price > 0)
+      || (draft.take_profit_price != null && draft.take_profit_price > 0)
+    );
+    const draftLevels = showDraft ? {
+      stop_loss_price: dragPrices.draftSl ?? draft.stop_loss_price,
+      take_profit_price: dragPrices.draftTp ?? draft.take_profit_price,
+    } : {};
+    const { elements: slTpEls, hitLines } = buildSlTpGraphic({
+      priceToY,
+      plotLeft,
+      plotRight,
+      dec: barsDec,
+      live,
+      draft: draftLevels,
+    });
+    slTpHitLinesRef.current = hitLines;
+    children.push(...slTpEls);
+
     setGraphic(children);
-  }, []);
+  }, [activeSymbol]);
 
   const renderChartGraphicsRef = useRef(renderChartGraphics);
   renderChartGraphicsRef.current = renderChartGraphics;
@@ -2085,10 +1510,23 @@ export default function ChartWidget() {
       let downPt = null;
       chart.getZr().on('mousedown', (p) => {
         downPt = { x: p.offsetX, y: p.offsetY, t: Date.now() };
+        const modeNow = useStore.getState().chartInteractionMode;
+        const toolNow = activeToolRef.current;
+        if (!toolNow && modeNow === 'normal' && chart.containPixel({ gridIndex: 0 }, [p.offsetX, p.offsetY])) {
+          const slTpHit = hitTestSlTp(p.offsetY, slTpHitLinesRef.current);
+          if (slTpHit) {
+            slTpDragRef.current = { target: slTpHit, startY: p.offsetY };
+            slTpDragPricesRef.current = {};
+            setSlTpDraggingRef.current(true);
+            p.stop?.();
+          }
+        }
       });
       chart.getZr().on('mouseup', (p) => {
+        const wasSlTpDrag = !!slTpDragRef.current;
         const start = downPt;
         downPt = null;
+        if (wasSlTpDrag) return;
         if (!start) return;
         const moved = Math.hypot(p.offsetX - start.x, p.offsetY - start.y);
         if (moved <= 5 && Date.now() - start.t < 700) handleChartClick(p);
@@ -2109,8 +1547,9 @@ export default function ChartWidget() {
 
     const ro = new ResizeObserver(() => {
       if (chart) {
-        chart.resize();
-        renderChartGraphicsRef.current?.();
+        if (safeChartResizeRef.current()) {
+          renderChartGraphicsRef.current?.();
+        }
         return;
       }
       mountChart();
@@ -2132,7 +1571,7 @@ export default function ChartWidget() {
       chartReadyRef.current = false;
       if (el.__chartInstance) delete el.__chartInstance;
     };
-  }, [updateLegendDOM, chartTheme.echartsTheme, resolvedTheme]);
+  }, [updateLegendDOM, chartTheme.echartsTheme, resolvedTheme, chartMountKey]);
 
   // Full rebuild when structure/history/indicators change (debounced — coalesces timeframe toggles)
   useEffect(() => {
@@ -2161,7 +1600,7 @@ export default function ChartWidget() {
   useEffect(() => {
     if (!chartReadyRef.current) return;
     renderChartGraphicsRef.current?.();
-  }, [drawings, selectedDrawingId, showVolumeProfile]);
+  }, [drawings, selectedDrawingId, showVolumeProfile, chartSlTpDraft, symbolPosition, slTpOverlayTick, activeSymbol]);
 
   // Persist the Volume Profile toggle to settings.
   useEffect(() => {
@@ -2233,8 +1672,10 @@ export default function ChartWidget() {
       const end = Math.min(100, ((catIdx + half) / total) * 100);
       try {
         suppressDataZoomEventsRef.current += 1;
+        const { xAxisCount } = chartLayoutRef.current;
+        const zoomXIndices = Array.from({ length: Math.max(1, xAxisCount) }, (_, i) => i);
         chart.setOption({
-          dataZoom: buildDataZoomOption(start, end),
+          dataZoom: buildDataZoomOption(start, end, zoomXIndices),
         });
         requestAnimationFrame(() => {
           suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
@@ -2250,7 +1691,7 @@ export default function ChartWidget() {
 
   const applyLiveCandleUpdate = useCallback(() => {
     const chart = chartRef.current;
-    if (!chart || !chartReadyRef.current || chartConfiguringRef.current) return;
+    if (isChartDisposed(chart) || !chartReadyRef.current || chartConfiguringRef.current) return;
     // Replay mode freezes live updates so the cursor controls what's visible.
     if (replayActiveRef.current) return;
 
@@ -2318,7 +1759,8 @@ export default function ChartWidget() {
         patch.series = buildNewBarSeriesPatches(bars, chartType, active, indicatorTheme, cache);
         if (pinnedToLiveRef.current) {
           const { start, end } = liveEdgeDataZoomForBars(bars.length, categoryData);
-          patch.dataZoom = buildDataZoomOption(start, end);
+          const zoomXIndices = Array.from({ length: Math.max(1, xAxisCount) }, (_, i) => i);
+          patch.dataZoom = buildDataZoomOption(start, end, zoomXIndices);
           suppressDataZoomEventsRef.current += 1;
         }
       } else {
@@ -2464,150 +1906,67 @@ export default function ChartWidget() {
     return () => window.removeEventListener('chart-click', handleChartClick);
   }, [chartInteractionMode, activeSymbol, setChartInteractionMode]);
 
+  useEffect(() => {
+    clearChartSlTpDraft();
+    slTpDragRef.current = null;
+    slTpDragPricesRef.current = {};
+    setSlTpDragging(false);
+  }, [activeSymbol, clearChartSlTpDraft]);
+
+  useChartSlTpDrag({
+    chartRef,
+    chartReadyRef,
+    slTpDragRef,
+    slTpDragPricesRef,
+    symbolPositionRef,
+    chartSlTpDraftRef,
+    activeSymbolRef,
+    renderChartGraphicsRef,
+    setChartSlTpDraft,
+    setSlTpDragging,
+    setSlTpOverlayTick,
+  });
+
+  const hasSlTpOverlay = useMemo(() => {
+    const pos = symbolPosition;
+    const draft = chartSlTpDraft?.symbol === activeSymbol ? chartSlTpDraft : null;
+    const liveSlTp = pos && Math.abs(pos.size) > 0 && (
+      (pos.stop_loss_price != null && pos.stop_loss_price > 0)
+      || (pos.take_profit_price != null && pos.take_profit_price > 0)
+    );
+    const draftSlTp = draft && (
+      (draft.stop_loss_price != null && draft.stop_loss_price > 0)
+      || (draft.take_profit_price != null && draft.take_profit_price > 0)
+    );
+    return !!(liveSlTp || draftSlTp);
+  }, [symbolPosition, chartSlTpDraft, activeSymbol]);
+
   const chartToolbar = (
-    <div className="chart-toolbar-stack">
-      <div className="chart-toolbar-row">
-        <div className="scroll-fade-x">
-          <WidgetToolbar className="scroll-panel-x no-scrollbar flex-nowrap border-0 py-0">
-            <ToggleGroup type="single" value={timeframe} onValueChange={(v) => v && setTimeframe(v)} spacing={0}>
-              {TF_CONFIGS.map(tf => (
-                <ToggleGroupItem key={tf.label} value={tf.label} size="sm" className="px-2 text-[0.68rem] font-bold">
-                  {tf.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-            <WidgetToolbarDivider />
-            <ToggleGroup type="single" value={chartType} onValueChange={(v) => v && setChartType(v)} spacing={0}>
-              <ToggleGroupItem value="candle" size="sm" className="px-2 text-[0.68rem] font-bold">
-                <AreaChart data-icon="inline-start" />
-                Candle
-              </ToggleGroupItem>
-              <ToggleGroupItem value="heikin" size="sm" className="px-2 text-[0.68rem] font-bold" title="Heikin-Ashi">
-                <CandlestickChart data-icon="inline-start" />
-                HA
-              </ToggleGroupItem>
-              <ToggleGroupItem value="renko" size="sm" className="px-2 text-[0.68rem] font-bold" title="Renko (time-aligned)">
-                <Grid3x3 data-icon="inline-start" />
-                Renko
-              </ToggleGroupItem>
-              <ToggleGroupItem value="line" size="sm" className="px-2 text-[0.68rem] font-bold">
-                <TrendingUp data-icon="inline-start" />
-                Line
-              </ToggleGroupItem>
-            </ToggleGroup>
-            <WidgetToolbarDivider />
-            <ToggleGroup
-              type="single"
-              value={activeTool || ''}
-              onValueChange={(v) => { pendingDrawPointRef.current = null; setActiveTool(v || null); }}
-              spacing={0}
-            >
-              <ToggleGroupItem value="trendline" size="sm" className="px-1.5" title="Trendline (2 clicks)">
-                <Spline size={13} />
-              </ToggleGroupItem>
-              <ToggleGroupItem value="hline" size="sm" className="px-1.5" title="Horizontal level (1 click)">
-                <Minus size={13} />
-              </ToggleGroupItem>
-              <ToggleGroupItem value="fib" size="sm" className="px-1.5" title="Fibonacci retracement (2 clicks)">
-                <AlignJustify size={13} />
-              </ToggleGroupItem>
-              <ToggleGroupItem value="rectangle" size="sm" className="px-1.5" title="Rectangle (2 clicks)">
-                <Square size={13} />
-              </ToggleGroupItem>
-            </ToggleGroup>
-            <Button
-              variant={showVolumeProfile ? 'secondary' : 'ghost'}
-              size="sm"
-              className="px-1.5"
-              title="Volume Profile (VPVR)"
-              onClick={() => setShowVolumeProfile((v) => !v)}
-            >
-              <BarChart2 size={13} />
-            </Button>
-            <Button
-              variant={replayActive ? 'secondary' : 'ghost'}
-              size="sm"
-              className="px-1.5"
-              title="Replay mode (bar-by-bar)"
-              onClick={() => (replayActive ? exitReplay() : enterReplay())}
-            >
-              <History size={13} />
-            </Button>
-            {compareOptions.length > 0 && (
-              <Select
-                value={compareSymbol || '__none__'}
-                onValueChange={(v) => setCompareSymbol(v === '__none__' ? null : v)}
-              >
-                <SelectTrigger
-                  className={cn(
-                    'h-6 w-auto gap-1 border-0 px-1.5 text-[0.62rem] font-semibold',
-                    compareSymbol && 'text-[#f472b6]',
-                  )}
-                  aria-label="Compare symbol"
-                  title="Compare with another symbol (rebased %)"
-                >
-                  <GitCompareArrows size={13} />
-                  <SelectValue placeholder="Compare" />
-                </SelectTrigger>
-                <SelectContent position="popper" className="max-h-64">
-                  <SelectItem value="__none__" className="text-xs">Compare: off</SelectItem>
-                  {compareOptions.map((sym) => (
-                    <SelectItem key={sym} value={sym} className="text-xs">{sym}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            {(drawings.length > 0 || selectedDrawingId) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="px-1.5 text-muted-foreground hover:text-destructive"
-                title={selectedDrawingId ? 'Delete selected drawing' : 'Clear all drawings'}
-                onClick={() => (selectedDrawingId ? removeDrawing(selectedDrawingId) : clearDrawings())}
-              >
-                <Trash2 size={13} />
-              </Button>
-            )}
-            {chartInteractionMode !== 'normal' && (
-              <Button
-                variant="destructive"
-                size="sm"
-                className="ml-auto h-6 shrink-0 text-[0.62rem]"
-                onClick={() => setChartInteractionMode('normal')}
-              >
-                Cancel {chartInteractionMode === 'edit_sl' ? 'SL' : 'TP'} Edit
-              </Button>
-            )}
-          </WidgetToolbar>
-        </div>
-      </div>
-      <div className="chart-toolbar-row">
-        <div className="scroll-fade-x">
-          <WidgetToolbar compact className="scroll-panel-x no-scrollbar flex-nowrap border-0">
-            <ToggleGroup
-              type="multiple"
-              value={activeIndicatorKeys}
-              onValueChange={handleIndicatorsChange}
-              className="flex flex-nowrap gap-[var(--icon-gap)]"
-              spacing={1}
-            >
-              {Object.entries(indicatorToolbar).map(([key, ind]) => (
-                <ToggleGroupItem
-                  key={key}
-                  value={key}
-                  size="sm"
-                  className="gap-[var(--icon-gap)] text-[0.62rem] font-semibold data-[state=on]:border-[var(--ind-c)] data-[state=on]:bg-[color-mix(in_srgb,var(--ind-c)_14%,transparent)] data-[state=on]:text-[var(--ind-c)]"
-                  style={{ '--ind-c': ind.color }}
-                >
-                  <span className="size-1.5 shrink-0 rounded-full bg-[var(--ind-c)] opacity-70" />
-                  {ind.label}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
-          </WidgetToolbar>
-        </div>
-      </div>
-    </div>
+    <ChartToolbar
+      timeframe={timeframe}
+      onTimeframeChange={setTimeframe}
+      chartType={chartType}
+      onChartTypeChange={setChartType}
+      activeTool={activeTool}
+      onActiveToolChange={(v) => { pendingDrawPointRef.current = null; setActiveTool(v); }}
+      showVolumeProfile={showVolumeProfile}
+      onToggleVolumeProfile={() => setShowVolumeProfile((v) => !v)}
+      replayActive={replayActive}
+      onToggleReplay={() => (replayActive ? exitReplay() : enterReplay())}
+      compareOptions={compareOptions}
+      compareSymbol={compareSymbol}
+      onCompareSymbolChange={setCompareSymbol}
+      drawings={drawings}
+      selectedDrawingId={selectedDrawingId}
+      onRemoveDrawing={removeDrawing}
+      onClearDrawings={clearDrawings}
+      chartInteractionMode={chartInteractionMode}
+      onCancelInteraction={() => setChartInteractionMode('normal')}
+      hasSlTpOverlay={hasSlTpOverlay}
+      activeIndicatorKeys={activeIndicatorKeys}
+      onIndicatorsChange={handleIndicatorsChange}
+      indicatorToolbar={indicatorToolbar}
+    />
   );
 
   return (
@@ -2709,7 +2068,11 @@ export default function ChartWidget() {
           <span id="chart-legend-pct" className="text-[10px] font-bold opacity-90">—</span>
         </div>
 
-        <div ref={containerRef} className="h-full w-full" data-chart-root="main" />
+        <div
+          ref={containerRef}
+          className={cn('h-full w-full', slTpDragging && 'cursor-ns-resize')}
+          data-chart-root="main"
+        />
         {!chartHistoryReady && aggregatedCandles.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center bg-background/40">
             <span className="text-xs text-muted-foreground">

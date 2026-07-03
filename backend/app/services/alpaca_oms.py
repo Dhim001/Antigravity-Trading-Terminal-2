@@ -202,6 +202,7 @@ class AlpacaOMSService(BaseOMSService):
         quantity = order_req.get("quantity")
         sl_pct = order_req.get("stop_loss_percent")
         tp_pct = order_req.get("take_profit_percent")
+        sl_price_abs = order_req.get("stop_loss_price")
         tp_price_abs = order_req.get("take_profit_price")
         
         # Formulate bracket payload if SL or TP is specified
@@ -216,13 +217,14 @@ class AlpacaOMSService(BaseOMSService):
         if order_type == "limit":
             payload["limit_price"] = str(price)
             
-        if sl_pct or tp_pct or tp_price_abs:
+        if sl_pct or tp_pct or tp_price_abs or sl_price_abs:
             payload["order_class"] = "bracket"
             
-            # Mid price reference
             mid_price = price if order_type == "limit" else self.feed._symbols[symbol]["price"]
             
-            if sl_pct:
+            if sl_price_abs:
+                payload["stop_loss"] = {"stop_price": f"{float(sl_price_abs):.2f}"}
+            elif sl_pct:
                 sl_price = mid_price * (1 - sl_pct / 100.0) if side == "buy" else mid_price * (1 + sl_pct / 100.0)
                 payload["stop_loss"] = {"stop_price": f"{sl_price:.2f}"}
             if tp_price_abs:

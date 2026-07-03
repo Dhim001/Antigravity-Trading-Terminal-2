@@ -82,7 +82,7 @@ def run_portfolio_backtest(
         return {"error": "Portfolio backtest produced no valid symbol runs", "portfolio": {"symbols": rows}}
 
     avg_win = (weighted_win / total_trades) if total_trades else 0.0
-    return {
+    result = {
         "portfolio": True,
         "symbols_tested": len(ok_rows),
         "symbols_failed": len(rows) - len(ok_rows),
@@ -97,3 +97,11 @@ def run_portfolio_backtest(
             "symbols_tested": len(ok_rows),
         },
     }
+    try:
+        from app.services.bots.correlation import summarize_basket_correlation
+
+        ok_syms = [r["symbol"] for r in ok_rows]
+        result["correlation_summary"] = summarize_basket_correlation(ok_syms)
+    except Exception:
+        pass
+    return result
