@@ -99,6 +99,12 @@ BOT_MAX_ACTIVE_BOTS = int(os.environ.get("BOT_MAX_ACTIVE_BOTS", "20"))
 BOT_SNAPSHOT_INTERVAL = float(os.environ.get("BOT_SNAPSHOT_INTERVAL", "300"))
 BOT_SNAPSHOT_RETENTION = int(os.environ.get("BOT_SNAPSHOT_RETENTION", "2000"))
 BOT_LOG_RETENTION = int(os.environ.get("BOT_LOG_RETENTION", "5000"))
+BOT_MAX_CONSECUTIVE_LOSSES = int(os.environ.get("BOT_MAX_CONSECUTIVE_LOSSES", "5"))
+BOT_LOSS_COOLOFF_SEC = int(os.environ.get("BOT_LOSS_COOLOFF_SEC", "300"))
+# Max cumulative drawdown (%) per bot before auto-pause.  0 = disabled.
+BOT_MAX_DRAWDOWN_PCT = float(os.environ.get("BOT_MAX_DRAWDOWN_PCT", "15.0"))
+# Max concurrent bots trading the same symbol.  0 = unlimited.
+BOT_MAX_PER_SYMBOL = int(os.environ.get("BOT_MAX_PER_SYMBOL", "3"))
 OPTIMIZATION_RETENTION_DAYS = int(os.environ.get("OPTIMIZATION_RETENTION_DAYS", "30"))
 BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", "14"))
 

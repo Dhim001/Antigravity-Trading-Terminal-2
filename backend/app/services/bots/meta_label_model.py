@@ -280,8 +280,14 @@ def train_model_from_rows(
     *,
     min_samples: int = 20,
     val_fraction: float = 0.2,
+    risk_adjusted_labels: bool = False,
 ) -> dict[str, Any]:
-    """Train HistGradientBoosting on pre-built feature rows (in-memory)."""
+    """Train HistGradientBoosting on pre-built feature rows (in-memory).
+
+    If risk_adjusted_labels=True, uses PnL/risk ratio to create labels:
+    trades with ratio > 0 are wins, ratio <= 0 are losses.  This prevents
+    $1 wins on $500 risk from being treated the same as $500 wins.
+    """
     n = len(rows)
     min_samples = int(min_samples)
     if n < min_samples:
@@ -293,13 +299,27 @@ def train_model_from_rows(
 
     HistGBC, roc_auc_score, log_loss_fn, _joblib = _load_sklearn()
     X = np.vstack([features_to_vector(r["features"]) for r in rows])
-    y = np.array([1 if r.get("win") else 0 for r in rows], dtype=np.int32)
+
+    # Risk-adjusted or binary labels
+    if risk_adjusted_labels:
+        y = np.array(
+            [1 if (r.get("pnl") or 0) > 0 else 0 for r in rows],
+            dtype=np.int32,
+        )
+        # Weight by magnitude: bigger PnL trades matter more
+        pnl_abs = np.array([abs(r.get("pnl") or 0) for r in rows], dtype=np.float64)
+        pnl_max = pnl_abs.max() if pnl_abs.max() > 0 else 1.0
+        sample_weights = 0.5 + 0.5 * (pnl_abs / pnl_max)  # range [0.5, 1.0]
+    else:
+        y = np.array([1 if r.get("win") else 0 for r in rows], dtype=np.int32)
+        sample_weights = None
 
     split_idx = max(1, int(n * (1.0 - val_fraction)))
     if split_idx >= n:
         split_idx = n - 1
     X_train, X_val = X[:split_idx], X[split_idx:]
     y_train, y_val = y[:split_idx], y[split_idx:]
+    w_train = sample_weights[:split_idx] if sample_weights is not None else None
 
     if len(np.unique(y_train)) < 2:
         return {
@@ -308,6 +328,16 @@ def train_model_from_rows(
             "sample_count": n,
         }
 
+    # Class-balanced weighting: prevent majority-class bias
+    n_pos = int(y_train.sum())
+    n_neg = int(len(y_train) - n_pos)
+    if n_pos > 0 and n_neg > 0:
+        class_weight_ratio = n_neg / n_pos
+        # Integrate into sample weights
+        if w_train is None:
+            w_train = np.ones(len(y_train), dtype=np.float64)
+        w_train[y_train == 1] *= class_weight_ratio
+
     model = HistGBC(
         max_depth=5,
         max_iter=120,
@@ -315,7 +345,7 @@ def train_model_from_rows(
         min_samples_leaf=max(2, min_samples // 15),
         random_state=42,
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=w_train)
 
     metrics: dict[str, Any] = {
         "train_samples": int(len(y_train)),
@@ -334,8 +364,26 @@ def train_model_from_rows(
             metrics["val_log_loss"] = None
 
     # Refit on all rows for production inference (val split is metrics-only).
-    model.fit(X, y)
+    # Recompute class balance from the full dataset (may differ from train split).
+    full_n_pos = int(y.sum())
+    full_n_neg = int(n - full_n_pos)
+    full_class_ratio = full_n_neg / full_n_pos if full_n_pos > 0 and full_n_neg > 0 else 1.0
+    all_weights = sample_weights if sample_weights is not None else None
+    if all_weights is None and full_n_pos > 0 and full_n_neg > 0:
+        all_weights = np.ones(n, dtype=np.float64)
+        all_weights[y == 1] *= full_class_ratio
+    elif all_weights is not None and full_n_pos > 0 and full_n_neg > 0:
+        # Apply class balance on top of existing risk-adjusted weights
+        all_weights = all_weights.copy()
+        all_weights[y == 1] *= full_class_ratio
+    model.fit(X, y, sample_weight=all_weights)
     metrics["fit_samples"] = int(n)
+    metrics["class_balance"] = {
+        "n_pos": full_n_pos,
+        "n_neg": full_n_neg,
+        "weight_ratio": round(float(full_class_ratio), 4),
+    }
+    metrics["risk_adjusted_labels"] = risk_adjusted_labels
 
     importances = getattr(model, "feature_importances_", None)
     top_features: list[dict[str, Any]] = []
@@ -522,6 +570,82 @@ def predict_meta_label_prob(
         entry_ts=ts,
     )
     return get_meta_label_store().predict_proba(bot_id, features)
+
+
+def explain_prediction(
+    bot_id: str,
+    insight: dict,
+    *,
+    symbol: str,
+    side: str,
+    timeframe: str,
+    bar_time: str | int | float | None = None,
+    entry_ts: str | int | float | None = None,
+    top_k: int = 5,
+) -> dict[str, Any] | None:
+    """Return feature contributions for a meta-label prediction.
+
+    Uses feature importances × sign of feature deviation from mean as
+    a lightweight SHAP approximation.  Returns the top_k contributing
+    features with direction (+/−) and magnitude.
+
+    Returns:
+        {
+            "prob": float,
+            "contributions": [
+                {"feature": str, "value": float, "contribution": float, "direction": str},
+                ...
+            ],
+            "decision": "pass" | "block",
+        }
+    """
+    ts = resolve_entry_ts(insight, bar_time=bar_time, entry_ts=entry_ts)
+    features = insight_to_features(
+        insight,
+        symbol=symbol,
+        side=side,
+        timeframe=timeframe,
+        entry_ts=ts,
+    )
+    store = get_meta_label_store()
+    prob = store.predict_proba(bot_id, features)
+    if prob is None:
+        return None
+
+    # Get model for feature importances — check session models first (backtest),
+    # then the persistent store (same lookup order as predict_proba).
+    model = get_backtest_session_model(bot_id)
+    if model is None:
+        model = store._models.get(str(bot_id))
+    if model is None:
+        return {"prob": prob, "contributions": [], "decision": "pass" if prob >= 0.5 else "block"}
+
+    importances = getattr(model, "feature_importances_", None)
+    if importances is None or len(importances) != len(FEATURE_NAMES):
+        return {"prob": prob, "contributions": [], "decision": "pass" if prob >= 0.5 else "block"}
+
+    vec = features_to_vector(features)
+    contributions: list[dict[str, Any]] = []
+    for i, (name, imp) in enumerate(zip(FEATURE_NAMES, importances)):
+        val = float(vec[i])
+        # Positive feature values with high importance → bullish contribution
+        # Negative → bearish.  Scale by importance.
+        contrib = val * float(imp)
+        direction = "bullish" if contrib > 0 else "bearish" if contrib < 0 else "neutral"
+        contributions.append({
+            "feature": name,
+            "value": round(val, 4),
+            "contribution": round(contrib, 4),
+            "direction": direction,
+        })
+
+    contributions.sort(key=lambda c: abs(c["contribution"]), reverse=True)
+
+    return {
+        "prob": round(prob, 4),
+        "contributions": contributions[:top_k],
+        "decision": "pass" if prob >= 0.5 else "block",
+    }
 
 
 def get_meta_label_status(bot_id: str) -> dict[str, Any]:

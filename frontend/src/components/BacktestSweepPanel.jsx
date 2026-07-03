@@ -576,7 +576,13 @@ export default function BacktestSweepPanel({
         </div>
       )}
 
-      <BacktestWalkForwardPanel walkForward={results?.walk_forward} />
+      <BacktestWalkForwardPanel
+        walkForward={results?.walk_forward}
+        symbol={symbol}
+        strategy={strategy}
+        timeframe={timeframe}
+        runId={results?.run_id}
+      />
 
       {results?.auto_deploy && (
         <Alert className={cn(

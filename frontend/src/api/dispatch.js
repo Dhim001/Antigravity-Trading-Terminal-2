@@ -125,12 +125,22 @@ export function applyServerMessage(type, data, storeActions, meta) {
         break;
       }
       if (data?.status === 'success' && data?.results && !data.results.error) {
-        storeActions.setBacktestResults(data.results);
-        const sym = data.results?.meta?.symbol;
-        const pnl = data.results?.total_pnl;
-        const trades = data.results?.trade_count ?? 0;
-        const explained = data.results?.reasoning?.trade_count
-          ?? data.results?.reasoning?.trades?.length
+        // FIX 3: Trim large arrays to prevent memory bloat
+        const results = data.results;
+        if (Array.isArray(results.equity_curve) && results.equity_curve.length > 2000) {
+          // Downsample: keep every Nth point to stay under 2000
+          const step = Math.ceil(results.equity_curve.length / 2000);
+          results.equity_curve = results.equity_curve.filter((_, i) => i % step === 0 || i === results.equity_curve.length - 1);
+        }
+        if (results.reasoning?.trades && Array.isArray(results.reasoning.trades) && results.reasoning.trades.length > 50) {
+          results.reasoning.trades = results.reasoning.trades.slice(0, 50);
+        }
+        storeActions.setBacktestResults(results);
+        const sym = results?.meta?.symbol;
+        const pnl = results?.total_pnl;
+        const trades = results?.trade_count ?? 0;
+        const explained = results?.reasoning?.trade_count
+          ?? results?.reasoning?.trades?.length
           ?? 0;
         const pnlLabel = pnl != null
           ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
@@ -142,19 +152,21 @@ export function applyServerMessage(type, data, storeActions, meta) {
             onClick: () => useStore.getState().openBacktestLab('results'),
           },
         });
-        if (data.results?.meta?.symbol && data.results?.run_id) {
+        if (results?.meta?.symbol && results?.run_id) {
+          const overlayTrades = Array.isArray(results.trades) ? results.trades.slice(0, 200) : [];
+          const overlayEquity = Array.isArray(results.equity_curve) ? results.equity_curve.slice(0, 2000) : [];
           storeActions.setBacktestOverlay({
-            runId: data.results.run_id,
-            symbol: data.results.meta.symbol,
-            meta: data.results.meta,
-            trades: data.results.trades ?? [],
-            tradesTotal: data.results.trades_total ?? data.results.trades?.length ?? 0,
-            equityCurve: data.results.equity_curve ?? [],
+            runId: results.run_id,
+            symbol: results.meta.symbol,
+            meta: results.meta,
+            trades: overlayTrades,
+            tradesTotal: results.trades_total ?? results.trades?.length ?? 0,
+            equityCurve: overlayEquity,
             visible: false,
           });
         }
-        if (data.results?.sweep) {
-          toast.success(`Sweep complete · best $${Number(data.results.total_pnl ?? 0).toFixed(2)}`);
+        if (results?.sweep) {
+          toast.success(`Sweep complete · best $${Number(results.total_pnl ?? 0).toFixed(2)}`);
         }
         import('./endpoints').then(({ fetchBacktestRuns }) => {
           fetchBacktestRuns(storeActions, sym);

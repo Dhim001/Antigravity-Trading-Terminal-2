@@ -128,6 +128,63 @@ def get_daily_pnl(bot_id: str) -> float:
     return val
 
 
+def get_recent_consecutive_losses(bot_id: str) -> int:
+    """Count current consecutive losing exits (most recent first)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT pnl FROM bot_trades
+        WHERE bot_id = ? AND is_exit = 1 AND pnl IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 20
+        """,
+        (bot_id,),
+    )
+    streak = 0
+    for row in cursor.fetchall():
+        pnl = float(row[0] if not isinstance(row, dict) else row.get("pnl", 0))
+        if pnl < 0:
+            streak += 1
+        else:
+            break
+    conn.close()
+    return streak
+
+
+def last_exit_timestamp(bot_id: str) -> str | None:
+    """Return ISO timestamp of the most recent exit trade, or None."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT timestamp FROM bot_trades
+        WHERE bot_id = ? AND is_exit = 1
+        ORDER BY timestamp DESC LIMIT 1
+        """,
+        (bot_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return row[0] if not isinstance(row, dict) else row.get("timestamp")
+
+
+def get_active_bots_for_symbol(symbol: str, *, exclude_bot_id: str = "") -> int:
+    """Count running bots trading the given symbol (excludes the asking bot)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*) FROM bots
+        WHERE symbol = ? AND status = 'RUNNING' AND id != ?
+        """,
+        (symbol, exclude_bot_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row[0] if row else 0)
+
 def get_bot_stats(bot_id: str) -> dict:
     return get_all_bot_stats([bot_id]).get(
         bot_id,

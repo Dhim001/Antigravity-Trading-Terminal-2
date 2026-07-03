@@ -4,6 +4,7 @@ import time
 import copy
 import asyncio
 import logging
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Awaitable, List
 
@@ -28,7 +29,7 @@ class SimulatedFeedService(BaseFeedService):
         self.volatility_multiplier = DEFAULT_VOLATILITY_MULTIPLIER
         self.biases = {}  # symbol -> 'UP' | 'DOWN' | 'RANDOM'
 
-        self.candles = {}
+        self.candles = {}  # symbol -> deque(maxlen=10080)
         self.order_books = {}
         self.broadcast_callback = None
         self._generators: dict = {}
@@ -38,8 +39,9 @@ class SimulatedFeedService(BaseFeedService):
         self._sbbs_warming = False
 
         for symbol, info in self._symbols.items():
-            self.candles[symbol] = self._generate_fallback_candles(
-                symbol, info["price"], SIM_INITIAL_CANDLE_BARS,
+            self.candles[symbol] = deque(
+                self._generate_fallback_candles(symbol, info["price"], SIM_INITIAL_CANDLE_BARS),
+                maxlen=10080,
             )
             self.order_books[symbol] = self._generate_order_book(symbol, info["price"])
 
@@ -58,7 +60,9 @@ class SimulatedFeedService(BaseFeedService):
                 if row.get("price") is not None:
                     self._symbols[symbol]["price"] = row["price"]
                 if row.get("candles"):
-                    self.candles[symbol] = self._normalize_candles(row["candles"])
+                    self.candles[symbol] = deque(
+                        self._normalize_candles(row["candles"]), maxlen=10080,
+                    )
                 if row.get("target"):
                     self._target_candles[symbol] = row["target"]
                 self.order_books[symbol] = self._generate_order_book(
@@ -228,9 +232,7 @@ class SimulatedFeedService(BaseFeedService):
                 "close": new_price,
                 "volume": round(vol_tick, 2)
             }
-            active_candles.append(new_candle)
-            if len(active_candles) > 10080:
-                active_candles.pop(0)
+            active_candles.append(new_candle)  # deque(maxlen=10080) auto-drops oldest
             self._bar_close.notify(symbol)
         else:
             # Update the current candle
@@ -265,7 +267,8 @@ class SimulatedFeedService(BaseFeedService):
         }
 
     def get_candles(self, symbol: str) -> List[dict]:
-        return self.candles.get(symbol, [])
+        buf = self.candles.get(symbol)
+        return list(buf) if buf else []
 
     def feed_lag_sec(self) -> float | None:
         """Seconds since the latest simulated 1m bar close across watched symbols."""

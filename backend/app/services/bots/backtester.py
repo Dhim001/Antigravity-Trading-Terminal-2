@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from app.config import BOT_DAILY_LOSS_LIMIT_PCT
 from app.services.bots.backtest_costs import (
+    CostModel,
     entry_fill_price,
     exit_fill_price,
     parse_cost_config,
@@ -214,9 +215,62 @@ def _compute_summary(
 
 
 class BacktesterService:
+    _CACHE_TTL_SEC = 300  # 5 min — auto-expire stale sweep DFs
+    _CACHE_MAX_ENTRIES = 10
+
     def __init__(self, screener_service):
         self.screener = screener_service
         self._risk_gate = RiskGate()
+        self._candle_cache: dict[str, tuple[float, "pd.DataFrame"]] = {}  # (timestamp, df)
+
+    # ── Candle cache for parameter sweeps ──────────────────────────────────
+    def cache_candles(self, symbol: str, strategy_name: str, candles: list, config: dict) -> str:
+        """Pre-compute and cache the indicator DataFrame for sweep reuse.
+
+        Returns the cache key for retrieval via get_cached_candles().
+        """
+        import time as _time
+
+        self._evict_expired_cache()
+        key = f"{symbol}:{strategy_name}:{len(candles)}"
+        df = self.screener.process_candles(
+            symbol, candles, config, strategy_name, full_history=True,
+        )
+        if not df.empty:
+            self._candle_cache[key] = (_time.monotonic(), df)
+        return key
+
+    def get_cached_candles(self, symbol: str, strategy_name: str, n_candles: int) -> "pd.DataFrame | None":
+        """Return a deep copy of cached indicator DF, or None if not cached."""
+        import time as _time
+
+        key = f"{symbol}:{strategy_name}:{n_candles}"
+        entry = self._candle_cache.get(key)
+        if entry is not None:
+            ts, df = entry
+            if _time.monotonic() - ts > self._CACHE_TTL_SEC:
+                self._candle_cache.pop(key, None)
+                return None
+            return df.copy()
+        return None
+
+    def _evict_expired_cache(self):
+        """Remove stale cache entries and enforce max size."""
+        import time as _time
+
+        now = _time.monotonic()
+        expired = [k for k, (ts, _) in self._candle_cache.items()
+                   if now - ts > self._CACHE_TTL_SEC]
+        for k in expired:
+            self._candle_cache.pop(k, None)
+        # Cap to max entries
+        while len(self._candle_cache) > self._CACHE_MAX_ENTRIES:
+            oldest_key = min(self._candle_cache, key=lambda k: self._candle_cache[k][0])
+            self._candle_cache.pop(oldest_key, None)
+
+    def clear_candle_cache(self):
+        """Clear the candle cache after a sweep completes."""
+        self._candle_cache.clear()
 
     def run_backtest(
         self,
@@ -253,9 +307,14 @@ class BacktesterService:
         if allocation <= 0:
             allocation = _DEFAULT_ALLOCATION
 
-        df = self.screener.process_candles(
-            symbol, candles, cfg, strategy_name, full_history=True,
-        )
+        # Use cached indicator DF when available (sweep reuse)
+        cached = self.get_cached_candles(symbol, strategy_name, len(candles))
+        if cached is not None:
+            df = cached
+        else:
+            df = self.screener.process_candles(
+                symbol, candles, cfg, strategy_name, full_history=True,
+            )
         if df.empty:
             return {"error": "Failed to calculate indicators"}
 
@@ -274,6 +333,7 @@ class BacktesterService:
         risk_cfg = parse_risk_sizing_config(cfg)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
+        cost_model = CostModel.from_config(cfg)
         total_fees = 0.0
         chart_cfg = merge_strategy_config("CHART_AGENT", cfg) if strat_key == "CHART_AGENT" else {}
 
@@ -466,8 +526,20 @@ class BacktesterService:
             _, tp_price = resolve_take_profit(
                 merged_config, signal_data, signal, current_price,
             )
-            entry_fill = entry_fill_price(current_price, "BUY", slippage_bps)
-            entry_fee = trade_fee(entry_fill * qty, fee_bps)
+            entry_notional = current_price * qty
+            bar_vol = float(row.get("volume") or 0)
+            bar_vol_notional = bar_vol * current_price
+            if cost_model.volume_participation:
+                cost_model.reset_bar(bar_time)
+                entry_fill = cost_model.fill_price(
+                    current_price, "BUY",
+                    order_notional=entry_notional,
+                    bar_volume_notional=bar_vol_notional,
+                )
+                entry_fee = cost_model.compute_fee(entry_fill * qty)
+            else:
+                entry_fill = entry_fill_price(current_price, "BUY", slippage_bps)
+                entry_fee = trade_fee(entry_fill * qty, fee_bps)
             equity -= entry_fee
             total_fees += entry_fee
             position = {
@@ -561,8 +633,20 @@ class BacktesterService:
             _, tp_price = resolve_take_profit(
                 merged_config, signal_data, "SELL", current_price,
             )
-            entry_fill = entry_fill_price(current_price, "SELL", slippage_bps)
-            entry_fee = trade_fee(entry_fill * qty, fee_bps)
+            entry_notional = current_price * qty
+            bar_vol = float(row.get("volume") or 0)
+            bar_vol_notional = bar_vol * current_price
+            if cost_model.volume_participation:
+                cost_model.reset_bar(bar_time)
+                entry_fill = cost_model.fill_price(
+                    current_price, "SELL",
+                    order_notional=entry_notional,
+                    bar_volume_notional=bar_vol_notional,
+                )
+                entry_fee = cost_model.compute_fee(entry_fill * qty)
+            else:
+                entry_fill = entry_fill_price(current_price, "SELL", slippage_bps)
+                entry_fee = trade_fee(entry_fill * qty, fee_bps)
             equity -= entry_fee
             total_fees += entry_fee
             position = {
@@ -731,8 +815,7 @@ class BacktesterService:
             "regime": summary.get("regime"),
             "benchmark_overlays": summary.get("benchmark_overlays"),
             "costs": {
-                "slippage_bps": slippage_bps,
-                "fee_bps": fee_bps,
+                **cost_model.to_dict(),
                 "total_fees": round(total_fees, 2),
             },
             "monte_carlo": monte_carlo,

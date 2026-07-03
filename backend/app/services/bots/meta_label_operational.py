@@ -158,3 +158,115 @@ def run_meta_label_walk_forward_sync(
     )
     result["meta"] = meta
     return result
+
+
+# ── Model staleness & rolling accuracy tracker ─────────────────────────────
+
+_rolling_predictions: dict[str, list[dict]] = {}  # bot_id → [{predicted: float, actual: bool, ts}]
+
+STALENESS_MAX_AGE_HOURS = 168  # 7 days — retrain if model is older
+STALENESS_MIN_ACCURACY = 0.50  # alert if rolling accuracy drops below 50%
+STALENESS_WINDOW_SIZE = 30  # track last 30 predictions
+
+
+def record_prediction_outcome(
+    bot_id: str,
+    predicted_prob: float,
+    actual_win: bool,
+    *,
+    timestamp: float | None = None,
+) -> None:
+    """Record a prediction/outcome pair for rolling accuracy tracking."""
+    import time
+
+    entry = {
+        "predicted": float(predicted_prob),
+        "actual": bool(actual_win),
+        "ts": timestamp or time.time(),
+    }
+    if bot_id not in _rolling_predictions:
+        _rolling_predictions[bot_id] = []
+    _rolling_predictions[bot_id].append(entry)
+    # Keep bounded
+    if len(_rolling_predictions[bot_id]) > STALENESS_WINDOW_SIZE * 2:
+        _rolling_predictions[bot_id] = _rolling_predictions[bot_id][-STALENESS_WINDOW_SIZE:]
+
+
+def get_model_staleness_report(bot_id: str) -> dict:
+    """Check model staleness: age, rolling accuracy, retraining recommendation.
+
+    Returns:
+        {
+            "bot_id": str,
+            "stale": bool,
+            "reasons": [str],
+            "rolling_accuracy": float | None,
+            "rolling_n": int,
+            "model_age_hours": float | None,
+            "retrain_recommended": bool,
+        }
+    """
+    import time
+
+    reasons: list[str] = []
+    retrain = False
+
+    # Rolling accuracy from in-memory tracker
+    preds = _rolling_predictions.get(bot_id, [])
+    recent = preds[-STALENESS_WINDOW_SIZE:]
+    rolling_n = len(recent)
+    rolling_accuracy = None
+    if rolling_n >= 5:
+        correct = sum(
+            1 for p in recent
+            if (p["predicted"] >= 0.5) == p["actual"]
+        )
+        rolling_accuracy = correct / rolling_n
+        if rolling_accuracy < STALENESS_MIN_ACCURACY:
+            reasons.append(
+                f"Rolling accuracy {rolling_accuracy:.1%} is below "
+                f"{STALENESS_MIN_ACCURACY:.0%} threshold ({rolling_n} samples)"
+            )
+            retrain = True
+
+    # Model age check from metadata
+    model_age_hours = None
+    try:
+        from app.services.bots.meta_label_model import get_meta_label_status
+
+        status = get_meta_label_status(bot_id)
+        meta = status.get("metadata") or {}
+        trained_at = meta.get("trained_at")
+        if trained_at:
+            from datetime import datetime, timezone
+
+            if isinstance(trained_at, str):
+                if trained_at.endswith("Z"):
+                    trained_at = trained_at[:-1] + "+00:00"
+                dt = datetime.fromisoformat(trained_at)
+            else:
+                dt = datetime.fromtimestamp(float(trained_at), tz=timezone.utc)
+            model_age_hours = (time.time() - dt.timestamp()) / 3600.0
+            if model_age_hours > STALENESS_MAX_AGE_HOURS:
+                reasons.append(
+                    f"Model age {model_age_hours:.0f}h exceeds "
+                    f"{STALENESS_MAX_AGE_HOURS}h limit"
+                )
+                retrain = True
+
+        if not status.get("model_loaded"):
+            reasons.append("No model loaded — training required")
+            retrain = True
+    except Exception:
+        pass
+
+    return {
+        "bot_id": bot_id,
+        "stale": bool(reasons),
+        "reasons": reasons,
+        "rolling_accuracy": round(rolling_accuracy, 4) if rolling_accuracy is not None else None,
+        "rolling_n": rolling_n,
+        "model_age_hours": round(model_age_hours, 1) if model_age_hours is not None else None,
+        "retrain_recommended": retrain,
+    }
+

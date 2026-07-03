@@ -319,7 +319,7 @@ class TickBacktester:
             equity_curve=equity_curve,
             candles=candles_1m,
             starting_equity=starting_equity,
-            feed=getattr(backtester.screener, "feed", None),
+            feed=None,
             symbol=symbol,
         )
 

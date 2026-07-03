@@ -26,6 +26,49 @@ class DomainScore:
     reasons: list[str] = field(default_factory=list)
 
 
+# ── Regime-adaptive domain weighting ──────────────────────────────────────
+# Each regime emphasizes different domains.  Weights are multiplied by the
+# raw integer domain score, then summed.  The result is rounded to int for
+# backward compatibility with the existing threshold logic (±2 → BUY/SELL).
+
+REGIME_WEIGHTS: dict[str, dict[str, float]] = {
+    "trending":     {"trend": 2.0, "momentum": 1.5, "volume": 1.0, "risk": 0.8, "sentiment": 0.5},
+    "ranging":      {"trend": 0.5, "momentum": 2.0, "volume": 1.5, "risk": 1.0, "sentiment": 0.8},
+    "elevated_vol": {"trend": 1.0, "momentum": 0.5, "volume": 0.8, "risk": 2.0, "sentiment": 1.0},
+    "compressed":   {"trend": 1.5, "momentum": 1.5, "volume": 1.2, "risk": 0.5, "sentiment": 0.8},
+}
+_EQUAL_WEIGHTS = {"trend": 1.0, "momentum": 1.0, "volume": 1.0, "risk": 1.0, "sentiment": 1.0}
+
+
+def _adaptive_score(
+    trend_score: int,
+    momentum_score: int,
+    volume_score: int,
+    sentiment_score: int,
+    risk_score: int,
+    regime: str,
+) -> tuple[int, dict[str, float]]:
+    """Compute regime-weighted composite score.
+
+    Returns (rounded_score, weights_used).
+    """
+    weights = REGIME_WEIGHTS.get(regime, _EQUAL_WEIGHTS)
+    raw = (
+        trend_score * weights["trend"]
+        + momentum_score * weights["momentum"]
+        + volume_score * weights["volume"]
+        + risk_score * weights.get("risk", 1.0)
+        + sentiment_score * weights["sentiment"]
+    )
+    # Normalize: sum of weights in equal mode = 5, so divide and re-scale
+    w_sum = sum(weights.values())
+    if w_sum > 0:
+        normalized = raw / w_sum * 5.0  # keep same scale as 5-domain equal-weight
+    else:
+        normalized = raw
+    return round(normalized), weights
+
+
 def _display_signal(score: int) -> str:
     if score >= 4:
         return "STRONG BUY"
@@ -379,8 +422,28 @@ def score_dataframe(
     momentum_score = sub_reports["momentum"]["score"]
     volume_score = sub_reports["volume"]["score"]
     sentiment_score = sub_reports["sentiment"]["score"]
-    # 3.1-A: Include volume conviction in total score.
-    score = trend_score + momentum_score + volume_score + sentiment_score
+    risk_score = sub_reports["risk"].get("score", 0)
+    trend_regime = sub_reports["trend"].get("trend_regime", "unknown")
+
+    # Map ATR regime to scoring regime when trend regime is not informative
+    atr_regime = sub_reports["risk"].get("atr_regime", "normal")
+    scoring_regime = trend_regime
+    if scoring_regime == "unknown":
+        scoring_regime = "ranging"
+    if atr_regime == "elevated":
+        scoring_regime = "elevated_vol"
+    elif atr_regime == "compressed" and scoring_regime != "trending":
+        scoring_regime = "compressed"
+
+    # Regime-adaptive weighted scoring
+    score, weights_used = _adaptive_score(
+        trend_score, momentum_score, volume_score,
+        sentiment_score, risk_score, scoring_regime,
+    )
+    sub_reports["regime_weights"] = {
+        "regime": scoring_regime,
+        "weights": {k: round(v, 2) for k, v in weights_used.items()},
+    }
     reasons = (
         sub_reports["trend"]["reasons"]
         + sub_reports["momentum"]["reasons"]

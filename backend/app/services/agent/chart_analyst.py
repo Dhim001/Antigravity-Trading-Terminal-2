@@ -119,8 +119,19 @@ class ChartAnalystService:
     def _set_cache(self, insight: ChartAgentInsight) -> None:
         payload = insight.to_dict()
         key = insight_cache_key(insight.symbol, insight.timeframe)
-        self._cache[key] = (time.monotonic(), payload)
+        now = time.monotonic()
+        self._cache[key] = (now, payload)
         ttl = self._cache_ttl(insight.timeframe)
+        # Evict expired entries and cap to 100
+        if len(self._cache) > 100:
+            expired = [k for k, (ts, _) in self._cache.items()
+                       if now - ts > self._cache_ttl(k.split('|')[-1] if '|' in k else '1m')]
+            for k in expired:
+                self._cache.pop(k, None)
+            # Still over cap — drop oldest
+            while len(self._cache) > 100:
+                oldest = min(self._cache, key=lambda k: self._cache[k][0])
+                self._cache.pop(oldest, None)
         if self._redis:
             try:
                 self._redis.setex(

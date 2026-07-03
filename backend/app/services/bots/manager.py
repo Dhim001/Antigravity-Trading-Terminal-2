@@ -307,6 +307,22 @@ class BotManagerService:
     def _get_bot_position_size(self, bot_id: str, symbol: str) -> float:
         return bot_positions.get_bot_size(bot_id, symbol)
 
+    def _get_model_staleness(self, bot_id: str) -> dict | None:
+        """Return model staleness report, or None if meta-label not configured."""
+        try:
+            bot = self.active_bots.get(bot_id) or {}
+            cfg = bot.get("config") or {}
+            if isinstance(cfg, str):
+                import json as _json
+                cfg = _json.loads(cfg) if cfg else {}
+            mode = str(cfg.get("meta_label_model_mode", "")).lower()
+            if mode not in ("gbm", "hybrid") and not cfg.get("meta_label_model_enabled"):
+                return None
+            from app.services.bots.meta_label_operational import get_model_staleness_report
+            return get_model_staleness_report(bot_id)
+        except Exception:
+            return None
+
     def _get_position(self, symbol: str) -> dict:
         positions = self.oms.get_account_data().get("positions", {})
         return positions.get(symbol) or {}
@@ -400,6 +416,8 @@ class BotManagerService:
             "stats": stats,
             "trades": bot_analytics.get_trades(bot_id, 50),
             "snapshots": bot_analytics.get_snapshots(bot_id, 30),
+            "consecutive_losses": bot_analytics.get_recent_consecutive_losses(bot_id),
+            "model_staleness": self._get_model_staleness(bot_id),
         }
 
     async def update_bot_config(self, bot_id: str, config_patch: dict) -> dict:
@@ -1243,6 +1261,22 @@ class BotManagerService:
                         from app.services.bots.calibration import get_calibration_store
 
                         get_calibration_store().invalidate(bot_id)
+
+                        # Track meta-label prediction accuracy for staleness monitoring
+                        try:
+                            from app.services.bots.meta_label_operational import record_prediction_outcome
+
+                            entry_snap = insight_snapshot or signal_data.get("insight_snapshot")
+                            if entry_snap and trade_pnl is not None:
+                                pred_prob = entry_snap.get("meta_label_prob")
+                                if pred_prob is not None:
+                                    record_prediction_outcome(
+                                        bot_id,
+                                        predicted_prob=float(pred_prob),
+                                        actual_win=(trade_pnl > 0),
+                                    )
+                        except Exception:
+                            pass
                     self.record_snapshot_for_bot(bot_id)
                     signal_ledger.mark_signal_filled(signal_id, order_id=order_id)
 

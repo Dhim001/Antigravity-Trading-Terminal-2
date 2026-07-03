@@ -487,6 +487,13 @@ async def _execute_backtest(
                 "total_runs": len(configs),
             })
 
+            # Pre-compute indicator DataFrame once for sweep reuse
+            if is_sweep and len(configs) > 1:
+                try:
+                    ctx.backtester.cache_candles(symbol, strategy, candles, config)
+                except Exception:
+                    pass  # fallback: each run computes its own
+
             sweep_rows = []
             best_result = None
             best_config = None
@@ -652,8 +659,11 @@ async def _execute_backtest(
                         return
 
         if best_result is None:
+            ctx.backtester.clear_candle_cache()
             await _finish("error", message="Sweep produced no valid runs")
             return
+
+        ctx.backtester.clear_candle_cache()
 
         if (
             not is_sweep

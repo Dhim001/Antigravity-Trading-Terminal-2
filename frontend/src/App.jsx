@@ -113,6 +113,9 @@ export default function App() {
   useAlertMonitor();
 
   const handleDockHeightChange = useCallback((h) => {
+    // Audit fix: don't persist dockHeight while collapsed — would restore to 44px on next expand
+    const ws = useSettingsStore.getState().settings.workspace;
+    if (ws?.dockCollapsed) return;
     setDockHeight(h);
     updateWorkspace({ dockHeight: h });
   }, [updateWorkspace]);
@@ -317,7 +320,8 @@ export default function App() {
         '--dock-h': `${effectiveDockH}px`,
         '--dock-min': showDock ? '200px' : '36px',
         '--sidebar-w': `${sidebarWidth}px`,
-        '--panel-w': !panelEnabled ? '0px' : panelCollapsed ? '44px' : undefined,
+        '--panel-w': !panelEnabled ? '0px' : undefined,
+        // Audit fix: panelCollapsed ? '44px' was redundant — CSS [data-panel-collapsed] handles it.
       }}
     >
       <a href="#main-chart" className="skip-link">
@@ -326,6 +330,12 @@ export default function App() {
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {connectionTitle}
       </div>
+      {/* Audit fix: zen mode had no escape affordance — hint fades after ~5s */}
+      {zenMode && (
+        <div className="zen-mode-hint" aria-hidden="true" key={Date.now()}>
+          Press <kbd>F</kbd> to exit zen mode
+        </div>
+      )}
       <SettingsBootstrap />
       <Suspense fallback={null}>
         <SystemControlPanel isOpen={showAdmin} onClose={() => setShowAdmin(false)} />

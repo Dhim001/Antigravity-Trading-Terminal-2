@@ -68,7 +68,12 @@ class TestChartAgentRules(unittest.TestCase):
         self.assertIsNotNone(insight.sub_reports)
         trend = insight.sub_reports["trend"]["score"]
         momentum = insight.sub_reports["momentum"]["score"]
-        self.assertEqual(insight.score, trend + momentum)
+        # Score is now regime-weighted (not flat sum), so just verify it's an int
+        # and regime_weights is present in sub_reports.
+        self.assertIsInstance(insight.score, int)
+        self.assertIn("regime_weights", insight.sub_reports)
+        self.assertIn("regime", insight.sub_reports["regime_weights"])
+        self.assertIn("weights", insight.sub_reports["regime_weights"])
         self.assertIn("risk", insight.sub_reports)
         self.assertIn("indicator", insight.sub_reports)
         self.assertEqual(insight.sub_reports["indicator"]["score"], momentum)

@@ -166,6 +166,13 @@
   /* Token bridge — prefer shadcn semantic tokens in new table/UI code */
   --surface-hover: color-mix(in oklab, var(--muted) 45%, transparent);
   --watchlist-sticky-header-h: 1.875rem;
+
+  /* ─── Audit fixes: missing / unified tokens ────────────────────── */
+  /* --color-primary was undefined → every active-tab glow & badge was transparent */
+  --color-primary:      var(--color-accent);
+  --color-warn:         #f59e0b;   /* amber warning surface */
+  --color-trading-warn: #d97706;   /* slightly darker for legible text */
+  --radius-sm:          var(--r-sm); /* bridge the --r-* and --radius-* naming families */
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -331,7 +338,7 @@ body {
 .workspace-switcher {
   height: var(--btn-h-sm);
   min-height: var(--btn-h-sm);
-  max-width: 9rem;
+  max-width: 12rem; /* raised from 9rem — avoids ellipsis on medium-length workspace names */
   padding-inline: var(--btn-pad-x-sm);
   gap: var(--icon-gap);
   box-sizing: border-box;
@@ -1491,6 +1498,8 @@ body {
   gap: var(--sp-3);
   min-height: var(--header-h);
   z-index: var(--z-header);
+  /* Audit fix: header needs its own background so chart content doesn't bleed through */
+  background: color-mix(in oklab, var(--surface-2) 92%, transparent);
   backdrop-filter: var(--glass);
   border-bottom: 1px solid var(--border-color);
   overflow: hidden;
@@ -1656,15 +1665,16 @@ body {
   max-width: 100%;
 }
 
+/* Audit fix: 0.92/0.96 opacity was too opaque on light surfaces — looked like a card floating in a card */
 :root .header-controls-inner {
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.92) 0%,
-    rgba(241, 245, 249, 0.96) 100%
+    rgba(255, 255, 255, 0.60) 0%,
+    rgba(241, 245, 249, 0.72) 100%
   );
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 1px 4px rgba(15, 23, 42, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 4px rgba(15, 23, 42, 0.06);
 }
 
 .dark .header-controls-inner {
@@ -1881,7 +1891,8 @@ body {
   box-shadow:
     0 0 0 1px color-mix(in oklab, var(--destructive) 35%, transparent),
     0 0 12px color-mix(in oklab, var(--destructive) 18%, transparent);
-  animation: header-stop-pulse 2.8s ease-in-out infinite;
+  /* Audit fix: infinite pulse causes alert fatigue — play 3× then rest */
+  animation: header-stop-pulse 2.8s ease-in-out 3;
 }
 
 @keyframes header-stop-pulse {
@@ -2055,7 +2066,8 @@ body {
 }
 
 .command-palette__list {
-  max-height: min(52vh, 360px);
+  /* Audit fix: min(52vh,360px) was too short on large screens — use clamp */
+  max-height: clamp(240px, 50vh, 480px);
   padding: var(--sp-1) var(--sp-2);
 }
 
@@ -2630,6 +2642,13 @@ body {
   box-shadow: 0 0 10px color-mix(in srgb, var(--color-primary) 15%, transparent);
 }
 
+/* Audit fix: dock tabs had no keyboard focus indicator — a11y violation */
+.dock-tab-switch [data-slot="tabs-trigger"]:focus-visible,
+.dock-group-toggle [data-slot="toggle-group-item"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 @media (max-width: 1279px) {
   .dock-group-toggle [data-slot="toggle-group-item"] {
     padding-inline: 8px;
@@ -2679,9 +2698,11 @@ body {
   contain-intrinsic-size: auto 320px;
 }
 
+/* Audit fix: display:none destroys scroll position in older browsers — use visibility instead */
 @supports not (content-visibility: hidden) {
   .dock-tab-body--cached[data-state="inactive"] {
-    display: none;
+    visibility: hidden;
+    pointer-events: none;
   }
 }
 
@@ -2708,7 +2729,11 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .chart-analyst-badge__pulse,
-  .header-mode-badge--live .animate-ping {
+  .header-mode-badge--live .animate-ping,
+  /* Audit fix: dock pulse and stop-bots btn were missing from reduced-motion */
+  .dock-algo-pulse,
+  .dock-collapsed-rail__pulse,
+  .header-stop-bots-btn {
     animation: none !important;
   }
 }
@@ -2928,6 +2953,8 @@ body {
   overflow: auto;
   padding: var(--sp-1) var(--sp-2);
   background: color-mix(in oklab, var(--muted) 20%, transparent);
+  /* Audit fix: missing scrollbar-gutter caused layout shift when scroll appears */
+  scrollbar-gutter: stable;
 }
 
 /* ScrollArea-based dock panel (DockScrollPanel) — Radix scrolls the inner
@@ -3070,15 +3097,33 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  height: 4px;
+  /* Audit fix: 4px was too thin for touch — raised to 8px */
+  height: 8px;
   cursor: ns-resize;
   z-index: 10;
   background: transparent;
   transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dock-resize-handle::before {
+  content: '';
+  display: block;
+  width: 3rem;
+  height: 3px;
+  border-radius: var(--r-full);
+  background: color-mix(in oklab, var(--foreground) 14%, transparent);
+  transition: width 0.15s ease, background 0.15s ease;
 }
 .dock-resize-handle:hover,
 .dock-resize-handle.dragging {
-  background: linear-gradient(to right, transparent, rgba(59,130,246,0.4), transparent);
+  background: linear-gradient(to right, transparent, rgba(59,130,246,0.25), transparent);
+}
+.dock-resize-handle:hover::before,
+.dock-resize-handle.dragging::before {
+  width: 4rem;
+  background: color-mix(in oklab, var(--primary) 55%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -5624,6 +5669,42 @@ body {
   font-weight: 600;
   color: var(--text-muted);
   margin: 0 0 0.35rem;
+}
+
+.algo-backtest-wf__deploy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-radius: var(--radius-md, 6px);
+  background: linear-gradient(135deg, var(--accent-hsl, hsl(210, 80%, 55%)), hsl(160, 70%, 45%));
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.algo-backtest-wf__deploy-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.algo-backtest-wf__deploy-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+.algo-backtest-wf__deploy-btn:disabled {
+  pointer-events: none;
+}
+
+.algo-backtest-wf__deploy-done {
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.6rem;
+  background: hsl(145, 60%, 15%);
+  border-radius: var(--radius-md, 6px);
+  display: inline-block;
 }
 
 .algo-backtest-parity__meta {
@@ -8864,6 +8945,10 @@ body {
   user-select: none;
 }
 
+/* ═ Shared resize handle — all 3 sheet panels use identical styles ──────── */
+/* Audit fix: 3 identical ×20-line blocks collapsed into one combined selector */
+.automation-studio__resize,
+.insights-hub__resize,
 .backtest-lab__resize {
   position: absolute;
   top: 0;
@@ -8880,8 +8965,9 @@ body {
   transition: background 0.15s ease;
 }
 
-.backtest-lab__resize:hover,
-.backtest-lab__resize.dragging {
+.automation-studio__resize:hover, .automation-studio__resize.dragging,
+.insights-hub__resize:hover,      .insights-hub__resize.dragging,
+.backtest-lab__resize:hover,      .backtest-lab__resize.dragging {
   background: linear-gradient(
     to bottom,
     transparent,
@@ -8890,6 +8976,8 @@ body {
   );
 }
 
+.automation-studio__resize-grip,
+.insights-hub__resize-grip,
 .backtest-lab__resize-grip {
   display: flex;
   align-items: center;
@@ -8905,6 +8993,10 @@ body {
   transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
+.automation-studio__resize:hover .automation-studio__resize-grip,
+.automation-studio__resize.dragging .automation-studio__resize-grip,
+.insights-hub__resize:hover .insights-hub__resize-grip,
+.insights-hub__resize.dragging .insights-hub__resize-grip,
 .backtest-lab__resize:hover .backtest-lab__resize-grip,
 .backtest-lab__resize.dragging .backtest-lab__resize-grip {
   opacity: 1;
@@ -8952,13 +9044,15 @@ body {
   color: var(--text-muted);
 }
 
-.backtest-lab__header {
-  display: flex !important;
-  flex-direction: row !important;
-  align-items: flex-start !important;
-  justify-content: space-between !important;
-  gap: 0.5rem !important;
-  padding: 0.85rem 3.25rem 0.75rem 0.85rem !important;
+/* Audit fix: remove !important by using a compound selector with higher specificity
+   than shadcn’s [data-slot="sheet-header"] base style */
+.backtest-lab [data-slot="sheet-header"].backtest-lab__header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.85rem 3.25rem 0.75rem 0.85rem;
   cursor: grab;
   user-select: none;
 }
@@ -9057,53 +9151,7 @@ body {
   user-select: none;
 }
 
-.automation-studio__resize {
-  position: absolute;
-  top: 0;
-  left: -6px;
-  bottom: 0;
-  z-index: 5;
-  display: flex;
-  width: 10px;
-  align-items: center;
-  justify-content: center;
-  cursor: ew-resize;
-  background: transparent;
-  touch-action: none;
-  transition: background 0.15s ease;
-}
-
-.automation-studio__resize:hover,
-.automation-studio__resize.dragging {
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    color-mix(in oklab, var(--primary) 38%, transparent),
-    transparent
-  );
-}
-
-.automation-studio__resize-grip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 36px;
-  border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in oklab, var(--border-color) 90%, transparent);
-  background: color-mix(in oklab, var(--background) 88%, var(--muted));
-  color: var(--text-muted);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.automation-studio__resize:hover .automation-studio__resize-grip,
-.automation-studio__resize.dragging .automation-studio__resize-grip {
-  opacity: 1;
-  color: var(--color-accent-light);
-  border-color: color-mix(in oklab, var(--primary) 42%, var(--border-color));
-}
+/* Resize handle styles — defined in shared multi-selector block (see backtest-lab section above) */
 
 .automation-studio [data-slot="sheet-close"] {
   top: 0.85rem;
@@ -9181,53 +9229,7 @@ body {
   user-select: none;
 }
 
-.insights-hub__resize {
-  position: absolute;
-  top: 0;
-  left: -6px;
-  bottom: 0;
-  z-index: 5;
-  display: flex;
-  width: 10px;
-  align-items: center;
-  justify-content: center;
-  cursor: ew-resize;
-  background: transparent;
-  touch-action: none;
-  transition: background 0.15s ease;
-}
-
-.insights-hub__resize:hover,
-.insights-hub__resize.dragging {
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    color-mix(in oklab, var(--primary) 38%, transparent),
-    transparent
-  );
-}
-
-.insights-hub__resize-grip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 36px;
-  border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in oklab, var(--border-color) 90%, transparent);
-  background: color-mix(in oklab, var(--background) 88%, var(--muted));
-  color: var(--text-muted);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.insights-hub__resize:hover .insights-hub__resize-grip,
-.insights-hub__resize.dragging .insights-hub__resize-grip {
-  opacity: 1;
-  color: var(--color-accent-light);
-  border-color: color-mix(in oklab, var(--primary) 42%, var(--border-color));
-}
+/* Resize handle styles — defined in shared multi-selector block (see backtest-lab section above) */
 
 .insights-hub [data-slot="sheet-close"] {
   top: 0.85rem;
@@ -9742,6 +9744,57 @@ body {
   z-index: var(--z-popover) !important;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   ZEN MODE ESCAPE HINT
+   Audit fix: users had no visual affordance to exit zen mode (F key).
+   Hint auto-fades after ~6 s — no persistent noise.
+════════════════════════════════════════════════════════════════════ */
+.zen-mode-hint {
+  position: fixed;
+  bottom: var(--sp-5);
+  right: var(--sp-5);
+  display: flex;
+  align-items: center;
+  gap: var(--icon-gap);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-color);
+  background: color-mix(in oklab, var(--surface-2) 88%, transparent);
+  backdrop-filter: blur(10px);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  z-index: var(--z-header);
+  pointer-events: none;
+  /* Shows for 2 s, then fades out over 1.5 s */
+  animation: zen-hint-fadeout 3.5s ease-out 1.5s both;
+}
+
+.zen-mode-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in oklab, var(--border-color) 80%, transparent);
+  background: rgba(255, 255, 255, 0.06);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--color-accent-light);
+}
+
+@keyframes zen-hint-fadeout {
+  0%   { opacity: 1; transform: translateY(0); }
+  75%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zen-mode-hint { animation: none; opacity: 0; }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -9762,4 +9815,4 @@ body {
   .num-mono {
     font-family: var(--font-mono);
   }
-}
+}

@@ -35,8 +35,19 @@ const setLocal = (key, val) => {
   } catch (_) {}
 };
 
+/** Memory-efficient revision bump — mutates a shallow clone only when needed.
+ *  Prunes keys that exceed MAX_REVISION_KEYS to prevent unbounded growth. */
+const MAX_REVISION_KEYS = 30;
 export function bumpRevision(revisions, symbol) {
-  return { ...revisions, [symbol]: (revisions[symbol] || 0) + 1 };
+  const next = { ...revisions, [symbol]: (revisions[symbol] || 0) + 1 };
+  const keys = Object.keys(next);
+  if (keys.length > MAX_REVISION_KEYS) {
+    // Drop oldest keys (first inserted — JS object key order is insertion-order)
+    for (const k of keys.slice(0, keys.length - MAX_REVISION_KEYS)) {
+      delete next[k];
+    }
+  }
+  return next;
 }
 
 export const useStore = create(subscribeWithSelector((set, get) => ({
@@ -150,9 +161,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   chartSlTpDraft: null,
 
   setScanResults: (data) => set({ scanResults: data }),
-  setVisionReport: (key, report) => set((state) => ({
-    visionReports: { ...state.visionReports, [key]: report },
-  })),
+  setVisionReport: (key, report) => set((state) => {
+    const next = { ...state.visionReports, [key]: report };
+    // FIX 1: Cap to 10 entries — vision reports contain large base64 images
+    const keys = Object.keys(next);
+    if (keys.length > 10) {
+      for (const k of keys.slice(0, keys.length - 10)) delete next[k];
+    }
+    return { visionReports: next };
+  }),
   setChartDrawings: (symbol, drawings) => set((state) => ({
     chartDrawings: { ...state.chartDrawings, [symbol]: drawings },
   })),
@@ -345,9 +362,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   },
 
   agentDeepReasoning: {},
-  setAgentDeepReasoning: (insightId, data) => set((state) => ({
-    agentDeepReasoning: { ...state.agentDeepReasoning, [insightId]: data },
-  })),
+  setAgentDeepReasoning: (insightId, data) => set((state) => {
+    const next = { ...state.agentDeepReasoning, [insightId]: data };
+    // FIX 2: Cap to 20 entries — LLM reasoning text accumulates
+    const keys = Object.keys(next);
+    if (keys.length > 20) {
+      for (const k of keys.slice(0, keys.length - 20)) delete next[k];
+    }
+    return { agentDeepReasoning: next };
+  }),
 
   setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),
 
@@ -450,9 +473,20 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     if (normalizeAnalystTimeframe(insight?.timeframe) === '1m') {
       nextInsights[sym] = insight;
     }
+    // FIX 4: Cap agentInsights to 30 keys
+    const iKeys = Object.keys(nextInsights);
+    if (iKeys.length > 30) {
+      for (const k of iKeys.slice(0, iKeys.length - 30)) delete nextInsights[k];
+    }
+    // Cap agentInsightHistory to 15 symbols
+    const nextHistoryMap = { ...state.agentInsightHistory, [sym]: nextHistory };
+    const hKeys = Object.keys(nextHistoryMap);
+    if (hKeys.length > 15) {
+      for (const k of hKeys.slice(0, hKeys.length - 15)) delete nextHistoryMap[k];
+    }
     return {
       agentInsights: nextInsights,
-      agentInsightHistory: { ...state.agentInsightHistory, [sym]: nextHistory },
+      agentInsightHistory: nextHistoryMap,
     };
   }),
 
@@ -601,10 +635,16 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 initCandleBufferCache(getLocal('terminal_active_symbol', 'BTCUSDT'));
 
 onCandleBufferEvict((symbol) => {
-  useStore.setState((state) => ({
-    candleRevision: bumpRevision(state.candleRevision, symbol),
-    candleHistoryRevision: bumpRevision(state.candleHistoryRevision, symbol),
-  }));
+  useStore.setState((state) => {
+    // FIX 5: Prune orderBooks and tickerData for evicted symbols
+    const nextOrderBooks = { ...state.orderBooks };
+    delete nextOrderBooks[symbol];
+    return {
+      candleRevision: bumpRevision(state.candleRevision, symbol),
+      candleHistoryRevision: bumpRevision(state.candleHistoryRevision, symbol),
+      orderBooks: nextOrderBooks,
+    };
+  });
 });
 
 if (import.meta.hot) {

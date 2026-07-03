@@ -1,8 +1,12 @@
 /**
  * Walk-forward in-sample vs out-of-sample summary (single or rolling folds).
+ * Includes "Deploy Live" button when OOS validation passes.
  */
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
+import { toast } from 'sonner';
 
 function Metric({ label, value, tone }) {
   return (
@@ -42,7 +46,80 @@ function FoldSummary({ fold }) {
   );
 }
 
-export default function BacktestWalkForwardPanel({ walkForward }) {
+function DeployButton({ symbol, strategy, timeframe, allocation, bestConfig, walkForward, runId }) {
+  const [deploying, setDeploying] = useState(false);
+  const [deployed, setDeployed] = useState(null);
+
+  const oos = walkForward?.out_of_sample ?? {};
+  const oosPnl = oos.total_pnl ?? 0;
+  const oosTrades = oos.trade_count ?? oos.summary?.total_trades ?? 0;
+  const canDeploy = oosPnl > 0 && oosTrades >= 1;
+
+  const handleDeploy = useCallback(async () => {
+    if (deploying || deployed) return;
+    setDeploying(true);
+    try {
+      const { ok, error } = await sendAction(Action.BOT_CREATE, {
+        strategy: strategy || 'CHART_AGENT',
+        symbol,
+        timeframe: timeframe || '1m',
+        allocation: allocation || 1000,
+        config: {
+          ...(bestConfig || {}),
+          walk_forward_deploy: true,
+          backtest_run_id: runId,
+          pipeline_source: 'walk_forward_ui',
+        },
+      });
+      if (ok) {
+        setDeployed({ ok: true });
+        toast.success(`Bot deployed for ${symbol} using walk-forward best config`);
+      } else {
+        setDeployed({ ok: false, message: error });
+        toast.error(`Deploy failed: ${error}`);
+      }
+    } catch (err) {
+      setDeployed({ ok: false, message: err?.message });
+      toast.error(`Deploy error: ${err?.message}`);
+    } finally {
+      setDeploying(false);
+    }
+  }, [deploying, deployed, symbol, strategy, timeframe, allocation, bestConfig, runId]);
+
+  if (deployed?.ok) {
+    return (
+      <div className="algo-backtest-wf__deploy-done">
+        <span className="text-trading-up font-semibold text-xs">
+          ✓ Bot deployed for {symbol}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      className={cn(
+        'algo-backtest-wf__deploy-btn',
+        !canDeploy && 'opacity-50 cursor-not-allowed',
+      )}
+      disabled={!canDeploy || deploying}
+      onClick={handleDeploy}
+      title={
+        !canDeploy
+          ? 'OOS PnL must be positive with ≥1 trade to deploy'
+          : 'Deploy a live bot using the walk-forward best config'
+      }
+    >
+      {deploying ? (
+        <span className="animate-pulse">Deploying…</span>
+      ) : (
+        <>🚀 Deploy Live from Walk-Forward</>
+      )}
+    </button>
+  );
+}
+
+export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy, timeframe, allocation, runId }) {
   if (!walkForward) return null;
 
   const folds = walkForward.folds ?? [];
@@ -52,6 +129,7 @@ export default function BacktestWalkForwardPanel({ walkForward }) {
   const oos = walkForward.out_of_sample ?? {};
   const isSummary = is.summary ?? {};
   const oosSummary = oos.summary ?? {};
+  const bestConfig = walkForward.best_config ?? {};
 
   return (
     <section className="algo-backtest-wf">
@@ -79,6 +157,46 @@ export default function BacktestWalkForwardPanel({ walkForward }) {
               ))}
             </tbody>
           </table>
+
+          {/* Fold Heatmap — visual overview of fold performance */}
+          <div className="mt-2">
+            <p className="text-[0.55rem] text-muted-foreground mb-1">Fold performance heatmap (OOS PnL)</p>
+            <div className="flex gap-0.5 flex-wrap">
+              {(() => {
+                const maxAbs = Math.max(...folds.map((f) => Math.abs(f.out_of_sample?.total_pnl ?? 0)), 1);
+                return folds.map((fold) => {
+                  const oosPnl = fold.out_of_sample?.total_pnl ?? 0;
+                  const intensity = Math.min(Math.abs(oosPnl) / maxAbs, 1);
+                  const alpha = 0.15 + intensity * 0.75;
+                  const hue = oosPnl >= 0 ? 145 : 0;
+                  const bg = `hsla(${hue}, 70%, ${oosPnl >= 0 ? 35 : 40}%, ${alpha.toFixed(2)})`;
+                  const oosSharpe = fold.out_of_sample?.summary?.sharpe_ratio;
+                  const sign = oosPnl < 0 ? '-' : '';
+                  const absVal = Math.abs(oosPnl);
+                  const label = absVal >= 1000 ? `${sign}$${(absVal / 1000).toFixed(1)}k` : `${sign}$${absVal.toFixed(0)}`;
+                  return (
+                    <div
+                      key={fold.fold}
+                      className="rounded-sm text-center num-mono"
+                      style={{
+                        background: bg,
+                        minWidth: '2.4rem',
+                        padding: '0.25rem 0.35rem',
+                        fontSize: '0.5rem',
+                        lineHeight: 1.3,
+                      }}
+                      title={`Fold ${fold.fold}: OOS PnL $${Number(oosPnl).toFixed(2)}${oosSharpe != null ? `, Sharpe ${Number(oosSharpe).toFixed(2)}` : ''}`}
+                    >
+                      <div className="font-semibold">{fold.fold}</div>
+                      <div className={oosPnl >= 0 ? 'text-trading-up' : 'text-trading-down'}>
+                        {label}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
         </div>
       )}
 
@@ -144,6 +262,18 @@ export default function BacktestWalkForwardPanel({ walkForward }) {
           </div>
         </div>
       )}
+
+      {/* Deploy from walk-forward button */}
+      <DeployButton
+        symbol={symbol}
+        strategy={strategy}
+        timeframe={timeframe}
+        allocation={allocation}
+        bestConfig={bestConfig}
+        walkForward={walkForward}
+        runId={runId}
+        ws={ws}
+      />
     </section>
   );
 }
