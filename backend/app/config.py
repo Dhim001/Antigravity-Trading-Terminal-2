@@ -37,6 +37,12 @@ USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 
 # Bot engine on live brokers is opt-in (paper/live safety gate).
 ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
+# Deploy gate — block bot_create when linked backtest fails OOS/WF prerequisites.
+DEPLOY_GATE_ENABLED = os.environ.get("DEPLOY_GATE_ENABLED", "true").lower() in ("1", "true", "yes")
+DEPLOY_MIN_OOS_PNL = float(os.environ.get("DEPLOY_MIN_OOS_PNL", "0"))
+DEPLOY_MIN_OOS_TRADES = int(os.environ.get("DEPLOY_MIN_OOS_TRADES", "1"))
+DEPLOY_MIN_STABILITY_SCORE = float(os.environ.get("DEPLOY_MIN_STABILITY_SCORE", "0.5"))
+DEPLOY_MAX_DRAWDOWN_WARN_PCT = float(os.environ.get("DEPLOY_MAX_DRAWDOWN_WARN_PCT", "25"))
 BOT_MIN_CANDLES = int(os.environ.get("BOT_MIN_CANDLES", "200"))
 # Chart analyst / agent scoring (MACD/RSI warm-up); lower than bot backtest minimum.
 AGENT_MIN_CANDLES = int(os.environ.get("AGENT_MIN_CANDLES", "50"))
@@ -107,6 +113,12 @@ BOT_MAX_DRAWDOWN_PCT = float(os.environ.get("BOT_MAX_DRAWDOWN_PCT", "15.0"))
 BOT_MAX_PER_SYMBOL = int(os.environ.get("BOT_MAX_PER_SYMBOL", "3"))
 OPTIMIZATION_RETENTION_DAYS = int(os.environ.get("OPTIMIZATION_RETENTION_DAYS", "30"))
 BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", "14"))
+# Parallel symbol/sweep workers (memory-bound — default 4).
+BACKTEST_PARALLEL_WORKERS = int(os.environ.get("BACKTEST_PARALLEL_WORKERS", "4"))
+# Run portfolio / sweep / WF / reasoning in a background asyncio task.
+BACKTEST_DEFER_HEAVY = os.environ.get("BACKTEST_DEFER_HEAVY", "true").lower() in ("1", "true", "yes")
+# Inline WS handler runs under this estimate (seconds); slower jobs go to the queue.
+BACKTEST_INLINE_MAX_SEC = float(os.environ.get("BACKTEST_INLINE_MAX_SEC", "30"))
 
 # Portfolio-level risk (all bots combined)
 PORTFOLIO_MAX_GROSS_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "80"))

@@ -6,6 +6,23 @@ import random
 from typing import Any
 
 
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    idx = int(pct * (len(sorted_vals) - 1))
+    return sorted_vals[max(0, min(idx, len(sorted_vals) - 1))]
+
+
+def _downsample_fan(fan: list[dict], max_points: int = 40) -> list[dict]:
+    if len(fan) <= max_points:
+        return fan
+    step = max(1, (len(fan) + max_points - 1) // max_points)
+    out = [fan[i] for i in range(0, len(fan), step)]
+    if out[-1] is not fan[-1]:
+        out.append(fan[-1])
+    return out
+
+
 def monte_carlo_trade_bands(
     trades: list[dict],
     *,
@@ -15,7 +32,7 @@ def monte_carlo_trade_bands(
 ) -> dict[str, Any] | None:
     """
     Resample closed-trade PnLs with replacement to estimate total PnL distribution.
-    Returns 5th/50th/95th percentile total PnL and return %.
+    Returns 5th/50th/95th percentile total PnL and return %, plus fan bands.
     """
     closed = [t for t in (trades or []) if t.get("is_exit") and t.get("pnl") is not None]
     if len(closed) < 2:
@@ -40,6 +57,26 @@ def monte_carlo_trade_bands(
     def _ret(pnl: float) -> float:
         return round(pnl / base * 100, 2)
 
+    fan: list[dict] = []
+    for step in range(1, n + 1):
+        step_totals: list[float] = []
+        for _ in range(min(sims, 300)):
+            sample = [pnls[rng.randrange(n)] for _ in range(step)]
+            step_totals.append(sum(sample))
+        step_totals.sort()
+        s5 = _percentile(step_totals, 0.05)
+        s50 = _percentile(step_totals, 0.50)
+        s95 = _percentile(step_totals, 0.95)
+        fan.append({
+            "step": step,
+            "pnl_p5": round(s5, 2),
+            "pnl_p50": round(s50, 2),
+            "pnl_p95": round(s95, 2),
+            "equity_p5": round(base + s5, 2),
+            "equity_p50": round(base + s50, 2),
+            "equity_p95": round(base + s95, 2),
+        })
+
     return {
         "simulations": sims,
         "trade_count": n,
@@ -49,4 +86,5 @@ def monte_carlo_trade_bands(
         "return_p5_pct": _ret(p5),
         "return_p50_pct": _ret(p50),
         "return_p95_pct": _ret(p95),
+        "fan_bands": _downsample_fan(fan),
     }

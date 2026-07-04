@@ -19,8 +19,21 @@ import StrategySuggestPanel from './StrategySuggestPanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
 import BacktestMetaLabelWalkForwardPanel from './BacktestMetaLabelWalkForwardPanel';
+import BacktestAssumptionsStrip from './BacktestAssumptionsStrip';
+import BacktestAssumptionsPanel from './BacktestAssumptionsPanel';
+import BacktestBlockedLog from './BacktestBlockedLog';
+import BacktestTradeExplain from './BacktestTradeExplain';
+import BacktestReportTabs from './BacktestReportTabs';
+import BacktestPerformanceSection from './BacktestPerformanceSection';
+import BacktestMonteCarloChart from './BacktestMonteCarloChart';
+import BacktestExcursionBar from './BacktestExcursionBar';
+import BacktestSparkline from './BacktestSparkline';
+import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import { cn } from '@/lib/utils';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
+import { buildDeployPayload, evaluateDeployGate } from '@/lib/deployGate';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   backtestFingerprint,
@@ -32,10 +45,11 @@ import {
   symbolsMatch,
 } from '@/lib/backtestDisplay';
 import { exportBacktestPdf } from '@/lib/backtestExport';
+import { exportBacktestManifest } from '@/lib/backtestManifest';
 
 const EMPTY_TRADES = [];
 
-function BacktestTable({ caption, children, className, onScroll }) {
+function BacktestTable({ caption, children, className, onScroll, footer }) {
   return (
     <div
       className={cn('algo-backtest-table-scroll', className)}
@@ -45,6 +59,27 @@ function BacktestTable({ caption, children, className, onScroll }) {
         <p className="algo-backtest-table-scroll__caption">{caption}</p>
       )}
       {children}
+      {footer}
+    </div>
+  );
+}
+
+function TradeLogFilters({ value, onChange }) {
+  return (
+    <div className="algo-backtest-trade-filters" role="group" aria-label="Filter trades">
+      {['all', 'entries', 'exits', 'SL', 'TP', 'SIGNAL'].map((f) => (
+        <button
+          key={f}
+          type="button"
+          className={cn(
+            'algo-backtest-trade-filters__btn',
+            value === f && 'algo-backtest-trade-filters__btn--active',
+          )}
+          onClick={() => onChange(f)}
+        >
+          {f}
+        </button>
+      ))}
     </div>
   );
 }
@@ -130,8 +165,17 @@ function FilterRejectsSection({ summary }) {
   );
 }
 
-function MonteCarloSection({ monteCarlo }) {
+function MonteCarloSection({ monteCarlo, startingEquity, isFull }) {
   if (!monteCarlo?.simulations) return null;
+  if (isFull && monteCarlo.fan_bands?.length) {
+    return (
+      <BacktestMonteCarloChart
+        monteCarlo={monteCarlo}
+        startingEquity={startingEquity}
+        className="backtest-mc-chart--lab mb-3"
+      />
+    );
+  }
   return (
     <section className="algo-backtest-lab__section mb-3 rounded border border-border/50 bg-muted/10 p-2">
       <p className="algo-backtest-table-scroll__caption mb-1.5">Monte Carlo confidence ({monteCarlo.simulations} sims)</p>
@@ -156,20 +200,131 @@ function MonteCarloSection({ monteCarlo }) {
   );
 }
 
-function PortfolioResultsSection({ results }) {
+function PortfolioDeployBasket({ results, strategy, timeframe, totalAllocation, runId, days }) {
+  const { botConfig } = useStore();
+  const [deploying, setDeploying] = useState(false);
+  const [forceDeploy, setForceDeploy] = useState(false);
+
+  const rows = (results?.symbol_results || []).filter((r) => !r.error);
+  if (!results?.portfolio || rows.length < 2) return null;
+
+  const gate = evaluateDeployGate({
+    results,
+    config: botConfig,
+    strategy,
+    timeframe,
+    days,
+  });
+  const canDeploy = gate.passed || forceDeploy;
+
+  const handleDeployBasket = async () => {
+    if (!canDeploy || deploying) return;
+    setDeploying(true);
+    let okCount = 0;
+    let failCount = 0;
+    const totalWeight = rows.reduce((sum, r) => sum + Number(r.weight || 1), 0) || rows.length;
+
+    for (const row of rows) {
+      const weight = Number(row.weight || 1) / totalWeight;
+      const alloc = Math.max(100, Math.round((totalAllocation || botConfig?.allocation || 1000) * weight));
+      const rowGate = evaluateDeployGate({
+        results: {
+          ...results,
+          total_pnl: row.total_pnl,
+          trade_count: row.trade_count,
+          summary: row.summary,
+        },
+        symbol: row.symbol,
+        strategy,
+        timeframe,
+        days,
+        config: botConfig,
+      });
+      if (rowGate.blocking && !forceDeploy) {
+        failCount += 1;
+        continue;
+      }
+      const payload = buildDeployPayload({
+        strategy: strategy || 'CHART_AGENT',
+        symbol: row.symbol,
+        timeframe: timeframe || '1m',
+        allocation: alloc,
+        executionMode: 'BAR_CLOSE',
+        config: {
+          ...botConfig,
+          portfolio_deploy: true,
+          portfolio_weight: weight,
+        },
+        results: { run_id: runId },
+        days,
+        forceDeploy,
+      });
+      const { ok } = await sendAction(Action.BOT_CREATE, payload);
+      if (ok) okCount += 1;
+      else failCount += 1;
+    }
+
+    setDeploying(false);
+    if (okCount > 0) {
+      toast.success(`Deployed ${okCount} portfolio bot${okCount === 1 ? '' : 's'}`);
+    }
+    if (failCount > 0) {
+      toast.error(`${failCount} symbol${failCount === 1 ? '' : 's'} skipped or failed`);
+    }
+  };
+
+  return (
+    <div className="portfolio-deploy-basket mt-2">
+      {gate.blocking && (
+        <label className="deploy-gate__force mb-1.5">
+          <input
+            type="checkbox"
+            checked={forceDeploy}
+            onChange={(e) => setForceDeploy(e.target.checked)}
+          />
+          <span>Deploy basket anyway (bypass gate)</span>
+        </label>
+      )}
+      <Button
+        type="button"
+        variant="buy"
+        size="xs"
+        disabled={!canDeploy || deploying}
+        onClick={handleDeployBasket}
+      >
+        {deploying ? 'Deploying basket…' : `Deploy ${rows.length}-symbol basket`}
+      </Button>
+    </div>
+  );
+}
+
+function PortfolioResultsSection({ results, strategy, timeframe, backtestDays, totalAllocation }) {
   const rows = results?.symbol_results;
   if (!results?.portfolio || !rows?.length) return null;
   const summary = results.summary ?? {};
   const pnl = results.total_pnl ?? summary.total_pnl ?? 0;
   const pnlTone = pnl >= 0 ? 'up' : 'down';
   const corr = results.correlation_summary;
+  const skipped = results.skipped_symbols ?? rows.filter((r) => r.error).map((r) => ({
+    symbol: r.symbol,
+    reason: r.error,
+  }));
 
   return (
     <section className="algo-backtest-lab__section mb-3">
       <p className="algo-backtest-table-scroll__caption mb-1.5">
         Portfolio backtest — {results.symbols_tested} symbol{results.symbols_tested === 1 ? '' : 's'}
-        {results.symbols_failed > 0 ? ` (${results.symbols_failed} failed)` : ''}
+        {results.symbols_failed > 0 ? ` (${results.symbols_failed} skipped/failed)` : ''}
       </p>
+
+      {skipped.length > 0 && (
+        <Alert variant="default" className="mb-2 py-1.5 px-2">
+          <AlertTriangle className="size-3.5" />
+          <AlertDescription className="text-[0.58rem] leading-snug">
+            Skipped: {skipped.map((s) => `${s.symbol} (${s.reason})`).join(' · ')}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="algo-backtest-stat-grid algo-backtest-stat-grid--compact mb-2">
         <StatCard label="Aggregate PnL" value={`$${Number(pnl).toFixed(2)}`} tone={pnlTone} />
@@ -192,6 +347,7 @@ function PortfolioResultsSection({ results }) {
           <thead>
             <tr>
               <th>Symbol</th>
+              <th>Curve</th>
               <th className="text-right">PnL</th>
               <th className="text-right">Trades</th>
               <th className="text-right">Win%</th>
@@ -202,6 +358,12 @@ function PortfolioResultsSection({ results }) {
             {rows.map((row) => (
               <tr key={row.symbol}>
                 <td>{row.symbol}</td>
+                <td>
+                  <BacktestSparkline
+                    values={row.sparkline}
+                    tone={(row.total_pnl ?? 0) >= 0 ? 'up' : 'down'}
+                  />
+                </td>
                 <td className={cn(
                   'num-mono text-right',
                   row.error ? 'text-muted-foreground' : (row.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
@@ -220,6 +382,14 @@ function PortfolioResultsSection({ results }) {
           </tbody>
         </table>
       </div>
+      <PortfolioDeployBasket
+        results={results}
+        strategy={strategy}
+        timeframe={timeframe}
+        totalAllocation={totalAllocation}
+        runId={results?.run_id}
+        days={backtestDays}
+      />
     </section>
   );
 }
@@ -336,6 +506,8 @@ export default function BacktestResultsPanel({
   const [loadingTrades, setLoadingTrades] = useState(false);
   const [loadingRun, setLoadingRun] = useState(false);
   const [tradeReasonFilter, setTradeReasonFilter] = useState('all');
+  const [focusBarTime, setFocusBarTime] = useState(null);
+  const [selectedTrade, setSelectedTrade] = useState(null);
   const loadRef = useRef(0);
 
   const isFull = variant === 'full';
@@ -369,6 +541,8 @@ export default function BacktestResultsPanel({
   }, [results?.run_id, tradesTotal, results?.trades]);
 
   const displayTrades = fullTrades ?? previewTrades;
+  const tradesTruncated = tradesTotal > previewTrades.length;
+  const chartTrades = loadingTrades && tradesTruncated ? [] : displayTrades;
 
   const chartOn = backtestOverlay?.visible
     && backtestOverlay?.runId === results?.run_id
@@ -408,6 +582,8 @@ export default function BacktestResultsPanel({
     return rows;
   }, [displayTrades, tradeReasonFilter]);
 
+  const tableTrades = isFull ? allTrades : allTrades.slice(0, 10);
+
   const closedTrades = useMemo(
     () => displayTrades.filter(t => t.is_exit),
     [displayTrades],
@@ -420,7 +596,7 @@ export default function BacktestResultsPanel({
 
   const reasoningRequested = Boolean(results?.meta?.reasoning || reasoningPending);
 
-  const { onScroll: onTradeScroll, window: tradeWindow } = useVirtualRows(allTrades, {
+  const { onScroll: onTradeScroll, window: tradeWindow } = useVirtualRows(tableTrades, {
     rowHeight: 28,
     overscan: 10,
   });
@@ -483,13 +659,21 @@ export default function BacktestResultsPanel({
     tradesTotal,
   ]);
 
-  const onExport = useCallback(() => {
+  const onExport = useCallback(async () => {
+    let exportTrades = fullTrades ?? previewTrades;
+    if (results?.run_id && (results.trades_total ?? 0) > exportTrades.length) {
+      try {
+        exportTrades = await fetchBacktestTrades(results.run_id);
+      } catch {
+        /* use preview trades */
+      }
+    }
     exportTradesCsv(
-      displayTrades,
+      exportTrades,
       symbol ?? results?.meta?.symbol ?? 'sym',
       strategy ?? results?.meta?.strategy ?? 'strategy',
     );
-  }, [displayTrades, results, symbol, strategy]);
+  }, [fullTrades, previewTrades, results, symbol, strategy]);
 
   const onExportPdf = useCallback(async () => {
     let exportTrades = fullTrades ?? previewTrades;
@@ -535,10 +719,46 @@ export default function BacktestResultsPanel({
 
   const onTradeRowClick = useCallback((trade) => {
     if (!trade?.time) return;
+    setFocusBarTime(trade.time);
+    setSelectedTrade(trade);
     window.dispatchEvent(new CustomEvent('backtest-focus-bar', {
       detail: { time: trade.time, symbol: results?.meta?.symbol ?? symbol },
     }));
   }, [results, symbol]);
+
+  const onBlockedBarFocus = useCallback((time) => {
+    if (time == null) return;
+    setFocusBarTime(time);
+    setSelectedTrade(null);
+    window.dispatchEvent(new CustomEvent('backtest-focus-bar', {
+      detail: { time, symbol: results?.meta?.symbol ?? symbol },
+    }));
+  }, [results, symbol]);
+
+  const onExportManifest = useCallback(() => {
+    const outcome = exportBacktestManifest({
+      results,
+      symbol: symbol ?? results?.meta?.symbol,
+      strategy: strategy ?? results?.meta?.strategy,
+      days: backtestDays,
+      timeframe: backtestTimeframe ?? results?.meta?.timeframe,
+      config: botConfig,
+    });
+    if (!outcome?.ok) {
+      toast.error(outcome?.error || 'Could not export manifest');
+      return;
+    }
+    toast.success(outcome.filename ? `Downloaded ${outcome.filename}` : 'Manifest downloaded');
+  }, [results, symbol, strategy, backtestDays, backtestTimeframe, botConfig]);
+
+  useEffect(() => {
+    const handler = (ev) => {
+      const t = ev?.detail?.time;
+      if (t != null) setFocusBarTime(t);
+    };
+    window.addEventListener('backtest-focus-bar', handler);
+    return () => window.removeEventListener('backtest-focus-bar', handler);
+  }, []);
 
   if (!results) return null;
 
@@ -554,6 +774,10 @@ export default function BacktestResultsPanel({
     results.meta?.walk_forward && {
       key: 'wf',
       label: `WF ${results.meta?.train_pct ?? results.walk_forward?.train_pct ?? 70}%`,
+    },
+    (results.live_parity || results.meta?.live_parity) && {
+      key: 'parity',
+      label: 'Live parity',
     },
     results.meta?.oos_pct && !results.meta?.walk_forward && {
       key: 'oos',
@@ -610,7 +834,7 @@ export default function BacktestResultsPanel({
           <div className="algo-backtest-lab__tags">
             {runTags.map((tag) => (
               <Badge key={tag.key} variant="outline" className="algo-backtest-lab__tag h-5 px-1.5 text-[0.55rem]">
-                {tag.icon && <tag.icon className="size-3" aria-hidden />}
+                {tag.icon && <tag.icon data-icon="inline-start" aria-hidden />}
                 {tag.label}
               </Badge>
             ))}
@@ -655,6 +879,17 @@ export default function BacktestResultsPanel({
             <FileText data-icon="inline-start" />
             PDF
           </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-[0.62rem]"
+            onClick={onExportManifest}
+            title="Download JSON reproducibility manifest"
+          >
+            <Download data-icon="inline-start" />
+            Manifest
+          </Button>
           {displayTrades.length > 0 && (
             <Button
               type="button"
@@ -671,7 +906,295 @@ export default function BacktestResultsPanel({
       </header>
 
       <div className="algo-backtest-lab__body">
-      <BacktestSummaryCards summary={summary} results={results} isFull={isFull} />
+      {isFull ? (
+        <BacktestReportTabs
+          overview={(
+            <>
+              <BacktestSummaryCards summary={summary} results={results} isFull={false} />
+              <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
+                <BacktestPriceChart
+                  symbol={symbol ?? results?.meta?.symbol}
+                  meta={results?.meta}
+                  timeframe={backtestTimeframe ?? results?.meta?.timeframe ?? '1m'}
+                  trades={chartTrades}
+                  tradesLoading={loadingTrades}
+                  tradesTotal={tradesTotal}
+                  highlightBarTime={focusBarTime}
+                  className="backtest-price-chart-wrap--lab"
+                />
+                <BacktestEquityChart
+                  equityCurve={results.equity_curve}
+                  drawdownCurve={results.drawdown_curve}
+                  totalPnl={results.total_pnl}
+                  trades={chartTrades}
+                  benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
+                  className="backtest-mini-chart--lab"
+                  variant="lab"
+                />
+                <BacktestTradeExplain
+                  trade={selectedTrade}
+                  strategy={strategy ?? results?.meta?.strategy}
+                />
+              </section>
+              <PortfolioResultsSection
+                results={results}
+                strategy={strategy ?? results?.meta?.strategy}
+                timeframe={backtestTimeframe ?? results?.meta?.timeframe}
+                backtestDays={backtestDays}
+                totalAllocation={botConfig?.allocation}
+              />
+              <BacktestRegimeSection
+                regime={results?.regime ?? summary?.regime}
+                benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
+              />
+              <BacktestWalkForwardPanel
+                walkForward={results?.walk_forward}
+                symbol={symbol ?? results?.meta?.symbol}
+                strategy={strategy ?? results?.meta?.strategy}
+                timeframe={backtestTimeframe ?? results?.meta?.timeframe}
+                allocation={results?.allocation ?? results?.starting_equity ?? botConfig?.allocation}
+                runId={results?.run_id}
+                results={results}
+                days={backtestDays}
+              />
+              <div className="algo-backtest-lab__tools-grid">
+                <BacktestComparePanel
+                  currentRun={{ run_id: results.run_id, results }}
+                  recentRuns={recentRuns}
+                />
+              </div>
+            </>
+          )}
+          performance={(
+            <>
+              <BacktestPerformanceSection summary={summary} results={results} />
+              <MonteCarloSection
+                monteCarlo={results?.monte_carlo}
+                startingEquity={results?.starting_equity ?? results?.allocation}
+                isFull
+              />
+              <FilterRejectsSection summary={summary} />
+              <BacktestBlockedLog
+                results={results}
+                onFocusBar={onBlockedBarFocus}
+              />
+              <BacktestParityPanel results={results} symbol={symbol} strategy={strategy} />
+              <BacktestMetaLabelWalkForwardPanel walkForward={results?.meta_label_walk_forward} />
+            </>
+          )}
+          trades={(
+            allTrades.length > 0 ? (
+              <section className="algo-backtest-lab__section algo-backtest-lab__section--trades">
+                <header className="algo-backtest-trade-log__header">
+                  <div className="algo-backtest-trade-log__title-row">
+                    <p className="algo-backtest-table-scroll__caption m-0">
+                      {`Trade log (${tradesTotal} fills)`}
+                    </p>
+                    {loadingTrades && (
+                      <Loader2 className="size-3 animate-spin text-muted-foreground" aria-hidden />
+                    )}
+                  </div>
+                  <TradeLogFilters value={tradeReasonFilter} onChange={setTradeReasonFilter} />
+                </header>
+                <BacktestTable
+                  className="algo-backtest-table-scroll--trades algo-backtest-table-scroll--trades-full"
+                  onScroll={onTradeScroll}
+                >
+                  <table className="terminal-table algo-backtest-table m-0">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Side</th>
+                        <th className="text-right">Qty</th>
+                        <th className="text-right">Price</th>
+                        <th className="text-right">PnL</th>
+                        <th>Excursion</th>
+                        <th>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <VirtualTablePadding height={tradeWindow.topPad} colSpan={8} />
+                      {tradeWindow.slice.map((t, i) => (
+                        <tr
+                          key={`${t.time}-${t.side}-${tradeWindow.start + i}`}
+                          className={cn(
+                            'cursor-pointer hover:bg-muted/30',
+                            focusBarTime === t.time && 'bg-primary/10',
+                          )}
+                          onClick={() => onTradeRowClick(t)}
+                          title="Focus chart on this bar"
+                        >
+                          <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
+                          <td className="whitespace-nowrap">
+                            <span className={cn(
+                              'algo-backtest-trade-type',
+                              t.is_exit ? 'algo-backtest-trade-type--exit' : 'algo-backtest-trade-type--entry',
+                            )}
+                            >
+                              {t.is_exit ? 'Exit' : 'Entry'}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap">{t.side}</td>
+                          <td className="num-mono text-right whitespace-nowrap">{Number(t.quantity).toFixed(4)}</td>
+                          <td className="num-mono text-right whitespace-nowrap">{Number(t.price).toFixed(2)}</td>
+                          <td className={cn(
+                            'num-mono text-right whitespace-nowrap',
+                            t.pnl != null && (t.pnl >= 0 ? 'text-trading-up' : 'text-trading-down'),
+                          )}>
+                            {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
+                          </td>
+                          <td className="w-[4.5rem]">
+                            {t.is_exit ? (
+                              <BacktestExcursionBar mfePct={t.mfe_pct} maePct={t.mae_pct} pnl={t.pnl} />
+                            ) : '—'}
+                          </td>
+                          <td className="text-muted-foreground max-w-[10rem] truncate" title={t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}>
+                            {t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}
+                          </td>
+                        </tr>
+                      ))}
+                      <VirtualTablePadding height={tradeWindow.bottomPad} colSpan={8} />
+                    </tbody>
+                  </table>
+                </BacktestTable>
+                <BacktestTradeExplain
+                  trade={selectedTrade}
+                  strategy={strategy ?? results?.meta?.strategy}
+                />
+              </section>
+            ) : (
+              <p className="text-xs text-muted-foreground px-1">No trades in this run.</p>
+            )
+          )}
+          properties={(
+            <>
+              <BacktestAssumptionsStrip results={results} />
+              <BacktestAssumptionsPanel results={results} />
+              <section className="algo-backtest-lab__section algo-backtest-lab__section--audit">
+                <div className="algo-backtest-section__head">
+                  <p className="algo-backtest-section__title m-0">Run audit</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    className="h-6 text-[0.62rem]"
+                    onClick={onExportManifest}
+                  >
+                    <Download data-icon="inline-start" />
+                    JSON manifest
+                  </Button>
+                </div>
+                <BacktestTable className="algo-backtest-table-scroll--properties">
+                  <table className="terminal-table algo-backtest-table algo-backtest-audit-table m-0">
+                    <thead>
+                      <tr>
+                        <th>Property</th>
+                        <th>Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        ['Run ID', <span className="num-mono" key="run">{results.run_id ?? '—'}</span>],
+                        ['Symbol', symbol ?? results?.meta?.symbol ?? '—'],
+                        ['Strategy', strategy ?? results?.meta?.strategy ?? '—'],
+                        ['Days', <span className="num-mono" key="days">{results?.meta?.days ?? backtestDays}</span>],
+                        ['Timeframe', results?.meta?.timeframe ?? backtestTimeframe],
+                        ['Sim mode', results.sim_mode ?? results?.meta?.sim_mode ?? 'live_aligned'],
+                        ['Fees', <span className="num-mono" key="fees">${Number(summary?.total_fees ?? 0).toFixed(2)}</span>],
+                        ['Slippage', <span className="num-mono" key="slip">{summary?.slippage_bps ?? results?.costs?.slippage_bps ?? 0} bps</span>],
+                      ].map(([label, value]) => (
+                        <tr key={String(label)}>
+                          <td className="text-muted-foreground">{label}</td>
+                          <td>{value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </BacktestTable>
+              </section>
+              <section className="algo-backtest-lab__section algo-backtest-lab__section--advisor">
+                <StrategySuggestPanel
+                  botId={advisorBotId}
+                  candidateBots={activeBots}
+                  backtestDays={backtestDays}
+                  recentResults={results}
+                  agentLlmAvailable={agentLlmAvailable}
+                  symbol={symbol ?? results?.meta?.symbol}
+                  compact={false}
+                />
+              </section>
+              {recentRuns.length > 0 && (
+                <section className="algo-backtest-lab__section algo-backtest-lab__section--history">
+                  <BacktestTable
+                    caption="Saved runs (same symbol)"
+                    className="algo-backtest-table-scroll--history algo-backtest-table-scroll--history-full"
+                  >
+                    <table className="terminal-table algo-backtest-table m-0">
+                      <thead>
+                        <tr>
+                          <th>When</th>
+                          <th>Strategy</th>
+                          <th>Days</th>
+                          <th className="text-right">PnL</th>
+                          <th className="text-right">Win%</th>
+                          <th>Regime</th>
+                          <th className="text-right">PF</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recentRuns.slice(0, 15).map((run) => (
+                          <tr
+                            key={run.id}
+                            className={cn(
+                              'cursor-pointer hover:bg-muted/40',
+                              run.id === results.run_id && 'bg-primary/5',
+                            )}
+                            onClick={() => loadSavedRun(run.id)}
+                            title="Load saved run"
+                          >
+                            <td className="text-muted-foreground whitespace-nowrap">{run.created_at?.slice(0, 16) ?? '—'}</td>
+                            <td className="whitespace-nowrap">{run.strategy}</td>
+                            <td className="num-mono">{run.days}</td>
+                            <td className={cn(
+                              'num-mono text-right whitespace-nowrap',
+                              (run.summary?.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+                            )}>
+                              {run.summary?.total_pnl != null ? `$${Number(run.summary.total_pnl).toFixed(2)}` : '—'}
+                            </td>
+                            <td className="num-mono text-right whitespace-nowrap">
+                              {run.summary?.win_rate != null ? `${Number(run.summary.win_rate).toFixed(1)}%` : '—'}
+                            </td>
+                            <td className="capitalize text-muted-foreground whitespace-nowrap">
+                              {run.summary?.regime?.dominant_regime ?? run.results?.regime?.dominant_regime ?? '—'}
+                            </td>
+                            <td className="num-mono text-right whitespace-nowrap">
+                              {run.summary?.profit_factor != null ? Number(run.summary.profit_factor).toFixed(2) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </BacktestTable>
+                </section>
+              )}
+              {(showReasoningSection || reasoningRequested || results?.reasoning) && (
+                <BacktestReasoningPanel
+                  reasoning={results.reasoning}
+                  reasoningRequested={reasoningRequested}
+                  entryCount={entryCount}
+                  tradeLog={fullTrades ?? previewTrades}
+                  results={results}
+                  className="mt-2"
+                />
+              )}
+            </>
+          )}
+        />
+      ) : (
+        <>
+      <BacktestAssumptionsStrip results={results} className="mb-2" />
+      <BacktestSummaryCards summary={summary} results={results} isFull={false} />
 
       <section className="algo-backtest-lab__section algo-backtest-lab__section--advisor">
         <StrategySuggestPanel
@@ -681,28 +1204,11 @@ export default function BacktestResultsPanel({
           recentResults={results}
           agentLlmAvailable={agentLlmAvailable}
           symbol={symbol ?? results?.meta?.symbol}
-          compact={!isFull}
+          compact
         />
       </section>
 
-      {isFull && <PortfolioResultsSection results={results} />}
-      {isFull && (
-        <BacktestRegimeSection
-          regime={results?.regime ?? summary?.regime}
-          benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
-        />
-      )}
-      {isFull && <MonteCarloSection monteCarlo={results?.monte_carlo} />}
-      {isFull && (
-        <BacktestMetaLabelWalkForwardPanel walkForward={results?.meta_label_walk_forward} />
-      )}
-      {isFull && <FilterRejectsSection summary={summary} />}
-
-      {isFull && (
-        <BacktestParityPanel results={results} symbol={symbol} strategy={strategy} />
-      )}
-
-      {!isFull && results?.sweep?.results?.length > 0 && (
+      {results?.sweep?.results?.length > 0 && (
         <button
           type="button"
           className="algo-backtest-sweep-teaser text-[0.62rem] text-primary hover:underline text-left px-1 py-1"
@@ -712,131 +1218,39 @@ export default function BacktestResultsPanel({
         </button>
       )}
 
-      {isFull && (
-        <div className="algo-backtest-lab__tools-grid">
-          <BacktestComparePanel
-            currentRun={{ run_id: results.run_id, results }}
-            recentRuns={recentRuns}
-          />
-        </div>
-      )}
-
       <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
-        <BacktestPriceChart
-          symbol={symbol ?? results?.meta?.symbol}
-          meta={results?.meta}
-          timeframe={backtestTimeframe ?? results?.meta?.timeframe ?? '1m'}
-          trades={displayTrades}
-          className={isFull ? 'backtest-price-chart-wrap--lab' : undefined}
-        />
         <BacktestEquityChart
           equityCurve={results.equity_curve}
           drawdownCurve={results.drawdown_curve}
           totalPnl={results.total_pnl}
           trades={displayTrades}
           benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
-          className={isFull ? 'backtest-mini-chart--lab' : undefined}
         />
       </section>
 
-      <div className={cn(
-        'algo-backtest-lab__tables',
-        isFull && 'algo-backtest-lab__tables--full',
-      )}>
-      {recentRuns.length > 0 && isFull && (
-        <section className="algo-backtest-lab__section algo-backtest-lab__section--history">
-        <BacktestTable
-          caption={recentRuns.length > 1 ? 'Recent runs (same symbol)' : 'Saved runs (same symbol)'}
-          className={cn(
-            'algo-backtest-table-scroll--history',
-            isFull && 'algo-backtest-table-scroll--history-full',
-          )}
-        >
-          <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Strategy</th>
-                <th>Days</th>
-                <th className="text-right">PnL</th>
-                <th className="text-right">Win%</th>
-                <th>Regime</th>
-                <th className="text-right">PF</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentRuns.slice(0, isFull ? 15 : 5).map(run => (
-                <tr
-                  key={run.id}
-                  className={cn(
-                    'cursor-pointer hover:bg-muted/40',
-                    run.id === results.run_id && 'bg-primary/5',
-                  )}
-                  onClick={() => loadSavedRun(run.id)}
-                  title="Load saved run"
-                >
-                  <td className="text-muted-foreground whitespace-nowrap">{run.created_at?.slice(0, 16) ?? '—'}</td>
-                  <td className="whitespace-nowrap">{run.strategy}</td>
-                  <td className="num-mono">{run.days}</td>
-                  <td className={cn(
-                    'num-mono text-right whitespace-nowrap',
-                    (run.summary?.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                  )}>
-                    {run.summary?.total_pnl != null ? `$${Number(run.summary.total_pnl).toFixed(2)}` : '—'}
-                  </td>
-                  <td className="num-mono text-right whitespace-nowrap">
-                    {run.summary?.win_rate != null ? `${Number(run.summary.win_rate).toFixed(1)}%` : '—'}
-                  </td>
-                  <td className="capitalize text-muted-foreground whitespace-nowrap">
-                    {run.summary?.regime?.dominant_regime ?? run.results?.regime?.dominant_regime ?? '—'}
-                  </td>
-                  <td className="num-mono text-right whitespace-nowrap">
-                    {run.summary?.profit_factor != null ? Number(run.summary.profit_factor).toFixed(2) : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </BacktestTable>
-        </section>
-      )}
-
-      {allTrades.length > 0 && (
+      {tableTrades.length > 0 && (
         <section className="algo-backtest-lab__section algo-backtest-lab__section--trades">
+        <header className="algo-backtest-trade-log__header">
+          <div className="algo-backtest-trade-log__title-row">
+            <p className="algo-backtest-table-scroll__caption m-0">
+              {`Trade preview (${Math.min(10, tradesTotal)} of ${tradesTotal})`}
+            </p>
+            {loadingTrades && <Loader2 className="size-3 animate-spin text-muted-foreground" aria-hidden />}
+          </div>
+        </header>
         <BacktestTable
-          caption={(
-            <span className="inline-flex flex-wrap items-center gap-2">
-              <span>{`Trade log (${tradesTotal} fills)`}</span>
-              {loadingTrades && <Loader2 className="size-3 animate-spin" aria-hidden />}
-              {isFull && (
-                <span className="algo-backtest-trade-filters">
-                  {['all', 'entries', 'exits', 'SL', 'TP', 'SIGNAL'].map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      className={cn(
-                        'algo-backtest-trade-filters__btn',
-                        tradeReasonFilter === f && 'algo-backtest-trade-filters__btn--active',
-                      )}
-                      onClick={() => setTradeReasonFilter(f)}
-                    >
-                      {f}
-                    </button>
-                  ))}
-                </span>
-              )}
-            </span>
-          )}
-          className={cn(
-            'algo-backtest-table-scroll--trades',
-            isFull && 'algo-backtest-table-scroll--trades-full',
-          )}
-          onScroll={onTradeScroll}
+          className="algo-backtest-table-scroll--trades"
+          footer={tradesTotal > 10 ? (
+            <p className="algo-backtest-table-scroll__footer">
+              Open Lab for full trade log, excursion bars, and charts.
+            </p>
+          ) : null}
         >
-          <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
+          <table className="terminal-table algo-backtest-table m-0">
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Type</th>
                 <th>Side</th>
                 <th className="text-right">Qty</th>
                 <th className="text-right">Price</th>
@@ -845,16 +1259,24 @@ export default function BacktestResultsPanel({
               </tr>
             </thead>
             <tbody>
-              <VirtualTablePadding height={tradeWindow.topPad} colSpan={6} />
-              {tradeWindow.slice.map((t, i) => (
+              {tableTrades.map((t, i) => (
                 <tr
-                  key={`${t.time}-${t.side}-${tradeWindow.start + i}`}
+                  key={`${t.time}-${t.side}-${i}`}
                   className="cursor-pointer hover:bg-muted/30"
                   onClick={() => onTradeRowClick(t)}
                   title="Focus chart on this bar"
                 >
                   <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
-                  <td className="whitespace-nowrap">{t.side}{t.is_exit ? ' ↗' : ''}</td>
+                  <td className="whitespace-nowrap">
+                    <span className={cn(
+                      'algo-backtest-trade-type',
+                      t.is_exit ? 'algo-backtest-trade-type--exit' : 'algo-backtest-trade-type--entry',
+                    )}
+                    >
+                      {t.is_exit ? 'Exit' : 'Entry'}
+                    </span>
+                  </td>
+                  <td className="whitespace-nowrap">{t.side}</td>
                   <td className="num-mono text-right whitespace-nowrap">{Number(t.quantity).toFixed(4)}</td>
                   <td className="num-mono text-right whitespace-nowrap">{Number(t.price).toFixed(2)}</td>
                   <td className={cn(
@@ -863,36 +1285,17 @@ export default function BacktestResultsPanel({
                   )}>
                     {t.pnl != null ? `$${Number(t.pnl).toFixed(2)}` : '—'}
                   </td>
-                  <td className="text-muted-foreground max-w-[10rem] truncate" title={t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}>
-                    {t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}
-                  </td>
+                  <td className="text-muted-foreground max-w-[8rem] truncate">{t.reason ?? (t.is_exit ? 'EXIT' : 'ENTRY')}</td>
                 </tr>
               ))}
-              <VirtualTablePadding height={tradeWindow.bottomPad} colSpan={6} />
             </tbody>
           </table>
-          {closedTrades.length > 0 && (
-            <p className="algo-backtest-table-scroll__footer">
-              {closedTrades.length} closed trade{closedTrades.length !== 1 ? 's' : ''}
-              {tradesTotal > previewTrades.length ? ' · full log loaded from server' : ''}
-            </p>
-          )}
         </BacktestTable>
         </section>
       )}
-
-      </div>
-
-      {(showReasoningSection || reasoningRequested || results?.reasoning) && (
-        <BacktestReasoningPanel
-          reasoning={results.reasoning}
-          reasoningRequested={reasoningRequested}
-          entryCount={entryCount}
-          tradeLog={fullTrades ?? previewTrades}
-          results={results}
-          className="mt-2"
-        />
+        </>
       )}
+
       </div>
     </div>
   );

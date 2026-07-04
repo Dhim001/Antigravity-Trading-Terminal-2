@@ -14,7 +14,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import StrategyBadge from '../StrategyBadge';
+import DeployGatePanel from '../DeployGatePanel';
 import { deployTimeframeSummary } from '@/lib/barTimeframes';
+import { buildDeployPayload } from '@/lib/deployGate';
 import { useShallow } from 'zustand/react/shallow';
 
 export default function GlobalDeployDialog({ switchToAlgoTab }) {
@@ -22,7 +24,7 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
   const setPendingDeploy = useStore((s) => s.setPendingDeploy);
   const {
     botStrategy, botConfig, activeSymbol, botExecutionMode, botTimeframe,
-    isLive, allowLiveBots,
+    isLive, allowLiveBots, backtestResults, backtestSnapshot, backtestDays,
   } = useStore(useShallow((s) => ({
     botStrategy: s.botStrategy,
     botConfig: s.botConfig,
@@ -31,8 +33,13 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
     botTimeframe: s.botTimeframe,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
+    backtestResults: s.backtestResults,
+    backtestSnapshot: s.backtestSnapshot,
+    backtestDays: s.backtestDays,
   })));
   const [deployOpen, setDeployOpen] = useState(false);
+  const [forceDeploy, setForceDeploy] = useState(false);
+  const [deployGate, setDeployGate] = useState(null);
 
   useEffect(() => {
     if (pendingDeploy) {
@@ -45,6 +52,10 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
   const liveBotsBlocked = isLive && !allowLiveBots;
 
   const confirmDeploy = () => {
+    if (deployGate?.blocking && !forceDeploy) {
+      toast.error(deployGate.block_reason || 'Deploy gate blocked');
+      return;
+    }
     setDeployOpen(false);
     if (liveBotsBlocked) {
       toast.error('Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true on the server.');
@@ -54,27 +65,32 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
       toast.error('Enter a valid max notional cap');
       return;
     }
-    sendAction(Action.BOT_CREATE, {
+    const days = parseInt(backtestDays, 10) || 7;
+    const payload = buildDeployPayload({
       strategy: botStrategy,
       symbol: activeSymbol,
       timeframe: botExecutionMode === 'TICK' ? 'tick' : botTimeframe,
       allocation: botConfig.allocation,
-      execution_mode: botExecutionMode,
-      config: {
-        ...botConfig,
-        trailing_stop_percent: botConfig.trailing_stop_percent ?? 2,
-        backtest_run_id: useStore.getState().backtestResults?.run_id ?? undefined,
-      },
+      executionMode: botExecutionMode,
+      config: botConfig,
+      results: backtestResults,
+      snapshot: backtestSnapshot,
+      days,
+      forceDeploy,
     });
+    sendAction(Action.BOT_CREATE, payload);
   };
 
   return (
-    <Dialog open={deployOpen} onOpenChange={setDeployOpen}>
+    <Dialog open={deployOpen} onOpenChange={(open) => {
+      setDeployOpen(open);
+      if (!open) setForceDeploy(false);
+    }}>
       <DialogContent className="algo-dialog sm:max-w-md" overlayClassName="admin-panel-overlay">
         <DialogHeader>
           <DialogTitle>Deploy trading bot</DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
-            This will start a live bot on the server using your current template and max notional cap.
+            Forward-test workflow: validate backtest OOS before allocating capital.
           </DialogDescription>
         </DialogHeader>
         <div className="algo-dialog-summary">
@@ -98,9 +114,28 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
           </div>
           <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
         </div>
+        <DeployGatePanel
+          results={backtestResults}
+          symbol={activeSymbol}
+          strategy={botStrategy}
+          timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
+          days={parseInt(backtestDays, 10) || 7}
+          config={botConfig}
+          snapshot={backtestSnapshot}
+          onGateChange={setDeployGate}
+          forceDeploy={forceDeploy}
+          onForceDeployChange={setForceDeploy}
+        />
         <DialogFooter showCloseButton={false}>
           <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
-          <Button variant="buy" size="sm" onClick={confirmDeploy} disabled={liveBotsBlocked}>Confirm deploy</Button>
+          <Button
+            variant="buy"
+            size="sm"
+            onClick={confirmDeploy}
+            disabled={liveBotsBlocked || (deployGate?.blocking && !forceDeploy)}
+          >
+            Confirm deploy
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

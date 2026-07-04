@@ -21,7 +21,7 @@ export default function BacktestMetaLabelWalkForwardPanel({ walkForward, classNa
 
   if (!walkForward.ok) {
     return (
-      <section className={cn('algo-backtest-wf rounded-md border border-border/60 p-3', className)}>
+      <section className={cn('algo-backtest-wf', className)}>
         <header className="text-xs font-medium mb-1">Meta-label walk-forward</header>
         <p className="text-[0.65rem] text-muted-foreground m-0">
           {walkForward.error || 'Evaluation did not complete'}
@@ -36,9 +36,9 @@ export default function BacktestMetaLabelWalkForwardPanel({ walkForward, classNa
   const delta = agg.gbm_vs_baseline_avg || {};
 
   return (
-    <section className={cn('algo-backtest-wf rounded-md border border-primary/25 bg-primary/5 p-3 space-y-2', className)}>
-      <header>
-        <span className="text-xs font-medium">Meta-label walk-forward (OOS)</span>
+    <section className={cn('algo-backtest-wf flex flex-col gap-2', className)}>
+      <header className="algo-backtest-wf__title-wrap">
+        <span className="algo-backtest-wf__title">Meta-label walk-forward (OOS)</span>
         <p className="text-[0.62rem] text-muted-foreground m-0 mt-0.5">
           GBM trained on in-sample trades, gate applied out-of-sample vs no gate.
         </p>

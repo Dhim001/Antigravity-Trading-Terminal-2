@@ -4,9 +4,58 @@ from __future__ import annotations
 
 import copy
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
+from app.services.bots.backtest_perf import parallel_worker_count
 from app.services.bots.backtest_sweep import sweep_label
+
+def _downsample_curve(curve: list[dict] | None, max_points: int = 120) -> list[dict]:
+    if not curve or len(curve) <= max_points:
+        return list(curve or [])
+    step = max(1, (len(curve) + max_points - 1) // max_points)
+    out = [curve[i] for i in range(0, len(curve), step)]
+    if out[-1] is not curve[-1]:
+        out.append(curve[-1])
+    return out
+
+
+def stitch_oos_equity_curves(
+    folds: list[dict],
+    *,
+    starting_equity: float,
+) -> list[dict]:
+    """Chain OOS equity curves across walk-forward folds."""
+    stitched: list[dict] = []
+    cumulative_pnl = 0.0
+    base = float(starting_equity) if starting_equity > 0 else 10_000.0
+    for fold in folds:
+        oos_curve = (fold.get("out_of_sample") or {}).get("equity_curve") or []
+        if not oos_curve:
+            continue
+        oos_start = float(oos_curve[0].get("equity") or base)
+        for pt in oos_curve:
+            oos_eq = float(pt.get("equity") or oos_start)
+            fold_delta = oos_eq - oos_start
+            stitched.append({
+                "time": pt.get("time"),
+                "equity": round(base + cumulative_pnl + fold_delta, 2),
+                "fold": fold.get("fold"),
+            })
+        if oos_curve:
+            oos_end = float(oos_curve[-1].get("equity") or oos_start)
+            cumulative_pnl += oos_end - oos_start
+    return stitched
+
+
+def _oos_snapshot(oos: dict) -> dict:
+    return {
+        "summary": oos.get("summary") or {},
+        "total_pnl": oos.get("total_pnl"),
+        "trade_count": oos.get("trade_count"),
+        "meta": oos.get("meta") or {},
+        "equity_curve": _downsample_curve(oos.get("equity_curve")),
+    }
 
 
 def split_train_test(
@@ -189,6 +238,54 @@ def _metric_from_backtest(res: dict, objective: str) -> float:
     )
 
 
+def aggregate_regime_oos(fold_entries: list[dict]) -> dict[str, Any]:
+    """Regime-aware WF — bucket OOS PnL by dominant vol regime per fold."""
+    by_regime: dict[str, list[float]] = {}
+    regimes_seen: list[str] = []
+    for entry in fold_entries:
+        regime = entry.get("oos_regime") or {}
+        label = str(regime.get("dominant_regime") or "unknown")
+        regimes_seen.append(label)
+        oos = entry.get("out_of_sample") or {}
+        pnl = oos.get("total_pnl")
+        if pnl is None:
+            continue
+        by_regime.setdefault(label, []).append(float(pnl))
+
+    per_regime: dict[str, dict[str, Any]] = {}
+    for label, pnls in by_regime.items():
+        positive = sum(1 for p in pnls if p > 0)
+        per_regime[label] = {
+            "folds": len(pnls),
+            "mean_pnl": round(sum(pnls) / len(pnls), 2) if pnls else None,
+            "positive_folds": positive,
+            "win_rate": round(positive / len(pnls), 3) if pnls else 0.0,
+        }
+
+    unique = sorted(set(regimes_seen))
+    profitable_regimes = [
+        r for r, stats in per_regime.items()
+        if stats.get("mean_pnl") is not None and stats["mean_pnl"] > 0
+    ]
+    single_regime_only = len(profitable_regimes) <= 1 and len(per_regime) <= 1
+    stable = len(profitable_regimes) >= 2 or (
+        len(per_regime) == 1 and (per_regime.get(unique[0], {}).get("win_rate") or 0) >= 0.6
+    )
+
+    return {
+        "per_regime": per_regime,
+        "regimes_seen": unique,
+        "profitable_regimes": profitable_regimes,
+        "regime_stable": stable,
+        "single_regime_risk": single_regime_only and len(fold_entries) >= 2,
+        "note": (
+            "Strategy OOS PnL concentrated in one vol regime — may not generalize."
+            if single_regime_only and len(fold_entries) >= 2
+            else None
+        ),
+    }
+
+
 def aggregate_fold_oos(
     fold_entries: list[dict],
     *,
@@ -224,6 +321,7 @@ def aggregate_fold_oos(
         "stability_score": round(stability, 4),
         "positive_folds": positive,
         "objective": objective,
+        "regime_analysis": aggregate_regime_oos(fold_entries),
     }
 
 
@@ -289,21 +387,19 @@ def _run_single_walk_forward(
     if oos.get("error"):
         return {"error": f"Out-of-sample run failed: {oos['error']}"}
 
+    from app.services.bots.backtest_analytics import classify_backtest_regime
+
     fold_entry = {
         "fold": 1,
         "best_config": best_config,
+        "oos_regime": classify_backtest_regime(test),
         "in_sample": {
             "summary": (best_row or {}).get("summary") or {},
             "total_pnl": (best_row or {}).get("total_pnl"),
             "trade_count": (best_row or {}).get("trade_count"),
             "meta": train_meta,
         },
-        "out_of_sample": {
-            "summary": oos.get("summary") or {},
-            "total_pnl": oos.get("total_pnl"),
-            "trade_count": oos.get("trade_count"),
-            "meta": test_meta,
-        },
+        "out_of_sample": _oos_snapshot(oos),
     }
     aggregate = aggregate_fold_oos([fold_entry], objective=sweep_objective)
 
@@ -331,6 +427,10 @@ def _run_single_walk_forward(
         "in_sample": fold_entry["in_sample"],
         "out_of_sample": fold_entry["out_of_sample"],
         "best_config": best_config,
+        "oos_equity_stitch": stitch_oos_equity_curves(
+            [fold_entry],
+            starting_equity=float(oos.get("starting_equity") or oos.get("allocation") or 10_000),
+        ),
     }
     return merged
 
@@ -352,9 +452,10 @@ def _run_in_sample_sweep(
 ) -> list[dict]:
     total_runs = total_runs or len(configs)
     sweep_rows: list[dict] = []
-    for idx, cfg in enumerate(configs):
+
+    def _run_one(idx: int, cfg: dict) -> tuple[int, dict | None]:
         if cancel_cb and cancel_cb():
-            return sweep_rows
+            return idx, None
 
         def _is_progress(done: int, total: int, _idx: int = idx) -> None:
             if progress_cb:
@@ -370,8 +471,34 @@ def _run_in_sample_sweep(
             cancel_cb=cancel_cb,
         )
         if res.get("cancelled"):
+            return idx, None
+        return idx, _result_to_row(cfg, res, window="in_sample")
+
+    workers = parallel_worker_count(len(configs))
+    if workers > 1:
+        rows_by_idx: dict[int, dict] = {}
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bt-wf-sweep") as pool:
+            futures = [pool.submit(_run_one, idx, cfg) for idx, cfg in enumerate(configs)]
+            for fut in as_completed(futures):
+                if cancel_cb and cancel_cb():
+                    return sweep_rows
+                idx, row = fut.result()
+                if row is None:
+                    if cancel_cb and cancel_cb():
+                        return sweep_rows
+                    continue
+                rows_by_idx[idx] = row
+        for idx in sorted(rows_by_idx):
+            sweep_rows.append(rows_by_idx[idx])
+        return sweep_rows
+
+    for idx, cfg in enumerate(configs):
+        if cancel_cb and cancel_cb():
             return sweep_rows
-        sweep_rows.append(_result_to_row(cfg, res, window="in_sample"))
+        _, row = _run_one(idx, cfg)
+        if row is None:
+            return sweep_rows
+        sweep_rows.append(row)
     return sweep_rows
 
 
@@ -479,21 +606,20 @@ def run_walk_forward(
         if oos.get("error"):
             return {"error": f"Out-of-sample run failed (fold {fold_idx + 1}): {oos['error']}"}
 
+        from app.services.bots.backtest_analytics import classify_backtest_regime
+
+        oos_regime = classify_backtest_regime(test)
         fold_entries.append({
             "fold": fold_idx + 1,
             "best_config": best_config,
+            "oos_regime": oos_regime,
             "in_sample": {
                 "summary": (best_row or {}).get("summary") or {},
                 "total_pnl": (best_row or {}).get("total_pnl"),
                 "trade_count": (best_row or {}).get("trade_count"),
                 "meta": train_meta,
             },
-            "out_of_sample": {
-                "summary": oos.get("summary") or {},
-                "total_pnl": oos.get("total_pnl"),
-                "trade_count": oos.get("trade_count"),
-                "meta": test_meta,
-            },
+            "out_of_sample": _oos_snapshot(oos),
         })
 
     # Pick config with best mean OOS objective across all folds (not just last-fold IS winner)
@@ -526,9 +652,18 @@ def run_walk_forward(
     aggregate = aggregate_fold_oos(fold_entries, objective=sweep_objective)
     aggregate["mean_oos_objective"] = best_entry["mean_oos"]
 
-    last_fold = fold_entries[-1]
+    last_train, last_test, last_train_meta, last_test_meta = windows[-1]
+    last_is = run_backtest(
+        symbol, strategy, best_config, last_train,
+        cancel_cb=cancel_cb,
+    )
+    if last_is.get("cancelled"):
+        return last_is
+    if last_is.get("error"):
+        return {"error": f"Final in-sample run failed: {last_is['error']}"}
+
     last_oos = run_backtest(
-        symbol, strategy, best_config, windows[-1][1],
+        symbol, strategy, best_config, last_test,
         cancel_cb=cancel_cb,
     )
     if last_oos.get("cancelled"):
@@ -537,7 +672,7 @@ def run_walk_forward(
         return {"error": f"Final OOS run failed: {last_oos['error']}"}
 
     merged = dict(last_oos)
-    merged["meta"] = {**(last_oos.get("meta") or {}), **(meta or {})}
+    merged["meta"] = {**(last_oos.get("meta") or {}), **(meta or {}), **last_test_meta}
     merged["meta"]["train_pct"] = train_pct
     merged["meta"]["walk_forward"] = True
     merged["meta"]["rolling_folds"] = n_folds if n_folds > 1 else 1
@@ -553,8 +688,17 @@ def run_walk_forward(
         "rolling_folds": n_folds if n_folds > 1 else 1,
         "folds": fold_entries,
         "aggregate": aggregate,
-        "in_sample": last_fold["in_sample"],
-        "out_of_sample": last_fold["out_of_sample"],
+        "in_sample": {
+            "summary": last_is.get("summary") or {},
+            "total_pnl": last_is.get("total_pnl"),
+            "trade_count": last_is.get("trade_count"),
+            "meta": last_train_meta,
+        },
+        "out_of_sample": _oos_snapshot(last_oos),
         "best_config": best_config,
+        "oos_equity_stitch": stitch_oos_equity_curves(
+            fold_entries,
+            starting_equity=float(last_oos.get("starting_equity") or last_oos.get("allocation") or 10_000),
+        ),
     }
     return merged

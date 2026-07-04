@@ -9,6 +9,7 @@ const PHASE_LABELS = {
   resolve: 'Loading candles',
   indicators: 'Indicators',
   simulate: 'Simulating',
+  portfolio: 'Portfolio symbols',
   meta_label_wf: 'Meta-label walk-forward',
   reasoning: 'LLM explanations',
   save: 'Saving',
@@ -24,6 +25,7 @@ export default function BacktestProgressBar({ className, compact = false }) {
   const pct = Math.min(100, Math.max(0, Number(progress?.pct ?? 0)));
   const phase = progress?.phase ?? 'resolve';
   const label = progress?.message ?? PHASE_LABELS[phase] ?? 'Running…';
+  const skipped = progress?.skipped_symbols;
 
   return (
     <div className={cn('algo-backtest-progress', compact && 'algo-backtest-progress--compact', className)} aria-live="polite">
@@ -34,6 +36,11 @@ export default function BacktestProgressBar({ className, compact = false }) {
         <span className="algo-backtest-progress__label">{label}</span>
         <span className="algo-backtest-progress__pct num-mono">{pct}%</span>
       </div>
+      {Array.isArray(skipped) && skipped.length > 0 && (
+        <p className="text-[0.55rem] text-muted-foreground mt-0.5 truncate" title={skipped.map((s) => `${s.symbol}: ${s.reason}`).join(', ')}>
+          Skipped: {skipped.map((s) => s.symbol).join(', ')}
+        </p>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db.connection import db_session
+from app.services.bots.backtest_payload import trim_results_for_persist
 
 
 def _now_iso() -> str:
@@ -22,6 +23,7 @@ def save_backtest_run(
     results: dict,
 ) -> str:
     run_id = str(uuid.uuid4())
+    payload = trim_results_for_persist(results or {})
     with db_session() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -35,7 +37,7 @@ def save_backtest_run(
                 strategy,
                 json.dumps(config or {}),
                 int(days),
-                json.dumps(results),
+                json.dumps(payload),
                 _now_iso(),
             ),
         )

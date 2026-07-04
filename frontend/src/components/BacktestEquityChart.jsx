@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import BacktestMiniChart from './BacktestMiniChart';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 
 function indexBenchmarkCurve(benchmarkCurve, equityCurve) {
   if (!benchmarkCurve?.length || !equityCurve?.length) return [];
@@ -26,6 +27,7 @@ export default function BacktestEquityChart({
   trades,
   benchmarkOverlays,
   className,
+  variant = 'compact',
 }) {
   const [showSpy, setShowSpy] = useState(true);
   const [showBtc, setShowBtc] = useState(true);
@@ -51,8 +53,15 @@ export default function BacktestEquityChart({
     || benchmarkOverlays?.symbol_bh_curve?.length,
   );
 
+  const isLab = variant === 'lab';
+
   return (
-    <div className="space-y-1">
+    <div className={cn('backtest-equity-chart-wrap', isLab && 'backtest-equity-chart-wrap--lab')}>
+      {isLab && (
+        <div className="backtest-equity-chart-wrap__head">
+          <span className="backtest-equity-chart-wrap__title">Equity &amp; drawdown</span>
+        </div>
+      )}
       {hasBench && (
         <div className="flex flex-wrap items-center gap-3 px-0.5 text-[0.58rem] text-muted-foreground">
           {benchmarkOverlays?.symbol_bh_curve?.length > 0 && (
@@ -82,6 +91,7 @@ export default function BacktestEquityChart({
         trades={trades}
         benchmarkOverlays={overlays}
         className={className}
+        variant={variant}
       />
     </div>
   );

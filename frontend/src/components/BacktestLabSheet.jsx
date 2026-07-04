@@ -1,18 +1,23 @@
 /**
  * Backtest Lab — resizable right sheet with Results | Optimizer | Jobs tabs.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Activity, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
 import { Button } from '@/components/ui/button';
-import BacktestResultsPanel from './BacktestResultsPanel';
 import BacktestProgressBar from './BacktestProgressBar';
-import BacktestJobHistory from './BacktestJobHistory';
-import BacktestSweepPanel from './BacktestSweepPanel';
 import ErrorBoundary from './ErrorBoundary';
+
+const BacktestResultsPanel = lazy(() => import('./BacktestResultsPanel'));
+const BacktestSweepPanel = lazy(() => import('./BacktestSweepPanel'));
+const BacktestJobHistory = lazy(() => import('./BacktestJobHistory'));
+
+function LabPanelFallback() {
+  return <p className="backtest-lab__loading px-3 pt-2">Loading panel…</p>;
+}
 
 const LAB_WIDTH_KEY = 'terminal_backtest_lab_width';
 const LAB_FULLSCREEN_KEY = 'terminal_backtest_lab_fullscreen';
@@ -149,27 +154,28 @@ export default function BacktestLabSheet() {
           </div>
         )}
 
-        <div className="backtest-lab__header-tools">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="backtest-lab__expand-btn shrink-0"
-            onClick={() => setFullscreen((f) => !f)}
-            title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            {fullscreen ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
-          </Button>
-        </div>
-
         <SheetHeader className="terminal-sheet__header backtest-lab__header">
-          <SheetTitle className="backtest-lab__title">
-            <Activity aria-hidden />
-            Backtest Lab
-          </SheetTitle>
-          <SheetDescription className="backtest-lab__description">
-            Strategy replay report — equity, trades, optimizer, and run history
-          </SheetDescription>
+          <div className="backtest-lab__header-main">
+            <SheetTitle className="backtest-lab__title">
+              <Activity aria-hidden />
+              Backtest Lab
+            </SheetTitle>
+            <SheetDescription className="backtest-lab__description">
+              Strategy replay report — equity, trades, optimizer, and run history
+            </SheetDescription>
+          </div>
+          <div className="backtest-lab__header-tools">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="backtest-lab__expand-btn shrink-0"
+              onClick={() => setFullscreen((f) => !f)}
+              title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              {fullscreen ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+            </Button>
+          </div>
         </SheetHeader>
 
         <div className="backtest-lab__tabs">
@@ -185,21 +191,31 @@ export default function BacktestLabSheet() {
         </div>
 
         <div className="terminal-sheet__body backtest-lab__body">
-          <div className="terminal-sheet__scroll backtest-lab__scroll">
+          <div className={cn(
+          'terminal-sheet__scroll backtest-lab__scroll',
+          labTab === 'jobs' && 'backtest-lab__scroll--jobs',
+        )}
+        >
             <BacktestProgressBar />
 
-            {labTab === 'jobs' && <BacktestJobHistory />}
+            {labTab === 'jobs' && (
+              <Suspense fallback={<LabPanelFallback />}>
+                <BacktestJobHistory />
+              </Suspense>
+            )}
 
             {labTab === 'optimizer' && (
               <div className="backtest-lab__optimizer px-1 pt-2">
-                <BacktestSweepPanel
-                  symbol={symbol}
-                  strategy={strategy}
-                  days={days != null ? String(days) : backtestDays}
-                  timeframe={timeframe}
-                  oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
-                  results={backtestResults}
-                />
+                <Suspense fallback={<LabPanelFallback />}>
+                  <BacktestSweepPanel
+                    symbol={symbol}
+                    strategy={strategy}
+                    days={days != null ? String(days) : backtestDays}
+                    timeframe={timeframe}
+                    oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
+                    results={backtestResults}
+                  />
+                </Suspense>
               </div>
             )}
 
@@ -212,20 +228,22 @@ export default function BacktestLabSheet() {
                 )}
                 {backtestResults ? (
                   <ErrorBoundary name="Backtest report">
-                    <BacktestResultsPanel
-                      variant="full"
-                      results={backtestResults}
-                      backtestDays={days != null ? String(days) : '7'}
-                      backtestTimeframe={timeframe}
-                      symbol={symbol}
-                      strategy={strategy}
-                      recentRuns={backtestRuns}
-                      snapshot={backtestSnapshot}
-                      showReasoningSection={agentLlmAvailable}
-                      oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
-                      advisorBotId={advisorBotId}
-                      agentLlmAvailable={agentLlmAvailable}
-                    />
+                    <Suspense fallback={<LabPanelFallback />}>
+                      <BacktestResultsPanel
+                        variant="full"
+                        results={backtestResults}
+                        backtestDays={days != null ? String(days) : '7'}
+                        backtestTimeframe={timeframe}
+                        symbol={symbol}
+                        strategy={strategy}
+                        recentRuns={backtestRuns}
+                        snapshot={backtestSnapshot}
+                        showReasoningSection={agentLlmAvailable}
+                        oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
+                        advisorBotId={advisorBotId}
+                        agentLlmAvailable={agentLlmAvailable}
+                      />
+                    </Suspense>
                   </ErrorBoundary>
                 ) : !backtestRunning && (
                   <div className="backtest-lab__empty">

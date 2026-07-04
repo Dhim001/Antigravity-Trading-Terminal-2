@@ -26,10 +26,12 @@ export default function BacktestMiniChart({
   trades,
   benchmarkOverlays,
   className,
+  variant = 'compact',
 }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const hasDrawdown = Boolean(drawdownCurve?.length);
+  const isLab = variant === 'lab';
 
   const tradeMarkers = useMemo(() => {
     if (!trades?.length || !equityCurve?.length) return [];
@@ -110,10 +112,10 @@ export default function BacktestMiniChart({
 
     const grids = hasDrawdown
       ? [
-          { left: 4, right: 4, top: 8, height: '58%' },
-          { left: 4, right: 4, top: '72%', height: '22%' },
+          { left: isLab ? 52 : 4, right: isLab ? 16 : 4, top: isLab ? 20 : 8, height: '58%' },
+          { left: isLab ? 52 : 4, right: isLab ? 16 : 4, top: '72%', height: '22%' },
         ]
-      : [{ left: 4, right: 4, top: 12, bottom: 4, containLabel: true }];
+      : [{ left: isLab ? 52 : 4, right: isLab ? 16 : 4, top: isLab ? 20 : 12, bottom: isLab ? 16 : 4, containLabel: true }];
 
     const extraSeries = [];
     if (benchmarkOverlays?.symbolBh?.length) {
@@ -172,19 +174,19 @@ export default function BacktestMiniChart({
             {
               type: 'value', scale: true, gridIndex: 0,
               splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-              axisLabel: { fontSize: 9, color: '#9ca3af' },
+              axisLabel: { fontSize: isLab ? 10 : 9, color: '#9ca3af' },
             },
             {
               type: 'value', gridIndex: 1, max: 100, min: 0,
               splitLine: { show: false },
-              axisLabel: { fontSize: 8, color: '#9ca3af', formatter: (v) => `${v}%` },
+              axisLabel: { fontSize: isLab ? 9 : 8, color: '#9ca3af', formatter: (v) => `${v}%` },
             },
           ]
         : {
             type: 'value',
             scale: true,
             splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-            axisLabel: { fontSize: 9, color: '#9ca3af' },
+            axisLabel: { fontSize: isLab ? 10 : 9, color: '#9ca3af' },
           },
       series: [
         {
@@ -194,7 +196,7 @@ export default function BacktestMiniChart({
           yAxisIndex: hasDrawdown ? 0 : undefined,
           showSymbol: false,
           smooth: true,
-          lineStyle: { width: 1.5, color },
+          lineStyle: { width: isLab ? 2 : 1.5, color },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
               { offset: 0, color: up ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)' },
@@ -229,7 +231,7 @@ export default function BacktestMiniChart({
         },
       },
     }, { notMerge: true });
-  }, [equityCurve, drawdownCurve, totalPnl, tradeMarkers, hasDrawdown, benchmarkOverlays]);
+  }, [equityCurve, drawdownCurve, totalPnl, tradeMarkers, hasDrawdown, benchmarkOverlays, isLab]);
 
   if (!equityCurve?.length) return null;
 

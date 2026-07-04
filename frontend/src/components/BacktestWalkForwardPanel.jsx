@@ -1,12 +1,15 @@
 /**
- * Walk-forward in-sample vs out-of-sample summary (single or rolling folds).
- * Includes "Deploy Live" button when OOS validation passes.
+ * BacktestWalkForwardPanel.jsx — Walk-forward in-sample vs out-of-sample summary.
+ * Deploy uses the shared deploy gate (forward test before capital).
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { toast } from 'sonner';
+import BacktestOosStitchChart from './BacktestOosStitchChart';
+import { evaluateDeployGate, buildDeployPayload } from '@/lib/deployGate';
+import { backtestFingerprint } from '@/lib/backtestDisplay';
 
 function Metric({ label, value, tone }) {
   return (
@@ -46,31 +49,63 @@ function FoldSummary({ fold }) {
   );
 }
 
-function DeployButton({ symbol, strategy, timeframe, allocation, bestConfig, walkForward, runId }) {
+function DeployButton({
+  symbol,
+  strategy,
+  timeframe,
+  allocation,
+  bestConfig,
+  walkForward,
+  runId,
+  results,
+  days,
+}) {
   const [deploying, setDeploying] = useState(false);
   const [deployed, setDeployed] = useState(null);
+  const [forceDeploy, setForceDeploy] = useState(false);
 
-  const oos = walkForward?.out_of_sample ?? {};
-  const oosPnl = oos.total_pnl ?? 0;
-  const oosTrades = oos.trade_count ?? oos.summary?.total_trades ?? 0;
-  const canDeploy = oosPnl > 0 && oosTrades >= 1;
+  const gate = useMemo(
+    () => evaluateDeployGate({
+      results: { ...results, walk_forward: walkForward, run_id: runId },
+      symbol,
+      strategy,
+      timeframe,
+      days,
+      config: bestConfig,
+    }),
+    [results, walkForward, runId, symbol, strategy, timeframe, days, bestConfig],
+  );
+
+  const canDeploy = gate.passed || forceDeploy;
 
   const handleDeploy = useCallback(async () => {
-    if (deploying || deployed) return;
+    if (deploying || deployed || !canDeploy) return;
     setDeploying(true);
     try {
-      const { ok, error } = await sendAction(Action.BOT_CREATE, {
+      const snapshot = backtestFingerprint({
+        symbol,
+        strategy,
+        days: String(days),
+        timeframe,
+        config: bestConfig,
+      });
+      const payload = buildDeployPayload({
         strategy: strategy || 'CHART_AGENT',
         symbol,
         timeframe: timeframe || '1m',
         allocation: allocation || 1000,
+        executionMode: 'BAR_CLOSE',
         config: {
           ...(bestConfig || {}),
           walk_forward_deploy: true,
-          backtest_run_id: runId,
           pipeline_source: 'walk_forward_ui',
         },
+        results: { run_id: runId },
+        snapshot,
+        days,
+        forceDeploy,
       });
+      const { ok, error } = await sendAction(Action.BOT_CREATE, payload);
       if (ok) {
         setDeployed({ ok: true });
         toast.success(`Bot deployed for ${symbol} using walk-forward best config`);
@@ -84,7 +119,10 @@ function DeployButton({ symbol, strategy, timeframe, allocation, bestConfig, wal
     } finally {
       setDeploying(false);
     }
-  }, [deploying, deployed, symbol, strategy, timeframe, allocation, bestConfig, runId]);
+  }, [
+    deploying, deployed, canDeploy, symbol, strategy, timeframe, allocation,
+    bestConfig, runId, days, forceDeploy,
+  ]);
 
   if (deployed?.ok) {
     return (
@@ -97,29 +135,50 @@ function DeployButton({ symbol, strategy, timeframe, allocation, bestConfig, wal
   }
 
   return (
-    <button
-      className={cn(
-        'algo-backtest-wf__deploy-btn',
-        !canDeploy && 'opacity-50 cursor-not-allowed',
+    <div className="algo-backtest-wf__deploy-wrap">
+      {gate.blocking && (
+        <label className="deploy-gate__force mb-2">
+          <input
+            type="checkbox"
+            checked={forceDeploy}
+            onChange={(e) => setForceDeploy(e.target.checked)}
+          />
+          <span>Deploy anyway (bypass OOS gate)</span>
+        </label>
       )}
-      disabled={!canDeploy || deploying}
-      onClick={handleDeploy}
-      title={
-        !canDeploy
-          ? 'OOS PnL must be positive with ≥1 trade to deploy'
-          : 'Deploy a live bot using the walk-forward best config'
-      }
-    >
-      {deploying ? (
-        <span className="animate-pulse">Deploying…</span>
-      ) : (
-        <>🚀 Deploy Live from Walk-Forward</>
-      )}
-    </button>
+      <button
+        className={cn(
+          'algo-backtest-wf__deploy-btn',
+          !canDeploy && 'opacity-50 cursor-not-allowed',
+        )}
+        disabled={!canDeploy || deploying}
+        onClick={handleDeploy}
+        title={
+          !canDeploy
+            ? gate.block_reason || 'OOS validation must pass to deploy'
+            : 'Deploy a bot using the walk-forward best config'
+        }
+      >
+        {deploying ? (
+          <span className="animate-pulse">Deploying…</span>
+        ) : (
+          <>🚀 Deploy from Walk-Forward</>
+        )}
+      </button>
+    </div>
   );
 }
 
-export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy, timeframe, allocation, runId }) {
+export default function BacktestWalkForwardPanel({
+  walkForward,
+  symbol,
+  strategy,
+  timeframe,
+  allocation,
+  runId,
+  results,
+  days = 7,
+}) {
   if (!walkForward) return null;
 
   const folds = walkForward.folds ?? [];
@@ -158,7 +217,6 @@ export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy
             </tbody>
           </table>
 
-          {/* Fold Heatmap — visual overview of fold performance */}
           <div className="mt-2">
             <p className="text-[0.55rem] text-muted-foreground mb-1">Fold performance heatmap (OOS PnL)</p>
             <div className="flex gap-0.5 flex-wrap">
@@ -223,6 +281,7 @@ export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy
               </strong>
             </span>
           </div>
+          <BacktestOosStitchChart stitchCurve={walkForward.oos_equity_stitch} className="mt-2" />
         </div>
       )}
 
@@ -263,7 +322,6 @@ export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy
         </div>
       )}
 
-      {/* Deploy from walk-forward button */}
       <DeployButton
         symbol={symbol}
         strategy={strategy}
@@ -272,7 +330,8 @@ export default function BacktestWalkForwardPanel({ walkForward, symbol, strategy
         bestConfig={bestConfig}
         walkForward={walkForward}
         runId={runId}
-        ws={ws}
+        results={results}
+        days={days}
       />
     </section>
   );

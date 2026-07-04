@@ -96,6 +96,7 @@ class TestPortfolioBacktest(unittest.TestCase):
         )
         self.assertTrue(out.get("portfolio"))
         self.assertEqual(out["total_pnl"], 15)
+        self.assertEqual(out["symbols_tested"], 2)
         self.assertEqual(len(out["symbol_results"]), 2)
 
 

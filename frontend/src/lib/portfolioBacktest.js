@@ -1,5 +1,10 @@
 /** Portfolio backtest symbol selection helpers. */
 
+import {
+  getBacktestClientTimeoutMs,
+  formatBacktestTimeoutLabel,
+} from './backtestTimeouts';
+
 export const PORTFOLIO_BACKTEST_MAX = 8;
 export const PORTFOLIO_BACKTEST_MIN = 2;
 
@@ -36,4 +41,22 @@ export function togglePortfolioSymbol(selected, symbol, max = PORTFOLIO_BACKTEST
   }
   if (current.length >= max) return current;
   return [...current, sym];
+}
+
+/** Estimated client wait for a portfolio run (matches backtestTimeouts scaling). */
+export function estimatePortfolioTimeoutMs(symbolCount, { days = 7 } = {}) {
+  const n = Array.isArray(symbolCount)
+    ? uniqueSymbols(symbolCount).length
+    : Math.max(0, Math.floor(Number(symbolCount) || 0));
+  return getBacktestClientTimeoutMs({
+    portfolioSymbolCount: n,
+    days,
+  });
+}
+
+export function formatPortfolioRunEstimate(symbolCount, { days = 7 } = {}) {
+  const n = uniqueSymbols(symbolCount).length;
+  if (n < PORTFOLIO_BACKTEST_MIN) return null;
+  const ms = estimatePortfolioTimeoutMs(n, { days });
+  return `Est. wait ~${formatBacktestTimeoutLabel(ms)} (${n} symbols)`;
 }

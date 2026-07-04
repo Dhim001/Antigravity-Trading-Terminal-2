@@ -36,6 +36,9 @@ export default function BacktestPriceChart({
   meta,
   timeframe = '1m',
   trades = [],
+  tradesLoading = false,
+  tradesTotal = null,
+  highlightBarTime = null,
   className,
   title,
 }) {
@@ -79,10 +82,43 @@ export default function BacktestPriceChart({
     return () => { cancelled = true; };
   }, [symbol, meta?.oldest, meta?.newest, meta?.count, timeframe]);
 
+  const markersPending = tradesLoading
+    && tradesTotal != null
+    && tradesTotal > (trades?.length ?? 0);
+
+  const markerTrades = markersPending ? [] : trades;
+
   const markerPoints = useMemo(
-    () => buildTradeMarkerPoints(candles, trades, bucketSecs),
-    [candles, trades, bucketSecs],
+    () => buildTradeMarkerPoints(candles, markerTrades, bucketSecs),
+    [candles, markerTrades, bucketSecs],
   );
+
+  const markerCounts = useMemo(() => {
+    let entries = 0;
+    let exits = 0;
+    for (const m of markerPoints) {
+      if (m.isExit) exits += 1;
+      else entries += 1;
+    }
+    return { entries, exits };
+  }, [markerPoints]);
+
+  const highlightIndex = useMemo(() => {
+    if (!highlightBarTime || !candles.length) return -1;
+    const target = Number(highlightBarTime);
+    let best = -1;
+    let bestDiff = Infinity;
+    candles.forEach((c, idx) => {
+      const sec = toUnixSeconds(c.time);
+      if (sec == null) return;
+      const diff = Math.abs(sec - target);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = idx;
+      }
+    });
+    return best;
+  }, [candles, highlightBarTime]);
 
   const scatterSeries = useMemo(() => {
     const entries = [];
@@ -215,6 +251,12 @@ export default function BacktestPriceChart({
             borderColor: '#16a34a',
             borderColor0: '#dc2626',
           },
+          markLine: highlightIndex >= 0 ? {
+            symbol: 'none',
+            silent: true,
+            lineStyle: { color: '#f59e0b', width: 1, type: 'dashed' },
+            data: [{ xAxis: highlightIndex }],
+          } : undefined,
         },
         ...scatterSeries,
       ],
@@ -223,8 +265,13 @@ export default function BacktestPriceChart({
         axisPointer: { type: 'cross' },
         textStyle: { fontSize: 11 },
       },
+      dataZoom: highlightIndex >= 0 ? [{
+        type: 'inside',
+        startValue: Math.max(0, highlightIndex - 30),
+        endValue: Math.min(labels.length - 1, highlightIndex + 30),
+      }] : undefined,
     }, { notMerge: true });
-  }, [candles, scatterSeries]);
+  }, [candles, scatterSeries, highlightIndex]);
 
   if (!symbol || !meta?.oldest) return null;
 
@@ -235,10 +282,21 @@ export default function BacktestPriceChart({
           {title ?? `Price & trades · ${timeframe}`}
         </span>
         <BacktestChartLegend />
+        {markersPending && (
+          <span className="backtest-price-chart-wrap__status text-[0.58rem] text-muted-foreground">
+            <Loader2 className="inline size-3 animate-spin" aria-hidden />
+            Loading trade markers…
+          </span>
+        )}
+        {!markersPending && markerPoints.length > 0 && (
+          <span className="backtest-price-chart-wrap__status text-[0.58rem] text-muted-foreground">
+            {markerCounts.entries} entries · {markerCounts.exits} exits
+          </span>
+        )}
       </div>
       {loading && (
         <div className="backtest-price-chart__state" aria-live="polite">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
+          <Loader2 className="animate-spin text-muted-foreground" aria-hidden />
           <span className="text-[0.62rem] text-muted-foreground">Loading candles…</span>
         </div>
       )}

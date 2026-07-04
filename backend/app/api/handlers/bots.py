@@ -18,9 +18,17 @@ from app.services.bots.backtest_job_store import (
     create_backtest_job,
     is_job_cancelled,
     set_job_status,
+    start_job_execution,
     update_job_progress,
 )
+from app.services.bots.backtest_perf import (
+    backtest_tier_meta,
+    heavy_backtest_label,
+    parallel_worker_count,
+)
 from app.services.bots.backtest_sweep import expand_sweep_grid, sweep_label
+from app.services.bots.backtest_costs import parse_cost_config
+from app.services.bots.backtest_payload import trim_results_for_wire
 from app.services.bots.strategies import normalize_strategy_name
 from app.services.bots.backtest_walk_forward import (
     pick_best_config,
@@ -156,6 +164,44 @@ def _parse_backtest_request(msg: dict) -> dict:
     }
 
 
+async def _maybe_defer_backtest(ctx: RequestContext, req: dict) -> bool:
+    """Queue slow runs in a background task; return True when deferred."""
+    tier_meta = backtest_tier_meta(req)
+    tier = tier_meta["tier"]
+    if tier != "deferred":
+        return False
+
+    label = tier_meta.get("label") or heavy_backtest_label({
+        **req,
+        "config": req.get("config") or {},
+    })
+    client_key = str(id(ctx.websocket)) if ctx.websocket is not None else None
+    job_req = {**req, "tier": tier, "estimated_sec": tier_meta.get("estimated_sec")}
+    job_id = create_backtest_job(job_req, status="pending", client_key=client_key)
+    start_job(ctx.websocket, job_id)
+    progress = {
+        "pct": 0,
+        "phase": "queued",
+        "message": f"Queued {label} backtest (~{tier_meta.get('estimated_sec')}s est.)…",
+        "job_id": job_id,
+        "tier": tier,
+        "estimated_sec": tier_meta.get("estimated_sec"),
+    }
+    update_job_progress(job_id, progress)
+    await send_backtest_progress(ctx, progress)
+
+    async def _run_deferred() -> None:
+        try:
+            await _execute_backtest(ctx, job_id=job_id, **req)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Deferred backtest %s failed", job_id)
+            set_job_status(job_id, "failed", error="Deferred backtest failed")
+
+    asyncio.create_task(_run_deferred())
+    return True
+
+
 def _apply_oos_window(candles: list, meta: dict, oos_pct: float | None) -> list:
     if not oos_pct or not candles:
         return candles
@@ -230,6 +276,8 @@ async def _execute_backtest(
             status="running",
             client_key=client_key,
         )
+    else:
+        start_job_execution(job_id)
 
     job = start_job(ctx.websocket, job_id)
     progress_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
@@ -295,54 +343,119 @@ async def _execute_backtest(
 
         # Multi-symbol portfolio backtest (no sweep / walk-forward)
         if portfolio_symbols and len(portfolio_symbols) > 1 and not sweep and not walk_forward:
-            from app.services.bots.backtest_portfolio import run_portfolio_backtest
+            from app.services.bots.backtest_portfolio import (
+                PortfolioBacktestConfig,
+                format_portfolio_results,
+                run_portfolio_backtest,
+            )
+            from app.services.bots.correlation import summarize_basket_correlation
 
             enqueue_progress({"pct": 5, "phase": "resolve", "message": f"Portfolio: {len(portfolio_symbols)} symbols…"})
 
-            def resolve_sym(sym: str):
-                c, m = resolve_backtest_candles(
-                    sym,
-                    ctx.oms.feed,
-                    days=days,
-                    interval=interval,
-                    timeframe=timeframe,
-                )
-                if oos_pct:
-                    c = _apply_oos_window(c, m, oos_pct)
-                return c, m
+            candles_by_symbol: dict[str, list] = {}
+            skipped_resolve: list[dict] = []
+            for sym in portfolio_symbols:
+                if is_cancelled():
+                    await _finish("cancelled")
+                    return
+                try:
+                    c, _m = await asyncio.to_thread(
+                        resolve_backtest_candles,
+                        sym,
+                        ctx.oms.feed,
+                        days=days,
+                        interval=interval,
+                        timeframe=timeframe,
+                    )
+                    if oos_pct:
+                        c = _apply_oos_window(c, _m, oos_pct)
+                    candles_by_symbol[sym] = c or []
+                except ValueError as exc:
+                    candles_by_symbol[sym] = []
+                    skipped_resolve.append({"symbol": sym, "reason": str(exc)})
+
+            for sym, c in candles_by_symbol.items():
+                if c and len(c) >= 50:
+                    try:
+                        ctx.backtester.cache_candles(sym, strategy, c, config)
+                    except Exception:
+                        pass
+
+            slippage_bps, fee_bps = parse_cost_config(config)
+            total_capital = float(config.get("allocation") or 10_000.0) * len(portfolio_symbols)
+            sym_entries = [
+                {"symbol": sym, "strategy": strategy, "config": config, "weight": 1.0}
+                for sym in portfolio_symbols
+            ]
+            portfolio_cfg = PortfolioBacktestConfig(
+                symbols=sym_entries,
+                total_capital=total_capital,
+                slippage_bps=slippage_bps,
+                fee_bps=fee_bps,
+            )
+
+            skipped_symbols: list[dict] = list(skipped_resolve)
 
             def portfolio_progress(**kw) -> None:
                 si = kw.get("symbol_index", 1)
                 st = kw.get("symbol_total", 1)
                 sym = kw.get("symbol", "")
+                batch_skipped = kw.get("skipped") or []
+                if batch_skipped:
+                    skipped_symbols.extend(batch_skipped)
+                skip_note = ""
+                if skipped_symbols:
+                    skip_note = f" · {len(skipped_symbols)} skipped"
                 enqueue_progress({
                     "pct": min(5 + int((si / max(st, 1)) * 85), 90),
                     "phase": "portfolio",
-                    "message": f"Portfolio {si}/{st}: {sym}…",
+                    "message": f"Portfolio {si}/{st}: {sym}…{skip_note}",
                     "symbol": sym,
+                    "skipped_symbols": skipped_symbols[-8:],
                 })
 
-            portfolio_result = await asyncio.to_thread(
-                partial(
-                    run_portfolio_backtest,
-                    run_backtest=ctx.backtester.run_backtest,
-                    symbols=portfolio_symbols,
-                    strategy=strategy,
-                    config=config,
-                    resolve_candles=resolve_sym,
-                    progress_cb=portfolio_progress,
-                    cancel_cb=is_cancelled,
-                ),
+            portfolio_raw = await asyncio.to_thread(
+                run_portfolio_backtest,
+                ctx.backtester,
+                portfolio_cfg,
+                candles_by_symbol,
+                progress_cb=portfolio_progress,
+                cancel_cb=is_cancelled,
             )
-            if portfolio_result.get("cancelled"):
+            if portfolio_raw.get("cancelled"):
                 await _finish("cancelled")
                 return
-            if portfolio_result.get("error") and not portfolio_result.get("portfolio"):
-                await _finish("error", message=portfolio_result["error"])
+            if portfolio_raw.get("error") and not portfolio_raw.get("per_symbol"):
+                await _finish("error", message=portfolio_raw["error"])
                 return
+
+            corr_summary = await asyncio.to_thread(
+                summarize_basket_correlation,
+                portfolio_symbols,
+                feed=ctx.oms.feed,
+            )
+            portfolio_result = format_portfolio_results(
+                portfolio_raw,
+                correlation_summary=corr_summary,
+            )
+
+            if (
+                portfolio_result.get("symbols_tested", 0) == 0
+                and portfolio_result.get("symbols_failed", 0) > 0
+            ):
+                portfolio_result["error"] = "All portfolio symbols skipped or failed"
+                await _finish("error", message=portfolio_result["error"], results=portfolio_result)
+                return
+
             meta["strategy"] = strategy
             meta["portfolio"] = True
             meta["portfolio_symbols"] = portfolio_symbols
+            meta["live_parity"] = config.get("live_parity", config.get("sim_mode", "live_aligned") == "live_aligned")
+            from app.services.bots.backtest_provenance import repo_git_revision
+
+            git_rev = repo_git_revision()
+            if git_rev:
+                meta["git_revision"] = git_rev
             bot_id = str(config.get("backtest_bot_id") or config.get("_bot_id") or "").strip()
             if bot_id:
                 meta["bot_id"] = bot_id
@@ -358,7 +471,9 @@ async def _execute_backtest(
                 portfolio_result,
             )
             portfolio_result["run_id"] = run_id
-            await _finish("success", results=portfolio_result, run_id=run_id)
+            wire = trim_results_for_wire(portfolio_result)
+            wire["run_id"] = run_id
+            await _finish("success", results=wire, run_id=run_id)
             return
 
         configs = expand_sweep_grid(config, sweep) if sweep else [config]
@@ -377,6 +492,7 @@ async def _execute_backtest(
 
         if walk_forward and is_sweep:
             from app.services.bots.backtest_walk_forward import run_walk_forward
+            from app.services.bots.backtester import thread_local_backtest_runner
 
             wf_label = (
                 f"Rolling walk-forward ({rolling_folds} folds)"
@@ -427,10 +543,11 @@ async def _execute_backtest(
                     "total_runs": total_runs,
                 })
 
+            wf_runner = thread_local_backtest_runner(ctx.backtester)
             best_result = await asyncio.to_thread(
                 partial(
                     run_walk_forward,
-                    run_backtest=ctx.backtester.run_backtest,
+                    run_backtest=wf_runner,
                     symbol=symbol,
                     strategy=strategy,
                     base_config=config,
@@ -563,7 +680,7 @@ async def _execute_backtest(
 
             use_parallel = is_sweep and len(configs) > 1
             if use_parallel:
-                workers = min(4, len(configs))
+                workers = parallel_worker_count(len(configs))
                 sem = asyncio.Semaphore(workers)
                 completed = 0
 
@@ -760,6 +877,22 @@ async def _execute_backtest(
         enqueue_progress({"pct": 98, "phase": "save", "message": "Saving run…"})
 
         meta["strategy"] = strategy
+        meta["live_parity"] = config.get(
+            "live_parity",
+            config.get("sim_mode", "live_aligned") == "live_aligned",
+        )
+        tier_meta = backtest_tier_meta({
+            **request_payload,
+            "reasoning": reasoning,
+            "config": config,
+        })
+        meta["job_tier"] = tier_meta.get("tier")
+        meta["estimated_sec"] = tier_meta.get("estimated_sec")
+        from app.services.bots.backtest_provenance import repo_git_revision
+
+        git_rev = repo_git_revision()
+        if git_rev:
+            meta["git_revision"] = git_rev
         bot_id = str(config.get("backtest_bot_id") or config.get("_bot_id") or "").strip()
         if bot_id:
             meta["bot_id"] = bot_id
@@ -813,11 +946,12 @@ async def _execute_backtest(
         all_trades = best_result.get("trades") or []
         best_result["trades_total"] = len(all_trades)
         run_id = save_backtest_run(symbol, strategy, best_config or config, days, best_result)
-        wire_results = {
+        wire_results = trim_results_for_wire({
             **best_result,
             "trades": all_trades[-100:],
             "run_id": run_id,
-        }
+        })
+        wire_results["run_id"] = run_id
 
         if auto_deploy and walk_forward and is_sweep:
             from app.services.agent.pipeline import auto_deploy_from_walk_forward
@@ -855,8 +989,71 @@ async def bot_create(ctx: RequestContext) -> None:
     symbol = msg.get("symbol")
     timeframe = msg.get("timeframe", "1m")
     allocation = float(msg.get("allocation", 1000))
-    config = msg.get("config", {})
+    config = dict(msg.get("config") or {})
     execution_mode = msg.get("execution_mode", "BAR_CLOSE")
+    force_deploy = bool(msg.get("force_deploy"))
+    backtest_fingerprint = msg.get("backtest_fingerprint") or config.get("backtest_fingerprint")
+    run_id = config.get("backtest_run_id")
+
+    from app.config import (
+        DEPLOY_GATE_ENABLED,
+        DEPLOY_MAX_DRAWDOWN_WARN_PCT,
+        DEPLOY_MIN_OOS_PNL,
+        DEPLOY_MIN_OOS_TRADES,
+        DEPLOY_MIN_STABILITY_SCORE,
+    )
+    from app.services.bots.backtest_store import get_backtest_run
+    from app.services.bots.deploy_gate import (
+        config_fingerprint,
+        enrich_deploy_config,
+        evaluate_deploy_gate,
+    )
+
+    gate = None
+    run = None
+    if DEPLOY_GATE_ENABLED and run_id and not force_deploy:
+        run = get_backtest_run(str(run_id))
+        if not run:
+            await send_order_result(ctx, {
+                "status": "error",
+                "message": f"Backtest run {run_id} not found",
+            })
+            return
+        gate = evaluate_deploy_gate(
+            run.get("results"),
+            symbol=str(symbol or "").upper() or None,
+            deploy_fingerprint=backtest_fingerprint,
+            run_config=run.get("config"),
+            run_days=run.get("days"),
+            run_timeframe=timeframe,
+            min_trades=DEPLOY_MIN_OOS_TRADES,
+            min_pnl=DEPLOY_MIN_OOS_PNL,
+            min_stability_score=DEPLOY_MIN_STABILITY_SCORE,
+            max_drawdown_warn_pct=DEPLOY_MAX_DRAWDOWN_WARN_PCT,
+        )
+        if gate.get("blocking") and not gate.get("passed"):
+            await send_order_result(ctx, {
+                "status": "error",
+                "message": gate.get("block_reason") or "Deploy gate blocked",
+                "deploy_gate": gate,
+            })
+            return
+
+    if not backtest_fingerprint and run:
+        backtest_fingerprint = config_fingerprint(
+            symbol=run.get("symbol"),
+            strategy=run.get("strategy"),
+            days=run.get("days"),
+            timeframe=timeframe,
+            config=config,
+        )
+
+    config = enrich_deploy_config(
+        config,
+        run_id=str(run_id) if run_id else None,
+        fingerprint=backtest_fingerprint,
+        gate=gate,
+    )
 
     try:
         bot_id = await ctx.bot_manager.create_bot(
@@ -865,6 +1062,7 @@ async def bot_create(ctx: RequestContext) -> None:
         await send_order_result(ctx, {
             "status": "success",
             "message": f"Bot {bot_id} created successfully",
+            "deploy_gate": gate,
         })
         await broadcast_bots_update(ctx)
         await _notify_bot_registry_change()
@@ -953,6 +1151,8 @@ async def bot_list_all(ctx: RequestContext) -> None:
 @route(Action.RUN_BACKTEST, tags=["bots"])
 async def run_backtest(ctx: RequestContext) -> None:
     req = _parse_backtest_request(ctx.message)
+    if await _maybe_defer_backtest(ctx, req):
+        return
     await _execute_backtest(ctx, **req)
 
 
@@ -964,6 +1164,8 @@ async def run_backtest_sweep(ctx: RequestContext) -> None:
         "take_profit_percent": ctx.message.get("take_profit_values") or [2, 3, 5],
     }
     req["sweep"] = sweep
+    if await _maybe_defer_backtest(ctx, req):
+        return
     await _execute_backtest(ctx, **req)
 
 

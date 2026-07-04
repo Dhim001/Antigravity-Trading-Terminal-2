@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
@@ -38,6 +39,8 @@ import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { openBacktestLabWithRun } from '@/lib/backtestLab';
+import { backtestFingerprint } from '@/lib/backtestDisplay';
 import {
   Pause,
   PlayCircle,
@@ -51,6 +54,8 @@ import {
   ChevronsDownUp,
   Maximize2,
   Minimize2,
+  FlaskConical,
+  AlertTriangle,
 } from 'lucide-react';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
@@ -396,6 +401,49 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                     <span className="text-muted-foreground/60" aria-hidden> · </span>
                     ${Number(bot.allocation).toLocaleString()} allocated
                   </p>
+                  {bot.config?.backtest_run_id && (
+                    <div className="bot-detail-drawer__source-backtest mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        className="h-6 gap-1 text-[0.62rem]"
+                        onClick={() => {
+                          openBacktestLabWithRun(bot.config.backtest_run_id).catch(() => {
+                            toast.error('Could not load source backtest run');
+                          });
+                        }}
+                      >
+                        <FlaskConical className="size-3" aria-hidden />
+                        Source backtest
+                      </Button>
+                      {bot.config.deploy_gate_passed_at && (
+                        <Badge variant="secondary" className="text-[0.55rem] font-normal">
+                          Gate passed
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+                  {bot.config?.backtest_fingerprint && bot.config && (() => {
+                    const current = backtestFingerprint({
+                      symbol: bot.symbol,
+                      strategy: bot.strategy,
+                      days: String(bot.config.backtest_days || '7'),
+                      timeframe: bot.timeframe,
+                      config: bot.config,
+                    });
+                    if (current !== bot.config.backtest_fingerprint) {
+                      return (
+                        <Alert variant="default" className="mt-2 py-1.5 px-2">
+                          <AlertTriangle className="size-3.5" />
+                          <AlertDescription className="text-[0.58rem] leading-snug">
+                            Config drift — parameters differ from the linked backtest snapshot.
+                          </AlertDescription>
+                        </Alert>
+                      );
+                    }
+                    return null;
+                  })()}
                 </>
               ) : (
                 <span>{loading ? 'Loading bot metrics…' : 'Select a bot from the table'}</span>

@@ -43,6 +43,26 @@ def create_backtest_job(request: dict, *, status: str = "running", client_key: s
     return job_id
 
 
+def start_job_execution(job_id: str) -> None:
+    """Mark a pending job as running when a deferred task begins."""
+    if not job_id:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE backtest_jobs
+            SET status = 'running', started_at = COALESCE(started_at, ?)
+            WHERE id = ? AND status IN ('pending', 'running')
+            """,
+            (_now_iso(), job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_job_progress(job_id: str, progress: dict) -> None:
     if not job_id:
         return

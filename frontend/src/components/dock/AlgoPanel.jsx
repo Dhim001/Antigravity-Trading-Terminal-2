@@ -45,14 +45,22 @@ import {
   clearBacktestClientTimeout,
   backtestTimeoutHint,
 } from '../../lib/backtestTimeouts';
+import { stopBacktestJobPolling } from '../../lib/backtestPolling';
 import PortfolioBacktestPicker from '../PortfolioBacktestPicker';
 import { canRunPortfolioBacktest } from '../../lib/portfolioBacktest';
+import { formatRunEstimate } from '../../lib/backtestRunEstimate';
+import BacktestWorkflowPresets, { applyWorkflowPreset } from '../BacktestWorkflowPresets';
+import BacktestStaleBanner from '../BacktestStaleBanner';
+import BacktestErrorRecovery from '../BacktestErrorRecovery';
+import { slimBacktestForDock } from '../../lib/backtestSlim';
 import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
+import { buildDeployPayload } from '@/lib/deployGate';
+import DeployGatePanel from '../DeployGatePanel';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
 
@@ -62,8 +70,10 @@ export function AlgoTab({ hideToolbar = false }) {
     activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
     setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
     strategyTemplates, backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
+    backtestLabOpen, backtestLastError, backtestLastRequest, backtestJobId,
     setBacktestRunning, setBacktestProgress, setBacktestSnapshot,
     openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
+    clearBacktestLastError, setBacktestLastError,
     setChartInteractionMode,
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
     executionMode,
@@ -89,12 +99,18 @@ export function AlgoTab({ hideToolbar = false }) {
     backtestRuns: s.backtestRuns,
     backtestRunning: s.backtestRunning,
     backtestSnapshot: s.backtestSnapshot,
+    backtestLabOpen: s.backtestLabOpen,
+    backtestLastError: s.backtestLastError,
+    backtestLastRequest: s.backtestLastRequest,
+    backtestJobId: s.backtestJobId,
     setBacktestRunning: s.setBacktestRunning,
     setBacktestProgress: s.setBacktestProgress,
     setBacktestSnapshot: s.setBacktestSnapshot,
     openBacktestLab: s.openBacktestLab,
     setStoreBacktestDays: s.setBacktestDays,
     setStoreBacktestOos: s.setBacktestOos,
+    clearBacktestLastError: s.clearBacktestLastError,
+    setBacktestLastError: s.setBacktestLastError,
     setChartInteractionMode: s.setChartInteractionMode,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
@@ -121,15 +137,19 @@ export function AlgoTab({ hideToolbar = false }) {
   const massiveLive = isLiveMassiveMode(terminalMode);
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
+  const [forceDeploy, setForceDeploy] = useState(false);
+  const [deployGate, setDeployGate] = useState(null);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [backtestDays, setBacktestDaysLocal] = useState('7');
   const [backtestOos, setBacktestOosLocal] = useState(false);
   const [backtestReasoning, setBacktestReasoning] = useState(false);
   const [backtestSimMode, setBacktestSimMode] = useState('live_aligned');
+  const [backtestLiveParity, setBacktestLiveParity] = useState(true);
   const [backtestRiskBaseMode, setBacktestRiskBaseMode] = useState('account_snapshot');
   const [portfolioBacktest, setPortfolioBacktest] = useState(false);
   const [portfolioSymbols, setPortfolioSymbols] = useState([]);
   const [metaLabelWalkForward, setMetaLabelWalkForward] = useState(false);
+  const [activeWorkflowPreset, setActiveWorkflowPreset] = useState(null);
   const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
@@ -168,6 +188,40 @@ export function AlgoTab({ hideToolbar = false }) {
     clearBacktestClientTimeout();
   }, []);
 
+  useEffect(() => {
+    if (backtestSimMode === 'research') {
+      setBacktestLiveParity(false);
+    } else if (backtestSimMode === 'live_aligned') {
+      setBacktestLiveParity(true);
+    }
+  }, [backtestSimMode]);
+
+  const portfolioList = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
+    ? portfolioSymbols
+    : undefined;
+  const portfolioSymbolCount = portfolioList?.length ?? 0;
+
+  const runEstimate = useMemo(() => formatRunEstimate({
+    days: parseInt(backtestDays, 10) || 7,
+    portfolioSymbols: portfolioList,
+    portfolioSymbolCount,
+    reasoning: backtestReasoning,
+    metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+    walkForward: false,
+    deferred: portfolioSymbolCount >= 2
+      || parseInt(backtestDays, 10) >= 30
+      || backtestReasoning
+      || (botStrategy === 'CHART_AGENT' && metaLabelWalkForward),
+  }), [
+    backtestDays, portfolioList, portfolioSymbolCount, backtestReasoning,
+    botStrategy, metaLabelWalkForward,
+  ]);
+
+  const dockPreview = useMemo(
+    () => (backtestLabOpen && backtestResults ? slimBacktestForDock(backtestResults) : null),
+    [backtestLabOpen, backtestResults],
+  );
+
   const setBacktestDays = (days) => {
     setBacktestDaysLocal(days);
     setStoreBacktestDays(days);
@@ -181,6 +235,101 @@ export function AlgoTab({ hideToolbar = false }) {
     setStoreBacktestDays(backtestDays);
     setStoreBacktestOos(backtestOos);
     openBacktestLab('optimizer');
+  };
+
+  const handleWorkflowPreset = (presetId) => {
+    const ok = applyWorkflowPreset(presetId, {
+      activeSymbol,
+      symbolsList,
+      botStrategy,
+      setBacktestDays,
+      setBacktestOos,
+      setBacktestReasoning,
+      setPortfolioBacktest,
+      setPortfolioSymbols,
+      setBacktestSimMode,
+      setBacktestLiveParity,
+      setMetaLabelWalkForward,
+      openBacktestLab,
+    });
+    if (ok) {
+      setActiveWorkflowPreset(presetId);
+      if (presetId !== 'wf_optimize' && presetId !== 'meta_label_validate') {
+        toast.message('Preset applied — review settings then RUN');
+      }
+    } else {
+      toast.error('Preset not available for this strategy');
+    }
+  };
+
+  const buildBacktestRequest = useCallback((patch = {}) => {
+    const days = parseInt(backtestDays, 10) || 7;
+    const isTick = botExecutionMode === 'TICK';
+    const list = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
+      ? portfolioSymbols
+      : undefined;
+    return {
+      strategy: botStrategy,
+      symbol: activeSymbol,
+      config: {
+        ...botConfig,
+        sim_mode: backtestSimMode,
+        live_parity: backtestLiveParity,
+        risk_base_mode: backtestRiskBaseMode,
+        ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
+        ...(selectedBotId ? { backtest_bot_id: selectedBotId } : {}),
+        ...(botStrategy === 'CHART_AGENT' && metaLabelWalkForward
+          ? { meta_label_walk_forward: true }
+          : {}),
+      },
+      days: patch.days != null ? patch.days : days,
+      timeframe: isTick ? 'tick' : botTimeframe,
+      oos_pct: patch.oos_pct != null
+        ? patch.oos_pct
+        : (backtestOos ? 30 : undefined),
+      reasoning: patch.reasoning != null ? patch.reasoning : (backtestReasoning || undefined),
+      portfolio_symbols: patch.portfolio_symbols !== undefined
+        ? patch.portfolio_symbols
+        : (list?.length > 1 ? list : undefined),
+      ...patch,
+    };
+  }, [
+    backtestDays, botExecutionMode, portfolioBacktest, portfolioSymbols, botStrategy,
+    activeSymbol, botConfig, backtestSimMode, backtestLiveParity, backtestRiskBaseMode,
+    cashTotal, selectedBotId, metaLabelWalkForward, botTimeframe, backtestOos, backtestReasoning,
+  ]);
+
+  const handleRetryBacktest = async (request) => {
+    clearBacktestLastError();
+    if (request?.days) setBacktestDays(String(request.days));
+    if (request?.reasoning === false) setBacktestReasoning(false);
+    if (request?.portfolio_symbols === undefined && portfolioBacktest) {
+      setPortfolioBacktest(false);
+    }
+    setBacktestRunning(true);
+    setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Retrying backtest…' });
+    scheduleBacktestClientTimeout({
+      reasoning: request?.reasoning,
+      metaLabelWalkForward: request?.config?.meta_label_walk_forward,
+      days: request?.days,
+      portfolioSymbolCount: request?.portfolio_symbols?.length ?? 0,
+      onTimeout: (timeoutMs) => {
+        if (useStore.getState().backtestRunning) {
+          stopBacktestJobPolling();
+          setBacktestRunning(false);
+          setBacktestProgress(null);
+          toast.error(`Backtest timed out after ${Math.round(timeoutMs / 60000)} min`);
+        }
+      },
+    });
+    const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel(request));
+    if (!ok) {
+      clearBacktestClientTimeout();
+      setBacktestRunning(false);
+      setBacktestProgress(null);
+      setBacktestLastError(error || 'Retry failed', request);
+      if (error) toast.error(error);
+    }
   };
 
   const handleRunBacktest = async () => {
@@ -202,19 +351,23 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestRunning(true);
     setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Starting backtest…' });
     setBacktestSnapshot(snapshot);
+    clearBacktestLastError();
 
     scheduleBacktestClientTimeout({
       reasoning: backtestReasoning,
       metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
       days,
+      portfolioSymbolCount,
       onTimeout: (timeoutMs) => {
         if (useStore.getState().backtestRunning) {
+          stopBacktestJobPolling();
           setBacktestRunning(false);
           setBacktestProgress(null);
           toast.error(
             backtestTimeoutHint({
               reasoning: backtestReasoning,
               metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+              portfolioSymbolCount,
               timeoutMs,
             }),
           );
@@ -222,44 +375,32 @@ export function AlgoTab({ hideToolbar = false }) {
       },
     });
 
-    const portfolioList = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
-      ? portfolioSymbols
-      : undefined;
-
-    const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel({
-      strategy: botStrategy,
-      symbol: activeSymbol,
-      config: {
-        ...botConfig,
-        sim_mode: backtestSimMode,
-        risk_base_mode: backtestRiskBaseMode,
-        ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
-        ...(selectedBotId ? { backtest_bot_id: selectedBotId } : {}),
-        ...(botStrategy === 'CHART_AGENT' && metaLabelWalkForward
-          ? { meta_label_walk_forward: true }
-          : {}),
-      },
-      days,
-      timeframe: isTick ? 'tick' : botTimeframe,
-      oos_pct: backtestOos ? 30 : undefined,
-      reasoning: backtestReasoning || undefined,
-      portfolio_symbols: portfolioList?.length > 1 ? portfolioList : undefined,
-    }));
+    const request = buildBacktestRequest();
+    const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel(request));
 
     if (!ok) {
       clearBacktestClientTimeout();
       setBacktestRunning(false);
       setBacktestProgress(null);
+      setBacktestLastError(error || 'Backtest request failed', request);
       if (error) toast.error(error);
     }
   };
 
   const handleCancelBacktest = () => {
+    stopBacktestJobPolling();
+    clearBacktestClientTimeout();
+    setBacktestRunning(false);
+    setBacktestProgress(null);
     const jobId = useStore.getState().backtestJobId;
     sendAction(Action.CANCEL_BACKTEST, jobId ? { job_id: jobId } : {});
   };
 
   const confirmDeploy = () => {
+    if (deployGate?.blocking && !forceDeploy) {
+      toast.error(deployGate.block_reason || 'Deploy gate blocked — run backtest or confirm bypass');
+      return;
+    }
     setDeployOpen(false);
     handleCreateBot();
   };
@@ -274,18 +415,20 @@ export function AlgoTab({ hideToolbar = false }) {
       return;
     }
 
-    sendAction(Action.BOT_CREATE, {
+    const days = parseInt(backtestDays, 10) || 7;
+    const payload = buildDeployPayload({
       strategy: botStrategy,
       symbol: activeSymbol,
       timeframe: botExecutionMode === 'TICK' ? 'tick' : botTimeframe,
       allocation: botConfig.allocation,
-      execution_mode: botExecutionMode,
-      config: {
-        ...botConfig,
-        trailing_stop_percent: botConfig.trailing_stop_percent ?? 2,
-        backtest_run_id: useStore.getState().backtestResults?.run_id ?? undefined,
-      },
+      executionMode: botExecutionMode,
+      config: botConfig,
+      results: useStore.getState().backtestResults,
+      snapshot: backtestSnapshot,
+      days,
+      forceDeploy,
     });
+    sendAction(Action.BOT_CREATE, payload);
   };
 
   const filteredTemplates = strategyTemplates.filter(
@@ -744,6 +887,33 @@ export function AlgoTab({ hideToolbar = false }) {
               </div>
             )}
 
+            <BacktestWorkflowPresets
+              activePreset={activeWorkflowPreset}
+              botStrategy={botStrategy}
+              disabled={backtestRunning}
+              onSelect={handleWorkflowPreset}
+              className="mb-2"
+            />
+
+            <BacktestStaleBanner
+              snapshot={backtestSnapshot}
+              symbol={activeSymbol}
+              strategy={botStrategy}
+              days={backtestDays}
+              timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
+              config={botConfig}
+              onRerun={handleRunBacktest}
+              className="algo-backtest-stale-banner py-2 mb-2"
+            />
+
+            <BacktestErrorRecovery
+              error={backtestLastError}
+              lastRequest={backtestLastRequest}
+              onRetry={handleRetryBacktest}
+              onDismiss={clearBacktestLastError}
+              className="mb-2"
+            />
+
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Backtest Timeframe</Label>
               <Select value={botTimeframe} onValueChange={setBotTimeframe} disabled={botExecutionMode === 'TICK'}>
@@ -841,7 +1011,19 @@ export function AlgoTab({ hideToolbar = false }) {
               activeSymbol={activeSymbol}
               oos={backtestOos}
               walkForward={botStrategy === 'CHART_AGENT' && metaLabelWalkForward}
+              runEstimate={portfolioBacktest ? runEstimate : null}
             />
+
+            <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                checked={backtestLiveParity}
+                disabled={backtestSimMode === 'research'}
+                onChange={(e) => setBacktestLiveParity(e.target.checked)}
+              />
+              Live parity — simulate HTF confirm + filter_strategy gates (matches deployed bot)
+            </label>
 
             {agentLlmAvailable ? (
               <label className="flex items-center gap-2 text-[0.62rem] text-muted-foreground cursor-pointer">
@@ -916,7 +1098,23 @@ export function AlgoTab({ hideToolbar = false }) {
 
             {backtestRunning && <BacktestProgressBar compact />}
 
-            {backtestResults && (
+            {backtestRunning && backtestJobId && (
+              <p className="text-[0.58rem] text-muted-foreground mb-2">
+                Background job active — safe to switch tabs. Toast on completion.
+              </p>
+            )}
+
+            {dockPreview ? (
+              <div className="algo-backtest-dock-summary mb-2 rounded border border-border/50 p-2 text-xs">
+                <p className="font-medium mb-1">Full report open in Lab</p>
+                <p className="text-muted-foreground num-mono mb-2">
+                  ${Number(dockPreview.total_pnl ?? 0).toFixed(2)} · {dockPreview.trade_count ?? 0} trades
+                </p>
+                <Button type="button" variant="outline" size="xs" onClick={() => openBacktestLab('results')}>
+                  Focus Lab
+                </Button>
+              </div>
+            ) : backtestResults ? (
               <BacktestResultsPanel
                 results={backtestResults}
                 backtestDays={backtestDays}
@@ -931,7 +1129,7 @@ export function AlgoTab({ hideToolbar = false }) {
                 advisorBotId={selectedBotId}
                 agentLlmAvailable={agentLlmAvailable}
               />
-            )}
+            ) : null}
           </div>
         </div>
         <footer className="algo-tab__panel-footer algo-deploy-actions">
@@ -939,7 +1137,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <Button
               variant="ghost"
               size="sm"
-              className="algo-deploy-actions__btn"
+              className="algo-deploy-actions__btn algo-deploy-actions__btn--backtest"
               onClick={handleRunBacktest}
               disabled={backtestRunning}
             >
@@ -953,7 +1151,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <Button
               variant="ghost"
               size="sm"
-              className="algo-deploy-actions__btn"
+              className="algo-deploy-actions__btn algo-deploy-actions__btn--optimize"
               onClick={handleOpenOptimizer}
               disabled={backtestRunning}
               title="Open Backtest Lab optimizer with current symbol, strategy, and config"
@@ -998,12 +1196,15 @@ export function AlgoTab({ hideToolbar = false }) {
         </footer>
       </section>
 
-      <Dialog open={deployOpen} onOpenChange={setDeployOpen}>
+      <Dialog open={deployOpen} onOpenChange={(open) => {
+        setDeployOpen(open);
+        if (!open) setForceDeploy(false);
+      }}>
         <DialogContent className="algo-dialog sm:max-w-md" overlayClassName="admin-panel-overlay">
           <DialogHeader>
             <DialogTitle>Deploy trading bot</DialogTitle>
             <DialogDescription className="text-xs leading-relaxed">
-              This will start a live bot on the server using your current template and max notional cap.
+              Forward-test workflow: validate backtest OOS before allocating capital.
             </DialogDescription>
           </DialogHeader>
           <div className="algo-dialog-summary">
@@ -1027,9 +1228,28 @@ export function AlgoTab({ hideToolbar = false }) {
             </div>
             <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
           </div>
+          <DeployGatePanel
+            results={backtestResults}
+            symbol={activeSymbol}
+            strategy={botStrategy}
+            timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
+            days={parseInt(backtestDays, 10) || 7}
+            config={botConfig}
+            snapshot={backtestSnapshot}
+            onGateChange={setDeployGate}
+            forceDeploy={forceDeploy}
+            onForceDeployChange={setForceDeploy}
+          />
           <DialogFooter showCloseButton={false}>
             <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
-            <Button variant="buy" size="sm" onClick={confirmDeploy}>Confirm deploy</Button>
+            <Button
+              variant="buy"
+              size="sm"
+              onClick={confirmDeploy}
+              disabled={liveBotsBlocked || (deployGate?.blocking && !forceDeploy)}
+            >
+              Confirm deploy
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

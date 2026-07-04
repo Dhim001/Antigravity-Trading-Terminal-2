@@ -5,6 +5,9 @@ import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
+import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
+import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
+import { toast } from 'sonner';
 import { normalizeOrderCapabilities } from '../lib/positionActions';
 
 /** GET /api/v1/session — single-round-trip bootstrap snapshot. */
@@ -526,13 +529,10 @@ export async function fetchPipelineStatus({ strategy, timeframe } = {}) {
   return body;
 }
 
-let _backtestPollTimer = null;
+export { stopBacktestJobPolling } from '../lib/backtestPolling';
 
-function startBacktestJobPolling(jobId, storeActions) {
-  if (_backtestPollTimer) {
-    clearTimeout(_backtestPollTimer);
-    _backtestPollTimer = null;
-  }
+export function startBacktestJobPolling(jobId, storeActions) {
+  stopBacktestJobPolling();
   storeActions.setBacktestJobId(jobId);
   storeActions.setBacktestRunning(true);
   const poll = () => {
@@ -541,31 +541,49 @@ function startBacktestJobPolling(jobId, storeActions) {
         if (!fresh) return;
         if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
         if (fresh.status === 'completed' && fresh.results) {
+          stopBacktestJobPolling();
           clearBacktestClientTimeout();
-          const wire = {
+          const wire = trimBacktestPayload({
             ...fresh.results,
             run_id: fresh.run_id ?? fresh.results.run_id,
-          };
+          });
           storeActions.setBacktestResults(wire);
           storeActions.setBacktestRunning(false);
           storeActions.setBacktestProgress(null);
+          storeActions.clearBacktestLastError?.();
+          const overlay = buildBacktestOverlay(wire);
+          if (overlay) storeActions.setBacktestOverlay(overlay);
+          const pnl = wire?.total_pnl;
+          const trades = wire?.trade_count ?? 0;
+          toast.success(
+            `Background backtest complete · ${pnl != null ? `$${Number(pnl).toFixed(2)}` : '—'} · ${trades} trades`,
+            { action: { label: 'Open Lab', onClick: () => useStore.getState().openBacktestLab('results') } },
+          );
           return;
         }
         if (fresh.status === 'failed' || fresh.status === 'cancelled') {
+          stopBacktestJobPolling();
           clearBacktestClientTimeout();
           storeActions.setBacktestRunning(false);
           storeActions.setBacktestProgress(null);
+          if (fresh.status === 'failed') {
+            const msg = fresh.error || 'Background backtest failed';
+            storeActions.setBacktestLastError?.(msg, fresh.request ?? null);
+            toast.error(msg);
+          } else {
+            toast.info('Backtest cancelled');
+          }
           return;
         }
         if (['pending', 'running'].includes(fresh.status)) {
-          _backtestPollTimer = setTimeout(poll, 2000);
+          scheduleBacktestJobPoll(poll, 2000);
         }
       })
       .catch(() => {
-        _backtestPollTimer = setTimeout(poll, 3000);
+        scheduleBacktestJobPoll(poll, 3000);
       });
   };
-  _backtestPollTimer = setTimeout(poll, 1500);
+  scheduleBacktestJobPoll(poll, 1500);
 }
 
 export function watchBacktestJob(jobId, storeActions, { progress } = {}) {

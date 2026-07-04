@@ -16,6 +16,7 @@ import { Action } from '../api/protocol';
 import { fetchBacktestJobs, fetchBacktestRun, watchBacktestJob } from '../api/endpoints';
 import { withLlmModel } from '../api/endpoints';
 import { toast } from 'sonner';
+import BacktestJobCompare from './BacktestJobCompare';
 
 const STATUS_VARIANT = {
   pending: 'secondary',
@@ -54,6 +55,7 @@ export default function BacktestJobHistory() {
   const [sortKey, setSortKey] = useState('created_at');
   const [sortDir, setSortDir] = useState('desc');
   const [compareIds, setCompareIds] = useState([]);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [pinned, setPinned] = useState(() => {
     try { return JSON.parse(localStorage.getItem('bt_pinned') || '[]'); } catch { return []; }
   });
@@ -119,6 +121,11 @@ export default function BacktestJobHistory() {
     return list;
   }, [jobs, search, pinned, sortKey, sortDir]);
 
+  const compareJobs = useMemo(
+    () => compareIds.map((id) => jobs.find((j) => j.id === id)).filter(Boolean),
+    [compareIds, jobs],
+  );
+
   const handleSort = (key) => {
     if (sortKey === key) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('desc'); }
@@ -169,7 +176,7 @@ export default function BacktestJobHistory() {
   );
 
   return (
-    <section className="algo-backtest-lab__section algo-backtest-lab__section--jobs mb-4">
+    <section className="algo-backtest-lab__section algo-backtest-lab__section--jobs">
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <p className="algo-backtest-table-scroll__caption">Backtest library</p>
         <div className="flex items-center gap-1.5">
@@ -178,10 +185,7 @@ export default function BacktestJobHistory() {
               variant="outline"
               size="xs"
               className="h-6 text-[0.58rem]"
-              onClick={() => {
-                toast.message(`Compare: ${compareIds[0]?.slice(0, 8)} vs ${compareIds[1]?.slice(0, 8)}`);
-                // Future: load both runs and show A/B overlay
-              }}
+              onClick={() => setCompareOpen(true)}
             >
               <GitCompare className="size-3 mr-0.5" />
               Compare ({compareIds.length})
@@ -209,7 +213,7 @@ export default function BacktestJobHistory() {
           {search ? 'No matching runs.' : 'No backtest jobs yet.'}
         </p>
       ) : (
-        <div className="algo-backtest-table-scroll algo-backtest-table-scroll--history">
+        <div className="algo-backtest-table-scroll algo-backtest-table-scroll--jobs-library">
           <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
             <thead>
               <tr>
@@ -309,6 +313,11 @@ export default function BacktestJobHistory() {
           </table>
         </div>
       )}
+      <BacktestJobCompare
+        jobs={compareJobs}
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+      />
     </section>
   );
 }

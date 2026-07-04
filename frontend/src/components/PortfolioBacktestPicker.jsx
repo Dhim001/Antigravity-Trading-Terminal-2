@@ -26,6 +26,7 @@ export default function PortfolioBacktestPicker({
   activeSymbol,
   oos,
   walkForward,
+  runEstimate = null,
 }) {
   const blocked = portfolioModeBlocked({ oos, walkForward });
   const watchlistOptions = useMemo(
@@ -131,13 +132,15 @@ export default function PortfolioBacktestPicker({
             })}
           </div>
 
-          {(correlation?.warning || corrLoading) && (
+          {(correlation?.warning || corrLoading || runEstimate) && (
             <Alert variant={correlation?.warning ? 'destructive' : 'default'} className="py-1.5 px-2">
               <AlertTriangle className="size-3.5" />
               <AlertDescription className="text-[0.58rem] leading-snug">
                 {corrLoading
                   ? 'Checking basket correlation…'
-                  : correlation?.message || 'High correlation detected in basket.'}
+                  : correlation?.warning
+                    ? (correlation?.message || 'High correlation detected in basket.')
+                    : runEstimate}
               </AlertDescription>
             </Alert>
           )}

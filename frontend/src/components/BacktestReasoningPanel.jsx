@@ -59,14 +59,14 @@ export default function BacktestReasoningPanel({
   const panelProvider = reasoning?.provider || trades.find((t) => t.provider)?.provider;
 
   return (
-    <section className={cn('llm-backtest-reasoning', className)}>
+    <section className={cn('llm-backtest-reasoning algo-backtest-lab__section', className)}>
       <header className="llm-backtest-reasoning__header">
         <div className="llm-backtest-reasoning__title-row">
           <span className="llm-backtest-reasoning__icon-wrap">
             <Brain className="size-3.5" aria-hidden />
           </span>
           <div>
-            <h4 className="llm-backtest-reasoning__title">LLM trade explanations</h4>
+            <h4 className="llm-backtest-reasoning__title algo-backtest-section__title">LLM trade explanations</h4>
             <p className="llm-backtest-reasoning__subtitle">{runContext.scope}</p>
           </div>
         </div>
@@ -126,7 +126,7 @@ export default function BacktestReasoningPanel({
 
       {hasRows && (
         <div className="algo-backtest-table-scroll algo-backtest-table-scroll--reasoning">
-          <table className="terminal-table algo-backtest-table llm-backtest-reasoning__table m-0 text-[0.62rem]">
+          <table className="terminal-table algo-backtest-table llm-backtest-reasoning__table m-0">
             <thead>
               <tr>
                 <th>#</th>

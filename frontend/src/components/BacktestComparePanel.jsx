@@ -11,6 +11,7 @@ import {
   resolveBacktestSummary,
   TONE_CLASS,
 } from '@/lib/metricComparison';
+import { diffBacktestConfigs, formatConfigValue } from '@/lib/backtestConfigDiff';
 import {
   Select,
   SelectContent,
@@ -42,6 +43,15 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
     [baseline],
   );
 
+  const configDiff = useMemo(() => {
+    const leftCfg = currentRun?.results?.meta?.config
+      ?? currentRun?.config
+      ?? currentRun?.results?.sweep?.best_config
+      ?? {};
+    const rightCfg = baseline?.config ?? baseline?.results?.sweep?.best_config ?? {};
+    return diffBacktestConfigs(leftCfg, rightCfg);
+  }, [currentRun, baseline]);
+
   if (!currentRun || candidates.length === 0) return null;
 
   return (
@@ -63,44 +73,79 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
       </div>
 
       {baseline && (
-        <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th className="text-right">Current</th>
-              <th className="text-right">Baseline</th>
-              <th className="text-right">Δ vs baseline</th>
-            </tr>
-          </thead>
-          <tbody>
-            {BACKTEST_COMPARE_METRICS.map(({ key, label, prefix = '', suffix = '', higherIsBetter }) => {
-              const cur = metricValue(currentSummary, key);
-              const base = metricValue(baselineSummary, key);
-              const { text, tone } = formatMetricDelta(cur, base, {
-                prefix,
-                suffix,
-                higherIsBetter,
-              });
-              const curTone = (key === 'total_pnl' || key === 'return_pct')
-                ? ((cur ?? 0) >= 0 ? 'up' : 'down')
-                : 'neutral';
-              return (
-                <tr key={key}>
-                  <td>{label}</td>
-                  <td className={cn('num-mono text-right', TONE_CLASS[curTone] ?? TONE_CLASS.neutral)}>
-                    {formatSignedValue(cur, { prefix, suffix })}
-                  </td>
-                  <td className="num-mono text-right text-muted-foreground">
-                    {formatSignedValue(base, { prefix, suffix })}
-                  </td>
-                  <td className={cn('num-mono text-right', TONE_CLASS[tone])}>
-                    {text}
-                  </td>
+        <div className={cn(
+          'algo-backtest-compare__body',
+          configDiff.length > 0 && 'algo-backtest-compare__body--split',
+        )}
+        >
+          <section className="algo-backtest-compare__metrics">
+            <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th className="text-right">Current</th>
+                  <th className="text-right">Baseline</th>
+                  <th className="text-right">Δ vs baseline</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {BACKTEST_COMPARE_METRICS.map(({ key, label, prefix = '', suffix = '', higherIsBetter }) => {
+                  const cur = metricValue(currentSummary, key);
+                  const base = metricValue(baselineSummary, key);
+                  const { text, tone } = formatMetricDelta(cur, base, {
+                    prefix,
+                    suffix,
+                    higherIsBetter,
+                  });
+                  const curTone = (key === 'total_pnl' || key === 'return_pct')
+                    ? ((cur ?? 0) >= 0 ? 'up' : 'down')
+                    : 'neutral';
+                  return (
+                    <tr key={key}>
+                      <td>{label}</td>
+                      <td className={cn('num-mono text-right', TONE_CLASS[curTone] ?? TONE_CLASS.neutral)}>
+                        {formatSignedValue(cur, { prefix, suffix })}
+                      </td>
+                      <td className="num-mono text-right text-muted-foreground">
+                        {formatSignedValue(base, { prefix, suffix })}
+                      </td>
+                      <td className={cn('num-mono text-right', TONE_CLASS[tone])}>
+                        {text}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+          {configDiff.length > 0 && (
+            <section className="algo-backtest-compare__config">
+              <p className="algo-backtest-table-scroll__caption mb-1">Config diff ({configDiff.length})</p>
+              <div className="algo-backtest-table-scroll algo-backtest-table-scroll--compare-config">
+                <table className="terminal-table algo-backtest-table m-0 text-[0.55rem]">
+                  <thead>
+                    <tr>
+                      <th>Param</th>
+                      <th className="text-right">Current</th>
+                      <th className="text-right">Baseline</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {configDiff.map((row) => (
+                      <tr key={row.key}>
+                        <td>{row.label}</td>
+                        <td className="num-mono text-right">{formatConfigValue(row.left)}</td>
+                        <td className="num-mono text-right text-muted-foreground">
+                          {formatConfigValue(row.right)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </div>
       )}
       <p className="algo-backtest-compare__hint text-[0.58rem] text-muted-foreground">
         Δ is current minus baseline — green means better on that metric (e.g. −$200 vs −$800 is +$600).

@@ -1,9 +1,22 @@
 import { toast } from 'sonner';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
+import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
+import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
 import { queueMarketUpdate } from '../services/marketUpdateBatch';
+
+/** Clear running backtest UI state after error, cancel, timeout, or completion. */
+export function resetBacktestRunState(storeActions, { errorMessage = null, request = null } = {}) {
+  stopBacktestJobPolling();
+  clearBacktestClientTimeout();
+  storeActions.setBacktestRunning(false);
+  storeActions.setBacktestProgress(null);
+  if (errorMessage) {
+    storeActions.setBacktestLastError?.(errorMessage, request);
+  }
+}
 
 /** Snapshot of Zustand actions for WS / HTTP message dispatch. */
 export function getStoreActions() {
@@ -29,6 +42,9 @@ export function getStoreActions() {
     setBacktestProgress: s.setBacktestProgress,
     setBacktestJobId: s.setBacktestJobId,
     setBacktestLabOpen: s.setBacktestLabOpen,
+    setBacktestSnapshot: s.setBacktestSnapshot,
+    setBacktestLastError: s.setBacktestLastError,
+    clearBacktestLastError: s.clearBacktestLastError,
     setBacktestOverlay: s.setBacktestOverlay,
     clearBacktestOverlay: s.clearBacktestOverlay,
     setStrategyCatalog: s.setStrategyCatalog,
@@ -114,8 +130,15 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.BACKTEST_PROGRESS:
       if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
       storeActions.setBacktestProgress(data);
+      if (data?.phase === 'queued' && data?.job_id) {
+        storeActions.setBacktestRunning(true);
+        import('./endpoints').then(({ startBacktestJobPolling }) => {
+          startBacktestJobPolling(data.job_id, storeActions);
+        });
+      }
       break;
     case MessageType.BACKTEST_RESULT:
+      stopBacktestJobPolling();
       clearBacktestClientTimeout();
       storeActions.setBacktestRunning(false);
       storeActions.setBacktestProgress(null);
@@ -125,16 +148,8 @@ export function applyServerMessage(type, data, storeActions, meta) {
         break;
       }
       if (data?.status === 'success' && data?.results && !data.results.error) {
-        // FIX 3: Trim large arrays to prevent memory bloat
-        const results = data.results;
-        if (Array.isArray(results.equity_curve) && results.equity_curve.length > 2000) {
-          // Downsample: keep every Nth point to stay under 2000
-          const step = Math.ceil(results.equity_curve.length / 2000);
-          results.equity_curve = results.equity_curve.filter((_, i) => i % step === 0 || i === results.equity_curve.length - 1);
-        }
-        if (results.reasoning?.trades && Array.isArray(results.reasoning.trades) && results.reasoning.trades.length > 50) {
-          results.reasoning.trades = results.reasoning.trades.slice(0, 50);
-        }
+        storeActions.clearBacktestLastError?.();
+        const results = trimBacktestPayload(data.results);
         storeActions.setBacktestResults(results);
         const sym = results?.meta?.symbol;
         const pnl = results?.total_pnl;
@@ -152,18 +167,9 @@ export function applyServerMessage(type, data, storeActions, meta) {
             onClick: () => useStore.getState().openBacktestLab('results'),
           },
         });
-        if (results?.meta?.symbol && results?.run_id) {
-          const overlayTrades = Array.isArray(results.trades) ? results.trades.slice(0, 200) : [];
-          const overlayEquity = Array.isArray(results.equity_curve) ? results.equity_curve.slice(0, 2000) : [];
-          storeActions.setBacktestOverlay({
-            runId: results.run_id,
-            symbol: results.meta.symbol,
-            meta: results.meta,
-            trades: overlayTrades,
-            tradesTotal: results.trades_total ?? results.trades?.length ?? 0,
-            equityCurve: overlayEquity,
-            visible: false,
-          });
+        const overlay = buildBacktestOverlay(results);
+        if (overlay) {
+          storeActions.setBacktestOverlay(overlay);
         }
         if (results?.sweep) {
           toast.success(`Sweep complete · best $${Number(results.total_pnl ?? 0).toFixed(2)}`);
@@ -174,7 +180,13 @@ export function applyServerMessage(type, data, storeActions, meta) {
       } else {
         const msg = data?.results?.error || data?.message || 'Backtest failed';
         console.error('Backtest failed:', msg);
-        toast.error(msg);
+        storeActions.setBacktestLastError?.(msg, data?.request ?? null);
+        toast.error(msg, {
+          action: {
+            label: 'Recovery',
+            onClick: () => useStore.getState().openBacktestLab('results'),
+          },
+        });
       }
       break;
     case MessageType.TICKS_UPDATE:
@@ -224,10 +236,16 @@ export function applyServerMessage(type, data, storeActions, meta) {
         storeActions.setVisionReport(`${data.symbol}:${data.timeframe}`, data);
       }
       break;
-    case MessageType.ERROR:
+    case MessageType.ERROR: {
       storeActions.setAnalyticsLoading(false);
-      console.error('Server execution error:', data?.message ?? data);
+      const errMsg = data?.message ?? (typeof data === 'string' ? data : null) ?? 'Server error';
+      console.error('Server execution error:', errMsg);
+      if (useStore.getState().backtestRunning) {
+        resetBacktestRunState(storeActions, { errorMessage: errMsg });
+        toast.error(errMsg);
+      }
       break;
+    }
     default:
       console.warn('Unrecognized server message type:', type);
   }

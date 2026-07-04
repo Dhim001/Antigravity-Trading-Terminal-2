@@ -127,6 +127,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   /** Fingerprint of params used for the last completed backtest run */
   backtestSnapshot: null,
   backtestOverlay: null,
+  backtestLastError: null,
+  backtestLastRequest: null,
   chartInteractionMode: 'normal',
   strategyTemplates: [
     { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
@@ -433,6 +435,11 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBacktestOos: (oos) => set({ backtestOos: Boolean(oos) }),
   setPendingDeploy: (pending) => set({ pendingDeploy: Boolean(pending) }),
   setBacktestSnapshot: (snapshot) => set({ backtestSnapshot: snapshot }),
+  setBacktestLastError: (error, request) => set({
+    backtestLastError: error ?? null,
+    backtestLastRequest: request ?? null,
+  }),
+  clearBacktestLastError: () => set({ backtestLastError: null, backtestLastRequest: null }),
   setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),
   clearBacktestOverlay: () => set({ backtestOverlay: null }),
 
