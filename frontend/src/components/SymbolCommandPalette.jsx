@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useStore } from '../store/useStore';
 import { cn } from '@/lib/utils';
-import { IS_OPERATOR } from '../lib/operator';
+import { useIsOperator } from '../lib/operator';
 import {
   CommandDialog,
   Command,
@@ -43,6 +43,7 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
   const tickerData = useStore(state => state.tickerData);
   const setActiveSymbol = useStore(state => state.setActiveSymbol);
   const setViewMode = useStore(state => state.setViewMode);
+  const isOperator = useIsOperator();
 
   const sortedSymbols = useMemo(
     () => [...symbolsList].sort((a, b) => a.localeCompare(b)),
@@ -215,7 +216,7 @@ export default function SymbolCommandPalette({ open, onOpenChange, onOpenAdmin, 
               <span>Preferences</span>
               <CommandShortcut>⌘,</CommandShortcut>
             </CommandItem>
-            {IS_OPERATOR && (
+            {isOperator && (
               <CommandItem
                 value="system control admin"
                 className="command-palette__item"

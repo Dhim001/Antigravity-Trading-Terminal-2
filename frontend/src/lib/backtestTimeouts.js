@@ -1,6 +1,7 @@
 /** Client-side guard while waiting for backtest_result / job completion. */
 
 const DEFAULT_BACKTEST_TIMEOUT_MS = 120_000;
+const DEFAULT_BACKTEST_CHART_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKTEST_REASONING_TIMEOUT_MS = 900_000;
 /** CHART_AGENT meta-label WF runs ~1 + (3 × folds) full replays — needs a longer guard. */
 const DEFAULT_BACKTEST_META_LABEL_WF_TIMEOUT_MS = 600_000;
@@ -19,18 +20,21 @@ function readEnvMs(key, fallback) {
 }
 
 /**
- * @param {{ reasoning?: boolean, metaLabelWalkForward?: boolean, days?: number, portfolioSymbolCount?: number }} [opts]
+ * @param {{ reasoning?: boolean, metaLabelWalkForward?: boolean, chartAgent?: boolean, strategy?: string, days?: number, portfolioSymbolCount?: number }} [opts]
  * @returns {number}
  */
 export function getBacktestClientTimeoutMs({
   reasoning = false,
   metaLabelWalkForward = false,
+  chartAgent = false,
+  strategy = '',
   days = 7,
   portfolioSymbolCount = 0,
 } = {}) {
   const parsedDays = Number(days) || 7;
   const extraPerDayMs = 30_000;
   const symbolCount = Math.max(0, Math.floor(Number(portfolioSymbolCount) || 0));
+  const isChartAgent = chartAgent || String(strategy).toUpperCase() === 'CHART_AGENT';
 
   if (reasoning) {
     const base = readEnvMs('VITE_BACKTEST_REASONING_TIMEOUT_MS', DEFAULT_BACKTEST_REASONING_TIMEOUT_MS);
@@ -41,6 +45,14 @@ export function getBacktestClientTimeoutMs({
     const base = readEnvMs(
       'VITE_BACKTEST_META_LABEL_WF_TIMEOUT_MS',
       DEFAULT_BACKTEST_META_LABEL_WF_TIMEOUT_MS,
+    );
+    return base + Math.max(0, parsedDays - 7) * 45_000;
+  }
+
+  if (isChartAgent) {
+    const base = readEnvMs(
+      'VITE_BACKTEST_CHART_AGENT_TIMEOUT_MS',
+      DEFAULT_BACKTEST_CHART_AGENT_TIMEOUT_MS,
     );
     return base + Math.max(0, parsedDays - 7) * 45_000;
   }
@@ -98,15 +110,21 @@ export function formatBacktestTimeoutLabel(ms) {
 export function backtestTimeoutHint({
   reasoning = false,
   metaLabelWalkForward = false,
+  chartAgent = false,
+  strategy = '',
   portfolioSymbolCount = 0,
   timeoutMs,
 } = {}) {
   const label = formatBacktestTimeoutLabel(timeoutMs);
+  const isChartAgent = chartAgent || String(strategy).toUpperCase() === 'CHART_AGENT';
   if (reasoning) {
     return `Backtest timed out after ${label} — increase VITE_BACKTEST_REASONING_TIMEOUT_MS, reduce days, or lower BACKTEST_REASONING_MAX_TRADES`;
   }
   if (metaLabelWalkForward) {
     return `Backtest timed out after ${label} — meta-label walk-forward runs multiple replays; increase VITE_BACKTEST_META_LABEL_WF_TIMEOUT_MS or reduce days`;
+  }
+  if (isChartAgent) {
+    return `CHART_AGENT backtest timed out after ${label} — increase VITE_BACKTEST_CHART_AGENT_TIMEOUT_MS or reduce days`;
   }
   if (Math.floor(Number(portfolioSymbolCount) || 0) >= PORTFOLIO_TIMEOUT_MIN_SYMBOLS) {
     return `Portfolio backtest timed out after ${label} — runs one replay per symbol; reduce symbols/days or increase VITE_BACKTEST_TIMEOUT_MS`;

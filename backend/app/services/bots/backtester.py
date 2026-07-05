@@ -408,6 +408,18 @@ class BacktesterService:
 
         df = prepare_strategy_df(df, strategy_name, cfg)
         strat_key = normalize_strategy_name(strategy_name)
+        from app.services.agent.rule_engine import (
+            clear_backtest_sentiment_cache,
+            prime_backtest_sentiment_cache,
+        )
+
+        if strat_key == "CHART_AGENT":
+            prime_backtest_sentiment_cache(symbol)
+
+        def _release_chart_agent_cache() -> None:
+            if strat_key == "CHART_AGENT":
+                clear_backtest_sentiment_cache()
+
         strat_filter = build_filter_from_config(cfg) if live_parity else None
         if live_parity and strat_key != "CHART_AGENT":
             filter_name = str(cfg.get("filter_strategy") or "").strip()
@@ -900,6 +912,7 @@ class BacktesterService:
 
         for i in range(start_i, len(df)):
             if cancel_cb and cancel_cb():
+                _release_chart_agent_cache()
                 return {"error": "Backtest cancelled", "cancelled": True}
 
             row = df.iloc[i].to_dict()
@@ -1082,6 +1095,7 @@ class BacktesterService:
             "execution_runtime": "strategy_runtime/v1",
         }
 
+        _release_chart_agent_cache()
         return result
 
 

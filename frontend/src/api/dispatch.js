@@ -7,6 +7,24 @@ import { useStore } from '../store/useStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
 import { queueMarketUpdate } from '../services/marketUpdateBatch';
 
+/** Background feature errors that must not cancel an in-flight backtest. */
+const BACKTEST_UNRELATED_ERROR_PATTERNS = [
+  /rate limited.*analyz/i,
+  /rate limited.*deep reason/i,
+  /rate limited.*scan/i,
+  /rate limited.*vision/i,
+  /rate limited.*trade action/i,
+  /chart analyst is disabled/i,
+  /not enough candle data for analysis/i,
+];
+
+/** True when a server ERROR should end the current backtest run. */
+export function errorAffectsBacktestRun(message) {
+  const msg = String(message || '').trim();
+  if (!msg) return false;
+  return !BACKTEST_UNRELATED_ERROR_PATTERNS.some((re) => re.test(msg));
+}
+
 /** Clear running backtest UI state after error, cancel, timeout, or completion. */
 export function resetBacktestRunState(storeActions, { errorMessage = null, request = null } = {}) {
   stopBacktestJobPolling();
@@ -241,7 +259,13 @@ export function applyServerMessage(type, data, storeActions, meta) {
       const errMsg = data?.message ?? (typeof data === 'string' ? data : null) ?? 'Server error';
       console.error('Server execution error:', errMsg);
       if (useStore.getState().backtestRunning) {
-        resetBacktestRunState(storeActions, { errorMessage: errMsg });
+        if (errorAffectsBacktestRun(errMsg)) {
+          resetBacktestRunState(storeActions, { errorMessage: errMsg });
+          toast.error(errMsg);
+        } else {
+          toast.message(errMsg);
+        }
+      } else {
         toast.error(errMsg);
       }
       break;

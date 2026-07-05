@@ -38,10 +38,14 @@ import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   backtestFingerprint,
   fmtBacktestRange,
+  formatBacktestDaysChip,
+  formatBacktestRangeLabel,
+  formatBacktestTitle,
   isBacktestStale,
   normalizeTradingSymbol,
   notifyBacktestOverlayChanged,
   ensureBacktestChartHistory,
+  resolveBacktestRange,
   symbolsMatch,
 } from '@/lib/backtestDisplay';
 import { exportBacktestPdf } from '@/lib/backtestExport';
@@ -115,6 +119,7 @@ function exportTradesCsv(trades, symbol, strategy) {
 function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, strategy }) {
   const meta = results?.meta ?? {};
   const range = fmtBacktestRange(meta);
+  const rangeInfo = resolveBacktestRange(meta);
   const allocation = results?.allocation ?? results?.starting_equity;
 
   return (
@@ -122,7 +127,15 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
       <div className="algo-backtest-lab__meta-chips">
         <span className="algo-backtest-lab__chip algo-backtest-lab__chip--symbol">{symbol}</span>
         <span className="algo-backtest-lab__chip">{strategy}</span>
-        <span className="algo-backtest-lab__chip">{meta.days ?? backtestDays}d</span>
+        <span
+          className={cn(
+            'algo-backtest-lab__chip',
+            rangeInfo.hasMismatch && 'algo-backtest-lab__chip--warn',
+          )}
+          title={rangeInfo.hasMismatch ? formatBacktestRangeLabel(meta, { fallbackDays: backtestDays }) : undefined}
+        >
+          {formatBacktestDaysChip(meta, backtestDays)}
+        </span>
         <span className="algo-backtest-lab__chip">{meta.timeframe ?? backtestTimeframe}</span>
         {allocation != null && (
           <span className="algo-backtest-lab__chip num-mono" title="Max notional cap">
@@ -135,12 +148,12 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
           </span>
         )}
       </div>
-      {(range || meta.resolution_note || meta.timeframe_note) && (
+      {(range || meta.resolution_note || meta.range_note || meta.timeframe_note) && (
         <div className="algo-backtest-lab__meta-secondary">
           {range && <span className="algo-backtest-lab__meta-range">{range}</span>}
-          {(meta.resolution_note || meta.timeframe_note) && (
+          {(meta.resolution_note || meta.range_note || meta.timeframe_note) && (
             <span className="algo-backtest-lab__meta-note">
-              {[meta.resolution_note, meta.timeframe_note].filter(Boolean).join(' · ')}
+              {[meta.resolution_note, meta.range_note, meta.timeframe_note].filter(Boolean).join(' · ')}
             </span>
           )}
         </div>
@@ -807,7 +820,10 @@ export default function BacktestResultsPanel({
         <div className="algo-backtest-lab__title-block">
           <h3 className="algo-backtest-lab__title">
             <span className="algo-backtest-lab__title-main">
-              {results.meta?.days ?? backtestDays}-Day · {results.meta?.timeframe ?? backtestTimeframe} Backtest
+              {formatBacktestTitle(results.meta, {
+                fallbackDays: backtestDays,
+                fallbackTimeframe: backtestTimeframe,
+              })}
             </span>
             {results.meta?.count != null && (
               <span className="algo-backtest-lab__title-sub">
@@ -1098,7 +1114,15 @@ export default function BacktestResultsPanel({
                         ['Run ID', <span className="num-mono" key="run">{results.run_id ?? '—'}</span>],
                         ['Symbol', symbol ?? results?.meta?.symbol ?? '—'],
                         ['Strategy', strategy ?? results?.meta?.strategy ?? '—'],
-                        ['Days', <span className="num-mono" key="days">{results?.meta?.days ?? backtestDays}</span>],
+                        ['Days', (
+                          <span className="num-mono" key="days" title={
+                            resolveBacktestRange(results?.meta).hasMismatch
+                              ? `Requested ${results?.meta?.days_requested ?? backtestDays}d`
+                              : undefined
+                          }>
+                            {formatBacktestRangeLabel(results?.meta ?? {}, { fallbackDays: backtestDays })}
+                          </span>
+                        )],
                         ['Timeframe', results?.meta?.timeframe ?? backtestTimeframe],
                         ['Sim mode', results.sim_mode ?? results?.meta?.sim_mode ?? 'live_aligned'],
                         ['Fees', <span className="num-mono" key="fees">${Number(summary?.total_fees ?? 0).toFixed(2)}</span>],

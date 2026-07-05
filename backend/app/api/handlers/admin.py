@@ -259,10 +259,74 @@ async def admin_archive_backfill(ctx: RequestContext) -> None:
             source=TERMINAL_MODE or "SIMULATED",
             skip_existing=not force,
         )
+        rows = int(result.get("rows_written") or 0)
+        skipped = sum(
+            1 for d in (result.get("details") or {}).values() if d.get("skipped")
+        )
+        if rows > 0:
+            message = f"Archive backfill wrote {rows} rows across {result.get('symbols', 0)} symbols"
+        elif skipped:
+            message = (
+                f"No new rows — {skipped} symbol(s) already have archive data "
+                "(re-run with force to upsert seed/feed again)"
+            )
+        elif not result.get("enabled", True):
+            message = "Archive disabled — set ARCHIVE_ENABLED=true"
+        else:
+            message = "No new rows — seed parquet files missing or feed buffer empty"
         await send_order_result(ctx, {
             "status": "success",
-            "message": f"Archive backfill wrote {result.get('rows_written', 0)} rows",
+            "message": message,
             "archive_backfill": result,
+        })
+    except Exception as exc:
+        await send_order_result(ctx, {"status": "error", "message": str(exc)})
+
+
+@route(Action.ADMIN_ARCHIVE_INGEST, tags=["admin"])
+async def admin_archive_ingest(ctx: RequestContext) -> None:
+    """Broker historical backfill + gap repair into market_bars_1m."""
+    from app.services.archive.ingestion import run_archive_ingestion
+
+    feed = getattr(ctx.oms, "feed", None)
+    symbols = ctx.message.get("symbols")
+    if symbols and not isinstance(symbols, list):
+        symbols = [symbols]
+    if not symbols and feed is not None:
+        symbols = list(feed.symbols)
+    days = ctx.message.get("days")
+    try:
+        days_int = int(days) if days is not None else None
+    except (TypeError, ValueError):
+        days_int = None
+    include_seed = bool(ctx.message.get("include_seed", True))
+
+    try:
+        result = run_archive_ingestion(
+            symbols,
+            feed=feed,
+            days=days_int,
+            include_seed_backfill=include_seed,
+        )
+        rows = int(result.get("rows_written") or 0)
+        broker = result.get("broker_source", "none")
+        sym_count = result.get("symbols", 0)
+        if rows > 0:
+            message = f"Archive ingest wrote {rows} rows via {broker} ({sym_count} symbols)"
+        elif broker == "none":
+            message = (
+                "No broker API configured — seed backfill only. "
+                "Set MASSIVE_API_KEY or broker credentials for historical fetch."
+            )
+        else:
+            message = (
+                f"No new rows from {broker} — archive may already cover the target window "
+                f"or broker returned no bars for {sym_count} symbol(s)"
+            )
+        await send_order_result(ctx, {
+            "status": "success",
+            "message": message,
+            "archive_ingest": result,
         })
     except Exception as exc:
         await send_order_result(ctx, {"status": "error", "message": str(exc)})

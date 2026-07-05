@@ -43,6 +43,79 @@ export async function ensureBacktestChartHistory(symbol, meta) {
   return total;
 }
 
+export function resolveBacktestRange(meta = {}) {
+  const requested = meta.days_requested ?? meta.days ?? null;
+  const effective = meta.effective_days ?? requested;
+
+  let replayedDays = meta.replayed_days;
+  if (replayedDays == null && meta.oldest != null && meta.newest != null) {
+    replayedDays = Math.max(0, (meta.newest - meta.oldest) / 86400);
+  }
+
+  const hasMismatch = requested != null
+    && replayedDays != null
+    && replayedDays < requested * 0.9;
+
+  return {
+    requested,
+    effective,
+    replayedDays,
+    hasMismatch,
+    rangeNote: meta.range_note ?? null,
+    timeframeNote: meta.timeframe_note ?? null,
+  };
+}
+
+function formatReplayedSpan(replayedDays) {
+  if (replayedDays == null) return '—';
+  if (replayedDays >= 1) {
+    const rounded = replayedDays >= 10
+      ? Math.round(replayedDays)
+      : Number(replayedDays.toFixed(1));
+    return `~${rounded} day${rounded === 1 ? '' : 's'}`;
+  }
+  return `~${(replayedDays * 24).toFixed(1)} hours`;
+}
+
+export function formatBacktestRangeLabel(meta, { fallbackDays } = {}) {
+  const { requested, replayedDays, hasMismatch } = resolveBacktestRange(meta);
+
+  if (replayedDays != null && hasMismatch) {
+    const requestedLabel = requested ?? fallbackDays;
+    return `${formatReplayedSpan(replayedDays)} (requested ${requestedLabel}d)`;
+  }
+  if (requested != null) return `${requested} day${requested === 1 ? '' : 's'}`;
+  if (fallbackDays != null) return `${fallbackDays} day${fallbackDays === 1 ? '' : 's'}`;
+  return '—';
+}
+
+export function formatBacktestDaysChip(meta, fallbackDays) {
+  const { requested, replayedDays, hasMismatch } = resolveBacktestRange(meta);
+  if (hasMismatch && replayedDays != null) {
+    if (replayedDays >= 1) {
+      const rounded = Math.max(1, Math.round(replayedDays));
+      return `~${rounded}d`;
+    }
+    return `~${(replayedDays * 24).toFixed(0)}h`;
+  }
+  return `${requested ?? fallbackDays}d`;
+}
+
+export function formatBacktestTitle(meta, { fallbackDays, fallbackTimeframe } = {}) {
+  const tf = meta?.timeframe ?? fallbackTimeframe ?? '1m';
+  const { requested, replayedDays, hasMismatch } = resolveBacktestRange(meta);
+
+  if (hasMismatch && replayedDays != null) {
+    if (replayedDays >= 1) {
+      const rounded = Math.max(1, Math.round(replayedDays));
+      return `${rounded}-Day · ${tf} Backtest`;
+    }
+    return `${(replayedDays * 24).toFixed(0)}h · ${tf} Backtest`;
+  }
+  const days = requested ?? fallbackDays ?? '?';
+  return `${days}-Day · ${tf} Backtest`;
+}
+
 export function fmtBacktestRange(meta) {
   if (!meta?.oldest || !meta?.newest) return null;
   const from = new Date(meta.oldest * 1000);

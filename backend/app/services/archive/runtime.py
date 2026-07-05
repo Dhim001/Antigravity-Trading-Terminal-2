@@ -1,4 +1,4 @@
-"""Background archive capture, flush, and rollup loops."""
+"""Background archive capture, flush, rollup, and broker ingestion loops."""
 
 from __future__ import annotations
 
@@ -6,14 +6,19 @@ import asyncio
 import logging
 
 from app.config import (
+    ARCHIVE_BACKFILL_ON_STARTUP,
     ARCHIVE_ENABLED,
     ARCHIVE_FLUSH_INTERVAL,
+    ARCHIVE_INGESTION_ENABLED,
+    ARCHIVE_INGESTION_INTERVAL,
+    ARCHIVE_INGESTION_ON_STARTUP,
+    ARCHIVE_INGESTION_STARTUP_BATCH_SIZE,
     ARCHIVE_ROLLUP_INTERVAL,
-    ARCHIVE_BACKFILL_ON_STARTUP,
     TERMINAL_MODE,
 )
 from app.services.archive.bar_hook import ArchiveBarHook
 from app.services.archive.backfill import run_archive_backfill
+from app.services.archive.ingestion import run_archive_ingestion
 from app.services.archive.rollup import run_rollup_job
 from app.services.archive.writer import get_archive_writer
 
@@ -48,6 +53,66 @@ async def archive_startup_backfill(feed) -> None:
             logger.info("Archive startup backfill: %s", result)
     except Exception as exc:
         logger.warning("Archive startup backfill failed: %s", exc)
+
+
+async def archive_startup_pipeline(feed) -> None:
+    """Run seed backfill then broker ingestion sequentially on startup."""
+    await archive_startup_backfill(feed)
+    await archive_ingestion_startup(feed)
+
+
+async def archive_ingestion_startup(feed) -> None:
+    """One-shot broker backfill + gap repair after seed backfill."""
+    if not ARCHIVE_ENABLED or not ARCHIVE_INGESTION_ON_STARTUP:
+        return
+    symbols = list(getattr(feed, "symbols", []) or [])
+    if not symbols:
+        return
+    try:
+        result = await asyncio.to_thread(
+            run_archive_ingestion,
+            symbols,
+            feed=feed,
+            include_seed_backfill=not ARCHIVE_BACKFILL_ON_STARTUP,
+            max_symbols=ARCHIVE_INGESTION_STARTUP_BATCH_SIZE,
+        )
+        if result.get("rows_written") or result.get("symbols_deferred"):
+            logger.info("Archive ingestion startup: %s", {
+                "rows": result.get("rows_written"),
+                "source": result.get("broker_source"),
+                "symbols": result.get("symbols"),
+                "deferred": result.get("symbols_deferred"),
+            })
+    except Exception as exc:
+        logger.warning("Archive ingestion startup failed: %s", exc)
+
+
+async def archive_ingestion_loop(feed) -> None:
+    """Periodic broker incremental backfill and gap repair."""
+    if not ARCHIVE_ENABLED or not ARCHIVE_INGESTION_ENABLED:
+        return
+
+    await asyncio.sleep(30.0)
+    logger.info(
+        "Market archive ingestion loop active (interval=%ss)",
+        ARCHIVE_INGESTION_INTERVAL,
+    )
+    while True:
+        await asyncio.sleep(ARCHIVE_INGESTION_INTERVAL)
+        symbols = list(getattr(feed, "symbols", []) or [])
+        if not symbols:
+            continue
+        try:
+            result = await asyncio.to_thread(
+                run_archive_ingestion,
+                symbols,
+                feed=feed,
+                include_seed_backfill=False,
+            )
+            if result.get("rows_written"):
+                logger.info("Archive ingestion cycle: %d rows", result["rows_written"])
+        except Exception as exc:
+            logger.warning("Archive ingestion loop error: %s", exc)
 
 
 async def archive_capture_loop(feed) -> None:

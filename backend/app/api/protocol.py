@@ -18,6 +18,7 @@ class Action(StrEnum):
     ADMIN_EMERGENCY_STOP = "admin_emergency_stop"
     ADMIN_GET_STATS = "admin_get_stats"
     ADMIN_ARCHIVE_BACKFILL = "admin_archive_backfill"
+    ADMIN_ARCHIVE_INGEST = "admin_archive_ingest"
     ADMIN_ARCHIVE_EXPORT = "admin_archive_export"
     ADMIN_ARCHIVE_IMPORT = "admin_archive_import"
     ADMIN_GET_RECONCILIATION = "admin_get_reconciliation"

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildBacktestAssumptions } from './backtestAssumptions';
+import { buildBacktestAssumptions, buildBacktestAssumptionDetails } from './backtestAssumptions';
+import {
+  formatBacktestDaysChip,
+  formatBacktestRangeLabel,
+  formatBacktestTitle,
+  resolveBacktestRange,
+} from './backtestDisplay';
 import { formatPortfolioRunEstimate } from './portfolioBacktest';
 
 describe('buildBacktestAssumptions', () => {
@@ -16,6 +22,36 @@ describe('buildBacktestAssumptions', () => {
       costs: { slippage_bps: 5, fee_bps: 10 },
     });
     expect(chips.length).toBeGreaterThan(2);
+  });
+
+  it('flags truncated replay window vs requested range', () => {
+    const meta = {
+      days: 7,
+      days_requested: 7,
+      replayed_days: 1.04,
+      timeframe: '5m',
+      count: 300,
+      oldest: 1783036800,
+      newest: 1783126800,
+      range_note: 'Replayed ~1.04d of 7d requested',
+    };
+    const range = resolveBacktestRange(meta);
+    expect(range.hasMismatch).toBe(true);
+    expect(formatBacktestDaysChip(meta, 7)).toBe('~1d');
+    expect(formatBacktestTitle(meta, { fallbackDays: 7, fallbackTimeframe: '5m' }))
+      .toBe('1-Day · 5m Backtest');
+    const details = buildBacktestAssumptionDetails({ meta });
+    const data = details.sections.find((s) => s.id === 'data');
+    expect(data.rows.some((r) => r.label === 'Requested range' && r.value === '7 days')).toBe(true);
+    expect(data.rows.some((r) => r.label === 'Replayed span' && r.warn)).toBe(true);
+    const chips = buildBacktestAssumptions({ meta });
+    expect(chips.find((c) => c.key === 'range')?.warn).toBe(true);
+  });
+
+  it('shows requested range when replay matches', () => {
+    const meta = { days: 7, days_requested: 7, replayed_days: 6.9, timeframe: '1m', count: 9000 };
+    expect(formatBacktestRangeLabel(meta)).toBe('7 days');
+    expect(resolveBacktestRange(meta).hasMismatch).toBe(false);
   });
 });
 

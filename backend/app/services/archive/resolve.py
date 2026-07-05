@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.config import ARCHIVE_ENABLED, ARCHIVE_RETENTION_1M_DAYS, BOT_MIN_CANDLES
+from app.config import ARCHIVE_ENABLED, ARCHIVE_RETENTION_1M_DAYS
 from app.services.archive.query import query_market_history
 from app.services.market.resample import resample_candles_for_timeframe
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
@@ -88,6 +88,47 @@ def resolve_candles_for_range(
     return windowed, meta
 
 
+def _replayed_span_days(candles: list[dict]) -> float:
+    if not candles:
+        return 0.0
+    return round(max(0.0, (candles[-1]["time"] - candles[0]["time"]) / 86400.0), 2)
+
+
+def _attach_backtest_range_meta(
+    meta: dict[str, Any],
+    candles: list[dict],
+    *,
+    days: int,
+    effective_days: int,
+) -> None:
+    """Record requested vs actually replayed window for UI parity."""
+    meta["days_requested"] = days
+    meta["days"] = days
+    meta["count"] = len(candles)
+    if candles:
+        meta["oldest"] = candles[0]["time"]
+        meta["newest"] = candles[-1]["time"]
+    replayed = _replayed_span_days(candles)
+    meta["replayed_days"] = replayed
+
+    notes: list[str] = []
+    if meta.get("timeframe_note"):
+        notes.append(str(meta["timeframe_note"]))
+
+    if replayed > 0 and replayed < days * 0.9:
+        if effective_days < days and not meta.get("timeframe_note"):
+            notes.append(
+                f"Replayed ~{replayed}d (requested {days}d; archive capped to {effective_days}d)"
+            )
+        else:
+            notes.append(f"Replayed ~{replayed}d of {days}d requested")
+    elif effective_days < days and not meta.get("timeframe_note"):
+        notes.append(f"Range capped to {effective_days}d (1m archive retention)")
+
+    if notes:
+        meta["range_note"] = " · ".join(notes)
+
+
 def resolve_backtest_candles(
     symbol: str,
     feed,
@@ -144,16 +185,11 @@ def resolve_backtest_candles(
             if interval == "1m"
             else "mixed 1m (recent) + 1h (older)"
         )
+        _attach_backtest_range_meta(meta, candles_1m, days=days, effective_days=effective_days)
         return candles_1m, meta
 
     resampled = resample_candles_for_timeframe(candles_1m, tf)
-    max_bars = max(50, BOT_MIN_CANDLES) + 100
-    if len(resampled) > max_bars:
-        resampled = resampled[-max_bars:]
     meta["bars_1m"] = len(candles_1m)
-    meta["count"] = len(resampled)
     meta["resolution_note"] = f"1m bars resampled to {tf}"
-    if resampled:
-        meta["oldest"] = resampled[0]["time"]
-        meta["newest"] = resampled[-1]["time"]
+    _attach_backtest_range_meta(meta, resampled, days=days, effective_days=effective_days)
     return resampled, meta

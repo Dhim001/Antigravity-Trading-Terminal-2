@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
-import { IS_OPERATOR } from '../lib/operator';
-import { sendAction } from '../api/transport';
+import { useIsOperator } from '../lib/operator';
+import { sendAction, invokeHttpAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import {
   Dialog,
@@ -59,6 +59,7 @@ import {
   Database,
   DollarSign,
   RefreshCw,
+  Loader2,
   ShieldAlert,
   Sliders,
   Zap,
@@ -77,6 +78,16 @@ const TICK_SPEEDS = [
   { val: 0.1, label: '100ms', sub: 'Fast' },
 ];
 
+function extractOrderResult(envelope) {
+  if (envelope?.data?.status) return envelope.data;
+  const msgs = envelope?.messages;
+  if (Array.isArray(msgs)) {
+    const hit = msgs.find((m) => m.type === 'order_result');
+    if (hit?.data) return hit.data;
+  }
+  return null;
+}
+
 export default function SystemControlPanel({ isOpen, onClose }) {
   const systemStats = useStore((state) => state.systemStats);
   const activeSymbol = useStore((state) => state.activeSymbol);
@@ -84,12 +95,25 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   const terminalMode = useStore((state) => state.terminalMode);
   const symbolsList = useStore((state) => state.symbolsList);
   const archiveParquetEnabled = useStore((state) => state.archiveParquetEnabled);
+  const isOperator = useIsOperator();
   const [activeTab, setActiveTab] = useState('simulation');
-  const parquetReason = !IS_OPERATOR
+  const parquetReason = !isOperator
     ? 'Operator build required'
     : !archiveParquetEnabled
       ? 'Set ARCHIVE_PARQUET_ENABLED'
       : null;
+
+  const archiveIngestion = systemStats?.archive?.ingestion ?? {};
+  const brokerSource = archiveIngestion.broker_source ?? 'none';
+  const brokerAvailable = archiveIngestion.broker_available ?? brokerSource !== 'none';
+  const ingestShortfall = archiveIngestion.symbols_shortfall ?? [];
+  const ingestTargetDays = archiveIngestion.target_days ?? 90;
+  const ingestShortfallLabel = ingestShortfall.length > 0
+    ? ingestShortfall.slice(0, 8).join(', ') + (ingestShortfall.length > 8 ? '…' : '')
+    : 'Full coverage';
+  const brokerIngestDisabledReason = !brokerAvailable
+    ? 'No broker API — set MASSIVE_API_KEY or Alpaca/Binance credentials'
+    : null;
 
   const getAvailableAssets = () => {
     const assets = new Set(['USD', 'USDT']);
@@ -109,6 +133,65 @@ export default function SystemControlPanel({ isOpen, onClose }) {
   const [seedAsset, setSeedAsset] = useState('USD');
   const [seedAmount, setSeedAmount] = useState('10000');
   const [isResetting, setIsResetting] = useState(false);
+  const [archivePending, setArchivePending] = useState(null);
+
+  const runArchiveAction = async (action, payload, { pendingKey, startLabel, timeoutMs }) => {
+    if (archivePending) return;
+    setArchivePending(pendingKey);
+    const toastId = toast.loading(startLabel);
+    try {
+      const envelope = await invokeHttpAction(action, payload, { timeoutMs });
+      const result = extractOrderResult(envelope);
+      const status = result?.status ?? (envelope?.ok === false ? 'error' : 'success');
+      const message = result?.message
+        ?? (status === 'success' ? 'Archive operation complete' : 'Archive operation failed');
+      if (status === 'error') {
+        toast.error(message, { id: toastId });
+      } else {
+        toast.success(message, { id: toastId, duration: 6000 });
+      }
+      sendAction(Action.ADMIN_GET_STATS);
+    } catch (err) {
+      const msg = err?.message || 'Archive operation failed';
+      if (/abort/i.test(msg)) {
+        toast.error('Archive operation timed out — it may still be running on the server. Refresh diagnostics in a minute.', { id: toastId, duration: 8000 });
+      } else {
+        toast.error(msg, { id: toastId });
+      }
+    } finally {
+      setArchivePending(null);
+    }
+  };
+
+  const handleArchiveBackfill = () => runArchiveAction(
+    Action.ADMIN_ARCHIVE_BACKFILL,
+    { force: true },
+    {
+      pendingKey: 'backfill',
+      startLabel: 'Importing seed parquet and feed buffer into archive…',
+      timeoutMs: 120000,
+    },
+  );
+
+  const handleArchiveIngest = () => runArchiveAction(
+    Action.ADMIN_ARCHIVE_INGEST,
+    { days: ingestTargetDays, include_seed: true },
+    {
+      pendingKey: 'ingest',
+      startLabel: `Broker ingest started (${ingestTargetDays}d target) — this may take several minutes…`,
+      timeoutMs: 600000,
+    },
+  );
+
+  const handleArchiveExport = () => runArchiveAction(
+    Action.ADMIN_ARCHIVE_EXPORT,
+    { days: 90, interval: 'auto' },
+    {
+      pendingKey: 'export',
+      startLabel: 'Exporting archive to Parquet…',
+      timeoutMs: 180000,
+    },
+  );
 
   const tickRate = (1.0 / (systemStats.tick_interval || tickInterval || 0.25)).toFixed(1);
 
@@ -618,6 +701,20 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                     sub="Rolled-up archive"
                   />
                   <StatCard
+                    label="Broker source"
+                    icon={Database}
+                    value={brokerSource}
+                    tone={brokerAvailable ? 'up' : 'down'}
+                    sub={brokerAvailable ? `${ingestTargetDays}d ingest target` : 'API not configured'}
+                  />
+                  <StatCard
+                    label="History shortfall"
+                    icon={Activity}
+                    value={ingestShortfall.length}
+                    tone={ingestShortfall.length > 0 ? 'down' : 'up'}
+                    sub={ingestShortfallLabel}
+                  />
+                  <StatCard
                     label="Est. Size"
                     icon={Database}
                     value={`${systemStats.archive?.est_size_mb ?? 0} MB`}
@@ -625,27 +722,57 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                     sub="SQLite / Postgres"
                   />
                 </div>
+                {ingestShortfall.length > 0 && (
+                  <Alert variant="default" className="mb-2 py-2">
+                    <AlertDescription className="text-xs">
+                      {ingestShortfall.length} symbol(s) have less than {ingestTargetDays} days of 1m archive.
+                      {brokerAvailable
+                        ? ' Run broker ingest or wait for the hourly ingestion cycle.'
+                        : ' Configure MASSIVE_API_KEY or broker credentials to backfill.'}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   className="text-xs"
-                  onClick={() => sendAction(Action.ADMIN_ARCHIVE_BACKFILL, { force: false })}
+                  disabled={Boolean(archivePending)}
+                  onClick={handleArchiveBackfill}
                 >
-                  <RefreshCw data-icon="inline-start" aria-hidden />
+                  {archivePending === 'backfill'
+                    ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden />
+                    : <RefreshCw data-icon="inline-start" aria-hidden />}
                   Backfill from seed data
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   className="text-xs"
-                  disabled={Boolean(parquetReason)}
-                  title={parquetReason ?? 'Export 90 days of bars to Parquet'}
-                  onClick={() => sendAction(Action.ADMIN_ARCHIVE_EXPORT, { days: 90, interval: 'auto' })}
+                  disabled={Boolean(archivePending) || Boolean(brokerIngestDisabledReason)}
+                  title={brokerIngestDisabledReason ?? `Fetch up to ${ingestTargetDays}d of 1m bars from broker API and repair gaps`}
+                  onClick={handleArchiveIngest}
                 >
-                  <Database data-icon="inline-start" aria-hidden />
+                  {archivePending === 'ingest'
+                    ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden />
+                    : <Database data-icon="inline-start" aria-hidden />}
+                  Broker ingest ({ingestTargetDays}d)
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  disabled={Boolean(archivePending) || Boolean(parquetReason)}
+                  title={parquetReason ?? 'Export 90 days of bars to Parquet'}
+                  onClick={handleArchiveExport}
+                >
+                  {archivePending === 'export'
+                    ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden />
+                    : <Database data-icon="inline-start" aria-hidden />}
                   Export Parquet (90d)
                   {parquetReason && <span className="ml-1 text-muted-foreground">· {parquetReason}</span>}
                 </Button>
+                </div>
                 {(systemStats.archive?.ticks ?? 0) > 0 && (
                   <StatCard
                     label="Ticks (24h)"

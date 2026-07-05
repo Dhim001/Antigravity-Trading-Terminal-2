@@ -57,6 +57,23 @@ class ResolveBacktestTimeframeTests(unittest.TestCase):
         self.assertGreaterEqual(meta["bars_1m"], 500)
         self.assertGreaterEqual(len(candles), 100)
         self.assertLessEqual(len(candles), 125)
+        self.assertIn("replayed_days", meta)
+        self.assertGreater(meta["replayed_days"], 0)
+
+    def test_5m_not_truncated_to_bot_min_candles(self):
+        """Resampled backtests must not cap to ~300 bars (BOT_MIN_CANDLES + 100)."""
+        base = _recent_base(60)
+        live = [_bar(base + i * 60, 100.0) for i in range(2500)]
+
+        class _Feed:
+            def get_candles(self, symbol):
+                return live
+
+        candles, meta = resolve_backtest_candles("AAPL", _Feed(), days=7, timeframe="5m")
+        self.assertGreater(len(candles), 300)
+        self.assertEqual(meta["days_requested"], 7)
+        self.assertLess(meta["replayed_days"], 7)
+        self.assertIn("Replayed", meta.get("range_note", ""))
 
     def test_invalid_timeframe_raises(self):
         class _Feed:

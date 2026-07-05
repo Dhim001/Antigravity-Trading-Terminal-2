@@ -39,6 +39,42 @@ REGIME_WEIGHTS: dict[str, dict[str, float]] = {
 }
 _EQUAL_WEIGHTS = {"trend": 1.0, "momentum": 1.0, "volume": 1.0, "risk": 1.0, "sentiment": 1.0}
 
+# Frozen per-symbol sentiment during CHART_AGENT bar replay (cleared after each run).
+_backtest_sentiment_cache: dict[str, dict] = {}
+
+
+def prime_backtest_sentiment_cache(symbol: str) -> None:
+    """Load aggregate sentiment once before CHART_AGENT backtest replay."""
+    sym = str(symbol or "").upper().strip()
+    if not sym or sym in _backtest_sentiment_cache:
+        return
+    from app.config import SENTIMENT_LOOKBACK_HOURS
+    from app.services.altdata.store import get_aggregate_sentiment
+
+    _backtest_sentiment_cache[sym] = get_aggregate_sentiment(
+        sym,
+        lookback_hours=SENTIMENT_LOOKBACK_HOURS,
+    )
+
+
+def clear_backtest_sentiment_cache() -> None:
+    _backtest_sentiment_cache.clear()
+
+
+def _aggregate_sentiment(symbol: str) -> dict:
+    sym = str(symbol or "").upper().strip()
+    if sym and sym in _backtest_sentiment_cache:
+        return _backtest_sentiment_cache[sym]
+    from app.config import SENTIMENT_LOOKBACK_HOURS
+    from app.services.altdata.store import get_aggregate_sentiment
+
+    return get_aggregate_sentiment(sym, lookback_hours=SENTIMENT_LOOKBACK_HOURS) if sym else {
+        "aggregate_score": 0.0,
+        "mention_count": 0,
+        "sources": [],
+        "sample_headlines": [],
+    }
+
 
 def _adaptive_score(
     trend_score: int,
@@ -96,13 +132,12 @@ def _confidence(score: int) -> float:
 
 def _score_sentiment(symbol: str) -> DomainScore:
     """News/social aggregate sentiment from persisted sentiment_events."""
-    from app.config import SENTIMENT_ENABLED, SENTIMENT_LOOKBACK_HOURS, SENTIMENT_SCORE_THRESHOLD
-    from app.services.altdata.store import get_aggregate_sentiment
+    from app.config import SENTIMENT_ENABLED, SENTIMENT_SCORE_THRESHOLD
 
     if not SENTIMENT_ENABLED:
         return DomainScore(score=0, reasons=[])
 
-    agg = get_aggregate_sentiment(symbol, lookback_hours=SENTIMENT_LOOKBACK_HOURS)
+    agg = _aggregate_sentiment(symbol)
     score_val = float(agg.get("aggregate_score") or 0.0)
     mentions = int(agg.get("mention_count") or 0)
     if mentions == 0:
@@ -333,10 +368,7 @@ def _build_sub_reports(
     trend_regime = _classify_trend_regime(row, df, idx)
     indicator = {"score": momentum.score, "reasons": list(momentum.reasons)}
     anomaly = detect_bar_anomaly(df, idx)
-    from app.config import SENTIMENT_LOOKBACK_HOURS
-    from app.services.altdata.store import get_aggregate_sentiment
-
-    agg = get_aggregate_sentiment(symbol, lookback_hours=SENTIMENT_LOOKBACK_HOURS) if symbol else {}
+    agg = _aggregate_sentiment(symbol) if symbol else {}
     sentiment_block: dict = {
         "score": sentiment.score,
         "reasons": sentiment.reasons,

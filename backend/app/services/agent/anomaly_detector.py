@@ -54,10 +54,6 @@ def detect_bar_anomaly(
     if df is None or df.empty or idx < 1 or idx >= len(df):
         return out
 
-    slice_end = idx + 1
-    if slice_end < window + 1:
-        return out
-
     row = df.iloc[idx]
     prev = df.iloc[idx - 1]
     close = _safe_float(row.get("close"))
@@ -71,19 +67,25 @@ def detect_bar_anomaly(
             out["is_anomaly"] = True
             out["kinds"].append("price_gap")
 
-    closes = df.iloc[: slice_end]["close"].astype(float)
-    returns = closes.pct_change().dropna()
-    if len(returns) >= window:
-        ret_z = _rolling_zscore(returns, window)
-        if ret_z is not None:
-            out["return_z"] = round(ret_z, 3)
-            if abs(ret_z) >= _RETURN_Z_THRESHOLD:
-                out["is_anomaly"] = True
-                if "return_spike" not in out["kinds"]:
-                    out["kinds"].append("return_spike")
+    start = max(0, idx - window)
+    window_df = df.iloc[start: idx + 1]
+    if len(window_df) < window + 1:
+        return out
 
-    if volume is not None and "volume" in df.columns:
-        vols = df.iloc[: slice_end]["volume"].astype(float)
+    if "close" in window_df.columns:
+        closes = window_df["close"].astype(float)
+        returns = closes.pct_change().dropna()
+        if len(returns) >= window:
+            ret_z = _rolling_zscore(returns, window)
+            if ret_z is not None:
+                out["return_z"] = round(ret_z, 3)
+                if abs(ret_z) >= _RETURN_Z_THRESHOLD:
+                    out["is_anomaly"] = True
+                    if "return_spike" not in out["kinds"]:
+                        out["kinds"].append("return_spike")
+
+    if volume is not None and "volume" in window_df.columns:
+        vols = window_df["volume"].astype(float)
         if len(vols) >= window:
             vol_z = _rolling_zscore(vols, window)
             if vol_z is not None:

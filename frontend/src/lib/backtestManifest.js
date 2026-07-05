@@ -1,7 +1,7 @@
 /**
  * Reproducibility manifest — JSON bundle for audit / re-run parity.
  */
-import { backtestFingerprint } from './backtestDisplay';
+import { backtestFingerprint, resolveBacktestRange } from './backtestDisplay';
 import { buildBacktestAssumptionDetails } from './backtestAssumptions';
 import { resolveBacktestSummary } from './metricComparison';
 
@@ -24,7 +24,9 @@ export function buildBacktestManifest({
   const sym = symbol ?? meta.symbol ?? null;
   const strat = strategy ?? meta.strategy ?? null;
   const tf = timeframe ?? meta.timeframe ?? '1m';
-  const dayCount = days ?? meta.days ?? null;
+  const rangeInfo = resolveBacktestRange(meta);
+  const dayCount = days ?? meta.days_requested ?? meta.days ?? null;
+  const replayedDays = meta.replayed_days ?? rangeInfo.replayedDays ?? null;
   const mergedConfig = { ...config, ...(meta.config ?? {}) };
 
   return {
@@ -35,6 +37,10 @@ export function buildBacktestManifest({
     symbol: sym,
     strategy: strat,
     days: dayCount,
+    days_requested: meta.days_requested ?? dayCount,
+    replayed_days: replayedDays,
+    effective_days: meta.effective_days ?? null,
+    range_note: meta.range_note ?? null,
     timeframe: tf,
     sim_mode: results.sim_mode ?? meta.sim_mode ?? 'live_aligned',
     live_parity: results.live_parity ?? meta.live_parity ?? null,

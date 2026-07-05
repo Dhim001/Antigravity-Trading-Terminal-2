@@ -311,6 +311,7 @@ export function AlgoTab({ hideToolbar = false }) {
     scheduleBacktestClientTimeout({
       reasoning: request?.reasoning,
       metaLabelWalkForward: request?.config?.meta_label_walk_forward,
+      strategy: request?.strategy,
       days: request?.days,
       portfolioSymbolCount: request?.portfolio_symbols?.length ?? 0,
       onTimeout: (timeoutMs) => {
@@ -356,6 +357,7 @@ export function AlgoTab({ hideToolbar = false }) {
     scheduleBacktestClientTimeout({
       reasoning: backtestReasoning,
       metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+      strategy: botStrategy,
       days,
       portfolioSymbolCount,
       onTimeout: (timeoutMs) => {
@@ -367,6 +369,7 @@ export function AlgoTab({ hideToolbar = false }) {
             backtestTimeoutHint({
               reasoning: backtestReasoning,
               metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+              strategy: botStrategy,
               portfolioSymbolCount,
               timeoutMs,
             }),

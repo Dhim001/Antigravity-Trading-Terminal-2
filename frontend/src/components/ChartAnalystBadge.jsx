@@ -63,6 +63,7 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
   const agentLlmEnabled = useStore((state) => state.agentLlmEnabled);
   const agentLlmAvailable = useStore((state) => state.agentLlmAvailable);
   const agentVisionEnabled = useStore((state) => state.agentVisionEnabled);
+  const backtestRunning = useStore((state) => state.backtestRunning);
   const visionReports = useStore((state) => state.visionReports);
   const setOrderPrefill = useStore((state) => state.setOrderPrefill);
   const ticker = useStore((state) => state.tickerData[symbol]);
@@ -147,10 +148,9 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
   const deepReasoning = display?.deep_reasoning || deepFromStore;
 
   useEffect(() => {
-    if (!agentInsight && symbol && lastCandleTime) {
-      sendAction(Action.CHART_ANALYZE, { symbol, timeframe: chartTf });
-    }
-  }, [symbol, chartTf, lastCandleTime, agentInsight]);
+    if (backtestRunning || !symbol || !lastCandleTime || agentInsight) return;
+    sendAction(Action.CHART_ANALYZE, { symbol, timeframe: chartTf });
+  }, [symbol, chartTf, lastCandleTime, agentInsight, backtestRunning]);
 
   if (!display) return null;
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from functools import partial
 
 from app.api.context import RequestContext
@@ -38,6 +39,8 @@ from app.services.bots.backtest_walk_forward import (
 )
 from app.services.events import channels
 from app.services.events import publish as event_publish
+
+logger = logging.getLogger(__name__)
 
 
 async def _notify_bot_registry_change() -> None:
@@ -193,10 +196,21 @@ async def _maybe_defer_backtest(ctx: RequestContext, req: dict) -> bool:
     async def _run_deferred() -> None:
         try:
             await _execute_backtest(ctx, job_id=job_id, **req)
-        except Exception:
+        except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("Deferred backtest %s failed", job_id)
-            set_job_status(job_id, "failed", error="Deferred backtest failed")
+            set_job_status(job_id, "failed", error=str(exc) or "Deferred backtest failed")
+            try:
+                await send_backtest_result(
+                    ctx,
+                    {
+                        "status": "error",
+                        "message": str(exc) or "Deferred backtest failed",
+                        "job_id": job_id,
+                    },
+                )
+            except Exception:
+                pass
 
     asyncio.create_task(_run_deferred())
     return True
@@ -976,6 +990,9 @@ async def _execute_backtest(
 
         enqueue_progress({"pct": 100, "phase": "done", "message": "Complete"})
         await _finish("success", results=wire_results, run_id=run_id)
+    except Exception as exc:
+        logger.exception("Backtest job %s failed", job_id)
+        await _finish("error", message=str(exc) or "Backtest failed")
     finally:
         clear_job(ctx.websocket)
         await progress_queue.put(None)

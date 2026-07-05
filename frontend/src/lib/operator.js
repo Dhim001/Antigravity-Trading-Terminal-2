@@ -1,12 +1,29 @@
 /**
- * Operator / env-only feature helpers.
+ * Operator / admin UI helpers.
  *
- * `IS_OPERATOR` is a build-time visibility gate (set `VITE_OPERATOR_MODE=true`).
- * It only controls which operator-facing controls are shown in the UI — the
- * backend admin routes are not authenticated by this flag.
+ * Operator mode can be enabled at build time (`VITE_OPERATOR_MODE=true`) or at
+ * runtime via backend `OPERATOR_MODE=true` (surfaced on GET /api/v1/session).
+ * This only controls which operator-facing controls are shown — backend admin
+ * routes are not authenticated by this flag.
  */
 
-export const IS_OPERATOR = import.meta.env.VITE_OPERATOR_MODE === 'true';
+import { useStore } from '../store/useStore';
+
+export const IS_OPERATOR_BUILD = import.meta.env.VITE_OPERATOR_MODE === 'true';
+
+/** True when build-time or session operator mode is active. */
+export function resolveIsOperator(storeIsOperator) {
+  return IS_OPERATOR_BUILD || storeIsOperator === true;
+}
+
+/** React hook — prefer this over the build-time `IS_OPERATOR` constant. */
+export function useIsOperator() {
+  const storeIsOperator = useStore((s) => s.isOperator);
+  return resolveIsOperator(storeIsOperator);
+}
+
+/** @deprecated Use `useIsOperator()` in components. */
+export const IS_OPERATOR = IS_OPERATOR_BUILD;
 
 const BROKER_LABELS = Object.freeze({
   SIMULATED: 'Sim',

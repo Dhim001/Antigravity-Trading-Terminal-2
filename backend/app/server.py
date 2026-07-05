@@ -66,7 +66,7 @@ from app.services.runtime.shutdown import (
 )
 from app.services.runtime.startup_recovery import run_startup_recovery
 from app.services.runtime import system_state
-from app.services.archive.runtime import archive_capture_loop, archive_rollup_loop, archive_startup_backfill
+from app.services.archive.runtime import archive_capture_loop, archive_ingestion_loop, archive_rollup_loop, archive_startup_pipeline
 from app.services.events import channels, publish as event_publish
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -476,9 +476,17 @@ async def main():
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
 
             if ARCHIVE_ENABLED:
-                tasks.append(asyncio.create_task(archive_startup_backfill(state.feed)))
+                from app.config import (
+                    ARCHIVE_BACKFILL_ON_STARTUP,
+                    ARCHIVE_INGESTION_ENABLED,
+                    ARCHIVE_INGESTION_ON_STARTUP,
+                )
+                if ARCHIVE_BACKFILL_ON_STARTUP or ARCHIVE_INGESTION_ON_STARTUP:
+                    tasks.append(asyncio.create_task(archive_startup_pipeline(state.feed)))
                 tasks.append(asyncio.create_task(archive_capture_loop(state.feed)))
                 tasks.append(asyncio.create_task(archive_rollup_loop(state.feed)))
+                if ARCHIVE_INGESTION_ENABLED:
+                    tasks.append(asyncio.create_task(archive_ingestion_loop(state.feed)))
 
             if ARCHIVE_TICKS_ENABLED:
                 from app.services.archive.tick_writer import tick_flush_loop

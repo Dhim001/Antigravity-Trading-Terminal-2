@@ -19,6 +19,7 @@ export const Action = Object.freeze({
   ADMIN_RESET_RISK_KILL_SWITCH: 'admin_reset_risk_kill_switch',
   ADMIN_GET_STATS: 'admin_get_stats',
   ADMIN_ARCHIVE_BACKFILL: 'admin_archive_backfill',
+  ADMIN_ARCHIVE_INGEST: 'admin_archive_ingest',
   ADMIN_ARCHIVE_EXPORT: 'admin_archive_export',
   ADMIN_ARCHIVE_IMPORT: 'admin_archive_import',
   ADMIN_GET_RECONCILIATION: 'admin_get_reconciliation',

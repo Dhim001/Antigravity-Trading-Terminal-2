@@ -47,6 +47,7 @@ export function applySessionToStore(session, storeActions) {
     agentVisionEnabled: t.agent_vision_enabled,
     agentEnabled: t.agent_enabled,
     scannerEnabled: t.scanner_enabled,
+    isOperator: t.operator_mode,
     orderCapabilities: normalizeOrderCapabilities(t.order_capabilities),
   });
   if (llm.preferred_model) {
@@ -87,6 +88,7 @@ export async function fetchHealth(storeActions) {
       scannerEnabled: body.scanner_enabled,
       botMinCandles: body.bot_min_candles,
       archiveTicksEnabled: body.archive_ticks_enabled,
+      isOperator: body.operator_mode,
       ...(body.worker != null
         ? {
             distributed: true,
@@ -535,7 +537,19 @@ export function startBacktestJobPolling(jobId, storeActions) {
   stopBacktestJobPolling();
   storeActions.setBacktestJobId(jobId);
   storeActions.setBacktestRunning(true);
+  const pollStartedAt = Date.now();
+  const pollMaxMs = 45 * 60 * 1000;
   const poll = () => {
+    if (Date.now() - pollStartedAt > pollMaxMs) {
+      stopBacktestJobPolling();
+      clearBacktestClientTimeout();
+      storeActions.setBacktestRunning(false);
+      storeActions.setBacktestProgress(null);
+      const msg = 'Background backtest stopped responding — check Jobs tab or retry';
+      storeActions.setBacktestLastError?.(msg, null);
+      toast.error(msg);
+      return;
+    }
     fetchBacktestJob(jobId)
       .then((fresh) => {
         if (!fresh) return;

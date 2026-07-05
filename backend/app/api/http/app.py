@@ -24,6 +24,7 @@ from app.config import (
     ARCHIVE_PARQUET_ENABLED,
     ARCHIVE_TICKS_ENABLED,
     BOT_MIN_CANDLES,
+    OPERATOR_MODE,
     HTTP_API_KEY,
     HTTP_CORS_ORIGINS,
     HTTP_HOST,
@@ -103,6 +104,7 @@ async def health(request: Request) -> JSONResponse:
         "archive_backend": ARCHIVE_BACKEND,
         "bot_min_candles": BOT_MIN_CANDLES,
         "archive_ticks_enabled": ARCHIVE_TICKS_ENABLED,
+        "operator_mode": OPERATOR_MODE,
     }
 
     try:

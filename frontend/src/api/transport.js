@@ -90,6 +90,11 @@ export const HTTP_ROUTES = Object.freeze({
     path: () => '/api/v1/admin/archive/backfill',
     body: (p) => p,
   },
+  [Action.ADMIN_ARCHIVE_INGEST]: {
+    method: 'POST',
+    path: () => '/api/v1/admin/archive/ingest',
+    body: (p) => p,
+  },
   [Action.ADMIN_ARCHIVE_EXPORT]: {
     method: 'POST',
     path: () => '/api/v1/admin/archive/export',

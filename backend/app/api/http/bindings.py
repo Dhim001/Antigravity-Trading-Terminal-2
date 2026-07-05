@@ -37,6 +37,7 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("POST", "/api/v1/chart-drawings/{symbol}", Action.CHART_DRAWINGS_SET, {"symbol": "symbol"}),
     ("GET", "/api/v1/admin/stats", Action.ADMIN_GET_STATS, None),
     ("POST", "/api/v1/admin/archive/backfill", Action.ADMIN_ARCHIVE_BACKFILL, None),
+    ("POST", "/api/v1/admin/archive/ingest", Action.ADMIN_ARCHIVE_INGEST, None),
     ("POST", "/api/v1/admin/archive/export", Action.ADMIN_ARCHIVE_EXPORT, None),
     ("POST", "/api/v1/admin/archive/import", Action.ADMIN_ARCHIVE_IMPORT, None),
     ("GET", "/api/v1/admin/reconciliation", Action.ADMIN_GET_RECONCILIATION, None),

@@ -127,6 +127,11 @@ def get_archive_stats() -> dict[str, Any]:
             (stats["bars_1m"] * 80 + stats["bars_1h"] * 88) / (1024 * 1024),
             2,
         )
+        try:
+            from app.services.archive.ingestion import get_ingestion_summary
+            stats["ingestion"] = get_ingestion_summary()
+        except Exception:
+            pass
     finally:
         conn.close()
     return stats

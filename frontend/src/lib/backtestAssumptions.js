@@ -1,5 +1,11 @@
 /** Build human-readable backtest assumption chips for the Lab report header. */
 
+import {
+  formatBacktestDaysChip,
+  formatBacktestRangeLabel,
+  resolveBacktestRange,
+} from './backtestDisplay';
+
 export function buildBacktestAssumptionDetails(results) {
   if (!results) return { sections: [] };
 
@@ -59,16 +65,34 @@ export function buildBacktestAssumptionDetails(results) {
     ],
   });
 
+  const rangeInfo = resolveBacktestRange(meta);
   const dataRows = [
-    { label: 'Range', value: meta.days != null ? `${meta.days} days` : '—' },
+    {
+      label: rangeInfo.hasMismatch ? 'Requested range' : 'Range',
+      value: rangeInfo.hasMismatch && rangeInfo.requested != null
+        ? `${rangeInfo.requested} days`
+        : formatBacktestRangeLabel(meta),
+    },
     { label: 'Timeframe', value: meta.timeframe ?? '1m' },
     { label: 'Bars replayed', value: meta.count != null ? Number(meta.count).toLocaleString() : '—' },
   ];
+  if (rangeInfo.hasMismatch) {
+    dataRows.push({
+      label: 'Replayed span',
+      value: formatBacktestRangeLabel(meta),
+      warn: true,
+    });
+  }
   if (meta.oldest && meta.newest) {
     dataRows.push({
       label: 'Data slice',
       value: `${new Date(meta.oldest * 1000).toISOString().slice(0, 10)} → ${new Date(meta.newest * 1000).toISOString().slice(0, 10)}`,
     });
+  }
+  if (rangeInfo.rangeNote) {
+    dataRows.push({ label: 'Range note', value: rangeInfo.rangeNote, warn: true });
+  } else if (rangeInfo.timeframeNote && !rangeInfo.hasMismatch) {
+    dataRows.push({ label: 'Range note', value: rangeInfo.timeframeNote, warn: true });
   }
   if (meta.oos_pct) {
     dataRows.push({ label: 'OOS window', value: `${meta.oos_pct}% hold-out` });
@@ -143,8 +167,14 @@ export function buildBacktestAssumptions(results) {
     chips.push({ key: 'fill', label: 'Bar close + fixed slip' });
   }
 
-  if (meta.days != null) {
-    chips.push({ key: 'range', label: `${meta.days}d · ${meta.timeframe ?? '1m'}` });
+  const rangeInfo = resolveBacktestRange(meta);
+  if (rangeInfo.requested != null || rangeInfo.replayedDays != null) {
+    const daysChip = formatBacktestDaysChip(meta, null);
+    chips.push({
+      key: 'range',
+      label: `${daysChip} · ${meta.timeframe ?? '1m'}`,
+      warn: rangeInfo.hasMismatch,
+    });
   }
 
   if (meta.count != null) {

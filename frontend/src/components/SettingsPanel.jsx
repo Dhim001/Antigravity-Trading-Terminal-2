@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { useTheme } from 'next-themes';
 import { useStore } from '../store/useStore';
 import { useSettingsStore } from '../store/useSettingsStore';
-import { IS_OPERATOR, brokerLabel } from '../lib/operator';
+import { useIsOperator, brokerLabel } from '../lib/operator';
 import {
   Sheet,
   SheetContent,
@@ -239,6 +239,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const allowLiveBots = useStore((s) => s.allowLiveBots);
   const allowCustomStrategies = useStore((s) => s.allowCustomStrategies);
   const archiveParquetEnabled = useStore((s) => s.archiveParquetEnabled);
+  const isOperator = useIsOperator();
   const archiveBackend = useStore((s) => s.archiveBackend);
   const archiveTicksEnabled = useStore((s) => s.archiveTicksEnabled);
   const botMinCandles = useStore((s) => s.botMinCandles);
@@ -1353,9 +1354,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     </dd>
                   </div>
                   <div>
-                    <dt>Operator build</dt>
-                    <dd className={IS_OPERATOR ? 'text-trading-accent' : 'text-muted-foreground'}>
-                      {IS_OPERATOR ? 'Yes' : 'No'}
+                    <dt>Operator mode</dt>
+                    <dd className={isOperator ? 'text-trading-accent' : 'text-muted-foreground'}>
+                      {isOperator ? 'Yes' : 'No'}
                     </dd>
                   </div>
                 </dl>
@@ -1387,7 +1388,7 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                 </SettingsAccordionSection>
               )}
 
-              {IS_OPERATOR && (
+              {isOperator && (
                 <SettingsAccordionSection
                   value="admin-simulation"
                   title="Admin & simulation"

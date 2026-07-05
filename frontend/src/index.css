@@ -5254,6 +5254,12 @@ body {
   background: color-mix(in oklab, var(--primary) 8%, transparent);
 }
 
+.algo-backtest-lab__chip--warn {
+  color: var(--trading-warn, #e8a317);
+  border-color: color-mix(in oklab, var(--trading-warn, #e8a317) 45%, var(--border));
+  background: color-mix(in oklab, var(--trading-warn, #e8a317) 10%, transparent);
+}
+
 .algo-backtest-lab__meta-secondary {
   display: flex;
   flex-direction: column;

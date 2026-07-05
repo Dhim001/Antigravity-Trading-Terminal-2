@@ -48,6 +48,30 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_bars_1h_symbol_time ON market_bars_1h (symbol, time)"
     )
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS archive_ingestion_state (
+            symbol          TEXT PRIMARY KEY,
+            last_bar_time   INTEGER,
+            oldest_bar_time INTEGER,
+            bars_total      INTEGER NOT NULL DEFAULT 0,
+            last_backfill   REAL,
+            last_gap_scan   REAL,
+            last_error      TEXT,
+            updated_at      REAL NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS archive_known_gaps (
+            symbol       TEXT NOT NULL,
+            bucket_time  INTEGER NOT NULL,
+            reason       TEXT NOT NULL DEFAULT 'unfillable',
+            recorded_at  REAL NOT NULL,
+            PRIMARY KEY (symbol, bucket_time)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_known_gaps_symbol ON archive_known_gaps (symbol)"
+    )
     tick_time = _int64_type()
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS market_ticks (

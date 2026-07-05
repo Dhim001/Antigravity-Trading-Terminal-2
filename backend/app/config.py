@@ -34,6 +34,8 @@ DB_PATH = (
 # Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB", "LIVE_MASSIVE"
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
 USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
+# Operator/admin UI — exposed on GET /api/v1/session as operator_mode.
+OPERATOR_MODE = os.environ.get("OPERATOR_MODE", "true").lower() in ("1", "true", "yes")
 
 # Bot engine on live brokers is opt-in (paper/live safety gate).
 ALLOW_LIVE_BOTS = os.environ.get("ALLOW_LIVE_BOTS", "false").lower() in ("1", "true", "yes")
@@ -184,9 +186,22 @@ ARCHIVE_RETENTION_1H_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1H_DAYS", "182
 ARCHIVE_ROLLUP_INTERVAL = float(os.environ.get("ARCHIVE_ROLLUP_INTERVAL", "3600"))
 ARCHIVE_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_FLUSH_INTERVAL", "60"))
 ARCHIVE_BACKEND = os.environ.get("ARCHIVE_BACKEND", "db").lower()
-ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "false").lower() in (
+ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "true").lower() in (
     "1", "true", "yes"
 )
+ARCHIVE_INGESTION_ENABLED = os.environ.get("ARCHIVE_INGESTION_ENABLED", "true").lower() in (
+    "1", "true", "yes"
+)
+ARCHIVE_INGESTION_ON_STARTUP = os.environ.get("ARCHIVE_INGESTION_ON_STARTUP", "true").lower() in (
+    "1", "true", "yes"
+)
+ARCHIVE_INGESTION_INTERVAL = float(os.environ.get("ARCHIVE_INGESTION_INTERVAL", "3600"))
+ARCHIVE_INGESTION_DAYS = int(os.environ.get("ARCHIVE_INGESTION_DAYS", "90"))
+ARCHIVE_INGESTION_GAP_SCAN_DAYS = int(os.environ.get("ARCHIVE_INGESTION_GAP_SCAN_DAYS", "7"))
+ARCHIVE_INGESTION_MAX_GAPS_PER_RUN = int(os.environ.get("ARCHIVE_INGESTION_MAX_GAPS_PER_RUN", "8"))
+ARCHIVE_INGESTION_CONCURRENCY = int(os.environ.get("ARCHIVE_INGESTION_CONCURRENCY", "2"))
+ARCHIVE_INGESTION_STARTUP_BATCH_SIZE = int(os.environ.get("ARCHIVE_INGESTION_STARTUP_BATCH_SIZE", "6"))
+ARCHIVE_INGESTION_SYMBOL_DELAY_SEC = float(os.environ.get("ARCHIVE_INGESTION_SYMBOL_DELAY_SEC", "1.0"))
 ARCHIVE_PARQUET_ENABLED = os.environ.get("ARCHIVE_PARQUET_ENABLED", "false").lower() in (
     "1", "true", "yes"
 )
