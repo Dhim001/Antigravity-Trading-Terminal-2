@@ -38,41 +38,49 @@ const WORKFLOWS = [
 export default function HelpSheet({ open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
-        <DialogHeader>
-          <DialogTitle>Help & glossary</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="help-sheet sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col gap-0 p-0">
+        <DialogHeader className="help-sheet__header">
+          <DialogTitle className="help-sheet__title">Help & glossary</DialogTitle>
+          <DialogDescription className="help-sheet__description">
             Quick reference for terminal features and workflows.
           </DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="workflows" className="min-h-0 flex-1 flex flex-col">
-          <TabsList className="w-full shrink-0">
-            <TabsTrigger value="workflows" className="flex-1">Workflows</TabsTrigger>
-            <TabsTrigger value="glossary" className="flex-1">Glossary</TabsTrigger>
-            <TabsTrigger value="shortcuts" className="flex-1">Shortcuts</TabsTrigger>
+
+        <Tabs defaultValue="workflows" className="help-sheet__tabs min-h-0 flex-1 flex flex-col">
+          <TabsList className="help-sheet__tablist shrink-0">
+            <TabsTrigger value="workflows" className="help-sheet__tab">Workflows</TabsTrigger>
+            <TabsTrigger value="glossary" className="help-sheet__tab">Glossary</TabsTrigger>
+            <TabsTrigger value="shortcuts" className="help-sheet__tab">Shortcuts</TabsTrigger>
           </TabsList>
-          <TabsContent value="workflows" className="mt-3 min-h-0 flex-1 overflow-y-auto space-y-4">
-            {WORKFLOWS.map((w) => (
-              <div key={w.title} className="rounded-md border border-border/60 p-3">
-                <h4 className="mb-2 text-sm font-semibold">{w.title}</h4>
-                <ol className="list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
-                  {w.steps.map((s) => (
-                    <li key={s}>{s}</li>
-                  ))}
-                </ol>
-              </div>
-            ))}
+
+          <TabsContent value="workflows" className="help-sheet__panel mt-0">
+            <div className="help-sheet__panel-scroll">
+              {WORKFLOWS.map((w) => (
+                <article key={w.title} className="help-sheet__workflow-card">
+                  <h4 className="help-sheet__workflow-title">{w.title}</h4>
+                  <ol className="help-sheet__workflow-steps">
+                    {w.steps.map((s) => (
+                      <li key={s}>{s}</li>
+                    ))}
+                  </ol>
+                </article>
+              ))}
+            </div>
           </TabsContent>
-          <TabsContent value="glossary" className="mt-3 min-h-0 flex-1 overflow-y-auto space-y-2">
-            {GLOSSARY.map((g) => (
-              <div key={g.term} className="border-b border-border/40 py-2 last:border-0">
-                <dt className="text-sm font-semibold">{g.term}</dt>
-                <dd className="mt-0.5 text-xs text-muted-foreground">{g.def}</dd>
-              </div>
-            ))}
+
+          <TabsContent value="glossary" className="help-sheet__panel mt-0">
+            <dl className="help-sheet__glossary help-sheet__panel-scroll">
+              {GLOSSARY.map((g) => (
+                <div key={g.term} className="help-sheet__glossary-item">
+                  <dt className="help-sheet__glossary-term">{g.term}</dt>
+                  <dd className="help-sheet__glossary-def">{g.def}</dd>
+                </div>
+              ))}
+            </dl>
           </TabsContent>
-          <TabsContent value="shortcuts" className="mt-3 min-h-0 flex-1 overflow-y-auto">
-            <ul className="space-y-2 text-sm">
+
+          <TabsContent value="shortcuts" className="help-sheet__panel mt-0">
+            <ul className="help-sheet__shortcuts help-sheet__panel-scroll">
               {[
                 ['⌘K', 'Command palette'],
                 ['⌘1 / ⌘2', 'Single / multi chart'],
@@ -81,9 +89,9 @@ export default function HelpSheet({ open, onOpenChange }) {
                 ['⌘,', 'Preferences'],
                 ['?', 'Keyboard shortcuts sheet'],
               ].map(([k, a]) => (
-                <li key={k} className="flex justify-between gap-4 border-b border-border/40 py-1.5">
-                  <span className="text-muted-foreground">{a}</span>
-                  <kbd className="rounded border border-border bg-muted px-2 py-0.5 font-mono text-[0.65rem]">{k}</kbd>
+                <li key={k} className="help-sheet__shortcut-row">
+                  <span className="help-sheet__shortcut-label">{a}</span>
+                  <kbd className="help-sheet__kbd">{k}</kbd>
                 </li>
               ))}
             </ul>

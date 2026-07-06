@@ -329,8 +329,9 @@ export async function runMarketScan(payload) {
  * Send a WS action — WebSocket first, HTTP fallback when offline.
  * @returns {Promise<{ ok: boolean, transport?: 'ws' | 'http', error?: string }>}
  */
-export function sendAction(action, payload = {}) {
-  if (sendWebSocketAction(action, payload)) {
+export function sendAction(action, payload = {}, opts = {}) {
+  const silentWs = opts.silentWs ?? true;
+  if (sendWebSocketAction(action, payload, { silent: silentWs })) {
     return Promise.resolve({ ok: true, transport: 'ws' });
   }
 

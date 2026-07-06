@@ -120,18 +120,19 @@ export default function BacktestWorkflowPresets({
       <div className="bt-workflow-presets__rail">
         {WORKFLOW_PRESETS.map((preset) => {
           const blocked = preset.id === 'meta_label_validate' && botStrategy !== 'CHART_AGENT';
+          const isActive = activePreset === preset.id;
           return (
             <Button
               key={preset.id}
               type="button"
-              variant={activePreset === preset.id ? 'secondary' : 'outline'}
+              variant={isActive ? 'secondary' : 'outline'}
               size="xs"
-              className="bt-workflow-presets__chip"
+              className={cn('bt-workflow-presets__chip', isActive && 'bt-workflow-presets__chip--active')}
               disabled={disabled || blocked}
               title={blocked ? 'CHART_AGENT only' : preset.hint}
               onClick={() => onSelect(preset.id)}
             >
-              {preset.label}
+              <span className="bt-workflow-presets__chip-label">{preset.label}</span>
             </Button>
           );
         })}

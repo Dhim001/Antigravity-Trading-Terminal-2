@@ -22,11 +22,16 @@ app_config.DB_PATH = db_conn.DB_PATH
 from app.database import init_db  # noqa: E402
 from app.services.altdata.news_provider import (  # noqa: E402
     SOURCE_FINNHUB,
+    SOURCE_GNEWS,
     SOURCE_YFINANCE,
     available_news_sources,
     fetch_symbol_news,
     get_symbol_news_feed,
     normalize_news_row,
+)
+from app.services.altdata.gnews_provider import (  # noqa: E402
+    SOURCE_GNEWS as GNEWS_SOURCE,
+    gnews_search_query,
 )
 
 
@@ -41,10 +46,16 @@ class NewsProviderTests(unittest.TestCase):
         self.assertIn(SOURCE_FINNHUB, sources)
         self.assertIn(SOURCE_YFINANCE, sources)
 
+    @patch("app.services.altdata.news_provider.GNEWS_ENABLED", True)
+    def test_available_sources_includes_gnews(self):
+        sources = available_news_sources()
+        self.assertIn(SOURCE_GNEWS, sources)
+
     @patch("app.services.altdata.news_provider.fetch_polygon_news", return_value=[])
+    @patch("app.services.altdata.news_provider.fetch_gnews_news", return_value=[])
     @patch("app.services.altdata.news_provider.fetch_yfinance_news")
     @patch("app.services.altdata.news_provider.fetch_finnhub_company_news")
-    def test_fetch_dedupes_headlines(self, mock_finn, mock_yf, _poly):
+    def test_fetch_dedupes_headlines(self, mock_finn, mock_yf, _gnews, _poly):
         mock_finn.return_value = [{
             "id": "finnhub_news:AAPL:1",
             "symbol": "AAPL",
@@ -110,6 +121,38 @@ class NewsProviderTests(unittest.TestCase):
         })
         self.assertEqual(item["url"], "https://finance.yahoo.com/example")
         self.assertIn("Crypto markets", item["summary"] or "")
+
+    @patch("app.services.altdata.news_provider.fetch_polygon_news", return_value=[])
+    @patch("app.services.altdata.news_provider.fetch_yfinance_news", return_value=[])
+    @patch("app.services.altdata.news_provider.fetch_finnhub_company_news", return_value=[])
+    @patch("app.services.altdata.news_provider.fetch_gnews_news")
+    def test_fetch_includes_gnews(self, mock_gnews, _finn, _yf, _poly):
+        mock_gnews.return_value = [{
+            "id": "gnews:ADAUSDT:1",
+            "symbol": "ADAUSDT",
+            "source": SOURCE_GNEWS,
+            "score": -0.2,
+            "mention_count": 1,
+            "headline": "Cardano network upgrade",
+            "published_at": "2026-07-06T12:00:00+00:00",
+            "raw": {
+                "url": "https://example.com/ada",
+                "description": "Upgrade details",
+                "title": "Cardano network upgrade",
+            },
+        }]
+        with patch("app.services.altdata.news_provider.GNEWS_ENABLED", True):
+            rows = fetch_symbol_news("ADAUSDT", sources=[SOURCE_GNEWS])
+        self.assertEqual(len(rows), 1)
+        item = normalize_news_row(rows[0])
+        self.assertEqual(item["source_label"], "Google News")
+        self.assertEqual(item["url"], "https://example.com/ada")
+        self.assertEqual(item["summary"], "Upgrade details")
+
+    def test_gnews_search_query_crypto_and_equity(self):
+        self.assertEqual(gnews_search_query("ADAUSDT"), "Cardano cryptocurrency")
+        self.assertEqual(gnews_search_query("AAPL"), "AAPL stock")
+        self.assertEqual(GNEWS_SOURCE, SOURCE_GNEWS)
 
     @patch("app.services.altdata.news_provider.fetch_symbol_news")
     def test_get_feed_refresh_persists(self, mock_fetch):

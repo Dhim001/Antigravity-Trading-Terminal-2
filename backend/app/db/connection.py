@@ -88,7 +88,9 @@ class _CursorWrapper:
                 if not _is_sqlite_locked(exc) or attempt >= max_attempts - 1:
                     raise
                 _inc_lock_retries()
-                time.sleep(_LOCK_RETRY_BASE_SEC * (2 ** attempt))
+                # PRAGMA busy_timeout already blocks inside SQLite — avoid stacking
+                # time.sleep() on the asyncio event loop during lock storms.
+                continue
             except Exception as exc:
                 if DB_DRIVER != "postgres" or not _is_transient_postgres_error(exc):
                     raise
@@ -176,7 +178,12 @@ class _SqlitePool:
                     self._created += 1
                     raw = self._new_conn()
                 else:
-                    raw = self._queue.get()
+                    try:
+                        raw = self._queue.get(timeout=_POOL_TIMEOUT)
+                    except queue.Empty as exc:
+                        raise RuntimeError(
+                            f"SQLite connection pool exhausted (max={self._max_size})"
+                        ) from exc
         return _ConnectionWrapper(raw, _release=self._release)
 
     def stats(self) -> dict[str, Any]:

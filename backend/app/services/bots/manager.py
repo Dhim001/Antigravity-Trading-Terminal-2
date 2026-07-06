@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import json
 import uuid
-import asyncio
 import time
 from datetime import datetime, timezone
+
+from app.db.async_bridge import run_db
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
 from app.services.bots.execution_mode import is_live_massive, uses_paper_oms
@@ -392,8 +394,11 @@ class BotManagerService:
         )
 
     async def snapshot_all_bots(self):
-        for bot_id in list(self.active_bots.keys()):
-            self.record_snapshot_for_bot(bot_id)
+        def _sync_snapshots() -> None:
+            for bot_id in list(self.active_bots.keys()):
+                self.record_snapshot_for_bot(bot_id)
+
+        await run_db(_sync_snapshots)
 
     def get_bot_detail(self, bot_id: str) -> dict | None:
         if bot_id not in self.active_bots:
@@ -605,7 +610,9 @@ class BotManagerService:
         for timeframe in sorted(tfs):
             if timeframe == "1m":
                 continue
-            ohlcv = get_bot_candles(symbol, feed, timeframe=timeframe)
+            ohlcv = await run_db(
+                get_bot_candles, symbol, feed, timeframe=timeframe,
+            )
             if not ohlcv or len(ohlcv) < 2:
                 continue
             if not self._bar_tracker.check(symbol, ohlcv, timeframe=timeframe):
@@ -1683,33 +1690,47 @@ class BotManagerService:
         if not bot_exits:
             return
 
-        touched: set[str] = set()
+        def _sync_record() -> set[str]:
+            touched: set[str] = set()
+            for exit_info in bot_exits:
+                bot_id = exit_info["bot_id"]
+                side = exit_info["side"]
+                qty = float(exit_info["quantity"])
+                price = float(exit_info["price"])
+                entry_price = float(exit_info.get("entry_price") or price)
+                trigger = exit_info.get("trigger_type", "SL/TP")
+                trade_pnl = self._calc_exit_pnl(side, qty, price, entry_price)
+
+                bot_analytics.record_trade(
+                    bot_id,
+                    exit_info.get("order_id"),
+                    exit_info["symbol"],
+                    side,
+                    qty,
+                    price,
+                    pnl=trade_pnl,
+                    signal_id=exit_info.get("signal_id"),
+                    is_exit=True,
+                )
+                from app.services.bots.calibration import get_calibration_store
+
+                get_calibration_store().invalidate(bot_id)
+                self.record_snapshot_for_bot(bot_id)
+                touched.add(bot_id)
+            return touched
+
+        touched = await run_db(_sync_record)
+
         for exit_info in bot_exits:
             bot_id = exit_info["bot_id"]
+            if bot_id not in touched:
+                continue
             side = exit_info["side"]
             qty = float(exit_info["quantity"])
             price = float(exit_info["price"])
             entry_price = float(exit_info.get("entry_price") or price)
             trigger = exit_info.get("trigger_type", "SL/TP")
             trade_pnl = self._calc_exit_pnl(side, qty, price, entry_price)
-
-            bot_analytics.record_trade(
-                bot_id,
-                exit_info.get("order_id"),
-                exit_info["symbol"],
-                side,
-                qty,
-                price,
-                pnl=trade_pnl,
-                signal_id=exit_info.get("signal_id"),
-                is_exit=True,
-            )
-            from app.services.bots.calibration import get_calibration_store
-
-            get_calibration_store().invalidate(bot_id)
-            self.record_snapshot_for_bot(bot_id)
-            touched.add(bot_id)
-
             await self.log_bot_event(
                 bot_id,
                 "INFO",

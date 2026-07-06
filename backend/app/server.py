@@ -8,6 +8,9 @@ from app.config import (
     WS_PORT,
     WS_MAX_MESSAGE_SIZE,
     WS_MSGPACK_ENABLED,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_KEEPALIVE_INTERVAL_SEC,
     TERMINAL_MODE,
     TERMINAL_ROLE,
     ALLOW_LIVE_BOTS,
@@ -41,6 +44,7 @@ from app.api.outbound import (
     publish_market_update,
     publish_post_trade_bundle,
     publish_system_stats,
+    keepalive,
     terminal_config,
     trade_history,
 )
@@ -86,6 +90,8 @@ if TERMINAL_ROLE == "worker":
     )
 
 state = create_app_state()
+
+_massive_broadcast_lock = asyncio.Lock()
 
 
 async def redis_forward_loop():
@@ -141,7 +147,7 @@ async def simulated_market_loop():
 
             tick_count += 1
             if tick_count % 120 == 0 and hasattr(feed, "persist_state"):
-                feed.persist_state()
+                await asyncio.to_thread(feed.persist_state)
             if tick_count % 12 == 0:
                 from app.services.db_stats_cache import get_db_stats_cached
 
@@ -230,48 +236,50 @@ async def live_massive_market_broadcast_loop():
     last_prices: dict[str, float] = {}
     while True:
         interval = MASSIVE_BROADCAST_INTERVAL_SEC
-        try:
-            if hasattr(feed, "massive_status"):
-                status = feed.massive_status
-                if status.get("poll_fallback"):
-                    interval = max(
-                        float(MASSIVE_BROADCAST_INTERVAL_SEC),
-                        float(MASSIVE_POLL_INTERVAL_SEC),
-                    )
-            data = {symbol: feed.get_market_data(symbol) for symbol in feed.symbols}
-            subscribed = {
-                manager.client_symbols.get(client)
-                for client in manager.connected_clients
-            }
-            subscribed.discard(None)
-            last_prices = await run_massive_bot_tick(
-                bot_manager, feed, manager, oms, last_prices=last_prices,
-            )
-            changed: dict[str, dict] = {}
-            if data:
-                for symbol, md in data.items():
-                    slim = _slim_market_payload({symbol: md})[symbol]
-                    if symbol in subscribed or _market_snapshot_changed(last_sent.get(symbol), slim):
-                        changed[symbol] = slim
-                        last_sent[symbol] = slim
-            if changed:
-                await publish_market_update(manager.broadcast, changed)
-                for client in list(manager.connected_clients):
-                    sym = manager.client_symbols.get(client)
-                    if sym and sym in changed:
-                        full = data.get(sym) or {}
-                        if full.get("orderbook"):
-                            await manager.send_to(
-                                client,
-                                orderbook_update({sym: full["orderbook"]}),
-                            )
-        except Exception as e:
-            logging.error("Error in LIVE_MASSIVE market broadcast loop: %s", e)
+        async with _massive_broadcast_lock:
+            try:
+                if hasattr(feed, "massive_status"):
+                    status = feed.massive_status
+                    if status.get("poll_fallback"):
+                        interval = max(
+                            float(MASSIVE_BROADCAST_INTERVAL_SEC),
+                            float(MASSIVE_POLL_INTERVAL_SEC),
+                        )
+                data = {symbol: feed.get_market_data(symbol) for symbol in feed.symbols}
+                subscribed = {
+                    manager.client_symbols.get(client)
+                    for client in manager.connected_clients
+                }
+                subscribed.discard(None)
+                last_prices = await run_massive_bot_tick(
+                    bot_manager, feed, manager, oms, last_prices=last_prices,
+                )
+                changed: dict[str, dict] = {}
+                if data:
+                    for symbol, md in data.items():
+                        slim = _slim_market_payload({symbol: md})[symbol]
+                        if symbol in subscribed or _market_snapshot_changed(last_sent.get(symbol), slim):
+                            changed[symbol] = slim
+                            last_sent[symbol] = slim
+                if changed:
+                    await publish_market_update(manager.broadcast, changed)
+                    for client in list(manager.connected_clients):
+                        sym = manager.client_symbols.get(client)
+                        if sym and sym in changed:
+                            full = data.get(sym) or {}
+                            if full.get("orderbook"):
+                                await manager.send_to(
+                                    client,
+                                    orderbook_update({sym: full["orderbook"]}),
+                                )
+            except Exception as e:
+                logging.error("Error in LIVE_MASSIVE market broadcast loop: %s", e)
         await asyncio.sleep(interval)
 
 
 async def diagnostics_broadcast_loop():
     from app.config import DIAGNOSTICS_INTERVAL_SEC
+    from app.db.async_bridge import run_db
     from app.services.db_stats_cache import get_db_stats_cached
     from app.services.data_quality.monitor import evaluate_symbols, data_quality_stats_from_report
 
@@ -280,10 +288,10 @@ async def diagnostics_broadcast_loop():
     interval = max(5.0, float(DIAGNOSTICS_INTERVAL_SEC))
     while True:
         try:
-            stats = await asyncio.to_thread(get_db_stats_cached)
+            stats = await run_db(get_db_stats_cached)
             symbols = list(getattr(feed, "symbols", []) or [])
             if symbols and not stats.get("data_quality"):
-                report = await asyncio.to_thread(evaluate_symbols, symbols)
+                report = await run_db(evaluate_symbols, symbols)
                 stats["data_quality"] = data_quality_stats_from_report(report)
             stats["clients"] = len(manager.connected_clients)
             stats["tick_interval"] = 1.0
@@ -310,6 +318,9 @@ async def websocket_handler(websocket):
     manager = state.manager
     logging.info("New client connected.")
     manager.register(websocket)
+    from app.observability.ws_metrics import record_ws_connect, record_ws_disconnect
+
+    record_ws_connect()
 
     llm_config: dict = {"available": False, "provider": "off"}
     llm_task = asyncio.create_task(_fetch_llm_config())
@@ -348,13 +359,41 @@ async def websocket_handler(websocket):
     except Exception:
         pass
 
+    close_code: int | None = None
+    close_reason = ""
     try:
         async for message_str in websocket:
             await handle_client_message(websocket, message_str, state)
-    except websockets.exceptions.ConnectionClosed:
-        logging.info("Client connection closed.")
+    except websockets.exceptions.ConnectionClosed as exc:
+        close_code = exc.code
+        close_reason = exc.reason or ""
+        logging.info(
+            "Client connection closed (code=%s reason=%r).",
+            close_code,
+            close_reason,
+        )
     finally:
+        if close_code is None:
+            close_code = websocket.close_code
+            close_reason = websocket.close_reason or ""
+        record_ws_disconnect(close_code, close_reason)
         manager.unregister(websocket)
+
+
+async def ws_keepalive_loop():
+    """Broadcast lightweight keepalive frames so clients/proxies detect half-open links."""
+    import time
+
+    manager = state.manager
+    interval = max(5.0, float(WS_KEEPALIVE_INTERVAL_SEC))
+    while True:
+        await asyncio.sleep(interval)
+        if not manager.connected_clients:
+            continue
+        try:
+            await manager.broadcast(keepalive({"ts": time.time()}))
+        except Exception as exc:
+            logging.debug("WS keepalive broadcast skipped: %s", exc)
 
 
 async def _fetch_llm_config() -> dict:
@@ -368,7 +407,7 @@ async def _fetch_llm_config() -> dict:
 
 async def heartbeat_loop():
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(60)
         logging.info("Heartbeat: Server is running...")
 
 
@@ -433,13 +472,21 @@ async def main():
 
     try:
         async with websockets.serve(
-            websocket_handler, WS_HOST, WS_PORT, max_size=WS_MAX_MESSAGE_SIZE
+            websocket_handler,
+            WS_HOST,
+            WS_PORT,
+            max_size=WS_MAX_MESSAGE_SIZE,
+            ping_interval=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_TIMEOUT,
         ):
             logging.info("WebSocket Server listening on ws://%s:%s", WS_HOST, WS_PORT)
             if HTTP_ENABLED:
                 logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
 
-            tasks = [asyncio.create_task(heartbeat_loop())]
+            tasks = [
+                asyncio.create_task(heartbeat_loop()),
+                asyncio.create_task(ws_keepalive_loop()),
+            ]
 
             if HTTP_ENABLED:
                 http_task = start_http_server(state, shutdown_event)

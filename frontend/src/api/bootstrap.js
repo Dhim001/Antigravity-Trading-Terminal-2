@@ -33,7 +33,7 @@ function prefetchStaggerMs() {
 
 /**
  * HTTP snapshot hydration — used on mount and after WebSocket reconnect.
- * @param {{ symbol?: string, light?: boolean, skipCandles?: boolean, timeframe?: string }} [opts]
+ * @param {{ symbol?: string, light?: boolean, skipCandles?: boolean, timeframe?: string, offline?: boolean }} [opts]
  */
 export async function runBootstrap(opts = {}) {
   if (bootstrapInFlight) {
@@ -45,21 +45,26 @@ export async function runBootstrap(opts = {}) {
     const symbol = opts.symbol ?? useStore.getState().activeSymbol;
     const light = opts.light ?? false;
     const skipCandles = opts.skipCandles ?? false;
+    const offline = opts.offline ?? false;
     const timeframe = opts.timeframe ?? '1m';
 
-    if (light && Date.now() - lastBootstrapAt < LIGHT_BOOTSTRAP_COOLDOWN_MS) {
-      resubscribeMarketSymbols();
+    if (light && !offline && Date.now() - lastBootstrapAt < LIGHT_BOOTSTRAP_COOLDOWN_MS) {
+      if (useStore.getState().connectionStatus === 'connected') {
+        resubscribeMarketSymbols();
+      }
       return { succeeded: 0, total: 0, skipped: true };
     }
     lastBootstrapAt = Date.now();
 
-    if (!light) {
+    if (!light && !offline) {
       useStore.getState().setApiStatus('loading');
     }
 
-    const tasks = light
-      ? [fetchHealth(storeActions)]
-      : [fetchSession(storeActions)];
+    const tasks = offline
+      ? [fetchSession(storeActions)]
+      : light
+        ? [fetchHealth(storeActions)]
+        : [fetchSession(storeActions)];
 
     const massive = isLiveMassiveMode(useStore.getState().terminalMode);
     const chartTf = massive && isHigherTimeframe(timeframe) ? timeframe : '1m';
@@ -81,7 +86,7 @@ export async function runBootstrap(opts = {}) {
       console.warn('[bootstrap] All HTTP snapshot requests failed — waiting for WebSocket.');
     }
 
-    if (!skipCandles && massive) {
+    if (!skipCandles && massive && useStore.getState().connectionStatus === 'connected') {
       subscribeChartSymbols([symbol], storeActions, { interval: '1m' });
     }
 
@@ -96,6 +101,9 @@ export async function runBootstrap(opts = {}) {
 
 /** Re-subscribe chart symbols after reconnect (watchlist + active). */
 export function resubscribeMarketSymbols() {
+  if (useStore.getState().connectionStatus !== 'connected') {
+    return;
+  }
   const { activeSymbol, symbolsList, terminalMode } = useStore.getState();
   const storeActions = getStoreActions();
   if (isLiveMassiveMode(terminalMode)) {
@@ -116,11 +124,14 @@ export function subscribeChartSymbols(symbols, storeActions, opts = {}) {
   const unique = [...new Set((symbols || []).filter(Boolean))];
   const interval = opts.interval || '1m';
   const stagger = prefetchStaggerMs();
+  const wsConnected = useStore.getState().connectionStatus === 'connected';
   unique.forEach((sym, i) => {
     setTimeout(() => {
       const payload = { symbol: sym, limit: CHART_SNAPSHOT_BARS };
       if (interval && interval !== '1m') payload.interval = interval;
-      sendAction(Action.SUBSCRIBE_SYMBOL, payload);
+      if (wsConnected) {
+        sendAction(Action.SUBSCRIBE_SYMBOL, payload);
+      }
       if (!hasChartReadyHistory(sym, undefined, interval)) {
         fetchCandles(sym, storeActions, {
           limit: CHART_SNAPSHOT_BARS,

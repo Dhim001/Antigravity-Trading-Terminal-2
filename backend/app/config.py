@@ -87,6 +87,12 @@ WS_MAX_MESSAGE_SIZE = int(os.environ.get("WS_MAX_MESSAGE_SIZE", str(4 * 1024 * 1
 # MessagePack binary frames for large history/tick payloads (Phase 4 transport).
 WS_MSGPACK_ENABLED = os.environ.get("WS_MSGPACK_ENABLED", "true").lower() in ("1", "true", "yes")
 WS_MSGPACK_MIN_BYTES = int(os.environ.get("WS_MSGPACK_MIN_BYTES", "4096"))
+# WebSocket protocol keepalive (websockets.serve). Tolerate short event-loop stalls from
+# sync DB / bot work — default ping_timeout is 20s and drops clients under load.
+WS_PING_INTERVAL = float(os.environ.get("WS_PING_INTERVAL", "30"))
+WS_PING_TIMEOUT = float(os.environ.get("WS_PING_TIMEOUT", "90"))
+# Application-level keepalive broadcast when clients are connected (NAT / proxy idle).
+WS_KEEPALIVE_INTERVAL_SEC = float(os.environ.get("WS_KEEPALIVE_INTERVAL_SEC", "25"))
 
 # HTTP REST API (Phase 3) — runs alongside WebSocket in server/all roles
 HTTP_ENABLED = os.environ.get("HTTP_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -264,6 +270,14 @@ SENTIMENT_SCORE_THRESHOLD = float(os.environ.get("SENTIMENT_SCORE_THRESHOLD", "0
 # Finnhub.io — company news + news-sentiment (https://finnhub.io/docs/api)
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 FINNHUB_API_URL = os.environ.get("FINNHUB_API_URL", "https://finnhub.io/api/v1").strip().rstrip("/")
+
+# Google News RSS (gnews package — keyword search, no API key)
+GNEWS_ENABLED = os.environ.get("GNEWS_ENABLED", "true").lower() in ("1", "true", "yes")
+try:
+    GNEWS_MAX_RESULTS = int(os.environ.get("GNEWS_MAX_RESULTS", "15"))
+except ValueError:
+    GNEWS_MAX_RESULTS = 15
+GNEWS_PERIOD = os.environ.get("GNEWS_PERIOD", "7d").strip() or "7d"
 
 # Strategy advisor — LLM-suggested bot params with optional shadow backtest
 STRATEGY_ADVISOR_ENABLED = os.environ.get("STRATEGY_ADVISOR_ENABLED", "true").lower() in ("1", "true", "yes")

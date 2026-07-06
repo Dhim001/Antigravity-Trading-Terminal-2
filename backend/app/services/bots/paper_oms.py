@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from app.api.outbound import publish_bot_log, publish_post_trade_bundle
+from app.db.async_bridge import run_db
 
 logger = logging.getLogger(__name__)
+
+
+def _paper_oms_sync_tick(oms: Any) -> tuple[Any, Any, list, list]:
+    """Sync DB + feed work — must not run on the asyncio event loop."""
+    fills = oms.match_pending_orders()
+    sl_tp_fills, sl_tp_logs, bot_exits = oms.check_sl_tp_triggers()
+    return fills, sl_tp_fills, sl_tp_logs, bot_exits
 
 
 async def run_paper_oms_tick(
@@ -20,8 +29,7 @@ async def run_paper_oms_tick(
 
     Returns True when any fill occurred (limit or SL/TP).
     """
-    fills = oms.match_pending_orders()
-    sl_tp_fills, sl_tp_logs, bot_exits = oms.check_sl_tp_triggers()
+    fills, sl_tp_fills, sl_tp_logs, bot_exits = await run_db(_paper_oms_sync_tick, oms)
 
     if sl_tp_logs:
         for log_msg in sl_tp_logs:

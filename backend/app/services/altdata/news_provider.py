@@ -1,4 +1,4 @@
-"""Financial news feed — Finnhub, Polygon/Massive, yfinance (free tiers)."""
+"""Financial news feed — Finnhub, Polygon/Massive, yfinance, Google News (free tiers)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import httpx
 
 from app.config import (
     FINNHUB_API_KEY,
+    GNEWS_ENABLED,
     MASSIVE_API_KEY,
     MASSIVE_REST_URL,
     SENTIMENT_ENABLED,
@@ -20,6 +21,7 @@ from app.config import (
     SYMBOLS,
 )
 from app.services.altdata.finnhub_provider import fetch_finnhub_company_news
+from app.services.altdata.gnews_provider import SOURCE_GNEWS, fetch_gnews_news
 from app.services.altdata.sentiment_lexicon import score_text_sentiment
 from app.services.altdata.store import get_aggregate_sentiment, get_sentiment_events, upsert_sentiment_events
 from app.services.massive_symbols import is_crypto_terminal_symbol, terminal_to_massive_rest_ticker
@@ -35,12 +37,14 @@ HEADLINE_SOURCES: frozenset[str] = frozenset({
     SOURCE_FINNHUB,
     SOURCE_YFINANCE,
     SOURCE_POLYGON,
+    SOURCE_GNEWS,
 })
 
 SOURCE_LABELS: dict[str, str] = {
     SOURCE_FINNHUB: "Finnhub",
     SOURCE_YFINANCE: "Yahoo Finance",
     SOURCE_POLYGON: "Polygon",
+    SOURCE_GNEWS: "Google News",
 }
 
 
@@ -133,6 +137,8 @@ def _extract_url(source: str, raw: dict[str, Any]) -> str | None:
         return _yfinance_url_from_block(raw)
     if source == SOURCE_POLYGON:
         return str(raw.get("article_url") or raw.get("amp_url") or raw.get("url") or "").strip() or None
+    if source == SOURCE_GNEWS:
+        return str(raw.get("url") or "").strip() or None
     return str(raw.get("url") or raw.get("link") or "").strip() or None
 
 
@@ -143,6 +149,8 @@ def _extract_summary(source: str, raw: dict[str, Any], headline: str) -> str | N
         text = str(raw.get("summary") or "").strip()
     elif source == SOURCE_POLYGON:
         text = str(raw.get("description") or raw.get("summary") or "").strip()
+    elif source == SOURCE_GNEWS:
+        text = str(raw.get("description") or "").strip()
     else:
         text = str(raw.get("summary") or raw.get("description") or "").strip()
     if not text or text == headline:
@@ -256,6 +264,8 @@ def available_news_sources() -> list[str]:
         sources.insert(0, SOURCE_FINNHUB)
     if MASSIVE_API_KEY:
         sources.append(SOURCE_POLYGON)
+    if GNEWS_ENABLED:
+        sources.append(SOURCE_GNEWS)
     return sources
 
 
@@ -266,6 +276,8 @@ def _source_fetchers() -> dict[str, Callable[[str], list[dict[str, Any]]]]:
     }
     if FINNHUB_API_KEY:
         fetchers[SOURCE_FINNHUB] = fetch_finnhub_company_news
+    if GNEWS_ENABLED:
+        fetchers[SOURCE_GNEWS] = fetch_gnews_news
     return fetchers
 
 

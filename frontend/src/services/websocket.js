@@ -17,8 +17,14 @@ let reconnectTimeout = hmr?.reconnectTimeout ?? null;
 let reconnectDelayMs = hmr?.reconnectDelayMs ?? 3000;
 const RECONNECT_BASE_MS = 3000;
 const RECONNECT_MAX_MS = 30000;
+/** No inbound frame for this long while OPEN → force reconnect (half-open / throttled tab). */
+const STALE_CONNECTION_MS = 90000;
+const STALE_CHECK_INTERVAL_MS = 15000;
 let isConnecting = false;
 let lastUrl = hmr?.lastUrl ?? null;
+let lastMessageAt = hmr?.lastMessageAt ?? 0;
+let staleWatchdog = hmr?.staleWatchdog ?? null;
+let lifecycleBound = hmr?.lifecycleBound ?? false;
 
 const clearReconnect = () => {
   if (reconnectTimeout) {
@@ -26,6 +32,73 @@ const clearReconnect = () => {
     reconnectTimeout = null;
   }
 };
+
+const touchLastMessage = () => {
+  lastMessageAt = Date.now();
+  if (hmr) hmr.lastMessageAt = lastMessageAt;
+};
+
+const clearStaleWatchdog = () => {
+  if (staleWatchdog) {
+    clearInterval(staleWatchdog);
+    staleWatchdog = null;
+  }
+  if (hmr) hmr.staleWatchdog = null;
+};
+
+const startStaleWatchdog = () => {
+  clearStaleWatchdog();
+  touchLastMessage();
+  staleWatchdog = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastMessageAt < STALE_CONNECTION_MS) return;
+    console.warn(
+      `WebSocket stale (${Math.round((Date.now() - lastMessageAt) / 1000)}s idle) — forcing reconnect.`,
+    );
+    try {
+      ws.close(4000, 'stale connection watchdog');
+    } catch {
+      connectWebSocket(lastUrl || WS_URL);
+    }
+  }, STALE_CHECK_INTERVAL_MS);
+  if (hmr) hmr.staleWatchdog = staleWatchdog;
+};
+
+const scheduleReconnect = (immediate = false) => {
+  clearReconnect();
+  if (immediate) {
+    reconnectDelayMs = RECONNECT_BASE_MS;
+    if (hmr) hmr.reconnectDelayMs = reconnectDelayMs;
+    if (lastUrl) connectWebSocket(lastUrl);
+    return;
+  }
+  const delay = reconnectDelayMs;
+  reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.6), RECONNECT_MAX_MS);
+  if (hmr) hmr.reconnectDelayMs = reconnectDelayMs;
+  reconnectTimeout = setTimeout(() => {
+    if (lastUrl) connectWebSocket(lastUrl);
+  }, delay);
+  if (hmr) hmr.reconnectTimeout = reconnectTimeout;
+};
+
+function bindConnectionLifecycle() {
+  if (lifecycleBound || typeof window === 'undefined') return;
+  lifecycleBound = true;
+  if (hmr) hmr.lifecycleBound = true;
+
+  window.addEventListener('online', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      scheduleReconnect(true);
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      scheduleReconnect(true);
+    }
+  });
+}
 
 async function parseWirePayload(raw) {
   if (typeof raw === 'string') {
@@ -43,9 +116,14 @@ function attachWebSocketHandlers(socket) {
   const storeActions = getStoreActions();
 
   socket.onmessage = async (event) => {
+    touchLastMessage();
     try {
       const payload = await parseWirePayload(event.data);
       const { type, data, message, meta } = payload;
+
+      if (type === MessageType.KEEPALIVE) {
+        return;
+      }
 
       if (type === MessageType.ERROR) {
         const errMsg = message || data?.message || 'Server error';
@@ -69,20 +147,19 @@ function attachWebSocketHandlers(socket) {
     }
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
     isConnecting = false;
     ws = null;
+    clearStaleWatchdog();
     if (hmr) hmr.ws = null;
-    console.log(`WebSocket disconnected. Retrying in ${Math.round(reconnectDelayMs / 1000)}s...`);
+    const code = event?.code ?? 'unknown';
+    const reason = event?.reason || '';
+    console.log(
+      `WebSocket disconnected (code=${code}${reason ? ` reason=${reason}` : ''}). `
+      + `Retrying in ${Math.round(reconnectDelayMs / 1000)}s…`,
+    );
     storeActions.setConnectionStatus('disconnected');
-    clearReconnect();
-    const delay = reconnectDelayMs;
-    reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.6), RECONNECT_MAX_MS);
-    if (hmr) hmr.reconnectDelayMs = reconnectDelayMs;
-    reconnectTimeout = setTimeout(() => {
-      if (lastUrl) connectWebSocket(lastUrl);
-    }, delay);
-    if (hmr) hmr.reconnectTimeout = reconnectTimeout;
+    scheduleReconnect();
   };
 
   socket.onerror = (error) => {
@@ -98,6 +175,7 @@ function onSocketOpen(socket) {
   const storeActions = getStoreActions();
   console.log('WebSocket connected successfully.');
   storeActions.setConnectionStatus('connected');
+  startStaleWatchdog();
   const activeSymbol = useStore.getState().activeSymbol;
   socket.send(JSON.stringify({
     action: Action.SUBSCRIBE_SYMBOL,
@@ -118,11 +196,13 @@ function persistHmrSocket() {
 }
 
 export const connectWebSocket = (url = WS_URL) => {
+  bindConnectionLifecycle();
   lastUrl = url;
   persistHmrSocket();
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     attachWebSocketHandlers(ws);
+    startStaleWatchdog();
     getStoreActions().setConnectionStatus('connected');
     return;
   }
@@ -146,6 +226,7 @@ export const connectWebSocket = (url = WS_URL) => {
 
 export const disconnectWebSocket = () => {
   clearReconnect();
+  clearStaleWatchdog();
   isConnecting = false;
   if (ws) {
     ws.onclose = null;
@@ -158,12 +239,14 @@ export const disconnectWebSocket = () => {
   }
 };
 
-export const sendWebSocketAction = (action, payload = {}) => {
+export const sendWebSocketAction = (action, payload = {}, opts = {}) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ action, ...payload }));
     return true;
   }
-  console.warn('Cannot transmit message. WebSocket is offline.');
+  if (!opts.silent) {
+    console.warn('Cannot transmit message. WebSocket is offline.');
+  }
   return false;
 };
 
@@ -185,6 +268,8 @@ if (import.meta.hot) {
 }
 
 if (ws && ws.readyState === WebSocket.OPEN) {
+  bindConnectionLifecycle();
   attachWebSocketHandlers(ws);
+  startStaleWatchdog();
   getStoreActions().setConnectionStatus('connected');
 }

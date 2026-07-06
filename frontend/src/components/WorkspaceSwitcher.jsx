@@ -66,116 +66,128 @@ export default function WorkspaceSwitcher({ layoutMode, onLayoutModeChange }) {
           <span className="header-label">{LAYOUT_MODE_CONFIG[layoutMode]?.label || 'Trade'}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="workspace-switcher__menu w-64 p-2">
-        <p className="px-2 py-1 text-[0.62rem] font-semibold uppercase text-muted-foreground">Professional Workflows</p>
-        <div className="flex flex-col gap-0.5">
-          {builtinPresets.map((p) => {
-            const Icon = ICONS[p.icon] || LayoutTemplate;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className="workspace-switcher__item flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/50"
-                onClick={() => handleApplyPreset(p)}
-              >
-                <div className={cn("mt-0.5 shrink-0", PRESET_CATEGORIES[p.category]?.color)}>
-                  <Icon size={14} />
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-xs font-medium text-foreground">{p.name}</span>
-                  {p.description && (
-                    <span className="text-[0.65rem] text-muted-foreground leading-tight mt-0.5">
-                      {p.description}
-                    </span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-        
-        <div className="my-2 h-px bg-border/50" />
-        <p className="px-2 py-1 text-[0.62rem] font-semibold uppercase text-muted-foreground">My Workspaces</p>
-        <div className="flex flex-col gap-0.5">
-          {userPresets.slice(0, 8).map((p) => (
-            <div key={p.id} className="group flex w-full items-center rounded-md hover:bg-muted/50">
-              <button
-                type="button"
-                className="flex flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs"
-                onClick={() => handleApplyPreset(p)}
-              >
-                <LayoutTemplate size={12} className="text-muted-foreground" />
-                <span className="truncate">{p.name}</span>
-              </button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="opacity-0 group-hover:opacity-100 h-6 w-6 shrink-0 mr-1 text-muted-foreground hover:text-destructive"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteWorkspacePreset(p.id);
-                }}
-                title="Delete preset"
-              >
-                <Trash2 size={12} />
-              </Button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            onClick={() => {
-              saveWorkspacePreset();
-              setOpen(false);
-            }}
-          >
-            <Edit2 size={12} />
-            <span>Save current layout…</span>
-          </button>
+      <PopoverContent align="center" className="workspace-switcher__menu w-72 p-0">
+        <div className="workspace-switcher__header">
+          <p className="workspace-switcher__title">Professional Workflows</p>
         </div>
 
-        <div className="my-2 h-px bg-border/50" />
-        <p className="px-2 py-1 text-[0.62rem] font-semibold uppercase text-muted-foreground flex items-center gap-1">
-          <Cloud size={10} /> Cloud Workspaces
-        </p>
-        <div className="flex flex-col gap-0.5">
-          {cloudWorkspacesLoading && <span className="text-xs text-muted-foreground px-2 py-1">Loading...</span>}
-          {cloudWorkspaces.slice(0, 8).map((p) => (
-            <div key={p.id} className="group flex w-full items-center rounded-md hover:bg-muted/50">
-              <button
-                type="button"
-                className="flex flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs"
-                onClick={() => handleApplyCloudPreset(p)}
-              >
-                <Cloud size={12} className="text-blue-500" />
-                <span className="truncate">{p.name}</span>
-              </button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="opacity-0 group-hover:opacity-100 h-6 w-6 shrink-0 mr-1 text-muted-foreground hover:text-destructive"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteCloudWorkspace(p.id);
-                }}
-                title="Delete cloud workspace"
-              >
-                <Trash2 size={12} />
-              </Button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-            onClick={() => {
-              const name = prompt('Enter a name for this cloud workspace:');
-              if (name) saveCloudWorkspace(name);
-              setOpen(false);
-            }}
-          >
-            <Cloud size={12} />
-            <span>Save to Cloud…</span>
-          </button>
+        <div className="workspace-switcher__section">
+          <div className="workspace-switcher__list">
+            {builtinPresets.map((p) => {
+              const Icon = ICONS[p.icon] || LayoutTemplate;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  className="workspace-switcher__item"
+                  onClick={() => handleApplyPreset(p)}
+                >
+                  <div className={cn('workspace-switcher__item-icon', PRESET_CATEGORIES[p.category]?.color)}>
+                    <Icon size={14} aria-hidden />
+                  </div>
+                  <div className="workspace-switcher__item-body">
+                    <span className="workspace-switcher__item-name">{p.name}</span>
+                    {p.description && (
+                      <span className="workspace-switcher__item-desc">{p.description}</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="workspace-switcher__divider" />
+
+        <div className="workspace-switcher__section">
+          <p className="workspace-switcher__section-label">My Workspaces</p>
+          <div className="workspace-switcher__list">
+            {userPresets.slice(0, 8).map((p) => (
+              <div key={p.id} className="workspace-switcher__row group">
+                <button
+                  type="button"
+                  className="workspace-switcher__row-btn"
+                  onClick={() => handleApplyPreset(p)}
+                >
+                  <LayoutTemplate size={12} className="workspace-switcher__row-icon" aria-hidden />
+                  <span className="workspace-switcher__row-label">{p.name}</span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="workspace-switcher__row-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteWorkspacePreset(p.id);
+                  }}
+                  title="Delete preset"
+                >
+                  <Trash2 size={12} aria-hidden />
+                </Button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="workspace-switcher__action"
+              onClick={() => {
+                saveWorkspacePreset();
+                setOpen(false);
+              }}
+            >
+              <Edit2 size={12} aria-hidden />
+              <span>Save current layout…</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="workspace-switcher__divider" />
+
+        <div className="workspace-switcher__section workspace-switcher__section--cloud">
+          <p className="workspace-switcher__section-label workspace-switcher__section-label--cloud">
+            <Cloud size={10} aria-hidden />
+            Cloud Workspaces
+          </p>
+          <div className="workspace-switcher__list">
+            {cloudWorkspacesLoading && (
+              <span className="workspace-switcher__loading">Loading…</span>
+            )}
+            {cloudWorkspaces.slice(0, 8).map((p) => (
+              <div key={p.id} className="workspace-switcher__row group">
+                <button
+                  type="button"
+                  className="workspace-switcher__row-btn"
+                  onClick={() => handleApplyCloudPreset(p)}
+                >
+                  <Cloud size={12} className="workspace-switcher__row-icon workspace-switcher__row-icon--cloud" aria-hidden />
+                  <span className="workspace-switcher__row-label">{p.name}</span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="workspace-switcher__row-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteCloudWorkspace(p.id);
+                  }}
+                  title="Delete cloud workspace"
+                >
+                  <Trash2 size={12} aria-hidden />
+                </Button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="workspace-switcher__action"
+              onClick={() => {
+                const name = prompt('Enter a name for this cloud workspace:');
+                if (name) saveCloudWorkspace(name);
+                setOpen(false);
+              }}
+            >
+              <Cloud size={12} aria-hidden />
+              <span>Save to Cloud…</span>
+            </button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>

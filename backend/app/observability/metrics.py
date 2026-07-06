@@ -103,6 +103,8 @@ def observability_snapshot() -> dict[str, float | None]:
         "massive_reconnects_total": counter_sum("massive_reconnects_total"),
         "massive_stream_errors_total": counter_sum("massive_stream_errors_total"),
         "massive_poll_updates_total": counter_sum("massive_poll_updates_total"),
+        "ws_client_connects_total": counter_sum("ws_client_connects_total"),
+        "ws_client_disconnects_total": counter_sum("ws_client_disconnects_total"),
         "meta_label_blocked_total": counter_sum("meta_label_blocked_total"),
         "meta_label_passed_total": counter_sum("meta_label_passed_total"),
         "meta_label_shadow_would_block_total": counter_sum("meta_label_shadow_would_block_total"),

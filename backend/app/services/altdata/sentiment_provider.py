@@ -8,10 +8,12 @@ from typing import Any
 
 from app.config import (
     FINNHUB_API_KEY,
+    GNEWS_ENABLED,
     SENTIMENT_LOOKBACK_HOURS,
     SYMBOLS,
 )
 from app.services.altdata.finnhub_provider import fetch_finnhub_sentiment
+from app.services.altdata.gnews_provider import fetch_gnews_news
 from app.services.altdata.news_provider import (
     fetch_polygon_news,
     fetch_yfinance_news,
@@ -43,6 +45,8 @@ def fetch_symbol_sentiment(symbol: str) -> list[dict[str, Any]]:
     if FINNHUB_API_KEY:
         _add(fetch_finnhub_sentiment(sym))
     _add(fetch_polygon_news(sym))
+    if GNEWS_ENABLED:
+        _add(fetch_gnews_news(sym))
     if not rows:
         _add(fetch_yfinance_news(sym))
     return rows

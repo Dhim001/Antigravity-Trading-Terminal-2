@@ -143,16 +143,18 @@ async def health(request: Request) -> JSONResponse:
 
     try:
         from app.db.connection import check_db_health
+        from app.db.async_bridge import run_db
 
-        body["database"] = await asyncio.to_thread(check_db_health)
+        body["database"] = await run_db(check_db_health)
     except Exception as exc:
         body["database"] = {"ok": False, "error": str(exc)}
         body["ok"] = False
 
     try:
+        from app.db.async_bridge import run_db
         from app.services.db_stats_cache import get_db_stats_cached
 
-        stats = await asyncio.to_thread(get_db_stats_cached)
+        stats = await run_db(get_db_stats_cached)
         body["metrics"] = {
             "open_positions": stats.get("positions_count", 0),
             "pending_orders": stats.get("pending_orders_count", 0),
@@ -177,6 +179,7 @@ async def health(request: Request) -> JSONResponse:
 
     try:
         from app.observability.metrics import observability_snapshot
+        from app.observability.ws_metrics import ws_metrics_snapshot
 
         snap = observability_snapshot()
         body["observability"] = {
@@ -184,6 +187,9 @@ async def health(request: Request) -> JSONResponse:
             for k, v in snap.items()
             if v is not None
         }
+        body["websocket_clients"] = ws_metrics_snapshot(
+            connected=len(state.manager.connected_clients),
+        )
     except Exception:
         pass
 

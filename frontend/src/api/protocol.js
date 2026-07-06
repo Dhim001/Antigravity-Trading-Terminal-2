@@ -80,6 +80,7 @@ export const MessageType = Object.freeze({
   MARKET_UPDATE: 'market_update',
   ORDERBOOK_UPDATE: 'orderbook_update',
   SYSTEM_STATS: 'system_stats',
+  KEEPALIVE: 'keepalive',
   BOTS_UPDATE: 'bots_update',
   BOT_DETAIL: 'bot_detail',
   BOT_LOG: 'bot_log',

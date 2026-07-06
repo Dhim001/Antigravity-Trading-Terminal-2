@@ -139,9 +139,10 @@ class SentimentRuleEngineTests(unittest.TestCase):
 
 class SentimentProviderMergeTests(unittest.TestCase):
     @patch("app.services.altdata.sentiment_provider.fetch_finnhub_sentiment")
+    @patch("app.services.altdata.sentiment_provider.fetch_gnews_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_polygon_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_yfinance_news", return_value=[])
-    def test_finnhub_merged_when_configured(self, _yf, _massive, mock_finn):
+    def test_finnhub_merged_when_configured(self, _yf, _massive, _gnews, mock_finn):
         mock_finn.return_value = [{
             "id": "finnhub_news:AAPL:1",
             "symbol": "AAPL",
@@ -158,6 +159,29 @@ class SentimentProviderMergeTests(unittest.TestCase):
             rows = fetch_symbol_sentiment("AAPL")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source"], "finnhub_news")
+
+    @patch("app.services.altdata.sentiment_provider.fetch_finnhub_sentiment", return_value=[])
+    @patch("app.services.altdata.sentiment_provider.fetch_polygon_news", return_value=[])
+    @patch("app.services.altdata.sentiment_provider.fetch_yfinance_news", return_value=[])
+    @patch("app.services.altdata.sentiment_provider.fetch_gnews_news")
+    def test_gnews_merged_when_enabled(self, mock_gnews, _yf, _poly, _finn):
+        mock_gnews.return_value = [{
+            "id": "gnews:ETHUSDT:1",
+            "symbol": "ETHUSDT",
+            "source": "gnews",
+            "score": 0.1,
+            "mention_count": 1,
+            "headline": "Ethereum upgrade",
+            "published_at": "2026-07-06T12:00:00+00:00",
+            "raw": {},
+        }]
+        with patch("app.services.altdata.sentiment_provider.GNEWS_ENABLED", True):
+            from app.services.altdata.sentiment_provider import fetch_symbol_sentiment
+
+            rows = fetch_symbol_sentiment("ETHUSDT")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "gnews")
+        mock_gnews.assert_called_once_with("ETHUSDT")
 
 
 if __name__ == "__main__":

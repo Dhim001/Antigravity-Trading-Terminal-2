@@ -106,38 +106,38 @@ const WatchlistColumnPicker = React.memo(function WatchlistColumnPicker({
           <Columns3 aria-hidden />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-60">
-        <PopoverHeader>
-          <PopoverTitle className="text-xs">Watchlist columns</PopoverTitle>
+      <PopoverContent align="end" className="watchlist-column-picker w-64 p-0">
+        <PopoverHeader className="watchlist-column-picker__header">
+          <PopoverTitle className="text-xs font-semibold">Watchlist columns</PopoverTitle>
         </PopoverHeader>
 
-        <div className="flex flex-col gap-1 pt-1">
-          <span className="text-[0.62rem] font-semibold uppercase tracking-wide text-muted-foreground">
-            Presets
-          </span>
-          {presets.map((preset) => (
-            <Button
-              key={preset.id}
-              type="button"
-              variant={activePresetId === preset.id ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 justify-start text-xs font-normal"
-              title={preset.description}
-              onClick={() => onApplyPreset(preset)}
-            >
-              {preset.name}
-            </Button>
-          ))}
-          {activePresetId === 'custom' && (
-            <span className="px-2 py-0.5 text-[0.62rem] text-muted-foreground">Custom layout</span>
-          )}
+        <div className="watchlist-column-picker__section">
+          <span className="watchlist-column-picker__section-label">Presets</span>
+          <div className="watchlist-column-picker__preset-list">
+            {presets.map((preset) => (
+              <Button
+                key={preset.id}
+                type="button"
+                variant={activePresetId === preset.id ? 'secondary' : 'ghost'}
+                size="sm"
+                className="watchlist-column-picker__preset"
+                title={preset.description}
+                onClick={() => onApplyPreset(preset)}
+              >
+                {preset.name}
+              </Button>
+            ))}
+            {activePresetId === 'custom' && (
+              <span className="watchlist-column-picker__custom-hint">Custom layout</span>
+            )}
+          </div>
         </div>
 
-        <Separator className="my-2" />
+        <Separator className="watchlist-column-picker__divider" />
 
-        <div className="flex flex-col gap-2">
+        <div className="watchlist-column-picker__section watchlist-column-picker__section--columns">
           {Object.entries(OPTIONAL_COLUMN_LABELS).map(([key, label]) => (
-            <div key={key} className="flex items-center gap-2">
+            <div key={key} className="watchlist-column-picker__checkbox-row">
               <Checkbox
                 id={`wl-col-${key}`}
                 checked={columns[key] !== false}
@@ -147,7 +147,7 @@ const WatchlistColumnPicker = React.memo(function WatchlistColumnPicker({
                   onChange(next);
                 }}
               />
-              <Label htmlFor={`wl-col-${key}`} className="text-xs font-normal">
+              <Label htmlFor={`wl-col-${key}`} className="watchlist-column-picker__checkbox-label">
                 {label}
               </Label>
             </div>

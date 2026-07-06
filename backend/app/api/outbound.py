@@ -56,6 +56,10 @@ def system_stats(data: dict) -> dict:
     return frame(MessageType.SYSTEM_STATS, data)
 
 
+def keepalive(data: dict | None = None) -> dict:
+    return frame(MessageType.KEEPALIVE, data or {})
+
+
 def bots_update(data: list) -> dict:
     return frame(MessageType.BOTS_UPDATE, data)
 

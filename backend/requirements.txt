@@ -19,6 +19,8 @@ pandas-ta-openbb>=0.4.24
 
 # Real-time data & statistics modeling for simulations
 yfinance>=1.4.1
+# Google News RSS headlines (altdata news provider)
+gnews>=0.5.0
 arch>=8.0.0
 # Parquet I/O — SBBS seed cache (data/*.parquet) and optional archive export
 pyarrow>=18.0.0
