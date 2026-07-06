@@ -315,6 +315,7 @@ class SimulatedOMSService(BaseOMSService):
                     order_id=order_id,
                 )
                 if bracket and (sl_price is not None or tp_price is not None):
+                    cancel_oco_for_symbol(cursor, symbol)
                     oco_group_id = new_group_id()
                     pos_size = quantity if side == "BUY" else -quantity
                     create_oco_exit_orders(
@@ -327,6 +328,8 @@ class SimulatedOMSService(BaseOMSService):
                         stop_loss_price=sl_price,
                         take_profit_price=tp_price,
                         parent_order_id=order_id,
+                        bot_id=bot_id,
+                        signal_id=signal_id,
                     )
             else:
                 pending_bot_fill = None
@@ -493,6 +496,7 @@ class SimulatedOMSService(BaseOMSService):
                         order_id=order["id"],
                     )
                     if sl_px is not None or tp_px is not None:
+                        cancel_oco_for_symbol(cursor, symbol)
                         oco_group_id = new_group_id()
                         pos_size = qty if side == "BUY" else -qty
                         create_oco_exit_orders(
@@ -505,6 +509,8 @@ class SimulatedOMSService(BaseOMSService):
                             stop_loss_price=sl_px,
                             take_profit_price=tp_px,
                             parent_order_id=order["id"],
+                            bot_id=order.get("bot_id"),
+                            signal_id=order.get("signal_id"),
                         )
                     if bot_fill:
                         pending_bot_fills.append(bot_fill)

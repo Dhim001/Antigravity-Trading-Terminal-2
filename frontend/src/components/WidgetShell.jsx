@@ -27,7 +27,7 @@ export function WidgetShell({
       <div className="widget-header">
         <div className="icon-label-loose min-w-0">
           {Icon && <Icon size={13} className="logo-icon shrink-0" aria-hidden />}
-          <span className="widget-title truncate">{title}</span>
+          <div className="widget-title min-w-0 truncate">{title}</div>
         </div>
         {headerRight != null && (
           <div className="flex shrink-0 items-center gap-[var(--icon-gap-loose)]">{headerRight}</div>

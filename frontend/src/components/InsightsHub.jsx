@@ -150,7 +150,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             Insights Hub
           </SheetTitle>
           <SheetDescription className="insights-hub__description">
-            Resizable scanner, analyst, and news workspace (⌘I). Dock intelligence tabs are for quick peek while trading; use this hub for extended review and wider layout.
+            Scanner, analyst, and news in one resizable workspace (⌘I). Use dock tabs for quick peek; this hub for deeper review.
           </SheetDescription>
         </SheetHeader>
 

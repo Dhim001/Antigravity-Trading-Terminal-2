@@ -70,6 +70,8 @@ def create_oco_exit_orders(
     stop_loss_price: float | None,
     take_profit_price: float | None,
     parent_order_id: str,
+    bot_id: str | None = None,
+    signal_id: str | None = None,
 ) -> list[str]:
     """Insert OCO exit leg rows; return created order ids."""
     if not stop_loss_price and not take_profit_price:
@@ -92,10 +94,11 @@ def create_oco_exit_orders(
                 id, symbol, type, side, price, quantity, status,
                 filled_quantity, average_fill_price,
                 stop_loss_percent, take_profit_percent,
+                bot_id, signal_id,
                 order_group_id, leg_type, oco_group_id,
                 stop_loss_price, take_profit_price
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'OCO_ACTIVE', 0, 0, NULL, NULL, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'OCO_ACTIVE', 0, 0, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 leg_id,
@@ -104,6 +107,8 @@ def create_oco_exit_orders(
                 exit_side,
                 trigger_price,
                 quantity,
+                bot_id,
+                signal_id,
                 order_group_id,
                 leg_code,
                 oco_group_id,

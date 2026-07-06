@@ -101,7 +101,13 @@ export default function OrdersTab() {
                   const dec = priceDecimals(ord.symbol, ord.price);
                   const isBuy = ord.side === 'BUY';
                   const value = (ord.price || 0) * ord.quantity;
-                  const bot = ord.bot_id ? byId[ord.bot_id] : null;
+                  const botId = ord.bot_id
+                    || (ord.order_group_id
+                      ? orders.find(
+                        (o) => o.order_group_id === ord.order_group_id && o.bot_id,
+                      )?.bot_id
+                      : null);
+                  const bot = botId ? byId[botId] : null;
                   const leg = legLabel(ord);
                   const isOco = ord.status === 'OCO_ACTIVE';
                   return (
@@ -119,6 +125,10 @@ export default function OrdersTab() {
                       <DataTableCell className="text-xs">
                         {bot ? (
                           <StrategyBadge strategy={bot.strategy} compact />
+                        ) : isOco && ord.leg_type ? (
+                          <span className="text-muted-foreground" title="Bracket exit leg — bot id missing on older orders">
+                            Bracket
+                          </span>
                         ) : (
                           <span className="text-muted-foreground">Manual</span>
                         )}

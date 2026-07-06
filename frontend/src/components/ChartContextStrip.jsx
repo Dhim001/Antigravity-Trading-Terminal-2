@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { openNewsHub } from '../lib/intelligenceEvents';
 import { cn } from '@/lib/utils';
+import ChartSymbolSwitcher from './chart/ChartSymbolSwitcher';
 
 export default function ChartContextStrip() {
   const activeSymbol = useStore((s) => s.activeSymbol);
@@ -31,10 +32,10 @@ export default function ChartContextStrip() {
 
   return (
     <div className="chart-context-strip">
-      <button type="button" className="chart-context-strip__seg" onClick={() => jumpDock('positions')}>
+      <div className="chart-context-strip__seg chart-context-strip__seg--symbol">
         <span className="text-muted-foreground">Symbol</span>
-        <strong>{activeSymbol}</strong>
-      </button>
+        <ChartSymbolSwitcher compact />
+      </div>
       <span className="chart-context-strip__dot" aria-hidden>·</span>
       <button type="button" className="chart-context-strip__seg" onClick={() => window.dispatchEvent(new CustomEvent('open-settings', { detail: 'chart' }))}>
         <span className="text-muted-foreground">TF</span>

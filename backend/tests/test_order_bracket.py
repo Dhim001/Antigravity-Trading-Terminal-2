@@ -56,8 +56,13 @@ class OrderBracketTests(unittest.TestCase):
             stop_loss_price=95.0,
             take_profit_price=110.0,
             parent_order_id="entry-1",
+            bot_id="bot-test-1",
+            signal_id="bot-test-1:123:BUY",
         )
         self.assertEqual(len(ids), 2)
+        cur.execute("SELECT bot_id, leg_type FROM orders ORDER BY leg_type")
+        for row in cur.fetchall():
+            self.assertEqual(row["bot_id"], "bot-test-1")
         cur.execute("SELECT COUNT(*) AS c FROM orders WHERE status = 'OCO_ACTIVE'")
         self.assertEqual(cur.fetchone()["c"], 2)
         cancel_oco_group(cur, "oco-1", except_leg="SL")

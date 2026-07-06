@@ -17,6 +17,7 @@ import {
 } from '../settings/indicatorThemes';
 import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings/defaults';
 import ChartHeaderPrice from './chart/ChartHeaderPrice';
+import ChartSymbolSwitcher from './chart/ChartSymbolSwitcher';
 import ChartToolbar from './chart/ChartToolbar';
 import { useChartSlTpDrag } from '../hooks/useChartSlTpDrag';
 import {
@@ -1974,7 +1975,7 @@ export default function ChartWidget() {
       className={cn(chartInteractionMode !== 'normal' && 'chart-interactive-mode relative')}
       data-tour="chart"
       icon={AreaChart}
-      title={activeSymbol}
+      title={<ChartSymbolSwitcher />}
       headerRight={
         <div className="relative z-20 flex min-w-0 items-center gap-[var(--icon-gap-loose)]">
           <ChartHeaderPrice symbol={activeSymbol} />
