@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { queueMarketUpdate, resetMarketUpdateBatchForTests } from './marketUpdateBatch';
+import { queueMarketUpdate, resetMarketUpdateBatchForTests, shouldBatchMarketUpdates } from './marketUpdateBatch';
+import { useStore } from '../store/useStore';
 
-vi.mock('../lib/massiveMarket', () => ({
-  isLiveMassiveMode: vi.fn(() => true),
-}));
+describe('shouldBatchMarketUpdates', () => {
+  it('batches for high-frequency terminal modes', () => {
+    expect(shouldBatchMarketUpdates('LIVE_MASSIVE')).toBe(true);
+    expect(shouldBatchMarketUpdates('LIVE_IB')).toBe(true);
+    expect(shouldBatchMarketUpdates('LIVE_ALPACA')).toBe(true);
+    expect(shouldBatchMarketUpdates('SIMULATED')).toBe(true);
+  });
+
+  it('does not batch for unknown modes', () => {
+    expect(shouldBatchMarketUpdates('OFFLINE')).toBe(false);
+    expect(shouldBatchMarketUpdates(undefined)).toBe(false);
+  });
+});
 
 describe('marketUpdateBatch', () => {
   /** @type {FrameRequestCallback | null} */
@@ -17,6 +28,7 @@ describe('marketUpdateBatch', () => {
       return 1;
     });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    useStore.setState({ terminalMode: 'LIVE_MASSIVE' });
   });
 
   afterEach(() => {
@@ -40,9 +52,8 @@ describe('marketUpdateBatch', () => {
     });
   });
 
-  it('applies immediately when not in Massive mode', async () => {
-    const { isLiveMassiveMode } = await import('../lib/massiveMarket');
-    isLiveMassiveMode.mockReturnValue(false);
+  it('applies immediately when batching is disabled for the terminal mode', () => {
+    useStore.setState({ terminalMode: 'OFFLINE' });
 
     const apply = vi.fn();
     queueMarketUpdate({ BTCUSDT: { price: 99 } }, apply);

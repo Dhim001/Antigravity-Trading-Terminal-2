@@ -183,15 +183,19 @@ class ArchiveBrokerSourceTests(unittest.TestCase):
         import app.services.archive.broker_fetch as bf
         bar_time = "2024-01-01T15:00:00Z"
         bar_ts = bf._parse_alpaca_bar_time(bar_time)
-        mock_client = mock_client_cls.return_value.__enter__.return_value
-        mock_client.get.return_value = type("R", (), {
+        mock_resp = type("R", (), {
+            "status_code": 200,
             "raise_for_status": lambda self: None,
             "json": lambda self: {
                 "bars": {"AAPL": [{"t": bar_time, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 100}]},
                 "next_page_token": None,
             },
         })()
-        with patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(bf, "ALPACA_SECRET_KEY", "s"):
+        mock_client = mock_client_cls.return_value.__enter__.return_value
+        mock_client.get.return_value = mock_resp
+        with patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(bf, "ALPACA_SECRET_KEY", "s"), patch.object(
+            bf, "resolve_equity_data_feed", return_value="iex"
+        ):
             rows = bf.fetch_alpaca_1m_bars("AAPL", bar_ts - 60, bar_ts + 60)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["symbol"], "AAPL")

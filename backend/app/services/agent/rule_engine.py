@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -32,12 +33,12 @@ class DomainScore:
 # backward compatibility with the existing threshold logic (±2 → BUY/SELL).
 
 REGIME_WEIGHTS: dict[str, dict[str, float]] = {
-    "trending":     {"trend": 2.0, "momentum": 1.5, "volume": 1.0, "risk": 0.8, "sentiment": 0.5},
-    "ranging":      {"trend": 0.5, "momentum": 2.0, "volume": 1.5, "risk": 1.0, "sentiment": 0.8},
-    "elevated_vol": {"trend": 1.0, "momentum": 0.5, "volume": 0.8, "risk": 2.0, "sentiment": 1.0},
-    "compressed":   {"trend": 1.5, "momentum": 1.5, "volume": 1.2, "risk": 0.5, "sentiment": 0.8},
+    "trending":     {"trend": 2.0, "momentum": 1.5, "volume": 1.0, "risk": 0.8, "sentiment": 0.5, "event": 0.3, "derivatives": 0.4},
+    "ranging":      {"trend": 0.5, "momentum": 2.0, "volume": 1.5, "risk": 1.0, "sentiment": 0.8, "event": 0.4, "derivatives": 0.5},
+    "elevated_vol": {"trend": 1.0, "momentum": 0.5, "volume": 0.8, "risk": 2.0, "sentiment": 1.0, "event": 0.5, "derivatives": 0.8},
+    "compressed":   {"trend": 1.5, "momentum": 1.5, "volume": 1.2, "risk": 0.5, "sentiment": 0.8, "event": 0.3, "derivatives": 0.4},
 }
-_EQUAL_WEIGHTS = {"trend": 1.0, "momentum": 1.0, "volume": 1.0, "risk": 1.0, "sentiment": 1.0}
+_EQUAL_WEIGHTS = {"trend": 1.0, "momentum": 1.0, "volume": 1.0, "risk": 1.0, "sentiment": 1.0, "event": 0.5, "derivatives": 0.5}
 
 # Frozen per-symbol sentiment during CHART_AGENT bar replay (cleared after each run).
 _backtest_sentiment_cache: dict[str, dict] = {}
@@ -76,12 +77,28 @@ def _aggregate_sentiment(symbol: str) -> dict:
     }
 
 
+def _score_events(symbol: str, bar_time: Any) -> DomainScore:
+    from app.services.altdata.event_policy import event_risk_score
+
+    score, reasons = event_risk_score(symbol, bar_time)
+    return DomainScore(score=score, reasons=reasons)
+
+
+def _score_derivatives(symbol: str, bar_time: Any) -> DomainScore:
+    from app.services.altdata.crypto_derivatives import get_derivatives_score_at
+
+    score, reasons, _meta = get_derivatives_score_at(symbol, bar_time)
+    return DomainScore(score=score, reasons=reasons)
+
+
 def _adaptive_score(
     trend_score: int,
     momentum_score: int,
     volume_score: int,
     sentiment_score: int,
     risk_score: int,
+    event_score: int,
+    derivatives_score: int,
     regime: str,
 ) -> tuple[int, dict[str, float]]:
     """Compute regime-weighted composite score.
@@ -95,6 +112,8 @@ def _adaptive_score(
         + volume_score * weights["volume"]
         + risk_score * weights.get("risk", 1.0)
         + sentiment_score * weights["sentiment"]
+        + event_score * weights.get("event", 0.5)
+        + derivatives_score * weights.get("derivatives", 0.5)
     )
     # Normalize: sum of weights in equal mode = 5, so divide and re-scale
     w_sum = sum(weights.values())
@@ -365,6 +384,9 @@ def _build_sub_reports(
     volume = _score_volume(row, df, idx)
     risk = _risk_report(row, df, idx)
     sentiment = _score_sentiment(symbol)
+    bar_time = row.get("time")
+    events = _score_events(symbol, bar_time)
+    derivatives = _score_derivatives(symbol, bar_time)
     trend_regime = _classify_trend_regime(row, df, idx)
     indicator = {"score": momentum.score, "reasons": list(momentum.reasons)}
     anomaly = detect_bar_anomaly(df, idx)
@@ -378,6 +400,14 @@ def _build_sub_reports(
     }
     if agg.get("sample_headlines"):
         sentiment_block["sample_headlines"] = agg["sample_headlines"]
+    upcoming: dict = {}
+    if symbol:
+        try:
+            from app.services.altdata.event_policy import get_upcoming_events
+
+            upcoming = get_upcoming_events(symbol, days=7)
+        except Exception:
+            upcoming = {}
     return {
         "trend": {
             "score": trend.score,
@@ -392,6 +422,18 @@ def _build_sub_reports(
         "risk": risk,
         "anomaly": anomaly,
         "sentiment": sentiment_block,
+        "events": {
+            "score": events.score,
+            "reasons": events.reasons,
+            "upcoming_corporate": (upcoming.get("corporate") or [])[:3],
+            "upcoming_holidays": (upcoming.get("holidays") or [])[:2],
+            "upcoming_macro": (upcoming.get("macro") or [])[:3],
+        },
+        "derivatives": {
+            "score": derivatives.score,
+            "reasons": derivatives.reasons,
+            "snapshot": upcoming.get("derivatives"),
+        },
     }
 
 
@@ -455,6 +497,8 @@ def score_dataframe(
     volume_score = sub_reports["volume"]["score"]
     sentiment_score = sub_reports["sentiment"]["score"]
     risk_score = sub_reports["risk"].get("score", 0)
+    event_score = sub_reports.get("events", {}).get("score", 0)
+    derivatives_score = sub_reports.get("derivatives", {}).get("score", 0)
     trend_regime = sub_reports["trend"].get("trend_regime", "unknown")
 
     # Map ATR regime to scoring regime when trend regime is not informative
@@ -470,7 +514,7 @@ def score_dataframe(
     # Regime-adaptive weighted scoring
     score, weights_used = _adaptive_score(
         trend_score, momentum_score, volume_score,
-        sentiment_score, risk_score, scoring_regime,
+        sentiment_score, risk_score, event_score, derivatives_score, scoring_regime,
     )
     sub_reports["regime_weights"] = {
         "regime": scoring_regime,
@@ -481,6 +525,8 @@ def score_dataframe(
         + sub_reports["momentum"]["reasons"]
         + sub_reports["volume"]["reasons"]
         + sub_reports["sentiment"]["reasons"]
+        + sub_reports.get("events", {}).get("reasons", [])
+        + sub_reports.get("derivatives", {}).get("reasons", [])
     )
     bot_sig = _bot_signal(score)
 

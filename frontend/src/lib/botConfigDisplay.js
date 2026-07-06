@@ -1,5 +1,28 @@
 /** Labels, grouping, and editable field schema for bot strategy config. */
 
+import { normalizeConfirmTimeframe } from '@/lib/barTimeframes';
+
+export const DIRECTION_MODE_OPTIONS = [
+  { value: 'LONG_ONLY', label: 'Long only' },
+  { value: 'SHORT_ONLY', label: 'Short only' },
+  { value: 'BOTH', label: 'Both (long & short)' },
+];
+
+const DIRECTION_MODE_LABELS = Object.fromEntries(
+  DIRECTION_MODE_OPTIONS.map((o) => [o.value, o.label]),
+);
+
+/** Normalize deploy/backtest direction_mode to LONG_ONLY | SHORT_ONLY | BOTH. */
+export function normalizeDirectionMode(value) {
+  const mode = String(value || 'LONG_ONLY').trim().toUpperCase();
+  if (mode === 'SHORT_ONLY' || mode === 'BOTH') return mode;
+  return 'LONG_ONLY';
+}
+
+export function formatDirectionModeLabel(value) {
+  return DIRECTION_MODE_LABELS[normalizeDirectionMode(value)] ?? normalizeDirectionMode(value);
+}
+
 export const GROUP_ORDER = ['risk', 'agent', 'indicators', 'tick', 'other'];
 
 export const GROUP_LABELS = {
@@ -24,7 +47,7 @@ export const FIELD_META = {
   rsi_oversold_gate: { label: 'RSI oversold gate', group: 'indicators', kind: 'integer', hint: 'Block VWAP sell when RSI below this (default 40).' },
   block_elevated_vol: { label: 'Block elevated vol', group: 'indicators', kind: 'boolean', hint: 'Skip entries when ATR is ≥1.5× its 20-bar median.' },
   min_score: { label: 'Min score', group: 'agent', kind: 'integer', hint: 'Require |composite score| ≥ this value.' },
-  confirm_timeframe: { label: 'Confirm TF', group: 'agent', kind: 'text', hint: 'Higher timeframe trend must confirm entry.' },
+  confirm_timeframe: { label: 'Confirm TF', group: 'agent', kind: 'confirm_timeframe', hint: 'Higher timeframe trend must confirm entry (e.g. 15m, 1h). Leave empty to disable.' },
   calibration_gate_enabled: { label: 'Calibration gate', group: 'agent', kind: 'boolean', hint: 'Block entries when the setup bucket underperforms in closed-trade history.' },
   calibration_min_samples: { label: 'Gate min samples', group: 'agent', kind: 'integer', hint: 'Minimum closed trades in a bucket before the gate can block.' },
   calibration_min_wilson: { label: 'Gate min Wilson', group: 'agent', kind: 'confidence', hint: 'Wilson lower-bound win rate required to allow entry (0–1).' },
@@ -127,6 +150,7 @@ function getInputType(key, meta) {
   if (key === 'tp_mode') return 'select';
   if (key === 'direction_mode') return 'select';
   if (key === 'meta_label_model_mode') return 'select';
+  if (key === 'confirm_timeframe' || meta?.kind === 'confirm_timeframe') return 'confirm_timeframe';
   if (meta?.kind === 'boolean') return 'checkbox';
   if (meta?.kind === 'confidence') return 'range';
   if (['percent', 'integer', 'decimal', 'seconds', 'price'].includes(meta?.kind)) return 'number';
@@ -260,13 +284,20 @@ export function buildConfigDraft(config, fields) {
     const v = config?.[f.key];
     if (f.input === 'checkbox') {
       draft[f.key] = Boolean(v);
-    } else if (f.input === 'select') {
+    } else if (f.input === 'select' || f.input === 'confirm_timeframe') {
       const selectDefault = f.key === 'direction_mode'
         ? 'LONG_ONLY'
         : f.key === 'meta_label_model_mode'
           ? 'wilson'
-          : 'percent';
-      draft[f.key] = v ?? selectDefault;
+          : f.key === 'confirm_timeframe'
+            ? ''
+            : 'percent';
+      if (f.key === 'confirm_timeframe' && v) {
+        const normalized = normalizeConfirmTimeframe(v);
+        draft[f.key] = normalized.ok ? normalized.value : String(v);
+      } else {
+        draft[f.key] = v ?? selectDefault;
+      }
     } else if (f.input === 'number' || f.input === 'range') {
       draft[f.key] = v != null && v !== '' ? String(v) : '';
     } else {
@@ -300,7 +331,24 @@ function valuesEqual(a, b) {
   return false;
 }
 
-export function buildConfigPatch(draft, originalConfig, fields) {
+/** @returns {string|null} First validation error, or null if patch is valid. */
+export function validateConfigPatch(patch, { botTimeframe } = {}) {
+  if (!patch || typeof patch !== 'object') return 'Invalid config patch';
+  if ('confirm_timeframe' in patch) {
+    const result = normalizeConfirmTimeframe(patch.confirm_timeframe);
+    if (!result.ok) return result.error;
+    const confirmTf = result.value;
+    if (confirmTf && botTimeframe) {
+      const botTf = normalizeConfirmTimeframe(botTimeframe);
+      if (botTf.ok && confirmTf === botTf.value) {
+        return `Confirm timeframe must differ from bot timeframe (${botTf.value})`;
+      }
+    }
+  }
+  return null;
+}
+
+export function buildConfigPatch(draft, originalConfig, fields, options = {}) {
   const patch = {};
   for (const f of fields) {
     if (!isFieldVisible(f, draft)) {
@@ -309,12 +357,21 @@ export function buildConfigPatch(draft, originalConfig, fields) {
       }
       continue;
     }
-    const parsed = parseFieldValue(f, draft[f.key]);
+    let parsed = parseFieldValue(f, draft[f.key]);
+    if (f.key === 'confirm_timeframe') {
+      const result = normalizeConfirmTimeframe(parsed);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+      parsed = result.value || null;
+    }
     const orig = originalConfig?.[f.key];
     if (!valuesEqual(parsed, orig)) {
       patch[f.key] = parsed;
     }
   }
+  const err = validateConfigPatch(patch, options);
+  if (err) throw new Error(err);
   return patch;
 }
 
@@ -348,8 +405,7 @@ export function formatBotConfigValue(key, value, meta = fieldMeta(key)) {
     return { text: TP_MODE_LABELS[mode] ?? humanizeKey(mode), tone: 'default' };
   }
   if (kind === 'direction_mode') {
-    const DIRECTION_LABELS = { LONG_ONLY: 'Long only', SHORT_ONLY: 'Short only', BOTH: 'Both' };
-    return { text: DIRECTION_LABELS[String(value).toUpperCase()] ?? String(value), tone: 'default' };
+    return { text: formatDirectionModeLabel(value), tone: 'default' };
   }
   if (kind === 'meta_label_mode') {
     const MODE_LABELS = { wilson: 'Wilson buckets', gbm: 'GBM classifier', hybrid: 'Hybrid (GBM + Wilson)' };

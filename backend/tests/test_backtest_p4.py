@@ -1,6 +1,7 @@
 """Tests for backtest P4+ — analytics, walk-forward, research sim_mode."""
 
 import unittest
+from unittest.mock import patch
 
 from app.services.bots.backtest_analytics import (
     buy_and_hold_benchmark,
@@ -210,6 +211,14 @@ class TestResearchSimMode(unittest.TestCase):
     def setUp(self):
         self.backtester = BacktesterService(MarketScreenerService())
         self.candles = _make_candles(120)
+        self._gate_patcher = patch(
+            "app.services.altdata.event_policy.check_entry_gates",
+            return_value=(True, None, None),
+        )
+        self._gate_patcher.start()
+
+    def tearDown(self):
+        self._gate_patcher.stop()
 
     def test_research_mode_skips_risk_gates(self):
         live = self.backtester.run_backtest(

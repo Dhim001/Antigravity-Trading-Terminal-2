@@ -523,7 +523,7 @@ class BacktesterService:
         daily_pnl = 0.0
         daily_pnl_day: str | None = None
         halted = False
-        bot_stub = {"status": "RUNNING", "allocation": allocation, "config": cfg}
+        bot_stub = {"status": "RUNNING", "allocation": allocation, "config": cfg, "symbol": symbol}
         blocked_entries = 0
         blocked_events: list[dict] = []
         blocked_events_total = [0]
@@ -632,6 +632,23 @@ class BacktesterService:
             chain = ExecutionChain(bar_time)
             chain.record("signal", ok=True, signal="BUY", side="BUY")
 
+            from app.services.altdata.event_policy import check_entry_gates
+
+            gate_ok, gate_reason, gate_kind = check_entry_gates(
+                symbol, bar_time, cfg, is_exit=False,
+            )
+            if not gate_ok and gate_reason:
+                blocked_entries += 1
+                chain.record("event_gate", ok=False, reason=gate_reason)
+                _record_blocked(
+                    gate_kind or "event",
+                    gate_reason,
+                    bar_time,
+                    side="BUY",
+                    signal="BUY",
+                )
+                return
+
             current_price = float(row["close"])
             stop_loss_price = signal_data.get("stop_loss_price")
             if stop_loss_price is not None:
@@ -666,6 +683,7 @@ class BacktesterService:
                     is_exit=False,
                     daily_pnl=daily_pnl,
                     position_size=0.0,
+                    at_ts=bar_time,
                 )
                 if not decision.allowed:
                     blocked_entries += 1
@@ -787,6 +805,23 @@ class BacktesterService:
             chain = ExecutionChain(bar_time)
             chain.record("signal", ok=True, signal="SELL", side="SELL")
 
+            from app.services.altdata.event_policy import check_entry_gates
+
+            gate_ok, gate_reason, gate_kind = check_entry_gates(
+                symbol, bar_time, cfg, is_exit=False,
+            )
+            if not gate_ok and gate_reason:
+                blocked_entries += 1
+                chain.record("event_gate", ok=False, reason=gate_reason)
+                _record_blocked(
+                    gate_kind or "event",
+                    gate_reason,
+                    bar_time,
+                    side="SELL",
+                    signal="SELL",
+                )
+                return
+
             current_price = float(row["close"])
             stop_loss_price = signal_data.get("stop_loss_price")
             if stop_loss_price is not None:
@@ -821,6 +856,7 @@ class BacktesterService:
                     is_exit=False,
                     daily_pnl=daily_pnl,
                     position_size=0.0,
+                    at_ts=bar_time,
                 )
                 if not decision.allowed:
                     blocked_entries += 1

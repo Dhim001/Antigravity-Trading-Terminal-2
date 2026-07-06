@@ -20,6 +20,7 @@ class OrderCapabilitiesTests(unittest.TestCase):
             "oco",
             "trailing_stop_manual",
             "order_preview_costs",
+            "paper_shorts",
         ):
             self.assertIn(key, caps)
 

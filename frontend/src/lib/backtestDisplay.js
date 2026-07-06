@@ -2,6 +2,7 @@
 
 import { getOldestBarTime, toUnixSeconds } from '../services/candleBuffer';
 import { fetchOlderCandles } from '../api/endpoints';
+import { normalizeDirectionMode } from './botConfigDisplay';
 
 export const BACKTEST_OVERLAY_EVENT = 'backtest-overlay-changed';
 
@@ -130,6 +131,7 @@ export function backtestFingerprint({
   days,
   timeframe,
   config = {},
+  simMode,
 }) {
   return JSON.stringify({
     symbol,
@@ -141,6 +143,8 @@ export function backtestFingerprint({
     take_profit_percent: config.take_profit_percent,
     tp_mode: config.tp_mode,
     min_confidence: config.min_confidence,
+    direction_mode: normalizeDirectionMode(config.direction_mode),
+    sim_mode: String(simMode ?? config.sim_mode ?? 'live_aligned').toLowerCase(),
   });
 }
 

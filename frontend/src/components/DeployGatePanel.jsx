@@ -37,6 +37,7 @@ export default function DeployGatePanel({
   timeframe,
   days,
   config,
+  backtestConfig,
   snapshot,
   className,
   onGateChange,
@@ -49,12 +50,13 @@ export default function DeployGatePanel({
       results,
       symbol,
       config,
+      backtestConfig,
       snapshot,
       days,
       timeframe,
       strategy,
     }),
-    [results, symbol, config, snapshot, days, timeframe, strategy],
+    [results, symbol, config, backtestConfig, snapshot, days, timeframe, strategy],
   );
 
   React.useEffect(() => {

@@ -112,6 +112,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     trailing_stop_percent: 2,
     take_profit_percent: 3,
     tp_mode: 'percent',
+    direction_mode: 'LONG_ONLY',
   }),
   botLogs: [],
 
@@ -138,7 +139,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', execution_mode: 'BAR_CLOSE', allocation: 1500, config: { trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent' } },
     { id: 't5', name: 'Tick Momentum', strategy: 'TICK_MOMENTUM', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 20, tick_cooldown_sec: 10, take_profit_percent: 0.2, tp_mode: 'percent' } },
     { id: 't6', name: 'Tick Mean Revert', strategy: 'TICK_MEAN_REVERT', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 30, tick_cooldown_sec: 15, take_profit_percent: 0.15, tp_mode: 'percent' } },
-    { id: 't7', name: 'Chart Analyst Agent', strategy: 'CHART_AGENT', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { min_confidence: 0.55, use_llm: false, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent' } },
+    { id: 't7', name: 'Chart Analyst Agent', strategy: 'CHART_AGENT', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { min_confidence: 0.55, use_llm: false, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't8', name: 'ICT Smart Money', strategy: 'ICT_SMC', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { ob_lookback: 10, fvg_min_gap_pct: 0.0005, sweep_lookback: 20, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't9', name: 'Donchian Breakout', strategy: 'DONCHIAN_BREAKOUT', execution_mode: 'BAR_CLOSE', allocation: 3000, config: { breakout_length: 20, exit_length: 10, atr_confirm_mult: 1.0, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't10', name: 'Market Maker', strategy: 'MARKET_MAKING', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { spread_pct: 0.002, max_skew: 0.5, vol_shutdown_mult: 2.5, inventory_target: 0, trailing_stop_percent: 1, tp_mode: 'none', direction_mode: 'BOTH' } },

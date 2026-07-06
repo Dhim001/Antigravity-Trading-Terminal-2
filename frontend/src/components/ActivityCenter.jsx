@@ -27,6 +27,7 @@ export default function ActivityCenter({ open, onOpenChange }) {
   const alerts = useSettingsStore((s) => s.settings.alerts || []);
 
   const items = useMemo(() => {
+    if (!open) return [];
     const list = [];
     if (connectionStatus !== 'connected') {
       list.push({
@@ -88,7 +89,7 @@ export default function ActivityCenter({ open, onOpenChange }) {
       });
     }
     return list.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  }, [connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts, onOpenChange, paperExecution]);
+  }, [open, connectionStatus, apiStatus, ambiguousOrders, activeBots, botLogs, alerts, onOpenChange, paperExecution]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

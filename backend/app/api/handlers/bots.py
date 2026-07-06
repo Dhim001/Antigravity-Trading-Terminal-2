@@ -465,6 +465,12 @@ async def _execute_backtest(
             meta["portfolio"] = True
             meta["portfolio_symbols"] = portfolio_symbols
             meta["live_parity"] = config.get("live_parity", config.get("sim_mode", "live_aligned") == "live_aligned")
+            meta["config"] = {
+                "direction_mode": str(config.get("direction_mode") or "LONG_ONLY").upper(),
+                "sim_mode": str(config.get("sim_mode") or "live_aligned").lower(),
+                "live_parity": meta["live_parity"],
+                "allocation": config.get("allocation"),
+            }
             from app.services.bots.backtest_provenance import repo_git_revision
 
             git_rev = repo_git_revision()
@@ -895,6 +901,12 @@ async def _execute_backtest(
             "live_parity",
             config.get("sim_mode", "live_aligned") == "live_aligned",
         )
+        meta["config"] = {
+            "direction_mode": str(config.get("direction_mode") or "LONG_ONLY").upper(),
+            "sim_mode": str(config.get("sim_mode") or "live_aligned").lower(),
+            "live_parity": meta["live_parity"],
+            "allocation": config.get("allocation"),
+        }
         tier_meta = backtest_tier_meta({
             **request_payload,
             "reasoning": reasoning,

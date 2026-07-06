@@ -383,14 +383,119 @@ def get_aggregate_sentiment(
     }
 
 
+def insert_crypto_derivatives_snapshot(row: dict[str, Any]) -> None:
+    sym = str(row.get("symbol") or "").upper()
+    if not sym:
+        return
+    recorded = float(row.get("recorded_at") or time.time())
+    with db_session() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO crypto_derivatives_history (
+                symbol, recorded_at, funding_rate, open_interest, oi_change_24h_pct,
+                mark_price, quadrant, score, source, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sym,
+                recorded,
+                row.get("funding_rate"),
+                row.get("open_interest"),
+                row.get("oi_change_24h_pct"),
+                row.get("mark_price"),
+                row.get("quadrant"),
+                int(row.get("score") or 0),
+                str(row.get("source") or "unknown"),
+                json.dumps(row.get("metadata") or {}),
+            ),
+        )
+        # Prune snapshots older than 30 days per symbol
+        cutoff = recorded - 30 * 86400
+        cursor.execute(
+            "DELETE FROM crypto_derivatives_history WHERE symbol = ? AND recorded_at < ?",
+            (sym, cutoff),
+        )
+
+
+def get_crypto_derivatives_at(
+    symbol: str,
+    at_ts: float | int | None,
+) -> dict[str, Any] | None:
+    sym = str(symbol or "").upper()
+    if not sym:
+        return None
+    try:
+        ref = float(at_ts) if at_ts is not None else time.time()
+    except (TypeError, ValueError):
+        ref = time.time()
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT funding_rate, open_interest, oi_change_24h_pct, mark_price,
+                       quadrant, score, source, recorded_at
+                FROM crypto_derivatives_history
+                WHERE symbol = ? AND recorded_at <= ?
+                ORDER BY recorded_at DESC
+                LIMIT 1
+                """,
+                (sym, ref),
+            )
+            row = cursor.fetchone()
+        except Exception:
+            return None
+    if not row:
+        # Live fallback: latest snapshot regardless of time
+        with db_session(commit=False) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT funding_rate, open_interest, oi_change_24h_pct, mark_price,
+                           quadrant, score, source, recorded_at
+                    FROM crypto_derivatives_history
+                    WHERE symbol = ?
+                    ORDER BY recorded_at DESC
+                    LIMIT 1
+                    """,
+                    (sym,),
+                )
+                row = cursor.fetchone()
+            except Exception:
+                return None
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    return {
+        "funding_rate": row[0],
+        "open_interest": row[1],
+        "oi_change_24h_pct": row[2],
+        "mark_price": row[3],
+        "quadrant": row[4],
+        "score": row[5],
+        "source": row[6],
+        "recorded_at": row[7],
+    }
+
+
 def altdata_counts() -> dict[str, int]:
-    out = {"economic_events": 0, "corporate_events": 0, "sentiment_events": 0}
+    out = {
+        "economic_events": 0,
+        "corporate_events": 0,
+        "sentiment_events": 0,
+        "crypto_derivatives_snapshots": 0,
+    }
     with db_session(commit=False) as conn:
         cursor = conn.cursor()
         for table, key in (
             ("economic_events", "economic_events"),
             ("corporate_events", "corporate_events"),
             ("sentiment_events", "sentiment_events"),
+            ("crypto_derivatives_history", "crypto_derivatives_snapshots"),
         ):
             try:
                 cursor.execute(f"SELECT COUNT(*) FROM {table}")

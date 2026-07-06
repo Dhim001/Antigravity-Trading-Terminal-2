@@ -66,6 +66,11 @@ export function applySessionToStore(session, storeActions) {
   }
 }
 
+/** GET /health/massive — lightweight Massive feed ops (no DB/LLM). */
+export async function fetchMassiveFeedHealth() {
+  return apiRequest('/health/massive');
+}
+
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');

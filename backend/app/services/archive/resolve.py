@@ -85,6 +85,13 @@ def resolve_candles_for_range(
         meta["oldest"] = windowed[0]["time"]
         meta["newest"] = windowed[-1]["time"]
 
+    from app.config import BACKTEST_PRICE_ADJUST
+    from app.services.altdata.adjustments import apply_price_adjustments
+
+    if BACKTEST_PRICE_ADJUST != "raw" and windowed:
+        windowed = apply_price_adjustments(windowed, symbol, mode=BACKTEST_PRICE_ADJUST)
+        meta["price_adjust"] = BACKTEST_PRICE_ADJUST
+
     return windowed, meta
 
 
@@ -100,6 +107,7 @@ def _attach_backtest_range_meta(
     *,
     days: int,
     effective_days: int,
+    symbol: str = "",
 ) -> None:
     """Record requested vs actually replayed window for UI parity."""
     meta["days_requested"] = days
@@ -127,6 +135,15 @@ def _attach_backtest_range_meta(
 
     if notes:
         meta["range_note"] = " · ".join(notes)
+
+    if candles and symbol:
+        from app.services.altdata.event_policy import backtest_event_manifest
+
+        meta["event_manifest"] = backtest_event_manifest(
+            symbol,
+            int(candles[0]["time"]),
+            int(candles[-1]["time"]),
+        )
 
 
 def resolve_backtest_candles(
@@ -185,11 +202,15 @@ def resolve_backtest_candles(
             if interval == "1m"
             else "mixed 1m (recent) + 1h (older)"
         )
-        _attach_backtest_range_meta(meta, candles_1m, days=days, effective_days=effective_days)
+        _attach_backtest_range_meta(
+            meta, candles_1m, days=days, effective_days=effective_days, symbol=symbol,
+        )
         return candles_1m, meta
 
     resampled = resample_candles_for_timeframe(candles_1m, tf)
     meta["bars_1m"] = len(candles_1m)
     meta["resolution_note"] = f"1m bars resampled to {tf}"
-    _attach_backtest_range_meta(meta, resampled, days=days, effective_days=effective_days)
+    _attach_backtest_range_meta(
+        meta, resampled, days=days, effective_days=effective_days, symbol=symbol,
+    )
     return resampled, meta

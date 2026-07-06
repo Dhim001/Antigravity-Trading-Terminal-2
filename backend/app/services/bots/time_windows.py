@@ -13,6 +13,7 @@ from app.config import (
     RISK_TIME_CONTROLS_ENABLED,
     RISK_WEEKEND_FLATTEN_ENABLED,
     RISK_WEEKEND_FLATTEN_FRIDAY_AFTER,
+    CRYPTO_SYMBOLS,
 )
 from app.services.massive_symbols import is_crypto_terminal_symbol
 
@@ -27,7 +28,8 @@ class TimeWindow:
 
 
 def is_crypto_symbol(symbol: str) -> bool:
-    return is_crypto_terminal_symbol(symbol or "")
+    sym = str(symbol or "").upper().strip()
+    return is_crypto_terminal_symbol(sym) or sym in CRYPTO_SYMBOLS
 
 
 def _parse_hhmm(value: str) -> time:
@@ -147,7 +149,7 @@ def should_flatten_symbol(symbol: str, now: datetime | None = None) -> bool:
 def time_controls_status(now: datetime | None = None) -> dict:
     local = _to_market_local(now or datetime.now(_market_tz()))
     blocked, reason = is_no_trade_window(local, "AAPL")
-    return {
+    status = {
         "enabled": RISK_TIME_CONTROLS_ENABLED,
         "no_trade_windows": RISK_NO_TRADE_WINDOWS,
         "market_tz": RISK_EQUITY_MARKET_TZ,
@@ -158,3 +160,25 @@ def time_controls_status(now: datetime | None = None) -> dict:
         "weekend_flatten_active": in_weekend_flatten_window(local),
         "crypto_exempt": True,
     }
+    try:
+        from app.config import CALENDAR_GATES_ENABLED, MACRO_GATES_ENABLED
+        from app.services.altdata.calendar import is_market_holiday, is_equity_rth_open
+        from app.services.altdata.event_policy import get_upcoming_macro
+
+        status["calendar_gates_enabled"] = CALENDAR_GATES_ENABLED
+        status["macro_gates_enabled"] = MACRO_GATES_ENABLED
+        if CALENDAR_GATES_ENABLED:
+            import time as _time
+
+            epoch = local.timestamp()
+            is_hol, hol_title = is_market_holiday(epoch)
+            rth_open, rth_reason = is_equity_rth_open("AAPL", epoch)
+            status["market_holiday_today"] = is_hol
+            status["market_holiday_title"] = hol_title
+            status["equity_rth_open"] = rth_open
+            status["equity_rth_reason"] = rth_reason
+        if MACRO_GATES_ENABLED:
+            status["upcoming_macro"] = get_upcoming_macro(days=3)[:5]
+    except Exception:
+        pass
+    return status

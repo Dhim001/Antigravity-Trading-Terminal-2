@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.config import ALTDATA_ENABLED, ALTDATA_REFRESH_INTERVAL_SEC, MASSIVE_API_KEY, TERMINAL_MODE
+from app.config import ALTDATA_ENABLED, ALTDATA_REFRESH_INTERVAL_SEC, CRYPTO_DERIVATIVES_ENABLED, FINNHUB_API_KEY, MACRO_CALENDAR_ENABLED, MASSIVE_API_KEY, TERMINAL_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,25 @@ def _run_refresh(symbols: list[str] | None) -> dict:
         except Exception as exc:
             logger.warning("Sentiment refresh failed: %s", exc)
             result["sentiment"] = {"enabled": True, "error": str(exc)}
+
+    if MACRO_CALENDAR_ENABLED and FINNHUB_API_KEY:
+        from app.services.altdata.macro_provider import refresh_macro_calendar
+
+        try:
+            result["macro_calendar"] = refresh_macro_calendar()
+        except Exception as exc:
+            logger.warning("Macro calendar refresh failed: %s", exc)
+            result["macro_calendar"] = {"enabled": True, "error": str(exc)}
+
+    if CRYPTO_DERIVATIVES_ENABLED:
+        from app.services.altdata.crypto_provider import refresh_crypto_derivatives
+
+        try:
+            result["crypto_derivatives"] = refresh_crypto_derivatives(symbols)
+        except Exception as exc:
+            logger.warning("Crypto derivatives refresh failed: %s", exc)
+            result["crypto_derivatives"] = {"enabled": True, "error": str(exc)}
+
     return result
 
 

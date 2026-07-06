@@ -23,6 +23,7 @@ import {
 import { fetchStrategySuggestion } from '@/api/endpoints';
 import { invokeHttpAction } from '@/api/transport';
 import { Action } from '@/api/protocol';
+import { validateConfigPatch } from '@/lib/botConfigDisplay';
 
 function formatParamLabel(key) {
   return String(key).replace(/_/g, ' ');
@@ -167,6 +168,12 @@ export default function StrategySuggestPanel({
   const applySuggestion = async () => {
     const patch = advisor?.suggested_params;
     if (!effectiveBotId || !patch || Object.keys(patch).length === 0 || applying) return;
+    const botTimeframe = sortedCandidates.find((b) => b.id === effectiveBotId)?.timeframe;
+    const validationError = validateConfigPatch(patch, { botTimeframe });
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
     setApplying(true);
     try {
       await invokeHttpAction(Action.BOT_UPDATE_CONFIG, {

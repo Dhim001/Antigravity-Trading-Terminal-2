@@ -50,6 +50,12 @@ function readLabWidth() {
 
 export default function BacktestLabSheet() {
   const open = useStore((s) => s.backtestLabOpen);
+  if (!open) return null;
+  return <BacktestLabSheetInner />;
+}
+
+function BacktestLabSheetInner() {
+  const open = useStore((s) => s.backtestLabOpen);
   const setOpen = useStore((s) => s.setBacktestLabOpen);
   const labTab = useStore((s) => s.backtestLabTab);
   const setBacktestLabTab = useStore((s) => s.setBacktestLabTab);

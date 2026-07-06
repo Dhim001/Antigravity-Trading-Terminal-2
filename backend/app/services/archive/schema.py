@@ -148,3 +148,22 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_updated ON sentiment_events (symbol, updated_at DESC)"
     )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS crypto_derivatives_history (
+            symbol            TEXT NOT NULL,
+            recorded_at       REAL NOT NULL,
+            funding_rate      REAL,
+            open_interest     REAL,
+            oi_change_24h_pct REAL,
+            mark_price        REAL,
+            quadrant          TEXT,
+            score             INTEGER NOT NULL DEFAULT 0,
+            source            TEXT NOT NULL,
+            metadata_json     TEXT,
+            PRIMARY KEY (symbol, recorded_at)
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_crypto_deriv_sym_time ON crypto_derivatives_history (symbol, recorded_at DESC)"
+    )

@@ -8,7 +8,7 @@ import { massiveFeedPlanLabel } from '../lib/massiveMarket';
 export default function MassiveFeedStatusBanner() {
   const terminalMode = useStore((s) => s.terminalMode);
   const symbolsList = useStore((s) => s.symbolsList);
-  const health = useMassiveHealth(12_000);
+  const health = useMassiveHealth();
 
   if (terminalMode !== 'LIVE_MASSIVE' || !health) return null;
 

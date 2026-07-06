@@ -1,7 +1,7 @@
 """Tests for backtest / live-bot alignment."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.services.bots.backtester import BacktesterService
 from app.services.bots.screener import MarketScreenerService
@@ -44,6 +44,14 @@ class BacktestRiskSizingAlignmentTests(unittest.TestCase):
         self.screener = MarketScreenerService()
         self.backtester = BacktesterService(self.screener)
         self.candles = _make_candles(120)
+        self._gate_patcher = patch(
+            "app.services.altdata.event_policy.check_entry_gates",
+            return_value=(True, None, None),
+        )
+        self._gate_patcher.start()
+
+    def tearDown(self):
+        self._gate_patcher.stop()
 
     def test_backtest_sizes_from_account_snapshot_not_allocation(self):
         """With risk_base=50k and cap=1000, qty reflects account risk then allocation cap."""
@@ -81,6 +89,14 @@ class BacktestLiveAlignmentTests(unittest.TestCase):
         self.screener = MarketScreenerService()
         self.backtester = BacktesterService(self.screener)
         self.candles = _make_candles(120)
+        self._gate_patcher = patch(
+            "app.services.altdata.event_policy.check_entry_gates",
+            return_value=(True, None, None),
+        )
+        self._gate_patcher.start()
+
+    def tearDown(self):
+        self._gate_patcher.stop()
 
     def test_screener_full_history_uses_all_bars(self):
         long_series = _make_candles(400)

@@ -1,6 +1,9 @@
 /** Deploy gate — forward-test before capital (mirrors backend deploy_gate.py). */
 
 import { backtestFingerprint } from './backtestDisplay';
+import { formatDirectionModeLabel, normalizeDirectionMode } from './botConfigDisplay';
+
+export { normalizeDirectionMode, formatDirectionModeLabel };
 
 export const DEPLOY_GATE_DEFAULTS = {
   minTrades: 1,
@@ -11,6 +14,29 @@ export const DEPLOY_GATE_DEFAULTS = {
 
 function check({ id, level, ok, message, detail }) {
   return { id, level, ok, message, detail };
+}
+
+/** sim_mode from backtest wire payload (top-level or meta.config). */
+export function extractBacktestSimMode(results) {
+  if (!results) return 'live_aligned';
+  const cfg = results.meta?.config ?? {};
+  return String(results.sim_mode ?? cfg.sim_mode ?? 'live_aligned').toLowerCase();
+}
+
+/** direction_mode used for the backtest run (meta.config, sweep best, or explicit override). */
+export function extractBacktestDirectionMode(results, backtestConfig) {
+  if (backtestConfig?.direction_mode != null) {
+    return normalizeDirectionMode(backtestConfig.direction_mode);
+  }
+  const cfg = results?.meta?.config ?? {};
+  if (cfg.direction_mode != null) {
+    return normalizeDirectionMode(cfg.direction_mode);
+  }
+  const best = results?.sweep?.best?.config;
+  if (best?.direction_mode != null) {
+    return normalizeDirectionMode(best.direction_mode);
+  }
+  return 'LONG_ONLY';
 }
 
 function symbolSlice(results, symbol) {
@@ -107,6 +133,7 @@ export function evaluateDeployGate({
   results,
   symbol,
   config,
+  backtestConfig,
   snapshot,
   days,
   timeframe,
@@ -243,6 +270,7 @@ export function evaluateDeployGate({
       days: String(days),
       timeframe,
       config,
+      simMode: backtestConfig?.sim_mode ?? extractBacktestSimMode(results),
     });
     if (snapshot !== current) {
       checks.push(check({
@@ -251,6 +279,38 @@ export function evaluateDeployGate({
         ok: false,
         message: 'Config changed since last backtest',
         detail: 'Re-run backtest or deploy anyway to accept drift risk.',
+      }));
+    }
+  }
+
+  if (results && config) {
+    const simMode = extractBacktestSimMode(results);
+    if (simMode === 'research') {
+      checks.push(check({
+        id: 'research_sim_mode',
+        level: 'warn',
+        ok: false,
+        message: 'Backtest used research mode',
+        detail: 'Research allows shorts without live risk gates — re-run live-aligned before deploy, or confirm bypass.',
+      }));
+    }
+
+    const deployDir = normalizeDirectionMode(config.direction_mode);
+    const btDir = extractBacktestDirectionMode(results, backtestConfig);
+    if (deployDir !== btDir) {
+      checks.push(check({
+        id: 'direction_mode_mismatch',
+        level: 'warn',
+        ok: false,
+        message: `Trade direction mismatch: backtest ${formatDirectionModeLabel(btDir)}, deploy ${formatDirectionModeLabel(deployDir)}`,
+        detail: 'Live bot risk gate uses deploy direction — shorts may be blocked or allowed differently than the backtest.',
+      }));
+    } else if (deployDir === 'BOTH' && simMode === 'live_aligned') {
+      checks.push(check({
+        id: 'direction_mode_both',
+        level: 'pass',
+        ok: true,
+        message: 'Trade direction: both long & short (live-aligned)',
       }));
     }
   }
@@ -280,6 +340,7 @@ export function buildDeployPayload({
     days: String(days),
     timeframe,
     config,
+    simMode: config?.sim_mode,
   });
   return {
     strategy,

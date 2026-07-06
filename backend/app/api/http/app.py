@@ -36,7 +36,6 @@ from app.config import (
     WS_PORT,
 )
 from app.api.http.auth import ApiKeyMiddleware
-from app.database import get_db_stats
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.backtest_store import get_backtest_run, get_backtest_trades, list_backtest_runs
 from app.services.bots.optimization_store import get_optimization_run, list_optimization_runs
@@ -62,6 +61,21 @@ async def metrics(request: Request) -> PlainTextResponse:
 async def health_live(request: Request) -> JSONResponse:
     """Fast liveness probe — no DB or LLM."""
     return JSONResponse({"ok": True, "service": "trading-terminal"})
+
+
+async def health_massive(request: Request) -> JSONResponse:
+    """Lightweight Massive feed status for UI banners (no DB/LLM)."""
+    state: AppState = request.app.state.terminal
+    feed = getattr(state, "feed", None)
+    body: dict = {"ok": True, "terminal_mode": TERMINAL_MODE}
+    if TERMINAL_MODE == "LIVE_MASSIVE" and feed is not None and hasattr(feed, "massive_status"):
+        try:
+            body["massive"] = feed.massive_status
+        except Exception:
+            body["massive"] = None
+    else:
+        body["massive"] = None
+    return JSONResponse(body)
 
 
 async def admin_shutdown_handler(request: Request) -> JSONResponse:
@@ -115,7 +129,7 @@ async def health(request: Request) -> JSONResponse:
             SCANNER_ENABLED,
         )
 
-        body["llm"] = await get_llm_status()
+        body["llm"] = await asyncio.wait_for(get_llm_status(), timeout=2.0)
         body["agent_llm_enabled"] = AGENT_LLM_ENABLED
         body["agent_vision_enabled"] = AGENT_VISION_ENABLED
         body["agent_enabled"] = AGENT_ENABLED
@@ -136,7 +150,9 @@ async def health(request: Request) -> JSONResponse:
         body["ok"] = False
 
     try:
-        stats = await asyncio.to_thread(get_db_stats)
+        from app.services.db_stats_cache import get_db_stats_cached
+
+        stats = await asyncio.to_thread(get_db_stats_cached)
         body["metrics"] = {
             "open_positions": stats.get("positions_count", 0),
             "pending_orders": stats.get("pending_orders_count", 0),
@@ -966,6 +982,7 @@ def _make_endpoint(binding):
 def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health/live", health_live, methods=["GET"]),
+        Route("/health/massive", health_massive, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
         Route("/api/v1/admin/shutdown", admin_shutdown_handler, methods=["POST"]),
         Route("/api/v1/session", session_handler, methods=["GET"]),

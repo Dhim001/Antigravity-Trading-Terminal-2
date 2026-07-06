@@ -120,6 +120,19 @@ def test_fingerprint_mismatch_warns():
     assert any(c["id"] == "config_fingerprint" for c in gate["checks"])
 
 
+def test_split_raw_adjust_warns():
+    results = {
+        "total_pnl": 100.0,
+        "trade_count": 5,
+        "summary": {"total_pnl": 100.0, "total_trades": 5},
+        "meta": {
+            "event_manifest": {"splits_in_range": 1, "price_adjust": "raw"},
+        },
+    }
+    gate = evaluate_deploy_gate(results)
+    assert any(c["id"] == "corp_split_adjust" for c in gate["checks"])
+
+
 def test_enrich_deploy_config_persists_audit_fields():
     out = enrich_deploy_config(
         {"min_confidence": 0.6},

@@ -22,6 +22,7 @@ _BY_MODE: dict[str, dict] = {
         "bracket_orders": True,
         "oco": True,
         "trailing_stop_manual": True,
+        "paper_shorts": True,
     },
     "LIVE_MASSIVE": {
         **_DEFAULT,
@@ -30,6 +31,7 @@ _BY_MODE: dict[str, dict] = {
         "bracket_orders": True,
         "oco": True,
         "trailing_stop_manual": True,
+        "paper_shorts": True,
     },
     "LIVE_ETORO": {
         **_DEFAULT,
@@ -61,9 +63,12 @@ _BY_MODE: dict[str, dict] = {
 
 def get_order_capabilities(oms=None) -> dict:
     """Return capability flags for the active terminal / OMS."""
+    from app.config import PAPER_SHORTS_ENABLED
+
     mode = TERMINAL_MODE
     caps = dict(_BY_MODE.get(mode, _DEFAULT))
     caps["broker"] = mode
+    caps["paper_shorts"] = PAPER_SHORTS_ENABLED and caps.get("paper_shorts", False)
 
     oms_name = type(oms).__name__.lower() if oms is not None else ""
     if oms is not None and getattr(oms, "use_fallback", False):

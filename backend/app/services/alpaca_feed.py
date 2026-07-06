@@ -5,7 +5,8 @@ import time
 from datetime import datetime
 from typing import Callable, Awaitable, List, Dict
 import websockets
-from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL, SYMBOLS
+from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BROADCAST_INTERVAL_SEC, SYMBOLS
+from app.services.alpaca_data import fallback_to_iex, get_alpaca_ws_url, is_sip_entitlement_error
 from app.api.outbound import publish_market_update
 from app.services.base_feed import BaseFeedService
 from app.services.feeds.bar_close import BarCloseEmitter
@@ -19,6 +20,9 @@ class AlpacaFeedService(BaseFeedService):
         self.connection_task = None
         self.active = False
         self._bar_close = BarCloseEmitter()
+        self._ws_url = ""
+        self._pending_updates: Dict[str, dict] = {}
+        self._broadcast_task = None
         for sym, info in self._symbols.items():
             self.order_books[sym] = self._generate_synthetic_book(sym, info["price"])
 
@@ -60,11 +64,20 @@ class AlpacaFeedService(BaseFeedService):
             return
             
         self.active = True
+        self._ws_url = get_alpaca_ws_url()
         self.connection_task = asyncio.create_task(self._ws_loop())
-        logging.info("Alpaca feed stream task started.")
+        self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        logging.info("Alpaca feed stream task started (ws=%s).", self._ws_url)
 
     async def stop(self) -> None:
         self.active = False
+        if self._broadcast_task:
+            self._broadcast_task.cancel()
+            try:
+                await self._broadcast_task
+            except asyncio.CancelledError:
+                pass
+            self._broadcast_task = None
         if self.connection_task:
             self.connection_task.cancel()
             try:
@@ -120,13 +133,33 @@ class AlpacaFeedService(BaseFeedService):
                 
         self.connection_task = asyncio.create_task(fallback_loop())
 
+    async def _broadcast_loop(self) -> None:
+        """Coalesce per-tick WS updates into periodic broadcasts (like Massive loop)."""
+        interval = max(0.5, float(ALPACA_BROADCAST_INTERVAL_SEC))
+        while self.active:
+            try:
+                await asyncio.sleep(interval)
+                if not self.broadcast_callback or not self._pending_updates:
+                    continue
+                batch = self._pending_updates
+                self._pending_updates = {}
+                await publish_market_update(self.broadcast_callback, batch)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logging.error("Alpaca broadcast loop error: %s", exc)
+
+    def _queue_market_broadcast(self, symbol: str) -> None:
+        if symbol in self._symbols:
+            self._pending_updates[symbol] = self.get_market_data(symbol)
+
     async def _ws_loop(self):
         while self.active:
             try:
-                async with websockets.connect(ALPACA_DATA_URL) as ws:
+                async with websockets.connect(self._ws_url) as ws:
                     # 1. Expect welcome message
                     welcome = await ws.recv()
-                    logging.info(f"Alpaca stream connected: {welcome}")
+                    logging.info("Alpaca stream connected (%s): %s", self._ws_url, welcome)
                     
                     # 2. Authenticate
                     auth_msg = {
@@ -139,7 +172,15 @@ class AlpacaFeedService(BaseFeedService):
                     logging.info(f"Alpaca auth response: {auth_resp}")
                     
                     auth_data = json.loads(auth_resp)
-                    if auth_data[0].get("msg") != "authenticated":
+                    first = auth_data[0] if auth_data else {}
+                    if first.get("msg") != "authenticated":
+                        if first.get("T") == "error" and (
+                            first.get("code") == 409
+                            or is_sip_entitlement_error(0, first.get("msg", ""))
+                        ):
+                            _, self._ws_url = fallback_to_iex()
+                            await asyncio.sleep(1)
+                            continue
                         logging.error("Alpaca authentication failed. Sleeping and retrying.")
                         await asyncio.sleep(5)
                         continue
@@ -159,7 +200,6 @@ class AlpacaFeedService(BaseFeedService):
                         if not self.active:
                             break
                         msgs = json.loads(msg_str)
-                        updates = {}
                         for m in msgs:
                             stream_type = m.get("T")
                             symbol = m.get("S")
@@ -202,10 +242,8 @@ class AlpacaFeedService(BaseFeedService):
                                         active_candles.pop(0)
                                     self._bar_close.notify(symbol)
                                         
-                            updates[symbol] = self.get_market_data(symbol)
-                            
-                        if updates and self.broadcast_callback:
-                            await publish_market_update(self.broadcast_callback, updates)
+                            if stream_type in ("t", "b"):
+                                self._queue_market_broadcast(symbol)
                             
             except asyncio.CancelledError:
                 break

@@ -22,7 +22,6 @@ import {
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
   RefreshCw, AlertTriangle, Zap, History, Brain, Radar, ChevronUp, Loader2,
 } from 'lucide-react';
-import EquityCurveTab from './EquityCurveTab';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestResultsPanel from './BacktestResultsPanel';
 import BacktestProgressBar from './BacktestProgressBar';
@@ -45,9 +44,14 @@ const TickViewerTab = lazy(() => import('./TickViewerTab'));
 const BotHistoryTab = lazy(() => import('./BotHistoryTab'));
 const AnalystTab = lazy(() => import('./AnalystTab'));
 const ScannerTab = lazy(() => import('./ScannerTab'));
+const EquityCurveTab = lazy(() => import('./EquityCurveTab'));
 
 function DockTabFallback() {
   return <WidgetEmpty message="Loading tab…" />;
+}
+
+function DetachedLazyPanel({ children }) {
+  return <Suspense fallback={<DockTabFallback />}>{children}</Suspense>;
 }
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -146,6 +150,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
   };
 
   const [activeTab, setActiveTab] = useState(workspaceTab);
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([workspaceTab]));
   const [activeGroup, setActiveGroup] = useState(
     DOCK_GROUP_CONFIG[workspaceGroup] ? workspaceGroup : dockGroupForTab(workspaceTab),
   );
@@ -164,6 +169,27 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     setActiveTab(workspaceTab);
     setActiveGroup(dockGroupForTab(workspaceTab));
   }, [workspaceTab]);
+
+  useEffect(() => {
+    setVisitedTabs((prev) => {
+      if (prev.has(activeTab)) return prev;
+      const next = new Set(prev);
+      next.add(activeTab);
+      return next;
+    });
+  }, [activeTab]);
+
+  const mountTab = useCallback((tabId) => visitedTabs.has(tabId), [visitedTabs]);
+
+  const renderMountedTab = (tabId, ContentComponent, options = {}) => {
+    const { suspense = false } = options;
+    if (!mountTab(tabId)) return null;
+    const body = renderTabContent(tabId, ContentComponent);
+    if (suspense) {
+      return <Suspense fallback={<DockTabFallback />}>{body}</Suspense>;
+    }
+    return body;
+  };
 
   useEffect(() => {
     if (DOCK_GROUP_CONFIG[workspaceGroup]) {
@@ -319,12 +345,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('scanner') && (
           <DetachedPanelPortal title="Scanner" onClose={() => attach('scanner')}>
-            <ScannerTab />
+            <DetachedLazyPanel><ScannerTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('analyst') && (
           <DetachedPanelPortal title="Analyst" onClose={() => attach('analyst')}>
-            <AnalystTab />
+            <DetachedLazyPanel><AnalystTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('reconcile') && (
@@ -334,12 +360,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('bots') && (
           <DetachedPanelPortal title="Bot History" onClose={() => attach('bots')}>
-            <BotHistoryTab />
+            <DetachedLazyPanel><BotHistoryTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('ticks') && (
           <DetachedPanelPortal title="Ticks" onClose={() => attach('ticks')}>
-            <TickViewerTab />
+            <DetachedLazyPanel><TickViewerTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('history') && (
@@ -349,7 +375,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('equity') && (
           <DetachedPanelPortal title="Equity Curve" onClose={() => attach('equity')}>
-            <EquityCurveTab />
+            <DetachedLazyPanel><EquityCurveTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
 
@@ -430,12 +456,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('scanner') && (
           <DetachedPanelPortal title="Scanner" onClose={() => attach('scanner')}>
-            <ScannerTab />
+            <DetachedLazyPanel><ScannerTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('analyst') && (
           <DetachedPanelPortal title="Analyst" onClose={() => attach('analyst')}>
-            <AnalystTab />
+            <DetachedLazyPanel><AnalystTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('reconcile') && (
@@ -445,12 +471,12 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('bots') && (
           <DetachedPanelPortal title="Bot History" onClose={() => attach('bots')}>
-            <BotHistoryTab />
+            <DetachedLazyPanel><BotHistoryTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('ticks') && (
           <DetachedPanelPortal title="Ticks" onClose={() => attach('ticks')}>
-            <TickViewerTab />
+            <DetachedLazyPanel><TickViewerTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('history') && (
@@ -460,7 +486,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         )}
         {isDetached('equity') && (
           <DetachedPanelPortal title="Equity Curve" onClose={() => attach('equity')}>
-            <EquityCurveTab />
+            <DetachedLazyPanel><EquityCurveTab /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
 
@@ -582,67 +608,59 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           </div>
 
           <div className="dock-tab-panels">
-          <TabsContent value="positions" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="positions" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Positions">
-              {renderTabContent("positions", PositionsTab)}
+              {renderMountedTab('positions', PositionsTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="orders" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="orders" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Orders">
-              {renderTabContent("orders", OrdersTab)}
+              {renderMountedTab('orders', OrdersTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="balances" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="balances" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Balances">
-              {renderTabContent("balances", BalancesTab)}
+              {renderMountedTab('balances', BalancesTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="algo" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="algo" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Algo Bot">
-              {renderTabContent("algo", AlgoTab)}
+              {renderMountedTab('algo', AlgoTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="scanner" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="scanner" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Scanner">
-              <Suspense fallback={<DockTabFallback />}>
-                {renderTabContent("scanner", ScannerTab)}
-              </Suspense>
+              {renderMountedTab('scanner', ScannerTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="analyst" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="analyst" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Chart Analyst">
-              <Suspense fallback={<DockTabFallback />}>
-                {renderTabContent("analyst", AnalystTab)}
-              </Suspense>
+              {renderMountedTab('analyst', AnalystTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="reconcile" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="reconcile" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Reconciliation">
-              {renderTabContent("reconcile", ReconciliationTab)}
+              {renderMountedTab('reconcile', ReconciliationTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="bots" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="bots" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Bot History">
-              <Suspense fallback={<DockTabFallback />}>
-                {renderTabContent("bots", BotHistoryTab)}
-              </Suspense>
+              {renderMountedTab('bots', BotHistoryTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="ticks" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="ticks" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Ticks">
-              <Suspense fallback={<DockTabFallback />}>
-                {renderTabContent("ticks", TickViewerTab)}
-              </Suspense>
+              {renderMountedTab('ticks', TickViewerTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="equity" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="equity" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Equity curve">
-              {renderTabContent("equity", EquityCurveTab)}
+              {renderMountedTab('equity', EquityCurveTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="history" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden" forceMount>
+          <TabsContent value="history" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Trade history">
-              {!historyFullscreen && <TradeHistoryContent embedded />}
+              {mountTab('history') && !historyFullscreen && <TradeHistoryContent embedded />}
             </ErrorBoundary>
           </TabsContent>
           </div>

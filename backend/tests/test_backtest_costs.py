@@ -1,6 +1,7 @@
 """Tests for backtest slippage/fees impact."""
 
 import unittest
+from unittest.mock import patch
 
 from app.services.bots.backtester import BacktesterService
 from app.services.bots.screener import MarketScreenerService
@@ -35,10 +36,16 @@ class BacktestCostsIntegrationTests(unittest.TestCase):
         import app.services.bots.backtester as bt_mod
         self._orig_get = bt_mod.get_strategy
         bt_mod.get_strategy = lambda _n, _c: AlwaysBuyStrategy({})
+        self._gate_patcher = patch(
+            "app.services.altdata.event_policy.check_entry_gates",
+            return_value=(True, None, None),
+        )
+        self._gate_patcher.start()
 
     def tearDown(self):
         import app.services.bots.backtester as bt_mod
         bt_mod.get_strategy = self._orig_get
+        self._gate_patcher.stop()
 
     def test_fees_reduce_pnl_vs_zero_cost(self):
         base = self.backtester.run_backtest(

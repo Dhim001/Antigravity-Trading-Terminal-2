@@ -787,7 +787,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
               {systemStats.data_quality && (
                 <AdminSection
                   title="Data Quality"
-                  description="Feed freshness, spread anomalies, and candle gaps. Severe stale feeds auto-pause bots."
+                  description="Feed freshness, spread anomalies, and candle gaps. Severe stale feeds auto-pause bots and resume when the feed recovers."
                 >
                   <div className="flex flex-wrap gap-2 mb-2">
                     <StatCard

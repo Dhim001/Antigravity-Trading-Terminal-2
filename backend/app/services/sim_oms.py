@@ -2,10 +2,16 @@ import uuid
 import time
 from typing import Dict, List, Any
 from app.database import get_connection
-from app.config import MAX_ORDER_VALUE
+from app.config import MAX_ORDER_VALUE, PAPER_SHORTS_ENABLED
 from app.services.base_oms import BaseOMSService
 from app.services.bots import positions as bot_positions
 from app.services.fifo_pnl import backfill_missing_order_pnl, enrich_orders_with_pnl, record_order_fifo_pnl
+from app.services.paper_ledger import (
+    apply_fill_balances,
+    classify_buy,
+    classify_sell,
+    short_margin_required,
+)
 from app.services.order_bracket import (
     bracket_result_fields,
     cancel_oco_for_symbol,
@@ -200,10 +206,26 @@ class SimulatedOMSService(BaseOMSService):
             if side == "BUY":
                 cursor.execute("SELECT balance, locked FROM accounts WHERE asset = ?", (quote,))
                 row = cursor.fetchone()
-                if not row or (row["balance"] - row["locked"]) < order_value:
+                cursor.execute(
+                    "SELECT size, avg_price FROM positions WHERE symbol = ?",
+                    (symbol,),
+                )
+                pos_row = cursor.fetchone()
+                position_size = float(pos_row["size"]) if pos_row else 0.0
+                position_avg = float(pos_row["avg_price"]) if pos_row else 0.0
+                short_cover, _ = classify_buy(position_size, quantity)
+                margin_releasable = position_avg * short_cover if short_cover > 0 else 0.0
+                available = (row["balance"] - row["locked"]) if row else 0.0
+                if available + margin_releasable < order_value:
                     conn.close()
-                    return {"status": "error", "message": f"Insufficient {quote} balance. Needed: {order_value:.2f}"}
-                    
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Insufficient {quote} balance. Needed: {order_value:.2f}, "
+                            f"available: {available + margin_releasable:.2f}"
+                        ),
+                    }
+
                 if order_type == "LIMIT":
                     cursor.execute("UPDATE accounts SET locked = locked + ? WHERE asset = ?", (order_value, quote))
                     
@@ -211,14 +233,49 @@ class SimulatedOMSService(BaseOMSService):
                 cursor.execute("SELECT size FROM positions WHERE symbol = ?", (symbol,))
                 row = cursor.fetchone()
                 position_size = row["size"] if row else 0.0
-                
-                cursor.execute("SELECT SUM(quantity) FROM orders WHERE symbol = ? AND side = 'SELL' AND status = 'PENDING'", (symbol,))
+
+                cursor.execute(
+                    "SELECT SUM(quantity) FROM orders WHERE symbol = ? AND side = 'SELL' AND status = 'PENDING'",
+                    (symbol,),
+                )
                 locked_row = cursor.fetchone()
                 locked_qty = locked_row[0] if locked_row[0] is not None else 0.0
-                
-                if (position_size - locked_qty) < quantity:
+
+                long_close_qty, short_open_qty = classify_sell(position_size, locked_qty, quantity)
+                if short_open_qty > 0:
+                    if not PAPER_SHORTS_ENABLED:
+                        conn.close()
+                        return {
+                            "status": "error",
+                            "message": "Short selling is disabled for paper trading (PAPER_SHORTS_ENABLED=false)",
+                        }
+                    margin_needed = short_margin_required(position_size, locked_qty, quantity, order_price)
+                    cursor.execute("SELECT balance, locked FROM accounts WHERE asset = ?", (quote,))
+                    bal_row = cursor.fetchone()
+                    available = (bal_row["balance"] - bal_row["locked"]) if bal_row else 0.0
+                    if available < margin_needed:
+                        conn.close()
+                        return {
+                            "status": "error",
+                            "message": (
+                                f"Insufficient {quote} margin for short. "
+                                f"Needed: {margin_needed:.2f}, available: {available:.2f}"
+                            ),
+                        }
+                    if order_type == "LIMIT":
+                        cursor.execute(
+                            "UPDATE accounts SET locked = locked + ? WHERE asset = ?",
+                            (margin_needed, quote),
+                        )
+                elif (position_size - locked_qty) < quantity:
                     conn.close()
-                    return {"status": "error", "message": f"Insufficient {symbol} position size to sell. Available: {position_size - locked_qty}"}
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Insufficient {symbol} position size to sell. "
+                            f"Available: {position_size - locked_qty}"
+                        ),
+                    }
 
             order_id = str(uuid.uuid4())
             status = "PENDING" if order_type == "LIMIT" else "FILLED"
@@ -331,6 +388,26 @@ class SimulatedOMSService(BaseOMSService):
             if order["side"] == "BUY" and order["type"] == "LIMIT":
                 release_val = order["price"] * order["quantity"]
                 cursor.execute("UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?", (release_val, quote))
+            elif order["side"] == "SELL" and order["type"] == "LIMIT":
+                cursor.execute("SELECT size FROM positions WHERE symbol = ?", (symbol,))
+                pos_row = cursor.fetchone()
+                position_size = pos_row["size"] if pos_row else 0.0
+                cursor.execute(
+                    """
+                    SELECT SUM(quantity) FROM orders
+                    WHERE symbol = ? AND side = 'SELL' AND status = 'PENDING' AND id != ?
+                    """,
+                    (symbol, order_id),
+                )
+                other_locked_row = cursor.fetchone()
+                other_locked = other_locked_row[0] if other_locked_row[0] is not None else 0.0
+                _, short_open_qty = classify_sell(position_size, other_locked, order["quantity"])
+                if short_open_qty > 0:
+                    release_val = short_open_qty * order["price"]
+                    cursor.execute(
+                        "UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?",
+                        (release_val, quote),
+                    )
                 
             conn.commit()
             conn.close()
@@ -387,7 +464,18 @@ class SimulatedOMSService(BaseOMSService):
                     if side == "BUY":
                         locked_val = limit_price * qty
                         cursor.execute("UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?", (locked_val, quote))
-                        
+                    elif side == "SELL":
+                        cursor.execute("SELECT size FROM positions WHERE symbol = ?", (symbol,))
+                        pos_row = cursor.fetchone()
+                        position_size = pos_row["size"] if pos_row else 0.0
+                        _, short_open_qty = classify_sell(position_size, 0.0, qty)
+                        if short_open_qty > 0:
+                            release_val = short_open_qty * limit_price
+                            cursor.execute(
+                                "UPDATE accounts SET locked = MAX(0.0, locked - ?) WHERE asset = ?",
+                                (release_val, quote),
+                            )
+
                     sl_pct, tp_pct, sl_px, tp_px = resolve_bracket_levels(
                         side,
                         market_price,
@@ -401,7 +489,7 @@ class SimulatedOMSService(BaseOMSService):
                         sl_pct, tp_pct,
                         stop_loss_price=sl_px,
                         take_profit_price=tp_px,
-                        bot_id=order.get("bot_id"),
+                        bot_id=order["bot_id"],
                         order_id=order["id"],
                     )
                     if sl_px is not None or tp_px is not None:
@@ -413,7 +501,7 @@ class SimulatedOMSService(BaseOMSService):
                             quantity=qty,
                             position_size=pos_size,
                             oco_group_id=oco_group_id,
-                            order_group_id=order.get("order_group_id"),
+                            order_group_id=order["order_group_id"],
                             stop_loss_price=sl_px,
                             take_profit_price=tp_px,
                             parent_order_id=order["id"],
@@ -472,16 +560,25 @@ class SimulatedOMSService(BaseOMSService):
         """Apply account/position updates on cursor. Returns bot fill tuple after commit."""
         base_asset = self.feed._symbols[symbol]["asset"]
         order_value = price * quantity
-        
-        if side == "BUY":
-            cursor.execute("UPDATE accounts SET balance = balance - ? WHERE asset = ?", (order_value, quote))
-            cursor.execute("UPDATE accounts SET balance = balance + ? WHERE asset = ?", (quantity, base_asset))
-        else:
-            cursor.execute("UPDATE accounts SET balance = balance + ? WHERE asset = ?", (order_value, quote))
-            cursor.execute("UPDATE accounts SET balance = MAX(0.0, balance - ?) WHERE asset = ?", (quantity, base_asset))
 
-        cursor.execute("SELECT size, avg_price, stop_loss_percent, take_profit_percent FROM positions WHERE symbol = ?", (symbol,))
+        cursor.execute(
+            "SELECT size, avg_price, stop_loss_percent, take_profit_percent FROM positions WHERE symbol = ?",
+            (symbol,),
+        )
         pos_row = cursor.fetchone()
+        position_size = float(pos_row["size"]) if pos_row else 0.0
+        position_avg = float(pos_row["avg_price"]) if pos_row else 0.0
+
+        apply_fill_balances(
+            cursor,
+            side=side,
+            price=price,
+            quantity=quantity,
+            quote=quote,
+            base_asset=base_asset,
+            position_size=position_size,
+            position_avg=position_avg,
+        )
         
         if not pos_row:
             new_size = quantity if side == "BUY" else -quantity

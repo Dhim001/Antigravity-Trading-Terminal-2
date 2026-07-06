@@ -99,6 +99,8 @@ HTTP_API_KEY = os.environ.get("HTTP_API_KEY", "").strip()
 
 # Pre-Trade Risk Limits
 MAX_ORDER_VALUE = 50000.0
+# Sim / Massive paper OMS: allow short entries (margin = 100% notional locked in quote).
+PAPER_SHORTS_ENABLED = os.environ.get("PAPER_SHORTS_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # Bot risk limits
 BOT_MIN_NOTIONAL = float(os.environ.get("BOT_MIN_NOTIONAL", "10.0"))
@@ -223,6 +225,9 @@ DATA_QUALITY_ENABLED = os.environ.get("DATA_QUALITY_ENABLED", "true").lower() in
     "1", "true", "yes"
 )
 DATA_QUALITY_INTERVAL_SEC = float(os.environ.get("DATA_QUALITY_INTERVAL_SEC", "15"))
+DIAGNOSTICS_INTERVAL_SEC = float(os.environ.get("DIAGNOSTICS_INTERVAL_SEC", "15"))
+DIAGNOSTICS_STATS_CACHE_SEC = float(os.environ.get("DIAGNOSTICS_STATS_CACHE_SEC", "30"))
+ALPACA_BROADCAST_INTERVAL_SEC = float(os.environ.get("ALPACA_BROADCAST_INTERVAL_SEC", "1.5"))
 DATA_QUALITY_STALE_WARN_SEC = float(os.environ.get("DATA_QUALITY_STALE_WARN_SEC", "30"))
 DATA_QUALITY_STALE_PAUSE_SEC = float(os.environ.get("DATA_QUALITY_STALE_PAUSE_SEC", "60"))
 DATA_QUALITY_MAX_SPREAD_PCT = float(os.environ.get("DATA_QUALITY_MAX_SPREAD_PCT", "2.0"))
@@ -234,6 +239,22 @@ DATA_QUALITY_ACTIVE_PAUSE = os.environ.get("DATA_QUALITY_ACTIVE_PAUSE", "true").
 # Alternative data refresh (Massive/Polygon REST)
 ALTDATA_ENABLED = os.environ.get("ALTDATA_ENABLED", "true").lower() in ("1", "true", "yes")
 ALTDATA_REFRESH_INTERVAL_SEC = float(os.environ.get("ALTDATA_REFRESH_INTERVAL_SEC", "3600"))
+# Calendar + corporate event entry gates (equity bots; crypto exempt)
+CALENDAR_GATES_ENABLED = os.environ.get("CALENDAR_GATES_ENABLED", "true").lower() in ("1", "true", "yes")
+CORP_EVENT_GATES_ENABLED = os.environ.get("CORP_EVENT_GATES_ENABLED", "true").lower() in ("1", "true", "yes")
+CORP_BLACKOUT_SPLIT_DAYS = int(os.environ.get("CORP_BLACKOUT_SPLIT_DAYS", "1"))
+CORP_BLACKOUT_EX_DIV_DAYS = int(os.environ.get("CORP_BLACKOUT_EX_DIV_DAYS", "0"))
+# Backtest price series: raw | split_only | total_return
+BACKTEST_PRICE_ADJUST = os.environ.get("BACKTEST_PRICE_ADJUST", "split_only").strip().lower()
+if BACKTEST_PRICE_ADJUST not in ("raw", "split_only", "total_return"):
+    BACKTEST_PRICE_ADJUST = "split_only"
+
+# Macro release entry gates (FOMC, CPI, NFP — applies to equities + crypto)
+MACRO_GATES_ENABLED = os.environ.get("MACRO_GATES_ENABLED", "true").lower() in ("1", "true", "yes")
+MACRO_BLACKOUT_MINUTES = int(os.environ.get("MACRO_BLACKOUT_MINUTES", "30"))
+MACRO_CALENDAR_ENABLED = os.environ.get("MACRO_CALENDAR_ENABLED", "true").lower() in ("1", "true", "yes")
+# Crypto perp positioning (Binance public API — funding + OI)
+CRYPTO_DERIVATIVES_ENABLED = os.environ.get("CRYPTO_DERIVATIVES_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # News/social sentiment feed (lexicon-scored headlines → sentiment_events)
 SENTIMENT_ENABLED = os.environ.get("SENTIMENT_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -324,7 +345,9 @@ DEFAULT_VOLATILITY_MULTIPLIER = 1.0
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+# WebSocket equity stream — auto-resolved to sip or iex when ALPACA_DATA_FEED=auto (default).
 ALPACA_DATA_URL = os.environ.get("ALPACA_DATA_URL", "wss://stream.data.alpaca.markets/v2/sip")
+ALPACA_DATA_FEED = os.environ.get("ALPACA_DATA_FEED", "auto").strip().lower()  # auto | sip | iex
 
 # Binance Credentials & URLs
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")

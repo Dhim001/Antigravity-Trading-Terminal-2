@@ -9,6 +9,14 @@ import {
 import { formatPortfolioRunEstimate } from './portfolioBacktest';
 
 describe('buildBacktestAssumptions', () => {
+  it('shows direction chip when not long-only', () => {
+    const chips = buildBacktestAssumptions({
+      sim_mode: 'live_aligned',
+      meta: { config: { direction_mode: 'BOTH' } },
+    });
+    expect(chips.some((c) => c.key === 'direction' && c.label.includes('Both'))).toBe(true);
+  });
+
   it('flags research mode', () => {
     const chips = buildBacktestAssumptions({ sim_mode: 'research' });
     expect(chips.some((c) => c.warn && c.label.includes('Research'))).toBe(true);

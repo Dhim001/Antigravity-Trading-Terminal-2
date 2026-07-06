@@ -244,6 +244,18 @@ def evaluate_deploy_gate(
                 detail="Strategy parameters changed since the linked backtest run.",
             ))
 
+    event_manifest = (scoped.get("meta") or results.get("meta") or {}).get("event_manifest") or {}
+    splits = int(event_manifest.get("splits_in_range") or 0)
+    price_adjust = str(event_manifest.get("price_adjust") or "raw")
+    if splits > 0 and price_adjust == "raw":
+        checks.append(_check(
+            check_id="corp_split_adjust",
+            level="warn",
+            ok=False,
+            message=f"Backtest spans {splits} split(s) with raw (unadjusted) prices",
+            detail="Set BACKTEST_PRICE_ADJUST=split_only or total_return for accurate PnL.",
+        ))
+
     stage = "ready"
     if any(c["level"] == "block" and not c["ok"] for c in checks):
         stage = "blocked"

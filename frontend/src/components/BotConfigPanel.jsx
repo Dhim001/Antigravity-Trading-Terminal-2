@@ -16,18 +16,14 @@ import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { cn } from '@/lib/utils';
 import {
+  DIRECTION_MODE_OPTIONS,
   TP_MODE_OPTIONS,
   buildConfigDraft,
   buildConfigFieldGroups,
   buildConfigPatch,
   getEditableConfigFields,
 } from '@/lib/botConfigDisplay';
-
-const DIRECTION_MODE_OPTIONS = [
-  { value: 'LONG_ONLY', label: 'Long only' },
-  { value: 'SHORT_ONLY', label: 'Short only' },
-  { value: 'BOTH', label: 'Both (long & short)' },
-];
+import { BAR_TIMEFRAMES, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 
 const META_LABEL_MODE_OPTIONS = [
   { value: 'wilson', label: 'Wilson buckets (default)' },
@@ -35,8 +31,39 @@ const META_LABEL_MODE_OPTIONS = [
   { value: 'hybrid', label: 'Hybrid — GBM when trained, else Wilson' },
 ];
 
-function ConfigField({ field, value, strategy, disabled, onChange }) {
+function ConfigField({ field, value, strategy, botTimeframe, disabled, onChange }) {
   const id = `bot-config-${field.key}`;
+
+  if (field.input === 'confirm_timeframe') {
+    const selectValue = value ? String(value) : '__none__';
+    const options = BAR_TIMEFRAMES.filter((tf) => {
+      const key = tf.toLowerCase();
+      return key !== String(botTimeframe || '').toLowerCase();
+    });
+    return (
+      <div className="bot-config-field">
+        <Label htmlFor={id} className="bot-config-field__label">{field.label}</Label>
+        <Select
+          value={selectValue}
+          onValueChange={(v) => onChange(field.key, v === '__none__' ? '' : v.toLowerCase())}
+          disabled={disabled}
+        >
+          <SelectTrigger id={id} className="bot-config-field__input h-8 w-full text-xs">
+            <SelectValue placeholder="Disabled" />
+          </SelectTrigger>
+          <SelectContent position="popper">
+            <SelectItem value="__none__" className="text-xs">Disabled</SelectItem>
+            {options.map((tf) => (
+              <SelectItem key={tf} value={tf.toLowerCase()} className="text-xs">
+                {formatBarTimeframeLabel(tf)} trend confirm
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {field.hint && <p className="bot-config-field__hint">{field.hint}</p>}
+      </div>
+    );
+  }
 
   if (field.input === 'select') {
     const strat = (strategy || '').toUpperCase();
@@ -146,6 +173,7 @@ export default function BotConfigPanel({
   strategy,
   config,
   botStatus,
+  botTimeframe,
   position,
 }) {
   const fields = useMemo(() => getEditableConfigFields(strategy, config), [strategy, config]);
@@ -176,7 +204,7 @@ export default function BotConfigPanel({
 
   const saveConfig = async () => {
     if (!botId || saving) return;
-    const patch = buildConfigPatch(draft, config, fields);
+    const patch = buildConfigPatch(draft, config, fields, { botTimeframe });
     if (Object.keys(patch).length === 0) {
       toast.message('No changes to save');
       return;
@@ -233,6 +261,7 @@ export default function BotConfigPanel({
                   field={field}
                   value={draft[field.key]}
                   strategy={strategy}
+                  botTimeframe={botTimeframe}
                   disabled={disabled || saving}
                   onChange={updateField}
                 />

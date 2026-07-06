@@ -26,6 +26,7 @@ from app.services.bots.risk_sizing import RISK_PCT
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
+from app.services.bots.config_validation import normalize_bot_config, sanitize_bot_config
 from app.services.runtime import system_state
 
 ACTIVE_STATUSES = ("RUNNING", "PAUSED", "ERROR")
@@ -155,6 +156,16 @@ class BotManagerService:
             loaded_ids.add(bot_id)
             self.active_bots[bot_id] = dict(row)
             self.active_bots[bot_id]["config"] = json.loads(row["config"])
+            cfg, cfg_warnings = sanitize_bot_config(self.active_bots[bot_id]["config"])
+            if cfg != self.active_bots[bot_id]["config"]:
+                self.active_bots[bot_id]["config"] = cfg
+                cursor.execute(
+                    "UPDATE bots SET config = ? WHERE id = ?",
+                    (json.dumps(cfg), bot_id),
+                )
+                conn.commit()
+            for msg in cfg_warnings:
+                self.logger.warning("Bot %s config: %s", bot_id[:8], msg)
             prev = runtime_state.get(bot_id)
             self.active_bots[bot_id]["last_signal_bar_time"] = (
                 prev["last_signal_bar_time"] if prev else None
@@ -440,6 +451,10 @@ class BotManagerService:
             bot["config"] = json.loads(bot["config"])
 
         merged_config = {**(bot.get("config") or {}), **config_patch}
+        merged_config = normalize_bot_config(
+            merged_config,
+            bot_timeframe=bot.get("timeframe"),
+        )
         bot_cfg = merge_tp_config(bot.get("strategy", ""), merged_config)
 
         conn = get_connection()
@@ -827,6 +842,25 @@ class BotManagerService:
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"Filter gate blocked {signal}: {reason}",
+                        )
+                        continue
+
+                # Event gates apply to new entries only — never block exit signals.
+                if signal in ("BUY", "SELL") and pos_size == 0:
+                    from app.services.altdata.event_policy import check_entry_gates
+
+                    gate_ok, gate_reason, gate_kind = check_entry_gates(
+                        symbol, bar_time, bot_config, is_exit=False,
+                    )
+                    if not gate_ok and gate_reason:
+                        inc(
+                            "bot_orders_blocked_total",
+                            labels={"strategy": strat_key, "reason": gate_kind or "event"},
+                        )
+                        await self.log_bot_event(
+                            bot_id, "WARN",
+                            f"Event gate blocked {signal}: {gate_reason}",
+                            meta={"event_type": "event_gate", "gate": gate_kind},
                         )
                         continue
 
@@ -1374,6 +1408,7 @@ class BotManagerService:
             tf = normalize_timeframe(timeframe or "1m")
         if strategy == "CHART_AGENT":
             config = {**(config or {}), "symbol": symbol, "timeframe": tf}
+        config, _ = sanitize_bot_config(config or {})
 
         bot_id = str(uuid.uuid4())
         conn = get_connection()

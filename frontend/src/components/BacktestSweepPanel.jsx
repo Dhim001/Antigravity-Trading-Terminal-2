@@ -453,6 +453,23 @@ export default function BacktestSweepPanel({
         </Alert>
       )}
 
+      {results?.sim_mode === 'research' && (
+        <Alert variant="destructive" className="py-1.5">
+          <AlertDescription className="text-xs leading-snug">
+            Parent backtest used research mode — sweep inherits sim_mode. Re-run live-aligned before deploy.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {results?.meta?.config?.direction_mode
+        && results.meta.config.direction_mode !== (botConfig?.direction_mode ?? 'LONG_ONLY') && (
+        <Alert className="py-1.5">
+          <AlertDescription className="text-xs leading-snug">
+            Backtest direction ({results.meta.config.direction_mode}) differs from current deploy config — align trade direction before optimizing.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Separator className="my-1" />
 
       <div className="algo-backtest-sweep__grid flex flex-col gap-2">

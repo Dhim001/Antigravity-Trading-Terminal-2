@@ -113,6 +113,8 @@ def build_advisor_context(
 
     filter_rejects = get_filter_reject_dashboard(symbol=symbol, strategy=strategy)
 
+    from app.services.altdata.event_policy import get_upcoming_events, parse_event_policy
+
     return {
         "bot_id": bot.get("id"),
         "symbol": symbol,
@@ -120,6 +122,8 @@ def build_advisor_context(
         "timeframe": bot.get("timeframe"),
         "status": bot.get("status"),
         "current_config": config,
+        "event_policy": parse_event_policy(config).__dict__,
+        "upcoming_events": get_upcoming_events(symbol, days=7),
         "allowable_params": sorted(ADVISABLE_PARAMS),
         "param_bounds": {k: list(v) for k, v in PARAM_BOUNDS.items()},
         "recent_backtests": run_summaries,
@@ -150,7 +154,11 @@ def validate_suggested_params(
         if key == "confirm_timeframe":
             tf = str(raw or "").strip()
             if tf:
-                clean[key] = tf
+                try:
+                    from app.services.bots.config_validation import normalize_confirm_timeframe
+                    clean[key] = normalize_confirm_timeframe(tf)
+                except ValueError as exc:
+                    warnings.append(str(exc))
             continue
         try:
             val = float(raw)

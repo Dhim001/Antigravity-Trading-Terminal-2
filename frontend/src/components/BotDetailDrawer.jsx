@@ -530,6 +530,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                         strategy={bot.strategy}
                         config={bot.config}
                         botStatus={bot.status}
+                        botTimeframe={bot.timeframe}
                         position={position}
                       />
 

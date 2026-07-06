@@ -57,6 +57,7 @@ import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { buildDeployPayload } from '@/lib/deployGate';
@@ -347,6 +348,7 @@ export function AlgoTab({ hideToolbar = false }) {
       days: String(days),
       timeframe: isTick ? 'tick' : botTimeframe,
       config: botConfig,
+      simMode: backtestSimMode,
     });
 
     setBacktestRunning(true);
@@ -692,6 +694,28 @@ export function AlgoTab({ hideToolbar = false }) {
                   />
                 ))}
               </div>
+            </div>
+
+            <div className="algo-deploy-field">
+              <Label className="algo-field-label">Trade direction</Label>
+              <Select
+                value={botConfig?.direction_mode ?? 'LONG_ONLY'}
+                onValueChange={(mode) => updateBotConfig({ direction_mode: mode })}
+              >
+                <SelectTrigger className="h-8 w-full text-xs" aria-label="Trade direction">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper">
+                  {DIRECTION_MODE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="algo-field-hint">
+                Live risk gate: LONG_ONLY blocks short entries; BOTH allows Chart Agent SELL signals to open shorts (paper OMS).
+              </span>
             </div>
 
             <div className="algo-deploy-field">
@@ -1075,7 +1099,8 @@ export function AlgoTab({ hideToolbar = false }) {
               </Select>
               {backtestSimMode === 'research' && (
                 <p className="algo-field-hint text-[10px] text-muted-foreground mt-1">
-                  SELL signals open short positions; SL/TP apply to shorts.
+                  Research mode allows shorts without live risk gates — results may not match a deployed bot.
+                  Use live-aligned + matching trade direction before deploy.
                 </p>
               )}
             </div>
@@ -1229,6 +1254,10 @@ export function AlgoTab({ hideToolbar = false }) {
                     : `${botConfig?.take_profit_percent ?? '—'}% TP`}
               </strong>
             </div>
+            <div>
+              <span className="text-muted-foreground">Trade direction:</span>{' '}
+              <strong>{formatDirectionModeLabel(botConfig?.direction_mode)}</strong>
+            </div>
             <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
           </div>
           <DeployGatePanel
@@ -1238,6 +1267,7 @@ export function AlgoTab({ hideToolbar = false }) {
             timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
             days={parseInt(backtestDays, 10) || 7}
             config={botConfig}
+            backtestConfig={backtestLastRequest?.config}
             snapshot={backtestSnapshot}
             onGateChange={setDeployGate}
             forceDeploy={forceDeploy}

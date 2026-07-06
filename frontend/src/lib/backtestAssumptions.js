@@ -5,6 +5,7 @@ import {
   formatBacktestRangeLabel,
   resolveBacktestRange,
 } from './backtestDisplay';
+import { formatDirectionModeLabel, normalizeDirectionMode } from './botConfigDisplay';
 
 export function buildBacktestAssumptionDetails(results) {
   if (!results) return { sections: [] };
@@ -17,11 +18,16 @@ export function buildBacktestAssumptionDetails(results) {
 
   const simMode = results.sim_mode ?? cfg.sim_mode ?? 'live_aligned';
   const liveParity = results.live_parity ?? meta.live_parity ?? cfg.live_parity;
+  const directionMode = normalizeDirectionMode(cfg.direction_mode);
   sections.push({
     id: 'gates',
     title: 'Simulation & gates',
     rows: [
       { label: 'Sim mode', value: simMode, warn: simMode === 'research' },
+      {
+        label: 'Trade direction',
+        value: formatDirectionModeLabel(directionMode),
+      },
       {
         label: 'Live parity',
         value: liveParity === false ? 'OFF (filters/HTF skipped)' : 'ON',
@@ -139,10 +145,19 @@ export function buildBacktestAssumptions(results) {
   const chips = [];
 
   const simMode = results.sim_mode ?? cfg.sim_mode;
+  const directionMode = normalizeDirectionMode(cfg.direction_mode);
   if (simMode === 'research') {
     chips.push({ key: 'sim', label: 'Research mode', warn: true });
   } else {
     chips.push({ key: 'sim', label: 'Live-aligned gates' });
+  }
+
+  if (directionMode && directionMode !== 'LONG_ONLY') {
+    chips.push({
+      key: 'direction',
+      label: formatDirectionModeLabel(directionMode),
+      warn: simMode === 'research',
+    });
   }
 
   const liveParity = results.live_parity ?? meta.live_parity ?? cfg.live_parity;

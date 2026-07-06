@@ -31,6 +31,8 @@ class DataQualityTests(unittest.TestCase):
 
     def setUp(self):
         registry.note_tick("AAPL", time_ms=int(time.time() * 1000))
+        from app.services.data_quality.monitor import _dq_paused_bot_ids
+        _dq_paused_bot_ids.clear()
 
     def test_snapshot_fresh_symbol(self):
         snap = registry.snapshot()
@@ -67,10 +69,36 @@ class DataQualityTests(unittest.TestCase):
         report = await evaluate_and_act(feed, bot_manager)
         self.assertGreaterEqual(report.get("bots_paused", 0), 1)
         bot_manager.pause_bot.assert_called_once_with("b1")
+        from app.services.data_quality.monitor import _dq_paused_bot_ids
+        self.assertIn("b1", _dq_paused_bot_ids)
 
     def test_active_pause_on_stale(self):
         import asyncio
         asyncio.run(self._run_pause_test())
+
+    @patch("app.services.data_quality.monitor.DATA_QUALITY_ACTIVE_PAUSE", True)
+    @patch("app.services.data_quality.monitor.DATA_QUALITY_STALE_PAUSE_SEC", 30)
+    async def _run_resume_test(self):
+        from app.services.data_quality.monitor import _dq_paused_bot_ids
+
+        _dq_paused_bot_ids.add("b1")
+        registry.note_tick("DOTUSDT", time_ms=int(time.time() * 1000))
+        bot_manager = MagicMock()
+        bot_manager.active_bots = {
+            "b1": {"status": "PAUSED", "symbol": "DOTUSDT"},
+        }
+        bot_manager.resume_bot = AsyncMock()
+        bot_manager.log_bot_event = AsyncMock()
+        feed = MagicMock()
+        feed.symbols = ["DOTUSDT"]
+        report = await evaluate_and_act(feed, bot_manager)
+        self.assertGreaterEqual(report.get("bots_resumed", 0), 1)
+        bot_manager.resume_bot.assert_called_once_with("b1")
+        self.assertNotIn("b1", _dq_paused_bot_ids)
+
+    def test_auto_resume_on_feed_recovery(self):
+        import asyncio
+        asyncio.run(self._run_resume_test())
 
 
 if __name__ == "__main__":

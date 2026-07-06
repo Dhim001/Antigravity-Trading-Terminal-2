@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.config import (
     BOT_MIN_NOTIONAL,
@@ -108,6 +109,7 @@ class RiskGate:
         is_exit: bool,
         daily_pnl: float,
         position_size: float,
+        at_ts: float | int | None = None,
     ) -> RiskDecision:
         if not is_exit:
             blocked = self._kill_switch_block()
@@ -115,9 +117,27 @@ class RiskGate:
                 return blocked
 
             symbol = str(bot.get("symbol") or "")
-            in_window, window_reason = is_no_trade_window(None, symbol)
+            if at_ts is not None:
+                try:
+                    ref_dt = datetime.fromtimestamp(float(at_ts), tz=timezone.utc)
+                except (TypeError, ValueError, OSError, OverflowError):
+                    ref_dt = None
+            else:
+                ref_dt = None
+            in_window, window_reason = is_no_trade_window(ref_dt, symbol)
             if in_window:
                 return RiskDecision(False, window_reason)
+
+            from app.services.altdata.event_policy import check_entry_gates
+            import time as _time
+
+            bot_cfg = self._parse_bot_config(bot)
+            gate_ts = at_ts if at_ts is not None else _time.time()
+            allowed, gate_reason, _gate = check_entry_gates(
+                symbol, gate_ts, bot_cfg, is_exit=False,
+            )
+            if not allowed and gate_reason:
+                return RiskDecision(False, gate_reason)
 
             # 4.1: Consecutive-loss auto-pause — block entries after N consecutive losses.
             streak_decision = self._check_streak_and_cooloff(bot)
@@ -167,9 +187,6 @@ class RiskGate:
             return RiskDecision(False, "Quantity must be greater than 0.")
 
         notional = quantity * price
-        if notional > MAX_ORDER_VALUE:
-            capped = MAX_ORDER_VALUE / price
-            return RiskDecision(True, "Capped to MAX_ORDER_VALUE.", capped)
 
         if is_exit:
             if side == "SELL" and position_size <= 0:
@@ -204,13 +221,16 @@ class RiskGate:
                 f"Notional ${notional:.2f} below minimum ${BOT_MIN_NOTIONAL:.2f}.",
             )
 
-        if notional > allocation:
-            capped_qty = allocation / price
-            return RiskDecision(
-                True,
-                f"Reduced to allocation cap (${allocation:.0f}).",
-                capped_qty,
-            )
+        max_notional = MAX_ORDER_VALUE
+        if allocation > 0:
+            max_notional = min(allocation, MAX_ORDER_VALUE)
+        if notional > max_notional:
+            capped = max_notional / price
+            if allocation > 0 and allocation < MAX_ORDER_VALUE:
+                cap_label = f"allocation cap (${allocation:.0f})"
+            else:
+                cap_label = f"MAX_ORDER_VALUE (${MAX_ORDER_VALUE:,.0f})"
+            return RiskDecision(True, f"Reduced to {cap_label}.", capped)
 
         return RiskDecision(True, "OK", quantity)
 

@@ -1,10 +1,21 @@
 /**
- * Batch WS market_update frames to one store flush per animation frame (Massive only).
- * Keeps UI live (~60 Hz) while avoiding 70+ separate React commits/sec.
+ * Batch WS market_update frames to one store flush per animation frame.
+ * Keeps UI live (~60 Hz) while avoiding dozens of separate React commits/sec.
  */
 
-import { isLiveMassiveMode } from '../lib/massiveMarket';
 import { useStore } from '../store/useStore';
+
+/** Terminal modes with high-frequency synthetic or live tick streams. */
+const RAF_BATCH_MODES = new Set([
+  'LIVE_MASSIVE',
+  'LIVE_IB',
+  'LIVE_ALPACA',
+  'SIMULATED',
+]);
+
+export function shouldBatchMarketUpdates(terminalMode) {
+  return RAF_BATCH_MODES.has(terminalMode);
+}
 
 /** @type {Record<string, object> | null} */
 let pending = null;
@@ -33,7 +44,7 @@ export function queueMarketUpdate(data, apply) {
   if (!data || typeof data !== 'object') return;
 
   const mode = useStore.getState().terminalMode;
-  if (!isLiveMassiveMode(mode)) {
+  if (!shouldBatchMarketUpdates(mode)) {
     apply(data);
     return;
   }
