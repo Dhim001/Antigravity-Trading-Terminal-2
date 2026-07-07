@@ -252,10 +252,12 @@ export function AlgoTab({ hideToolbar = false }) {
       setBacktestLiveParity,
       setMetaLabelWalkForward,
       openBacktestLab,
+      setOptimizerPreset: useStore.getState().setOptimizerPreset,
     });
     if (ok) {
       setActiveWorkflowPreset(presetId);
-      if (presetId !== 'wf_optimize' && presetId !== 'meta_label_validate') {
+      const opensLabOnly = ['wf_optimize', 'meta_label_validate', 'wf_rigorous', 'meta_label_sweep', 'portfolio_optimize'].includes(presetId);
+      if (!opensLabOnly) {
         toast.message('Preset applied — review settings then RUN');
       }
     } else {

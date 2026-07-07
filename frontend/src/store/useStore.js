@@ -131,6 +131,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   backtestOverlay: null,
   backtestLastError: null,
   backtestLastRequest: null,
+  /** One-shot optimizer UI preset from workflow chips (Tier 4) */
+  optimizerPreset: null,
   chartInteractionMode: 'normal',
   strategyTemplates: [
     { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
@@ -444,6 +446,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   }),
   clearBacktestLastError: () => set({ backtestLastError: null, backtestLastRequest: null }),
   setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),
+  setOptimizerPreset: (preset) => set({ optimizerPreset: preset ?? null }),
+  clearOptimizerPreset: () => set({ optimizerPreset: null }),
   clearBacktestOverlay: () => set({ backtestOverlay: null }),
 
   setStrategyCatalog: (strategies) => {

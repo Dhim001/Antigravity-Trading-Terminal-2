@@ -1,3 +1,4 @@
+import random
 from datetime import datetime, timezone
 
 from app.config import BOT_DAILY_LOSS_LIMIT_PCT
@@ -104,26 +105,51 @@ def _utc_day_key(bar_time) -> str | None:
         return None
 
 
-def _check_long_sl_tp(position: dict, bar_low: float, bar_high: float) -> tuple[str | None, float | None]:
-    """Intra-bar SL/TP for a long position (conservative: SL before TP)."""
+def _check_long_sl_tp(position: dict, bar_low: float, bar_high: float, *, randomize_sl_tp: bool = False) -> tuple[str | None, float | None]:
+    """Intra-bar SL/TP for a long position.
+
+    When *randomize_sl_tp* is True, a coin-flip decides priority when both SL
+    and TP are hit on the same bar (since intra-bar order is unknowable from OHLC).
+    Otherwise defaults to conservative: SL before TP.
+    """
     sl = position.get("stop_loss")
     tp = position.get("take_profit")
 
-    if sl is not None and bar_low <= sl:
+    sl_hit = sl is not None and bar_low <= sl
+    tp_hit = tp is not None and bar_high >= tp
+
+    if sl_hit and tp_hit and randomize_sl_tp:
+        if random.random() < 0.5:
+            return "TP", tp
         return "SL", sl
-    if tp is not None and bar_high >= tp:
+
+    if sl_hit:
+        return "SL", sl
+    if tp_hit:
         return "TP", tp
     return None, None
 
 
-def _check_short_sl_tp(position: dict, bar_low: float, bar_high: float) -> tuple[str | None, float | None]:
-    """Intra-bar SL/TP for a short position (conservative: SL before TP)."""
+def _check_short_sl_tp(position: dict, bar_low: float, bar_high: float, *, randomize_sl_tp: bool = False) -> tuple[str | None, float | None]:
+    """Intra-bar SL/TP for a short position.
+
+    When *randomize_sl_tp* is True, a coin-flip decides priority when both SL
+    and TP are hit on the same bar.
+    """
     sl = position.get("stop_loss")
     tp = position.get("take_profit")
 
-    if sl is not None and bar_high >= sl:
+    sl_hit = sl is not None and bar_high >= sl
+    tp_hit = tp is not None and bar_low <= tp
+
+    if sl_hit and tp_hit and randomize_sl_tp:
+        if random.random() < 0.5:
+            return "TP", tp
         return "SL", sl
-    if tp is not None and bar_low <= tp:
+
+    if sl_hit:
+        return "SL", sl
+    if tp_hit:
         return "TP", tp
     return None, None
 
@@ -307,15 +333,28 @@ class BacktesterService:
         self._candle_cache: dict[str, tuple[float, "pd.DataFrame"]] = {}  # (timestamp, df)
 
     # ── Candle cache for parameter sweeps ──────────────────────────────────
+    def _candle_cache_key(
+        self,
+        symbol: str,
+        strategy_name: str,
+        n_candles: int,
+        config: dict | None = None,
+    ) -> str:
+        from app.services.bots.backtest_indicator_cache import indicator_fingerprint
+
+        fp = indicator_fingerprint(strategy_name, config or {})
+        return f"{symbol}:{strategy_name}:{n_candles}:{fp}"
+
     def cache_candles(self, symbol: str, strategy_name: str, candles: list, config: dict) -> str:
         """Pre-compute and cache the indicator DataFrame for sweep reuse.
 
         Returns the cache key for retrieval via get_cached_candles().
+        Cache is keyed by indicator fingerprint — risk-only param sweeps share one DF.
         """
         import time as _time
 
         self._evict_expired_cache()
-        key = f"{symbol}:{strategy_name}:{len(candles)}"
+        key = self._candle_cache_key(symbol, strategy_name, len(candles), config)
         df = self.screener.process_candles(
             symbol, candles, config, strategy_name, full_history=True,
         )
@@ -323,11 +362,17 @@ class BacktesterService:
             self._candle_cache[key] = (_time.monotonic(), df)
         return key
 
-    def get_cached_candles(self, symbol: str, strategy_name: str, n_candles: int) -> "pd.DataFrame | None":
+    def get_cached_candles(
+        self,
+        symbol: str,
+        strategy_name: str,
+        n_candles: int,
+        config: dict | None = None,
+    ) -> "pd.DataFrame | None":
         """Return a deep copy of cached indicator DF, or None if not cached."""
         import time as _time
 
-        key = f"{symbol}:{strategy_name}:{n_candles}"
+        key = self._candle_cache_key(symbol, strategy_name, n_candles, config)
         entry = self._candle_cache.get(key)
         if entry is not None:
             ts, df = entry
@@ -396,7 +441,7 @@ class BacktesterService:
             allocation = _DEFAULT_ALLOCATION
 
         # Use cached indicator DF when available (sweep reuse)
-        cached = self.get_cached_candles(symbol, strategy_name, len(candles))
+        cached = self.get_cached_candles(symbol, strategy_name, len(candles), cfg)
         if cached is not None:
             df = cached
         else:
@@ -443,7 +488,8 @@ class BacktesterService:
         risk_cfg = parse_risk_sizing_config(cfg)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
-        cost_model = CostModel.from_config(cfg)
+        cost_model = CostModel.from_config(cfg)  # per-backtest copy for thread safety
+        randomize_sl_tp = bool(cfg.get("randomize_sl_tp", False))
         total_fees = 0.0
         chart_cfg = merge_strategy_config("CHART_AGENT", cfg) if strat_key == "CHART_AGENT" else {}
 
@@ -517,7 +563,7 @@ class BacktesterService:
         peak_equity = equity
         max_drawdown = 0.0
         equity_curve = []
-        sample_stride = max(1, (len(df) - 1) // 200)
+        sample_stride = max(1, (len(df) - 1) // 500)
         start_i = first_eval_index(df, strategy_name, cfg)
         last_signal_bar_time = None
         daily_pnl = 0.0
@@ -579,9 +625,9 @@ class BacktesterService:
             exit_fill = exit_fill_price(exit_price, exit_side, slippage_bps)
             exit_fee = trade_fee(exit_fill * qty, fee_bps)
             if side == "BUY":
-                profit = (exit_fill - entry_fill) * qty - exit_fee
+                profit = (exit_fill - entry_fill) * qty - exit_fee - float(position.get("entry_fee") or 0)
             else:
-                profit = (entry_fill - exit_fill) * qty - exit_fee
+                profit = (entry_fill - exit_fill) * qty - exit_fee - float(position.get("entry_fee") or 0)
             equity += profit
             total_fees += exit_fee
             daily_pnl += profit
@@ -749,6 +795,7 @@ class BacktesterService:
                 "high_watermark": current_price,
                 "excursion_high": current_price,
                 "excursion_low": current_price,
+                "entry_fee": entry_fee,
                 # 3.3-C: store ATR at entry for Chandelier scaling.
                 "entry_atr": float(row.get("ATR_14") or row.get("ATRr_14") or 0),
             }
@@ -914,6 +961,7 @@ class BacktesterService:
                 "low_watermark": current_price,
                 "excursion_high": current_price,
                 "excursion_low": current_price,
+                "entry_fee": entry_fee,
             }
             trade_log.append({
                 "time": int(bar_time) if bar_time is not None else 0,
@@ -970,14 +1018,14 @@ class BacktesterService:
                         _update_chandelier_stop(position, bar_high, bar_atr, chandelier_mult)
                     else:
                         _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
-                    trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high)
+                    trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high, randomize_sl_tp=randomize_sl_tp)
                 else:
                     if use_chandelier:
                         bar_atr = float(row.get("ATR_14") or row.get("ATRr_14") or position.get("entry_atr") or 0)
                         _update_chandelier_stop_short(position, bar_low, bar_atr, chandelier_mult)
                     else:
                         _update_trailing_stop_short(position, bar_low, bar_high, trailing_pct)
-                    trigger, exit_px = _check_short_sl_tp(position, bar_low, bar_high)
+                    trigger, exit_px = _check_short_sl_tp(position, bar_low, bar_high, randomize_sl_tp=randomize_sl_tp)
                 if trigger:
                     _close_position(bar_time, exit_px, trigger)
 
@@ -1130,6 +1178,12 @@ class BacktesterService:
             "monte_carlo": monte_carlo,
             "execution_runtime": "strategy_runtime/v1",
         }
+
+        score_from = cfg.get("score_from_time")
+        if score_from is not None:
+            from app.services.bots.backtest_selection_bias import apply_score_window
+
+            result = apply_score_window(result, int(score_from))
 
         _release_chart_agent_cache()
         return result

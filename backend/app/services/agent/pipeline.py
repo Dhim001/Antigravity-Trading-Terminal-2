@@ -207,6 +207,7 @@ def validate_walk_forward_oos(
     min_oos_trades: int = 1,
     min_stability_score: float = 0.0,
     min_oos_sortino: float | None = None,
+    min_wfe: float | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Return whether OOS metrics pass auto-deploy gates.
 
@@ -216,7 +217,11 @@ def validate_walk_forward_oos(
             Set to 0.6 to require 60% of folds profitable (recommended).
         min_oos_sortino: Optional Sortino ratio floor. Blocks strategies whose OOS
             return distribution is dominated by downside volatility.
+        min_wfe: Walk-forward efficiency floor (mean OOS / mean IS objective).
+            Defaults to 0.5 when aggregate WFE is available.
     """
+    from app.services.bots.backtest_selection_bias import DEFAULT_MIN_WFE
+
     wf = best_result.get("walk_forward") or {}
     oos = wf.get("out_of_sample") or {}
     summary = best_result.get("summary") or {}
@@ -231,6 +236,8 @@ def validate_walk_forward_oos(
 
     oos_trades = oos.get("total_trades")
     if oos_trades is None:
+        oos_trades = oos.get("trade_count")
+    if oos_trades is None:
         oos_trades = summary.get("total_trades")
     if oos_trades is None:
         oos_trades = best_result.get("trade_count")
@@ -242,6 +249,14 @@ def validate_walk_forward_oos(
     aggregate = wf.get("aggregate") or {}
     stability = aggregate.get("stability_score")
     fold_count = int(aggregate.get("fold_count") or 1)
+    wfe = aggregate.get("walk_forward_efficiency")
+    if wfe is None:
+        bias = aggregate.get("selection_bias") or {}
+        wfe = bias.get("walk_forward_efficiency")
+    dsr = aggregate.get("deflated_sharpe_ratio")
+    if dsr is None:
+        bias = aggregate.get("selection_bias") or {}
+        dsr = bias.get("deflated_sharpe_ratio")
 
     metrics = {
         "oos_pnl": round(oos_pnl_f, 4),
@@ -249,12 +264,28 @@ def validate_walk_forward_oos(
         "mean_oos_objective": aggregate.get("mean_oos_objective"),
         "stability_score": stability,
         "fold_count": fold_count,
+        "walk_forward_efficiency": wfe,
+        "deflated_sharpe_ratio": dsr,
     }
 
     if oos_trades_i < max(0, int(min_oos_trades)):
         return False, f"OOS trades {oos_trades_i} below minimum {min_oos_trades}", metrics
     if oos_pnl_f < float(min_oos_pnl):
         return False, f"OOS PnL {oos_pnl_f:.2f} below minimum {min_oos_pnl:.2f}", metrics
+
+    wfe_floor = DEFAULT_MIN_WFE if min_wfe is None else float(min_wfe)
+    if wfe is not None and wfe_floor > 0:
+        try:
+            wfe_f = float(wfe)
+        except (TypeError, ValueError):
+            wfe_f = 0.0
+        if wfe_f < wfe_floor:
+            return (
+                False,
+                f"Walk-forward efficiency {wfe_f:.2f} below minimum {wfe_floor:.2f} "
+                "(OOS objective / IS objective — overfitting risk)",
+                metrics,
+            )
 
     # 3.5-A: Stability gate — require min fraction of folds to be profitable.
     # Only meaningful when >= 3 folds ran (single-fold WFO skipped gracefully).
@@ -286,6 +317,21 @@ def validate_walk_forward_oos(
                     f"OOS Sortino {sortino_f:.2f} below minimum {min_oos_sortino:.2f}",
                     metrics,
                 )
+
+    holdout = best_result.get("final_holdout") or wf.get("final_holdout")
+    if holdout and not holdout.get("skipped"):
+        if holdout.get("error"):
+            return False, f"Final holdout failed: {holdout['error']}", metrics
+        if not holdout.get("passed", True):
+            ho_pnl = float(holdout.get("total_pnl") or 0)
+            ho_trades = int(holdout.get("trade_count") or 0)
+            metrics["holdout_pnl"] = round(ho_pnl, 4)
+            metrics["holdout_trades"] = ho_trades
+            return (
+                False,
+                f"Final holdout failed (${ho_pnl:.2f}, {ho_trades} trades)",
+                metrics,
+            )
 
     return True, "OK", metrics
 

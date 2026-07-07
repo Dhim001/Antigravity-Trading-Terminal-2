@@ -255,10 +255,13 @@ class SimulatedFeedService(BaseFeedService):
                 candle["low"] = round(target["low"], decimals)
                 candle["volume"] = round(target["volume"], 2)
                 
+        # Use candle closest to 24h (1440 1-min bars) ago, not buffer start
+        ref_idx = max(0, len(active_candles) - 1440)
+        ref_price = active_candles[ref_idx]["close"]
         return {
             "symbol": symbol,
             "price": new_price,
-            "change_24h": round((new_price - active_candles[0]["close"]) / active_candles[0]["close"] * 100, 2),
+            "change_24h": round((new_price - ref_price) / ref_price * 100, 2) if ref_price else 0.0,
             "volume_24h": sum(c["volume"] for c in active_candles),
             "high_24h": max(c["high"] for c in active_candles),
             "low_24h": min(c["low"] for c in active_candles),

@@ -82,6 +82,7 @@ def evaluate_deploy_gate(
     min_pnl: float = 0.0,
     min_stability_score: float = 0.5,
     max_drawdown_warn_pct: float = 25.0,
+    min_wfe: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate whether a backtest run satisfies deploy prerequisites."""
     checks: list[dict[str, Any]] = []
@@ -123,6 +124,7 @@ def evaluate_deploy_gate(
             min_oos_pnl=min_pnl,
             min_oos_trades=min_trades,
             min_stability_score=min_stability_score,
+            min_wfe=min_wfe,
         )
         checks.append(_check(
             check_id="wf_oos",
@@ -131,6 +133,18 @@ def evaluate_deploy_gate(
             message="Walk-forward OOS validation passed" if ok else reason,
             detail=None if ok else reason,
         ))
+        if metrics.get("deflated_sharpe_ratio") is not None:
+            dsr = float(metrics["deflated_sharpe_ratio"])
+            checks.append(_check(
+                check_id="wf_dsr",
+                level="warn" if dsr < 0.95 else "pass",
+                ok=dsr >= 0.95,
+                message=(
+                    f"Deflated Sharpe {dsr:.2%} (selection-bias adjusted)"
+                    if dsr >= 0.95
+                    else f"Deflated Sharpe {dsr:.2%} — high trial count may inflate IS Sharpe"
+                ),
+            ))
         if metrics.get("stability_score") is not None and int(metrics.get("fold_count") or 0) >= 3:
             stab = float(metrics["stability_score"])
             stab_ok = stab >= min_stability_score
@@ -144,6 +158,89 @@ def evaluate_deploy_gate(
                     else f"OOS stability {stab:.0%} below {min_stability_score:.0%}"
                 ),
             ))
+
+        holdout = scoped.get("final_holdout") or (scoped.get("walk_forward") or {}).get("final_holdout")
+        if holdout and not holdout.get("skipped"):
+            if holdout.get("error"):
+                checks.append(_check(
+                    check_id="final_holdout",
+                    level="block",
+                    ok=False,
+                    message=f"Final holdout failed: {holdout['error']}",
+                ))
+            else:
+                ho_pnl = float(holdout.get("total_pnl") or 0)
+                ho_trades = int(holdout.get("trade_count") or 0)
+                ho_passed = bool(holdout.get("passed", True))
+                metrics["holdout_pnl"] = round(ho_pnl, 4)
+                metrics["holdout_trades"] = ho_trades
+                checks.append(_check(
+                    check_id="final_holdout",
+                    level="block" if not ho_passed else "pass",
+                    ok=ho_passed,
+                    message=(
+                        f"Final holdout passed (${ho_pnl:.2f}, {ho_trades} trades)"
+                        if ho_passed
+                        else (
+                            f"Final holdout failed (${ho_pnl:.2f}, {ho_trades} trades) "
+                            f"— reserved segment never used in optimization"
+                        )
+                    ),
+                ))
+
+        pbo = scoped.get("pbo_audit") or (scoped.get("walk_forward") or {}).get("pbo_audit")
+        if pbo and pbo.get("pbo") is not None:
+            pbo_val = float(pbo["pbo"])
+            metrics["pbo"] = pbo_val
+            risk = str(pbo.get("risk_label") or "low")
+            if pbo_val >= 0.5:
+                checks.append(_check(
+                    check_id="pbo_audit",
+                    level="block",
+                    ok=False,
+                    message=f"PBO {pbo_val:.0%} — high overfit risk ({risk})",
+                    detail="IS winner frequently underperforms on CSCV OOS splits",
+                ))
+            elif pbo_val >= 0.35:
+                checks.append(_check(
+                    check_id="pbo_audit",
+                    level="warn",
+                    ok=False,
+                    message=f"PBO {pbo_val:.0%} — moderate overfit risk",
+                ))
+            else:
+                checks.append(_check(
+                    check_id="pbo_audit",
+                    level="pass",
+                    ok=True,
+                    message=f"PBO {pbo_val:.0%} — low overfit risk",
+                ))
+
+        regime = (scoped.get("walk_forward") or {}).get("aggregate", {}).get("regime_analysis") or {}
+        if regime.get("single_regime_risk"):
+            checks.append(_check(
+                check_id="wf_regime",
+                level="warn",
+                ok=False,
+                message="OOS PnL concentrated in one vol regime",
+                detail=regime.get("note") or "May not generalize across market conditions",
+            ))
+        elif regime.get("regime_stable") is False and len(regime.get("profitable_regimes") or []) < 2:
+            checks.append(_check(
+                check_id="wf_regime",
+                level="warn",
+                ok=False,
+                message="Profitable in fewer than 2 vol regimes",
+                detail="Consider regime-conditional optimization or longer history",
+            ))
+    elif scoped.get("sweep") and not scoped.get("walk_forward"):
+        checks.append(_check(
+            check_id="exploratory_sweep",
+            level="block",
+            ok=False,
+            message="Exploratory sweep only — run walk-forward before deploy",
+            detail="In-sample sweep winners are not OOS-validated",
+        ))
     else:
         summary = scoped.get("summary") or {}
         pnl = scoped.get("total_pnl")

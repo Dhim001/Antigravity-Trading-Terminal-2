@@ -1,4 +1,4 @@
-import { apiAction, apiRequest } from './client';
+import { apiAction, apiRequest, isAbortError } from './client';
 import { applyHttpEnvelope } from './dispatch';
 import { Action, MessageType } from './protocol';
 import { invokeHttpAction } from './transport';
@@ -649,19 +649,31 @@ export async function fetchCandles(symbol, storeActions, { limit = CHART_SNAPSHO
   return body;
 }
 
-export async function fetchAgentInsights(symbol, storeActions, limit = 30, timeframe = null) {
+const INSIGHTS_HISTORY_TIMEOUT_MS = 15000;
+
+export async function fetchAgentInsights(
+  symbol,
+  storeActions,
+  limit = 30,
+  timeframe = null,
+  { signal, timeoutMs = INSIGHTS_HISTORY_TIMEOUT_MS } = {},
+) {
   try {
     const encoded = encodeURIComponent(symbol);
     const qs = new URLSearchParams({ limit: String(limit) });
     if (timeframe) {
       qs.set('timeframe', normalizeAnalystTimeframe(timeframe));
     }
-    const body = await apiRequest(`/api/v1/agent/insights/${encoded}?${qs}`);
+    const body = await apiRequest(`/api/v1/agent/insights/${encoded}?${qs}`, {
+      timeoutMs,
+      signal,
+    });
     if (body.insights && storeActions?.setAgentInsightHistory) {
       storeActions.setAgentInsightHistory(symbol, body.insights);
     }
     return body;
   } catch (e) {
+    if (isAbortError(e)) throw e;
     console.warn('[analyst] Insight history unavailable:', e.message);
     throw e;
   }

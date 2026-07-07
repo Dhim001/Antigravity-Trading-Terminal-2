@@ -156,7 +156,7 @@ function ConfigField({ field, value, strategy, botTimeframe, disabled, onChange 
           min="0"
           step={field.kind === 'integer' ? '1' : 'any'}
           placeholder={field.kind === 'percent' ? 'e.g. 2' : undefined}
-          value={value}
+          value={value ?? ''}
           disabled={disabled}
           onChange={(e) => onChange(field.key, e.target.value)}
           className={cn('bot-config-field__input h-8 text-xs', suffix && 'pr-8')}
@@ -177,28 +177,30 @@ export default function BotConfigPanel({
   position,
 }) {
   const fields = useMemo(() => getEditableConfigFields(strategy, config), [strategy, config]);
-  const [draft, setDraft] = useState(() => buildConfigDraft(config, fields));
+  const baseDraft = useMemo(() => buildConfigDraft(config, fields), [config, fields]);
+  const [overrides, setOverrides] = useState({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  const draft = useMemo(() => ({ ...baseDraft, ...overrides }), [baseDraft, overrides]);
   const disabled = botStatus === 'STOPPED';
   const groups = useMemo(() => buildConfigFieldGroups(fields, draft), [fields, draft]);
   const fieldCount = groups.reduce((n, g) => n + g.fields.length, 0);
 
   useEffect(() => {
-    setDraft(buildConfigDraft(config, fields));
+    setOverrides({});
     setDirty(false);
-  }, [botId, config, fields]);
+  }, [botId, baseDraft]);
 
   if (fieldCount === 0) return null;
 
   const updateField = (key, value) => {
-    setDraft((prev) => ({ ...prev, [key]: value }));
+    setOverrides((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
   };
 
   const resetDraft = () => {
-    setDraft(buildConfigDraft(config, fields));
+    setOverrides({});
     setDirty(false);
   };
 

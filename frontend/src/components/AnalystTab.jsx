@@ -174,19 +174,22 @@ export default function AnalystTab() {
 
   const { onScroll, window: rowWindow } = useWindowedRows(rows, { rowHeight: 36 });
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (signal) => {
     setLoading(true);
     try {
-      await fetchAgentInsights(symbol, useStore.getState(), 40, analysisTf);
+      await fetchAgentInsights(symbol, useStore.getState(), 40, analysisTf, { signal });
     } catch (err) {
+      if (err?.name === 'AbortError') return;
       toast.error(err?.message || 'Failed to load analyst history');
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [symbol, analysisTf]);
 
   useEffect(() => {
-    loadHistory();
+    const ac = new AbortController();
+    loadHistory(ac.signal);
+    return () => ac.abort();
   }, [loadHistory]);
 
   const runAnalyze = () => {

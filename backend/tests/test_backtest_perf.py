@@ -31,6 +31,7 @@ class TestBacktestPerf(unittest.TestCase):
     def test_is_heavy_sweep_and_long_range(self):
         self.assertTrue(is_heavy_backtest(sweep={"trailing_stop_percent": [1, 2]}))
         self.assertTrue(is_heavy_backtest(days=30))
+        self.assertTrue(is_heavy_backtest(walk_forward=True, days=7))
         self.assertFalse(is_heavy_backtest(days=7))
 
     def test_heavy_backtest_label(self):
@@ -42,6 +43,12 @@ class TestBacktestPerf(unittest.TestCase):
             heavy_backtest_label({"sweep": {"x": [1]}}),
             "sweep",
         )
+
+    def test_sweep_combo_count_uses_trial_budget(self):
+        from app.services.bots.backtest_perf import _sweep_combo_count
+
+        n = _sweep_combo_count({"sweep_mode": "random", "max_combos": 150})
+        self.assertLessEqual(n, 200)
 
     def test_trim_results_for_persist_downsamples(self):
         raw = {

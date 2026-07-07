@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { useStore } from '../../store/useStore';
 import { sendAction } from '../../api/transport';
 import { Action } from '../../api/protocol';
-import { priceDecimals, fmtP } from '../../lib/dockFormatters';
+import { priceDecimals, fmtP, positionUnrealizedPnl, positionReturnPct } from '../../lib/dockFormatters';
 import {
   buildCloseOrderPayload,
   buildReverseOrderPayload,
@@ -69,8 +69,8 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [], 
     if (!ok) toast.error('Reverse order failed');
   }, [sym, pos.size]);
 
-  const uPnl = pos.size * (mark - pos.avg_price);
-  const pct  = pos.avg_price > 0 ? ((mark - pos.avg_price) / pos.avg_price) * 100 : 0;
+  const uPnl = positionUnrealizedPnl(pos, mark);
+  const pct = positionReturnPct(pos, mark);
   const isLong = pos.size >= 0;
   const dec = priceDecimals(sym, Math.max(mark, pos.avg_price));
   const isActive = sym === activeSymbol;

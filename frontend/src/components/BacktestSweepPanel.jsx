@@ -1,13 +1,12 @@
 /**
  * Parameter sweep + walk-forward controls with strategy-aware param grid.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Separator } from '@/components/ui/separator';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
@@ -22,6 +21,8 @@ import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { withLlmModel } from '../api/endpoints';
 import { getSweepEligibleFields } from '../lib/botConfigDisplay';
+import { DEFAULT_SWEEP_OBJECTIVE, defaultSweepEnabled, isExploratorySweep } from '../lib/optimizerDefaults';
+import { defaultPortfolioSymbols } from '../lib/portfolioBacktest';
 import { exportSweepCsv } from '../lib/backtestExport';
 import OptimizerHeatmap from './OptimizerHeatmap';
 import OptimizationHistory from './OptimizationHistory';
@@ -36,12 +37,17 @@ import {
 import { toast } from 'sonner';
 
 const OBJECTIVE_OPTIONS = [
+  { value: 'calmar_ratio', label: 'Calmar ratio (default)' },
+  { value: 'max_drawdown_penalty', label: 'PnL − DD penalty' },
   { value: 'total_pnl', label: 'Total PnL' },
   { value: 'sharpe_ratio', label: 'Sharpe ratio' },
+  { value: 'robust_score', label: 'Robust score (Sharpe × √trades)' },
   { value: 'profit_factor', label: 'Profit factor' },
   { value: 'sortino_ratio', label: 'Sortino ratio' },
-  { value: 'calmar_ratio', label: 'Calmar ratio' },
-  { value: 'max_drawdown_penalty', label: 'PnL − DD penalty' },
+  { value: 'expectancy', label: 'Expectancy / trade' },
+  { value: 'win_rate', label: 'Win rate' },
+  { value: 'stress_pnl', label: 'Stress PnL (2× slippage)' },
+  { value: 'max_consecutive_losses', label: 'Fewest loss streak' },
 ];
 
 function parseSweepValues(text, kind) {
@@ -106,7 +112,8 @@ function countCombos(sweep, paramDefs) {
     if (Array.isArray(vals) && vals.length) fullGrid *= vals.length;
   }
   const mode = sweep.sweep_mode || 'grid';
-  const cap = mode === 'grid' ? Math.min(sweep.max_combos ?? 24, 24) : Math.min(sweep.max_combos ?? 24, 100);
+  const cap = mode === 'grid' ? Math.min(sweep.max_combos ?? 24, 24) : Math.min(sweep.max_combos ?? 24, 200);
+  if (mode === 'bayesian') return cap;
   if (mode === 'grid') return Math.min(fullGrid, cap);
   return cap;
 }
@@ -121,20 +128,8 @@ function estimateFullGrid(sweep, paramDefs) {
   return n;
 }
 
-function defaultEnabledKeys(strategy) {
-  const strat = (strategy || '').toUpperCase();
-  const base = {
-    trailing_stop_percent: true,
-    take_profit_percent: true,
-    stop_loss_percent: false,
-    allocation: false,
-    slippage_bps: false,
-    fee_bps: false,
-  };
-  if (strat === 'CHART_AGENT') {
-    return { ...base, min_confidence: false, min_score: false };
-  }
-  return base;
+function defaultEnabledKeys(strategy, paramDefs) {
+  return defaultSweepEnabled(strategy, paramDefs);
 }
 
 function defaultValuesForFields(fields, botConfig) {
@@ -180,6 +175,8 @@ export default function BacktestSweepPanel({
 }) {
   const backtestRunning = useStore((s) => s.backtestRunning);
   const botConfig = useStore((s) => s.botConfig);
+  const optimizerPreset = useStore((s) => s.optimizerPreset);
+  const clearOptimizerPreset = useStore((s) => s.clearOptimizerPreset);
   const updateBotConfig = useStore((s) => s.updateBotConfig);
   const setPendingDeploy = useStore((s) => s.setPendingDeploy);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
@@ -189,27 +186,51 @@ export default function BacktestSweepPanel({
     [strategy, botConfig],
   );
 
-  const [enabled, setEnabled] = useState(() => defaultEnabledKeys(strategy));
+  const [enabled, setEnabled] = useState(() => defaultEnabledKeys(strategy, paramDefs));
   const [valuesByKey, setValuesByKey] = useState(() =>
     defaultValuesForFields(getSweepEligibleFields(strategy, botConfig), botConfig),
   );
   const [maxCombos, setMaxCombos] = useState(24);
   const [sweepMode, setSweepMode] = useState('grid');
-  const [objective, setObjective] = useState('total_pnl');
+  const [objective, setObjective] = useState(DEFAULT_SWEEP_OBJECTIVE);
   const [minTrades, setMinTrades] = useState(1);
   const [reasoning, setReasoning] = useState(false);
-  const [rollingWf, setRollingWf] = useState(false);
+  const [rollingWf, setRollingWf] = useState(true);
   const [rollingFolds, setRollingFolds] = useState(3);
+  const [wfMode, setWfMode] = useState('rolling');
+  const [purgedSplits, setPurgedSplits] = useState(true);
+  const [finalHoldoutPct, setFinalHoldoutPct] = useState('');
+  const [pboAudit, setPboAudit] = useState(false);
+  const [optimizeRegime, setOptimizeRegime] = useState('all');
+  const [portfolioSweep, setPortfolioSweep] = useState(false);
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [autoDeployMinOosPnl, setAutoDeployMinOosPnl] = useState('0');
 
   useEffect(() => {
-    setEnabled((prev) => ({ ...defaultEnabledKeys(strategy), ...prev }));
+    setEnabled(defaultSweepEnabled(strategy, paramDefs));
     setValuesByKey((prev) => ({
       ...defaultValuesForFields(paramDefs, botConfig),
       ...prev,
     }));
-  }, [strategy]);
+  }, [strategy, paramDefs, botConfig]);
+
+  useEffect(() => {
+    if (!optimizerPreset) return;
+    if (optimizerPreset.objective) setObjective(optimizerPreset.objective);
+    if (optimizerPreset.rollingWf != null) setRollingWf(Boolean(optimizerPreset.rollingWf));
+    if (optimizerPreset.rollingFolds) setRollingFolds(optimizerPreset.rollingFolds);
+    if (optimizerPreset.purgedSplits != null) setPurgedSplits(Boolean(optimizerPreset.purgedSplits));
+    if (optimizerPreset.wfMode) setWfMode(optimizerPreset.wfMode);
+    if (optimizerPreset.portfolioSweep != null) setPortfolioSweep(Boolean(optimizerPreset.portfolioSweep));
+    if (optimizerPreset.optimizeRegime) setOptimizeRegime(optimizerPreset.optimizeRegime);
+    if (optimizerPreset.enabled) {
+      setEnabled((prev) => ({ ...prev, ...optimizerPreset.enabled }));
+    }
+    if (optimizerPreset.values) {
+      setValuesByKey((prev) => ({ ...prev, ...optimizerPreset.values }));
+    }
+    clearOptimizerPreset();
+  }, [optimizerPreset, clearOptimizerPreset]);
 
   const sweep = results?.sweep;
   const activeObjective = sweep?.objective ?? results?.meta?.sweep_objective ?? objective;
@@ -255,6 +276,10 @@ export default function BacktestSweepPanel({
       toast.error(`Walk-forward needs ~${WALK_FORWARD_MIN_BARS}+ bars — increase days or lower the timeframe`);
       return;
     }
+    if (walkForward && wfMode === 'anchored' && !rollingWf) {
+      toast.error('Anchored walk-forward requires multi-fold mode — enable rolling WF');
+      return;
+    }
     if (backtestRunning) return;
     useStore.getState().setBacktestRunning(true);
     useStore.getState().setBacktestProgress({
@@ -276,6 +301,21 @@ export default function BacktestSweepPanel({
         toast.error(`Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`);
       },
     });
+    const portfolioSymbols = portfolioSweep
+      ? defaultPortfolioSymbols(symbol, useStore.getState().symbolsList)
+      : undefined;
+    const wfExtras = walkForward
+      ? {
+          wf_mode: wfMode,
+          purged_splits: purgedSplits,
+          final_holdout_pct: finalHoldoutPct ? parseFloat(finalHoldoutPct) : undefined,
+          pbo_audit: pboAudit || undefined,
+          optimize_regime: optimizeRegime !== 'all' ? optimizeRegime : undefined,
+        }
+      : {
+          optimize_regime: optimizeRegime !== 'all' ? optimizeRegime : undefined,
+          portfolio_sweep: portfolioSweep || undefined,
+        };
     const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, withLlmModel({
       symbol,
       strategy,
@@ -283,10 +323,16 @@ export default function BacktestSweepPanel({
       days: parseInt(days, 10) || 7,
       timeframe,
       oos_pct: oosPct || undefined,
+      portfolio_symbols: portfolioSymbols,
       walk_forward: walkForward || undefined,
       rolling_folds: walkForward ? (rollingWf ? rollingFolds : 1) : undefined,
       train_pct: walkForward ? 70 : undefined,
-      sweep: sweepGrid,
+      wf_mode: walkForward ? wfMode : undefined,
+      purged_splits: walkForward ? purgedSplits : undefined,
+      final_holdout_pct: walkForward && finalHoldoutPct ? parseFloat(finalHoldoutPct) : undefined,
+      pbo_audit: walkForward && pboAudit ? true : undefined,
+      optimize_regime: optimizeRegime !== 'all' ? optimizeRegime : undefined,
+      sweep: sweepGrid ? { ...sweepGrid, ...wfExtras } : null,
       sweep_objective: objective,
       min_trades: minTrades,
       reasoning: reasoning || undefined,
@@ -311,7 +357,9 @@ export default function BacktestSweepPanel({
   };
 
   const deployOptimized = () => {
-    const cfg = results?.walk_forward?.best_config ?? results?.sweep?.best_config;
+    const cfg = results?.walk_forward?.best_config
+      ?? results?.sweep?.stable_config
+      ?? results?.sweep?.best_config;
     if (!cfg) {
       toast.error('No optimized config available — run a sweep first');
       return;
@@ -331,53 +379,75 @@ export default function BacktestSweepPanel({
     if (!res.ok) toast.error(res.error);
   };
 
-  const bestConfig = results?.walk_forward?.best_config ?? results?.sweep?.best_config;
+  const bestConfig = results?.walk_forward?.best_config
+    ?? results?.sweep?.stable_config
+    ?? results?.sweep?.best_config;
+  const sweepStability = results?.sweep?.stability;
+  const bayesianMeta = results?.sweep?.bayesian;
   const isChartAgent = (strategy || '').toUpperCase() === 'CHART_AGENT';
 
   return (
-    <div className="algo-backtest-sweep">
-      <div className="algo-backtest-sweep__header">
-        <span className="algo-backtest-table-scroll__caption m-0">Parameter sweep</span>
-        <div className="flex flex-wrap gap-1.5">
+    <div className="algo-backtest-sweep algo-backtest-sweep--lab">
+      <header className="algo-backtest-sweep__hero">
+        <div className="algo-backtest-sweep__hero-copy">
+          <h4 className="algo-backtest-sweep__title">Parameter optimizer</h4>
+          <p className="algo-backtest-sweep__subtitle">
+            <span className="algo-backtest-sweep__chip">{symbol}</span>
+            <span className="algo-backtest-sweep__chip">{strategy}</span>
+            <span className="algo-backtest-sweep__chip num-mono">{days}d · {timeframe}</span>
+          </p>
+        </div>
+        <div className="algo-backtest-sweep__actions">
           <Button
             type="button"
             variant="outline"
             size="sm"
+            className="algo-backtest-sweep__btn algo-backtest-sweep__btn--sweep"
             disabled={backtestRunning || !sweepGrid}
             onClick={() => runSweep(false)}
           >
-            Run sweep ({comboCount})
+            Run sweep
+            <span className="algo-backtest-sweep__btn-badge num-mono">{comboCount}</span>
           </Button>
           <Button
             type="button"
-            variant="outline"
             size="sm"
+            className="algo-backtest-sweep__btn algo-backtest-sweep__btn--wf"
             disabled={backtestRunning || !sweepGrid || walkForwardTooFewBars}
             onClick={() => runSweep(true)}
             title={
               walkForwardTooFewBars
                 ? `Need ~${WALK_FORWARD_MIN_BARS}+ bars for a 70/30 split — increase days or use a lower timeframe`
-                : rollingWf
-                  ? `Rolling walk-forward (${rollingFolds} folds) — optimize IS, validate OOS per slice`
-                  : 'Optimize on first 70% of bars, validate on last 30%'
+                : wfMode === 'anchored' && rollingWf
+                  ? `Anchored walk-forward (${rollingFolds} folds) — expanding IS from series start`
+                  : rollingWf
+                    ? `Rolling walk-forward (${rollingFolds} folds) — optimize IS, validate OOS per slice`
+                    : 'Optimize on first 70% of bars, validate on last 30%'
             }
           >
-            {rollingWf ? `Rolling WF (${rollingFolds})` : 'Walk-forward'}
+            {wfMode === 'anchored' && rollingWf
+              ? `Anchored WF (${rollingFolds})`
+              : rollingWf
+                ? `Rolling WF (${rollingFolds})`
+                : 'Walk-forward'}
           </Button>
           {sweep?.results?.length > 0 && (
             <Button
               type="button"
               variant="ghost"
               size="sm"
+              className="algo-backtest-sweep__btn algo-backtest-sweep__btn--export"
               onClick={handleExportCsv}
             >
               Export CSV
             </Button>
           )}
         </div>
-      </div>
+      </header>
 
-      <div className="algo-backtest-sweep__controls">
+      <section className="algo-backtest-sweep__card algo-backtest-sweep__card--search" aria-label="Search settings">
+        <h5 className="algo-backtest-sweep__card-title">Search</h5>
+        <div className="algo-backtest-sweep__controls">
         <div className="algo-backtest-sweep__control">
           <Label className="algo-backtest-sweep__control-label">Objective</Label>
           <Select value={objective} onValueChange={setObjective}>
@@ -403,12 +473,13 @@ export default function BacktestSweepPanel({
             onValueChange={(v) => {
               if (!v) return;
               setSweepMode(v);
-              if (v !== 'grid' && maxCombos > 100) setMaxCombos(100);
+              if (v !== 'grid' && maxCombos > 200) setMaxCombos(200);
             }}
           >
             <ToggleGroupItem value="grid" className="text-xs" title="Full grid, capped at 24 runs">Grid</ToggleGroupItem>
-            <ToggleGroupItem value="random" className="text-xs" title="Random search, up to 100 runs">Random</ToggleGroupItem>
-            <ToggleGroupItem value="lhs" className="text-xs" title="Latin hypercube sampling, up to 100 runs">LHS</ToggleGroupItem>
+            <ToggleGroupItem value="random" className="text-xs" title="Random search, up to 200 trials">Random</ToggleGroupItem>
+            <ToggleGroupItem value="lhs" className="text-xs" title="Latin hypercube sampling, up to 200 trials">LHS</ToggleGroupItem>
+            <ToggleGroupItem value="bayesian" className="text-xs" title="Optuna TPE — adaptive search, up to 200 trials">Bayesian</ToggleGroupItem>
           </ToggleGroup>
         </div>
         <div className="algo-backtest-sweep__control">
@@ -421,60 +492,100 @@ export default function BacktestSweepPanel({
             value={minTrades}
             onChange={(e) => setMinTrades(Math.max(0, parseInt(e.target.value, 10) || 0))}
           />
+          {comboCount > 0 && (
+            <span className="text-[0.55rem] text-muted-foreground block mt-0.5">
+              WF floor: max({minTrades}, 5 × swept params)
+            </span>
+          )}
         </div>
         <div className="algo-backtest-sweep__control">
           <Label className="algo-backtest-sweep__control-label">Max combos</Label>
           <Input
             type="number"
             min={1}
-            max={sweepMode === 'grid' ? 24 : 100}
+            max={sweepMode === 'grid' ? 24 : 200}
             className="h-7 w-16 text-xs"
             value={maxCombos}
             onChange={(e) => {
-              const cap = sweepMode === 'grid' ? 24 : 100;
+              const cap = sweepMode === 'grid' ? 24 : 200;
               setMaxCombos(Math.max(1, Math.min(cap, parseInt(e.target.value, 10) || 1)));
             }}
           />
         </div>
-        <span className="algo-backtest-sweep__summary">
-          {comboCount} run{comboCount === 1 ? '' : 's'}
-          {fullGridSize > 1 && ` · full grid ${fullGridSize}`}
-          {comboTruncated && (
-            <span className="text-trading-warn"> · truncated to {comboCount}</span>
+        </div>
+        <div className="algo-backtest-sweep__budget">
+          <span className="algo-backtest-sweep__budget-item num-mono">
+            {comboCount} run{comboCount === 1 ? '' : 's'}
+          </span>
+          {fullGridSize > 1 && (
+            <span className="algo-backtest-sweep__budget-item num-mono">
+              grid {fullGridSize}
+            </span>
           )}
-        </span>
-      </div>
+          {comboTruncated && (
+            <span className="algo-backtest-sweep__budget-item algo-backtest-sweep__budget-item--warn">
+              capped {comboCount}
+            </span>
+          )}
+          <span className="algo-backtest-sweep__budget-item">5 min · 200 trial budget</span>
+        </div>
+      </section>
 
-      {isChartAgent && (
-        <Alert className="py-1.5">
-          <AlertDescription className="text-xs leading-snug">
-            Chart Agent sweeps replay rules-only signals — LLM analysis is not varied during optimization.
-          </AlertDescription>
-        </Alert>
+      {(isChartAgent || isExploratorySweep(results) || results?.sim_mode === 'research'
+        || (results?.meta?.config?.direction_mode
+          && results.meta.config.direction_mode !== (botConfig?.direction_mode ?? 'LONG_ONLY'))) && (
+        <div className="algo-backtest-sweep__alerts">
+          {isChartAgent && (
+            <Alert className="algo-backtest-sweep__alert py-1.5">
+              <AlertDescription className="text-xs leading-snug">
+                Chart Agent sweeps replay rules-only signals — LLM analysis is not varied during optimization.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {isExploratorySweep(results) && (
+            <Alert variant="destructive" className="algo-backtest-sweep__alert py-1.5">
+              <AlertDescription className="text-xs leading-snug">
+                Exploratory in-sample sweep — run walk-forward before deploy. Deploy gate will block until OOS-validated.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {results?.sim_mode === 'research' && (
+            <Alert variant="destructive" className="algo-backtest-sweep__alert py-1.5">
+              <AlertDescription className="text-xs leading-snug">
+                Parent backtest used research mode — sweep inherits sim_mode. Re-run live-aligned before deploy.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {results?.meta?.config?.direction_mode
+            && results.meta.config.direction_mode !== (botConfig?.direction_mode ?? 'LONG_ONLY') && (
+            <Alert className="algo-backtest-sweep__alert py-1.5">
+              <AlertDescription className="text-xs leading-snug">
+                Backtest direction ({results.meta.config.direction_mode}) differs from current deploy config — align trade direction before optimizing.
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
       )}
 
-      {results?.sim_mode === 'research' && (
-        <Alert variant="destructive" className="py-1.5">
-          <AlertDescription className="text-xs leading-snug">
-            Parent backtest used research mode — sweep inherits sim_mode. Re-run live-aligned before deploy.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {results?.meta?.config?.direction_mode
-        && results.meta.config.direction_mode !== (botConfig?.direction_mode ?? 'LONG_ONLY') && (
-        <Alert className="py-1.5">
-          <AlertDescription className="text-xs leading-snug">
-            Backtest direction ({results.meta.config.direction_mode}) differs from current deploy config — align trade direction before optimizing.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <Separator className="my-1" />
-
-      <div className="algo-backtest-sweep__grid flex flex-col gap-2">
+      <section className="algo-backtest-sweep__card algo-backtest-sweep__card--params" aria-label="Sweep parameters">
+        <h5 className="algo-backtest-sweep__card-title">Parameters</h5>
+        <div className="algo-backtest-sweep__param-head" aria-hidden>
+          <span />
+          <span>Field</span>
+          <span>Values</span>
+        </div>
+        <div className="algo-backtest-sweep__grid">
         {paramDefs.map((def) => (
-          <div key={def.key} className="algo-backtest-sweep__row flex items-center gap-2">
+          <div
+            key={def.key}
+            className={cn(
+              'algo-backtest-sweep__row',
+              enabled[def.key] && 'algo-backtest-sweep__row--active',
+            )}
+          >
             <Checkbox
               id={`sweep-${def.key}`}
               checked={Boolean(enabled[def.key])}
@@ -482,12 +593,12 @@ export default function BacktestSweepPanel({
             />
             <Label
               htmlFor={`sweep-${def.key}`}
-              className="w-28 shrink-0 cursor-pointer text-xs font-normal text-muted-foreground"
+              className="algo-backtest-sweep__row-label"
             >
               {def.label}
             </Label>
             <Input
-              className="h-8 min-w-[8rem] flex-1 text-xs"
+              className="algo-backtest-sweep__row-input h-8 text-xs num-mono"
               placeholder={def.placeholder}
               value={valuesByKey[def.key] ?? ''}
               disabled={!enabled[def.key]}
@@ -504,83 +615,178 @@ export default function BacktestSweepPanel({
           </Alert>
         )}
         {agentLlmAvailable && (
-          <div className="flex items-center gap-2">
+          <div className="algo-backtest-sweep__row algo-backtest-sweep__row--toggle">
             <Checkbox
               id="sweep-reasoning"
               checked={reasoning}
               onCheckedChange={(c) => setReasoning(c === true)}
             />
-            <Label htmlFor="sweep-reasoning" className="cursor-pointer text-xs font-normal text-muted-foreground">
+            <Label htmlFor="sweep-reasoning" className="algo-backtest-sweep__row-label algo-backtest-sweep__row-label--wide">
               Generate trade explanations after backtest (local LLM, post-hoc only)
             </Label>
           </div>
         )}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <div className="flex items-center gap-2">
+        </div>
+      </section>
+
+      <section className="algo-backtest-sweep__card algo-backtest-sweep__card--wf" aria-label="Walk-forward validation">
+        <h5 className="algo-backtest-sweep__card-title">Walk-forward &amp; validation</h5>
+        <div className="algo-backtest-sweep__wf-grid">
+          <div className="algo-backtest-sweep__wf-item">
             <Checkbox
               id="sweep-rolling"
               checked={rollingWf}
               onCheckedChange={(c) => setRollingWf(c === true)}
             />
-            <Label htmlFor="sweep-rolling" className="cursor-pointer text-xs font-normal text-muted-foreground">
-              Rolling walk-forward
+            <Label htmlFor="sweep-rolling" className="algo-backtest-sweep__wf-label">
+              Multi-fold walk-forward
             </Label>
           </div>
           {rollingWf && (
-            <div className="flex items-center gap-2">
-              <Label className="shrink-0 text-xs text-muted-foreground">Folds</Label>
-              <Select
-                value={String(rollingFolds)}
-                onValueChange={(v) => setRollingFolds(parseInt(v, 10) || 3)}
-              >
-                <SelectTrigger size="sm" className="w-[4.5rem]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent position="popper">
-                  {[2, 3, 4, 5].map((n) => (
-                    <SelectItem key={n} value={String(n)} className="text-xs">{n}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <>
+              <div className="algo-backtest-sweep__wf-field">
+                <Label className="algo-backtest-sweep__wf-field-label">Folds</Label>
+                <Select
+                  value={String(rollingFolds)}
+                  onValueChange={(v) => setRollingFolds(parseInt(v, 10) || 3)}
+                >
+                  <SelectTrigger size="sm" className="algo-backtest-sweep__wf-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    {[2, 3, 4, 5].map((n) => (
+                      <SelectItem key={n} value={String(n)} className="text-xs">{n}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="algo-backtest-sweep__wf-field">
+                <Label className="algo-backtest-sweep__wf-field-label">WF mode</Label>
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  value={wfMode}
+                  onValueChange={(v) => {
+                    if (!v) return;
+                    setWfMode(v);
+                    if (v === 'anchored') setRollingWf(true);
+                  }}
+                  className="algo-backtest-sweep__wf-toggle"
+                >
+                  <ToggleGroupItem value="rolling" className="text-xs" title="Fixed-width IS/OOS slices">
+                    Rolling
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="anchored" className="text-xs" title="Expanding IS anchored at series start">
+                    Anchored
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+            </>
           )}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="algo-backtest-sweep__wf-item">
+            <Checkbox
+              id="sweep-purged"
+              checked={purgedSplits}
+              onCheckedChange={(c) => setPurgedSplits(c === true)}
+            />
+            <Label htmlFor="sweep-purged" className="algo-backtest-sweep__wf-label">
+              Purged splits
+            </Label>
+          </div>
+          <div className="algo-backtest-sweep__wf-field">
+            <Label className="algo-backtest-sweep__wf-field-label">Holdout %</Label>
+            <Input
+              type="number"
+              min={0}
+              max={30}
+              className="algo-backtest-sweep__wf-input h-7 text-xs num-mono"
+              placeholder="off"
+              value={finalHoldoutPct}
+              onChange={(e) => setFinalHoldoutPct(e.target.value)}
+              title="Reserve trailing bars never used in optimization (5–30%). Empty = disabled."
+            />
+          </div>
+          <div className="algo-backtest-sweep__wf-item">
+            <Checkbox
+              id="sweep-pbo"
+              checked={pboAudit}
+              onCheckedChange={(c) => setPboAudit(c === true)}
+            />
+            <Label htmlFor="sweep-pbo" className="algo-backtest-sweep__wf-label">
+              PBO / CSCV audit
+            </Label>
+          </div>
+          <div className="algo-backtest-sweep__wf-field">
+            <Label className="algo-backtest-sweep__wf-field-label">Regime</Label>
+            <Select value={optimizeRegime} onValueChange={setOptimizeRegime}>
+              <SelectTrigger size="sm" className="algo-backtest-sweep__wf-select algo-backtest-sweep__wf-select--wide">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                {[
+                  { value: 'all', label: 'All bars' },
+                  { value: 'trend', label: 'Trend (norm+elev)' },
+                  { value: 'elevated', label: 'Elevated vol' },
+                  { value: 'normal', label: 'Normal vol' },
+                  { value: 'compressed', label: 'Compressed' },
+                ].map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="algo-backtest-sweep__wf-item">
+            <Checkbox
+              id="sweep-portfolio"
+              checked={portfolioSweep}
+              onCheckedChange={(c) => setPortfolioSweep(c === true)}
+            />
+            <Label htmlFor="sweep-portfolio" className="algo-backtest-sweep__wf-label">
+              Portfolio sweep
+            </Label>
+          </div>
+          <div className="algo-backtest-sweep__wf-item algo-backtest-sweep__wf-item--wide">
             <Checkbox
               id="sweep-auto-deploy"
               checked={autoDeploy}
               onCheckedChange={(c) => setAutoDeploy(c === true)}
             />
-            <Label htmlFor="sweep-auto-deploy" className="cursor-pointer text-xs font-normal text-muted-foreground">
-              Auto-deploy bot when walk-forward OOS passes
+            <Label htmlFor="sweep-auto-deploy" className="algo-backtest-sweep__wf-label">
+              Auto-deploy on OOS pass
             </Label>
             {autoDeploy && (
-              <div className="flex items-center gap-1.5">
-                <Label className="text-xs text-muted-foreground">Min OOS PnL</Label>
+              <div className="algo-backtest-sweep__wf-inline">
+                <Label className="algo-backtest-sweep__wf-field-label">Min OOS PnL</Label>
                 <Input
-                  className="h-7 w-16 text-xs num-mono"
+                  className="algo-backtest-sweep__wf-input h-7 w-16 text-xs num-mono"
                   value={autoDeployMinOosPnl}
                   onChange={(e) => setAutoDeployMinOosPnl(e.target.value)}
                 />
               </div>
             )}
           </div>
-          <span className="text-xs text-muted-foreground">
-            {rollingWf
-              ? 'Sequential IS/OOS slices across the range; best config by mean OOS performance'
-              : 'Walk-forward uses a single 70/30 split when rolling is off'}
-          </span>
         </div>
-      </div>
+        <p className="algo-backtest-sweep__wf-hint">
+          {wfMode === 'anchored' && rollingWf
+            ? 'Expanding in-sample from series start; OOS slides forward with purge/embargo'
+            : rollingWf
+              ? 'Sequential IS/OOS slices; best config by mean OOS performance'
+              : 'Single 70/30 split when multi-fold is off'}
+          {purgedSplits ? ' · purged' : ''}
+          {finalHoldoutPct ? ` · ${finalHoldoutPct}% final holdout` : ''}
+        </p>
+      </section>
 
       {bestConfig && (
-        <div className="flex flex-wrap gap-1.5 mt-2">
+        <div className="algo-backtest-sweep__deploy-bar">
           <Button
             type="button"
             variant="ghost"
             size="sm"
             onClick={() => applyConfig(bestConfig)}
           >
-            Apply best config to deploy
+            Apply best config
           </Button>
           <Button
             type="button"
@@ -588,104 +794,157 @@ export default function BacktestSweepPanel({
             size="sm"
             onClick={deployOptimized}
           >
-            Deploy with optimized params
+            Deploy optimized
           </Button>
         </div>
       )}
 
-      <BacktestWalkForwardPanel
-        walkForward={results?.walk_forward}
-        symbol={symbol}
-        strategy={strategy}
-        timeframe={timeframe}
-        runId={results?.run_id}
-      />
-
-      {results?.auto_deploy && (
-        <Alert className={cn(
-          'border-border/60 py-2',
-          results.auto_deploy.deployed ? 'bg-trading-up/10' : 'bg-muted/20',
-        )}>
-          <AlertDescription className="text-xs">
-            {results.auto_deploy.deployed
-              ? `Auto-deployed bot ${results.auto_deploy.bot_id?.slice(0, 8)}… (OOS PnL $${Number(results.auto_deploy.metrics?.oos_pnl ?? 0).toFixed(2)})`
-              : `Auto-deploy skipped: ${results.auto_deploy.reason}`}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {aggregatedFilterRejects && (
-        <FilterRejectsDashboard
-          rejects={aggregatedFilterRejects.rejects}
-          total={aggregatedFilterRejects.total}
-          title="Sweep filter rejects"
-          hint={`Summed across ${aggregatedFilterRejects.runs} optimizer runs — signals blocked before entry during replay.`}
+      <div className="algo-backtest-sweep__results">
+        <BacktestWalkForwardPanel
+          walkForward={results?.walk_forward}
+          symbol={symbol}
+          strategy={strategy}
+          timeframe={timeframe}
+          runId={results?.run_id}
         />
-      )}
 
-      {sweep?.results?.length > 0 && (
-        <>
-          <Separator className="my-1" />
-          <div className="algo-backtest-table-scroll">
-            <table className="terminal-table algo-backtest-table m-0 text-xs">
-              <thead>
-                <tr>
-                  <th>Config</th>
-                  <th className="text-right">{metricHeader(activeObjective)}</th>
-                  <th className="text-right">Trades</th>
-                  <th className="text-right">Filters</th>
-                  <th className="text-right">Win%</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {sweep.results.map((row, i) => {
-                  const isBest = i === 0;
-                  const summary = row.summary ?? {};
-                  return (
-                    <tr key={row.label ?? i} className={cn(isBest && 'bg-primary/5')}>
-                      <td className="max-w-[9rem] truncate" title={row.label}>{row.label}</td>
-                      <td className={cn(
-                        'num-mono text-right whitespace-nowrap',
-                        activeObjective === 'total_pnl' && (row.total_pnl ?? 0) >= 0 && 'text-trading-up',
-                        activeObjective === 'total_pnl' && (row.total_pnl ?? 0) < 0 && 'text-trading-down',
-                      )}>
-                        {formatMetric(row, activeObjective)}
-                      </td>
-                      <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
-                      <td className="num-mono text-right text-muted-foreground" title={
-                        row.filter_rejects
-                          ? Object.entries(row.filter_rejects).filter(([, n]) => n > 0).map(([k, n]) => `${k}:${n}`).join(', ')
-                          : undefined
-                      }>
-                        {row.filter_rejects_total ?? summary.filter_rejects_total ?? '—'}
-                      </td>
-                      <td className="num-mono text-right">
-                        {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
-                      </td>
-                      <td className="text-right">
-                        {isBest && row.config && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => applyConfig(row.config)}
-                          >
-                            Apply
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <OptimizerHeatmap sweep={sweep} paramDefs={paramDefs} objective={activeObjective} />
-        </>
-      )}
+        <div className="algo-backtest-sweep__result-alerts">
+          {results?.auto_deploy && (
+            <Alert className={cn(
+              'algo-backtest-sweep__alert',
+              results.auto_deploy.deployed ? 'algo-backtest-sweep__alert--ok' : 'algo-backtest-sweep__alert--muted',
+            )}>
+              <AlertDescription className="text-xs">
+                {results.auto_deploy.deployed
+                  ? `Auto-deployed bot ${results.auto_deploy.bot_id?.slice(0, 8)}… (OOS PnL $${Number(results.auto_deploy.metrics?.oos_pnl ?? 0).toFixed(2)})`
+                  : `Auto-deploy skipped: ${results.auto_deploy.reason}`}
+              </AlertDescription>
+            </Alert>
+          )}
 
-      <OptimizationHistory />
+          {bayesianMeta?.sampler && (
+            <Alert className="algo-backtest-sweep__alert algo-backtest-sweep__alert--muted">
+              <AlertDescription className="text-xs">
+                Bayesian search ({bayesianMeta.sampler}): {bayesianMeta.trials_completed}/{bayesianMeta.trials_budget} trials
+                {bayesianMeta.early_stopped ? ' — stopped early (plateau)' : ''}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {sweepStability?.recommendation === 'centroid' && (
+            <Alert className="algo-backtest-sweep__alert algo-backtest-sweep__alert--muted">
+              <AlertDescription className="text-xs">
+                Stable pick: top-quartile centroid (spread {Number(sweepStability.objective_spread ?? 0).toFixed(2)})
+                — prefer over single peak when params vary across winners.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {results?.pbo_audit?.pbo != null && (
+            <Alert className={cn(
+              'algo-backtest-sweep__alert',
+              Number(results.pbo_audit.pbo) >= 0.5
+                ? 'algo-backtest-sweep__alert--danger'
+                : Number(results.pbo_audit.pbo) >= 0.35
+                  ? 'algo-backtest-sweep__alert--warn'
+                  : 'algo-backtest-sweep__alert--muted',
+            )}>
+              <AlertDescription className="text-xs">
+                PBO / CSCV: {(Number(results.pbo_audit.pbo) * 100).toFixed(0)}% overfit probability
+                ({results.pbo_audit.risk_label || 'low'} risk, {results.pbo_audit.configs_audited} configs audited)
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {results?.final_holdout && !results.final_holdout.skipped && (
+            <Alert className={cn(
+              'algo-backtest-sweep__alert',
+              results.final_holdout.passed === false
+                ? 'algo-backtest-sweep__alert--danger'
+                : 'algo-backtest-sweep__alert--ok',
+            )}>
+              <AlertDescription className="text-xs">
+                Final holdout: ${Number(results.final_holdout.total_pnl ?? 0).toFixed(2)}
+                , {results.final_holdout.trade_count ?? 0} trades
+                {results.final_holdout.passed === false ? ' — failed deploy gate' : ' — passed'}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+
+        {aggregatedFilterRejects && (
+          <FilterRejectsDashboard
+            rejects={aggregatedFilterRejects.rejects}
+            total={aggregatedFilterRejects.total}
+            title="Sweep filter rejects"
+            hint={`Summed across ${aggregatedFilterRejects.runs} optimizer runs — signals blocked before entry during replay.`}
+          />
+        )}
+
+        {sweep?.results?.length > 0 && (
+          <section className="algo-backtest-sweep__card algo-backtest-sweep__card--results">
+            <h3 className="algo-backtest-sweep__card-title">Trial leaderboard</h3>
+            <div className="algo-backtest-sweep__table-wrap">
+              <table className="terminal-table algo-backtest-table algo-backtest-sweep__table">
+                <thead>
+                  <tr>
+                    <th>Config</th>
+                    <th className="text-right">{metricHeader(activeObjective)}</th>
+                    <th className="text-right">Trades</th>
+                    <th className="text-right">Filters</th>
+                    <th className="text-right">Win%</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sweep.results.map((row, i) => {
+                    const isBest = i === 0;
+                    const summary = row.summary ?? {};
+                    return (
+                      <tr key={row.label ?? i} className={cn(isBest && 'algo-backtest-sweep__row--best')}>
+                        <td className="algo-backtest-sweep__cell-config" title={row.label}>{row.label}</td>
+                        <td className={cn(
+                          'num-mono text-right',
+                          activeObjective === 'total_pnl' && (row.total_pnl ?? 0) >= 0 && 'text-trading-up',
+                          activeObjective === 'total_pnl' && (row.total_pnl ?? 0) < 0 && 'text-trading-down',
+                        )}>
+                          {formatMetric(row, activeObjective)}
+                        </td>
+                        <td className="num-mono text-right">{row.trade_count ?? summary.total_trades ?? '—'}</td>
+                        <td className="num-mono text-right text-muted-foreground" title={
+                          row.filter_rejects
+                            ? Object.entries(row.filter_rejects).filter(([, n]) => n > 0).map(([k, n]) => `${k}:${n}`).join(', ')
+                            : undefined
+                        }>
+                          {row.filter_rejects_total ?? summary.filter_rejects_total ?? '—'}
+                        </td>
+                        <td className="num-mono text-right">
+                          {summary.win_rate != null ? `${Number(summary.win_rate).toFixed(1)}%` : '—'}
+                        </td>
+                        <td className="text-right">
+                          {isBest && row.config && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => applyConfig(row.config)}
+                            >
+                              Apply
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <OptimizerHeatmap sweep={sweep} paramDefs={paramDefs} objective={activeObjective} />
+          </section>
+        )}
+
+        <OptimizationHistory />
+      </div>
     </div>
   );
 }

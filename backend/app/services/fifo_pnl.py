@@ -119,24 +119,33 @@ def record_order_fifo_pnl(
     side: str,
     fill_price: float,
     fill_qty: float,
+    *,
+    cached_queues: dict | None = None,
 ) -> tuple[float | None, float | None]:
-    """Compute FIFO PnL from prior fills for symbol and persist on the order row."""
-    cursor.execute(
-        """
-        SELECT side, filled_quantity, average_fill_price
-        FROM orders
-        WHERE symbol = ? AND status = 'FILLED' AND id != ?
-        ORDER BY timestamp ASC, id ASC
-        """,
-        (symbol, order_id),
-    )
-    queues: dict[str, dict[str, list[list[float]]]] = {}
-    for row in cursor.fetchall():
-        qty = float(row["filled_quantity"] or 0)
-        price = float(row["average_fill_price"] or 0)
-        if qty <= 0:
-            continue
-        apply_fill_to_queues(queues, symbol, row["side"], price, qty)
+    """Compute FIFO PnL from prior fills for symbol and persist on the order row.
+
+    When *cached_queues* is supplied the expensive O(n) replay is skipped and
+    the queue is updated in-place, making successive calls O(1) amortised.
+    """
+    if cached_queues is not None:
+        queues = cached_queues
+    else:
+        cursor.execute(
+            """
+            SELECT side, filled_quantity, average_fill_price
+            FROM orders
+            WHERE symbol = ? AND status = 'FILLED' AND id != ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (symbol, order_id),
+        )
+        queues: dict[str, dict[str, list[list[float]]]] = {}
+        for row in cursor.fetchall():
+            qty = float(row["filled_quantity"] or 0)
+            price = float(row["average_fill_price"] or 0)
+            if qty <= 0:
+                continue
+            apply_fill_to_queues(queues, symbol, row["side"], price, qty)
 
     cost_basis, realized_pnl = apply_fill_to_queues(queues, symbol, side, fill_price, fill_qty)
 

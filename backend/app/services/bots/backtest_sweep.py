@@ -24,9 +24,18 @@ SWEEP_RESERVED_KEYS = frozenset({
     "train_pct", "walk_forward", "max_combos",
     "sweep_objective", "min_trades", "objective",
     "sweep_mode", "sweep_seed",
+    "bayesian_patience", "bayesian_startup_trials",
+    # Tier 5 performance
+    "time_budget_sec", "max_trials",
+    # Tier 3 WF validation — never swept as strategy params
+    "wf_mode", "purged_splits", "purge_bars", "embargo_pct", "wf_step_pct",
+    "final_holdout_pct", "pbo_audit", "pbo_top_k", "pbo_groups",
+    "holdout_bars", "holdout_pct",
+    # Tier 4 UX / workflow
+    "optimize_regime", "portfolio_sweep",
 })
 
-SWEEP_MODES = frozenset({"grid", "random", "lhs"})
+SWEEP_MODES = frozenset({"grid", "random", "lhs", "bayesian"})
 
 
 def _coerce_sweep_values(values: list) -> list[Any]:
@@ -62,9 +71,8 @@ def _build_axes(base: dict, sweep: dict) -> list[tuple[str, list[Any]]]:
 
 
 def _max_combos_for_mode(sweep: dict, sweep_mode: str) -> int:
-    requested = int(sweep.get("max_combos") or MAX_SWEEP_COMBOS)
-    cap = MAX_SWEEP_COMBOS_EXTENDED if sweep_mode in ("random", "lhs") else MAX_SWEEP_COMBOS
-    return max(1, min(requested, cap))
+    from app.services.bots.backtest_trial_budget import resolve_max_trials
+    return resolve_max_trials(sweep, sweep_mode)
 
 
 def _lhs_unit_samples(n_samples: int, n_dims: int, rng: random.Random) -> list[list[float]]:
@@ -103,6 +111,16 @@ def estimate_sweep_combos(sweep: dict | None) -> dict[str, Any]:
         full_grid *= len(vals)
 
     max_combos = _max_combos_for_mode(sweep, sweep_mode)
+    if sweep_mode == "bayesian":
+        estimated = max_combos
+        return {
+            "estimated": estimated,
+            "full_grid": full_grid,
+            "truncated": full_grid > max_combos,
+            "max_combos": max_combos,
+            "sweep_mode": sweep_mode,
+        }
+
     estimated = min(full_grid, max_combos) if sweep_mode == "grid" else max_combos
     return {
         "estimated": estimated,
@@ -114,9 +132,14 @@ def estimate_sweep_combos(sweep: dict | None) -> dict[str, Any]:
 
 
 def expand_sweep_grid(base_config: dict, sweep: dict | None) -> list[dict]:
-    """Build parameter combos via grid, random, or Latin hypercube sampling."""
+    """Build parameter combos via grid, random, Latin hypercube, or bayesian placeholder."""
     base = copy.deepcopy(base_config or {})
     sweep = sweep or {}
+    sweep_mode = str(sweep.get("sweep_mode") or "grid").lower()
+    if sweep_mode == "bayesian":
+        # Trials are generated sequentially by backtest_bayesian.run_bayesian_sweep.
+        return []
+
     axes = _build_axes(base, sweep)
 
     if not axes:
@@ -173,6 +196,28 @@ def expand_sweep_grid(base_config: dict, sweep: dict | None) -> list[dict]:
     return out
 
 
+def count_sweep_axes(sweep: dict | None) -> int:
+    """Number of swept parameter axes (excluding reserved keys)."""
+    return len(_build_axes({}, sweep or {}))
+
+
+def count_varying_param_axes(configs: list[dict]) -> int:
+    """Count config keys that differ across sweep combos."""
+    if len(configs) <= 1:
+        return 0
+    keys: set[str] = set()
+    for cfg in configs:
+        keys.update(cfg.keys())
+    varying = 0
+    for key in sorted(keys):
+        if key in SWEEP_RESERVED_KEYS or key in ("sim_mode", "live_parity"):
+            continue
+        seen = {repr(cfg.get(key)) for cfg in configs}
+        if len(seen) > 1:
+            varying += 1
+    return varying
+
+
 def sweep_label(config: dict) -> str:
     parts = []
     for key, val in config.items():
@@ -188,3 +233,11 @@ def sweep_label(config: dict) -> str:
         if len(parts) >= 4:
             break
     return " · ".join(parts) if parts else "default"
+
+
+def is_sweep_request(sweep: dict | None, configs: list[dict]) -> bool:
+    """True when the request is a multi-config parameter sweep."""
+    from app.services.bots.backtest_bayesian import is_bayesian_sweep
+    if is_bayesian_sweep(sweep):
+        return count_sweep_axes(sweep) > 0
+    return len(configs) > 1 or bool(sweep)

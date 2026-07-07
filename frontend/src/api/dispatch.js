@@ -190,7 +190,8 @@ export function applyServerMessage(type, data, storeActions, meta) {
           storeActions.setBacktestOverlay(overlay);
         }
         if (results?.sweep) {
-          toast.success(`Sweep complete · best $${Number(results.total_pnl ?? 0).toFixed(2)}`);
+          const comboCount = results?.sweep?.configs?.length || results?.sweep?.sweep_rows?.length || '?';
+          toast.success(`Sweep complete · best of ${comboCount} combos · $${Number(results.total_pnl ?? 0).toFixed(2)}`);
         }
         import('./endpoints').then(({ fetchBacktestRuns }) => {
           fetchBacktestRuns(storeActions, sym);

@@ -11,6 +11,23 @@ export const priceDecimals = (sym, price) =>
 export const fmtP = (n, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
+/** Unrealized P&L — long and short (size sign drives direction). */
+export function positionUnrealizedPnl(pos, mark) {
+  const size = Number(pos?.size ?? 0);
+  const entry = Number(pos?.avg_price ?? 0);
+  const m = Number(mark ?? entry);
+  return size * (m - entry);
+}
+
+/** Return % on deployed notional — same sign as unrealized P&L. */
+export function positionReturnPct(pos, mark) {
+  const size = Number(pos?.size ?? 0);
+  const entry = Number(pos?.avg_price ?? 0);
+  const costBasis = Math.abs(size) * entry;
+  if (costBasis <= 0) return 0;
+  return (positionUnrealizedPnl(pos, mark) / costBasis) * 100;
+}
+
 export const QUOTE_ASSETS = new Set(['USD', 'USDT']);
 
 /** Strip quote suffix to get the base asset ticker. */

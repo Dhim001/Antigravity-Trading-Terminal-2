@@ -33,7 +33,7 @@ All bar-close bots share these (Algo deploy + Bot config):
 
 **Fees / slippage:** set `fee_bps` and `slippage_bps` in backtest (Algo → Backtest) before trusting PnL.
 
-**Live vs backtest:** `confirm_timeframe` and `filter_strategy` gates apply **live** on ICT/Donchian; backtests do not yet simulate HTF/filter gates for indicator bots — validate those in paper trading.
+**Live vs backtest:** With `sim_mode: live_aligned` (default), backtests apply the same `confirm_timeframe` HTF bias and `filter_strategy` gates as live bots. Use `sim_mode: research` to disable parity gates for exploratory runs.
 
 ---
 
@@ -254,7 +254,7 @@ Filter indicators are computed live alongside the primary strategy. Match `filte
 - **VWAP** on multi-day windows may blend sessions (rolling 300-bar live window).
 - **ICT** structure detection is simplified vs full SMC coursework (single-bar confluence).
 - **Market making** uses bar range as spread proxy, not order book data.
-- **Backtest** does not simulate `confirm_timeframe` / `filter_strategy` for indicator bots (live only today).
+- **Backtest** with `live_aligned` simulates `confirm_timeframe` / `filter_strategy` via `live_parity` (walk-forward optimizer forces this mode).
 
 ---
 

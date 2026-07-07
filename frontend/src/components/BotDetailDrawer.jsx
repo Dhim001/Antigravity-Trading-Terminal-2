@@ -18,13 +18,11 @@ import {
   SheetDescription,
   SheetFooter,
 } from '@/components/ui/sheet';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Empty,
@@ -188,7 +186,10 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
 
   useEffect(() => {
     if (!open || !bot?.symbol || bot.strategy !== 'CHART_AGENT') return;
-    fetchAgentInsights(bot.symbol, { setAgentInsightHistory }, 80).catch(() => {});
+    const ac = new AbortController();
+    fetchAgentInsights(bot.symbol, { setAgentInsightHistory }, 80, null, { signal: ac.signal })
+      .catch(() => {});
+    return () => ac.abort();
   }, [open, bot?.id, bot?.symbol, bot?.strategy, setAgentInsightHistory]);
 
   useEffect(() => {
@@ -523,47 +524,43 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 className="bot-detail-drawer__details"
               >
                 <CollapsibleContent className="bot-detail-drawer__details-content">
-                  <ScrollArea className="bot-detail-drawer__details-scroll">
-                    <div className="bot-detail-drawer__details-inner">
-                      <BotConfigPanel
+                  <div className="bot-detail-drawer__details-inner">
+                    <BotConfigPanel
+                      botId={bot.id}
+                      strategy={bot.strategy}
+                      config={bot.config}
+                      botStatus={bot.status}
+                      botTimeframe={bot.timeframe}
+                      position={position}
+                    />
+
+                    <BotDrawerSection
+                      id="calibration"
+                      title="Calibration & filters"
+                      defaultOpen={false}
+                      scrollable
+                      className="bot-drawer-section--calibration"
+                    >
+                      <BotCalibrationPanel
                         botId={bot.id}
+                        symbol={bot.symbol}
                         strategy={bot.strategy}
-                        config={bot.config}
-                        botStatus={bot.status}
-                        botTimeframe={bot.timeframe}
-                        position={position}
+                        className="bot-calibration-panel"
                       />
+                    </BotDrawerSection>
 
-                      {bot.strategy === 'CHART_AGENT' && (
-                        <BotDrawerSection
-                          id="calibration"
-                          title="Calibration & filters"
-                          defaultOpen={false}
-                          scrollable
-                          className="bot-drawer-section--calibration"
-                        >
-                          <BotCalibrationPanel
-                            botId={bot.id}
-                            symbol={bot.symbol}
-                            strategy={bot.strategy}
-                            className="bot-calibration-panel"
-                          />
-                        </BotDrawerSection>
-                      )}
-
-                      <BotDrawerSection
-                        id="equity"
-                        title="Equity curve"
-                        badge={snapshots.length}
-                        defaultOpen={false}
-                        className="bot-drawer-section--equity"
-                      >
-                        <div className="bot-detail-drawer__equity-body">
-                          <BotSnapshotChart snapshots={snapshots} allocation={bot.allocation} />
-                        </div>
-                      </BotDrawerSection>
-                    </div>
-                  </ScrollArea>
+                    <BotDrawerSection
+                      id="equity"
+                      title="Equity curve"
+                      badge={snapshots.length}
+                      defaultOpen={false}
+                      className="bot-drawer-section--equity"
+                    >
+                      <div className="bot-detail-drawer__equity-body">
+                        <BotSnapshotChart snapshots={snapshots} allocation={bot.allocation} />
+                      </div>
+                    </BotDrawerSection>
+                  </div>
                 </CollapsibleContent>
               </Collapsible>
 
@@ -572,38 +569,46 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 onOpenChange={setTradesOpen}
                 className="bot-detail-drawer__trades-card"
               >
-              <CollapsibleTrigger asChild>
-                <button type="button" className="bot-detail-drawer__trades-trigger">
-                  <ChevronRight
-                    className={cn(
-                      'bot-drawer-section__chevron',
-                      tradesOpen && 'bot-drawer-section__chevron--open',
-                    )}
-                    aria-hidden
-                  />
-                  <span className="bot-drawer-section__title">Recent fills</span>
-                  <Badge variant="secondary" className="bot-drawer-section__badge">
-                    {trades.length}
-                  </Badge>
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="bot-detail-drawer__trades-content">
-                <Card size="sm" className="bot-detail-drawer__trades-panel">
-                  <CardContent className="bot-detail-drawer__trades-body">
-                    {trades.length === 0 ? (
-                      <Empty className="bot-detail-drawer__trades-empty border-0">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon">
-                            <History aria-hidden />
-                          </EmptyMedia>
-                          <EmptyTitle>No trades yet</EmptyTitle>
-                          <EmptyDescription>
-                            Fills and trade explanations appear here once the bot executes.
-                          </EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : (
-                      <ScrollArea className="bot-detail-drawer__trades-scroll">
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="bot-detail-drawer__trades-trigger"
+                    aria-expanded={tradesOpen}
+                  >
+                    <ChevronRight
+                      className={cn(
+                        'bot-drawer-section__chevron',
+                        tradesOpen && 'bot-drawer-section__chevron--open',
+                      )}
+                      aria-hidden
+                    />
+                    <span className="bot-drawer-section__title">Recent fills</span>
+                    <Badge variant="secondary" className="bot-drawer-section__badge">
+                      {trades.length}
+                    </Badge>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="bot-detail-drawer__trades-content">
+                  {trades.length === 0 ? (
+                    <Empty className="bot-detail-drawer__trades-empty border-0">
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <History aria-hidden />
+                        </EmptyMedia>
+                        <EmptyTitle>No trades yet</EmptyTitle>
+                        <EmptyDescription>
+                          Fills and trade explanations appear here once the bot executes.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  ) : (
+                    <div className="bot-detail-drawer__trades-panel">
+                      <div
+                        className="bot-detail-drawer__trades-scroll"
+                        role="region"
+                        aria-label="Trade fill history"
+                        tabIndex={0}
+                      >
                         <table className="terminal-table bot-detail-trades-table m-0">
                           <thead>
                             <tr>
@@ -665,6 +670,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                                           agentInsights={agentInsights}
                                           agentInsightHistory={agentInsightHistory}
                                           useLlm={Boolean(bot?.config?.use_llm)}
+                                          compact
                                         />
                                       </td>
                                     </tr>
@@ -674,12 +680,16 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                             })}
                           </tbody>
                         </table>
-                      </ScrollArea>
-                    )}
-                  </CardContent>
-                </Card>
-              </CollapsibleContent>
-            </Collapsible>
+                      </div>
+                      {trades.length > 2 && (
+                        <p className="bot-detail-drawer__trades-hint" aria-hidden>
+                          Scroll for earlier fills
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
 
             {!fullscreen && !nested && (

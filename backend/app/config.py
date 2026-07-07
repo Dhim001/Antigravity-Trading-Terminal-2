@@ -127,8 +127,16 @@ BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", 
 BACKTEST_PARALLEL_WORKERS = int(os.environ.get("BACKTEST_PARALLEL_WORKERS", "4"))
 # Run portfolio / sweep / WF / reasoning in a background asyncio task.
 BACKTEST_DEFER_HEAVY = os.environ.get("BACKTEST_DEFER_HEAVY", "true").lower() in ("1", "true", "yes")
+# Always queue sweep / walk-forward optimization (never inline on WS handler).
+BACKTEST_FORCE_DEFER_OPTIMIZATION = os.environ.get(
+    "BACKTEST_FORCE_DEFER_OPTIMIZATION", "true"
+).lower() in ("1", "true", "yes")
 # Inline WS handler runs under this estimate (seconds); slower jobs go to the queue.
 BACKTEST_INLINE_MAX_SEC = float(os.environ.get("BACKTEST_INLINE_MAX_SEC", "30"))
+# Tier 5 adaptive trial budget defaults (overridable per sweep request).
+BACKTEST_SWEEP_MAX_TRIALS = int(os.environ.get("BACKTEST_SWEEP_MAX_TRIALS", "200"))
+BACKTEST_SWEEP_MAX_GRID = int(os.environ.get("BACKTEST_SWEEP_MAX_GRID", "24"))
+BACKTEST_SWEEP_TIME_BUDGET_SEC = float(os.environ.get("BACKTEST_SWEEP_TIME_BUDGET_SEC", "300"))
 
 # Portfolio-level risk (all bots combined)
 PORTFOLIO_MAX_GROSS_EXPOSURE_PCT = float(os.environ.get("PORTFOLIO_MAX_GROSS_EXPOSURE_PCT", "80"))

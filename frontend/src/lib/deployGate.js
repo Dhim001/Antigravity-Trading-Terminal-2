@@ -9,6 +9,7 @@ export const DEPLOY_GATE_DEFAULTS = {
   minTrades: 1,
   minPnl: 0,
   minStabilityScore: 0.5,
+  minWfe: 0.5,
   maxDrawdownWarnPct: 25,
 };
 
@@ -60,11 +61,12 @@ function symbolSlice(results, symbol) {
   };
 }
 
-function validateWalkForwardOos(results, { minPnl, minTrades, minStabilityScore }) {
+function validateWalkForwardOos(results, { minPnl, minTrades, minStabilityScore, minWfe }) {
   const wf = results?.walk_forward || {};
   const oos = wf.out_of_sample || {};
   const summary = results?.summary || {};
   const aggregate = wf.aggregate || {};
+  const bias = aggregate.selection_bias || {};
 
   let oosPnl = oos.total_pnl;
   if (oosPnl == null) oosPnl = results?.total_pnl;
@@ -76,12 +78,16 @@ function validateWalkForwardOos(results, { minPnl, minTrades, minStabilityScore 
 
   const foldCount = Number(aggregate.fold_count || 1);
   const stability = aggregate.stability_score;
+  const wfe = aggregate.walk_forward_efficiency ?? bias.walk_forward_efficiency;
+  const dsr = aggregate.deflated_sharpe_ratio ?? bias.deflated_sharpe_ratio;
 
   const metrics = {
     oos_pnl: oosPnl,
     oos_trades: oosTrades,
     stability_score: stability,
     fold_count: foldCount,
+    walk_forward_efficiency: wfe,
+    deflated_sharpe_ratio: dsr,
   };
 
   if (oosTrades < minTrades) {
@@ -95,6 +101,13 @@ function validateWalkForwardOos(results, { minPnl, minTrades, minStabilityScore 
     return {
       ok: false,
       reason: `OOS PnL ${oosPnl.toFixed(2)} below minimum ${minPnl.toFixed(2)}`,
+      metrics,
+    };
+  }
+  if (wfe != null && minWfe > 0 && Number(wfe) < minWfe) {
+    return {
+      ok: false,
+      reason: `Walk-forward efficiency ${Number(wfe).toFixed(2)} below ${minWfe.toFixed(2)}`,
       metrics,
     };
   }
@@ -144,6 +157,7 @@ export function evaluateDeployGate({
     minTrades = DEPLOY_GATE_DEFAULTS.minTrades,
     minPnl = DEPLOY_GATE_DEFAULTS.minPnl,
     minStabilityScore = DEPLOY_GATE_DEFAULTS.minStabilityScore,
+    minWfe = DEPLOY_GATE_DEFAULTS.minWfe,
     maxDrawdownWarnPct = DEPLOY_GATE_DEFAULTS.maxDrawdownWarnPct,
   } = thresholds;
 
@@ -179,6 +193,7 @@ export function evaluateDeployGate({
       minPnl,
       minTrades,
       minStabilityScore,
+      minWfe,
     });
     metrics = wfMetrics;
     checks.push(check({
@@ -200,6 +215,100 @@ export function evaluateDeployGate({
           : `OOS stability ${(stab * 100).toFixed(0)}% below ${(minStabilityScore * 100).toFixed(0)}%`,
       }));
     }
+    if (wfMetrics.deflated_sharpe_ratio != null) {
+      const dsr = Number(wfMetrics.deflated_sharpe_ratio);
+      checks.push(check({
+        id: 'wf_dsr',
+        level: dsr >= 0.95 ? 'pass' : 'warn',
+        ok: dsr >= 0.95,
+        message: dsr >= 0.95
+          ? `Deflated Sharpe ${(dsr * 100).toFixed(1)}% (selection-bias adjusted)`
+          : `Deflated Sharpe ${(dsr * 100).toFixed(1)}% — high trial count may inflate IS Sharpe`,
+      }));
+    }
+
+    const holdout = scoped.final_holdout ?? scoped.walk_forward?.final_holdout;
+    if (holdout && !holdout.skipped) {
+      if (holdout.error) {
+        checks.push(check({
+          id: 'final_holdout',
+          level: 'block',
+          ok: false,
+          message: `Final holdout failed: ${holdout.error}`,
+        }));
+      } else {
+        const hoPnl = Number(holdout.total_pnl ?? 0);
+        const hoTrades = Number(holdout.trade_count ?? 0);
+        const hoPassed = holdout.passed !== false;
+        metrics.holdout_pnl = hoPnl;
+        metrics.holdout_trades = hoTrades;
+        checks.push(check({
+          id: 'final_holdout',
+          level: hoPassed ? 'pass' : 'block',
+          ok: hoPassed,
+          message: hoPassed
+            ? `Final holdout passed ($${hoPnl.toFixed(2)}, ${hoTrades} trades)`
+            : `Final holdout failed ($${hoPnl.toFixed(2)}, ${hoTrades} trades) — reserved segment`,
+        }));
+      }
+    }
+
+    const pbo = scoped.pbo_audit ?? scoped.walk_forward?.pbo_audit;
+    if (pbo?.pbo != null) {
+      const pboVal = Number(pbo.pbo);
+      metrics.pbo = pboVal;
+      if (pboVal >= 0.5) {
+        checks.push(check({
+          id: 'pbo_audit',
+          level: 'block',
+          ok: false,
+          message: `PBO ${(pboVal * 100).toFixed(0)}% — high overfit risk`,
+        }));
+      } else if (pboVal >= 0.35) {
+        checks.push(check({
+          id: 'pbo_audit',
+          level: 'warn',
+          ok: false,
+          message: `PBO ${(pboVal * 100).toFixed(0)}% — moderate overfit risk`,
+        }));
+      } else {
+        checks.push(check({
+          id: 'pbo_audit',
+          level: 'pass',
+          ok: true,
+          message: `PBO ${(pboVal * 100).toFixed(0)}% — low overfit risk`,
+        }));
+      }
+    }
+
+    const regime = scoped.walk_forward?.aggregate?.regime_analysis;
+    if (regime?.single_regime_risk) {
+      checks.push(check({
+        id: 'wf_regime',
+        level: 'warn',
+        ok: false,
+        message: 'OOS PnL concentrated in one vol regime',
+        detail: regime.note || 'May not generalize across conditions',
+      }));
+    } else if (
+      regime?.regime_stable === false
+      && (regime.profitable_regimes?.length ?? 0) < 2
+    ) {
+      checks.push(check({
+        id: 'wf_regime',
+        level: 'warn',
+        ok: false,
+        message: 'Profitable in fewer than 2 vol regimes',
+      }));
+    }
+  } else if (scoped?.sweep && !scoped?.walk_forward) {
+    checks.push(check({
+      id: 'exploratory_sweep',
+      level: 'block',
+      ok: false,
+      message: 'Exploratory sweep only — run walk-forward before deploy',
+      detail: 'In-sample winners are not OOS-validated',
+    }));
   } else {
     const summary = scoped?.summary || {};
     const pnl = Number(scoped?.total_pnl ?? summary.total_pnl ?? 0);

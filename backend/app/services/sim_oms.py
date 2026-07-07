@@ -471,7 +471,17 @@ class SimulatedOMSService(BaseOMSService):
                         cursor.execute("SELECT size FROM positions WHERE symbol = ?", (symbol,))
                         pos_row = cursor.fetchone()
                         position_size = pos_row["size"] if pos_row else 0.0
-                        _, short_open_qty = classify_sell(position_size, 0.0, qty)
+                        # Query other pending sell orders to get correct locked qty
+                        cursor.execute(
+                            """
+                            SELECT COALESCE(SUM(quantity), 0.0) FROM orders
+                            WHERE symbol = ? AND side = 'SELL' AND status = 'PENDING' AND id != ?
+                            """,
+                            (symbol, order["id"]),
+                        )
+                        other_locked_row = cursor.fetchone()
+                        other_locked = float(other_locked_row[0]) if other_locked_row and other_locked_row[0] is not None else 0.0
+                        _, short_open_qty = classify_sell(position_size, other_locked, qty)
                         if short_open_qty > 0:
                             release_val = short_open_qty * limit_price
                             cursor.execute(
@@ -656,8 +666,19 @@ class SimulatedOMSService(BaseOMSService):
                     sl_price = new_avg * (1 - sl_pct / 100) if new_size > 0 else new_avg * (1 + sl_pct / 100)
                 if tp_price is None and tp_pct is not None:
                     tp_price = new_avg * (1 + tp_pct / 100) if new_size > 0 else new_avg * (1 - tp_pct / 100)
-                high_wm = new_avg if new_size > 0 else None
-                low_wm = new_avg if new_size < 0 else None
+                # Preserve existing watermark when adding to same-direction position;
+                # only initialise for new positions or direction flips.
+                existing_high = pos_row.get("high_watermark")
+                existing_low = pos_row.get("low_watermark")
+                if new_size > 0:
+                    high_wm = max(existing_high or new_avg, new_avg) if current_size > 0 else new_avg
+                    low_wm = None
+                elif new_size < 0:
+                    high_wm = None
+                    low_wm = min(existing_low or new_avg, new_avg) if current_size < 0 else new_avg
+                else:
+                    high_wm = None
+                    low_wm = None
 
             cursor.execute("""
                 UPDATE positions
@@ -1058,14 +1079,15 @@ class SimulatedOMSService(BaseOMSService):
 
     async def emergency_stop(self) -> dict:
         """Cancel all pending orders and close all open positions."""
+        # 1. Atomically fetch all pending order IDs before cancelling
         conn = get_connection()
-        cursor = conn.cursor()
-        
-        # 1. Cancel all pending orders
-        cursor.execute("SELECT id FROM orders WHERE status = 'PENDING'")
-        pending_ids = [r[0] for r in cursor.fetchall()]
-        conn.close()
-        
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM orders WHERE status = 'PENDING'")
+            pending_ids = [r[0] for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
         cancelled_count = 0
         for oid in pending_ids:
             res = await self.cancel_order(oid)

@@ -23,6 +23,21 @@ export const WORKFLOW_PRESETS = [
     hint: 'Multi-symbol · shared capital',
   },
   {
+    id: 'wf_rigorous',
+    label: 'WF rigorous',
+    hint: '30d · Calmar · multi-fold WF · purged',
+  },
+  {
+    id: 'meta_label_sweep',
+    label: 'Meta-label sweep',
+    hint: 'CHART_AGENT gate on/off comparison',
+  },
+  {
+    id: 'portfolio_optimize',
+    label: 'Portfolio optimize',
+    hint: 'Basket symbols · shared risk params',
+  },
+  {
     id: 'wf_optimize',
     label: 'WF optimize',
     hint: 'Open Lab optimizer',
@@ -50,9 +65,64 @@ export function applyWorkflowPreset(
     setMetaLabelWalkForward,
     openBacktestLab,
     setBacktestLabTab,
+    setOptimizerPreset,
   },
 ) {
   switch (presetId) {
+    case 'wf_rigorous':
+      setBacktestDays('30');
+      setBacktestOos(false);
+      setBacktestReasoning(false);
+      setPortfolioBacktest(false);
+      setMetaLabelWalkForward(false);
+      setBacktestSimMode('live_aligned');
+      setBacktestLiveParity(true);
+      if (setOptimizerPreset) {
+        setOptimizerPreset({
+          objective: 'calmar_ratio',
+          rollingWf: true,
+          rollingFolds: 3,
+          purgedSplits: true,
+          wfMode: 'rolling',
+        });
+      }
+      openBacktestLab('optimizer');
+      break;
+    case 'meta_label_sweep':
+      if (botStrategy !== 'CHART_AGENT') return false;
+      setBacktestDays('30');
+      setBacktestOos(false);
+      setPortfolioBacktest(false);
+      setMetaLabelWalkForward(false);
+      setBacktestSimMode('live_aligned');
+      setBacktestLiveParity(true);
+      if (setOptimizerPreset) {
+        setOptimizerPreset({
+          objective: 'calmar_ratio',
+          enabled: {
+            calibration_gate_enabled: true,
+            meta_label_model_mode: true,
+            trailing_stop_percent: true,
+          },
+          values: {
+            calibration_gate_enabled: 'true, false',
+            meta_label_model_mode: 'wilson, hybrid',
+          },
+        });
+      }
+      openBacktestLab('optimizer');
+      break;
+    case 'portfolio_optimize':
+      setBacktestDays('14');
+      setBacktestOos(false);
+      setPortfolioBacktest(true);
+      setPortfolioSymbols(defaultPortfolioSymbols(activeSymbol, symbolsList));
+      setMetaLabelWalkForward(false);
+      if (setOptimizerPreset) {
+        setOptimizerPreset({ objective: 'calmar_ratio', portfolioSweep: true });
+      }
+      openBacktestLab('optimizer');
+      break;
     case 'quick_baseline':
       setBacktestDays('7');
       setBacktestOos(false);
@@ -119,7 +189,10 @@ export default function BacktestWorkflowPresets({
       <p className="bt-workflow-presets__label">Workflow presets</p>
       <div className="bt-workflow-presets__rail">
         {WORKFLOW_PRESETS.map((preset) => {
-          const blocked = preset.id === 'meta_label_validate' && botStrategy !== 'CHART_AGENT';
+          const blocked = (
+            (preset.id === 'meta_label_validate' || preset.id === 'meta_label_sweep')
+            && botStrategy !== 'CHART_AGENT'
+          );
           const isActive = activePreset === preset.id;
           return (
             <Button

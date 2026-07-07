@@ -1,17 +1,22 @@
 /**
- * Saved optimization sessions — list + load into sweep results view.
+ * Saved optimization sessions — list, load, compare (Tier 4).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useStore } from '../store/useStore';
 import { fetchOptimizationRuns, fetchOptimizationRun } from '../api/endpoints';
+import OptimizationRunCompare from './OptimizationRunCompare';
 import { toast } from 'sonner';
 
 const OBJECTIVE_LABELS = {
   total_pnl: 'PnL',
   sharpe_ratio: 'Sharpe',
+  calmar_ratio: 'Calmar',
   profit_factor: 'PF',
+  max_drawdown_penalty: 'PnL−DD',
 };
 
 function fmtCreated(ts) {
@@ -27,6 +32,9 @@ export default function OptimizationHistory() {
   const backtestRunning = useStore((s) => s.backtestRunning);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [compareIds, setCompareIds] = useState([]);
+  const [compareRuns, setCompareRuns] = useState([null, null]);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -82,9 +90,51 @@ export default function OptimizationHistory() {
     }
   };
 
+  const toggleCompare = async (run) => {
+    const id = run.id;
+    setCompareIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return [prev[1], id];
+      return [...prev, id];
+    });
+  };
+
+  useEffect(() => {
+    if (compareIds.length !== 2) {
+      setCompareRuns([null, null]);
+      return;
+    }
+    let cancelled = false;
+    setCompareLoading(true);
+    Promise.all(compareIds.map((id) => fetchOptimizationRun(id)))
+      .then((pair) => {
+        if (!cancelled) setCompareRuns(pair);
+      })
+      .catch(() => {
+        if (!cancelled) toast.error('Could not load runs for compare');
+      })
+      .finally(() => {
+        if (!cancelled) setCompareLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [compareIds]);
+
   return (
     <section className="algo-backtest-lab__section algo-backtest-lab__section--opt-history mt-4">
-      <p className="algo-backtest-table-scroll__caption mb-1.5">Saved optimizations</p>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <p className="algo-backtest-table-scroll__caption m-0">Saved optimizations</p>
+        {compareIds.length > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-xs"
+            onClick={() => setCompareIds([])}
+          >
+            Clear compare ({compareIds.length}/2)
+          </Button>
+        )}
+      </div>
       {loading && runs.length === 0 ? (
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 size={12} className="animate-spin" aria-hidden />
@@ -97,6 +147,7 @@ export default function OptimizationHistory() {
           <table className="terminal-table algo-backtest-table m-0 text-xs">
             <thead>
               <tr>
+                <th className="w-8" />
                 <th>When</th>
                 <th>Symbol</th>
                 <th>Strategy</th>
@@ -108,24 +159,49 @@ export default function OptimizationHistory() {
               {runs.map((run) => (
                 <tr
                   key={run.id}
-                  className="cursor-pointer hover:bg-muted/40"
-                  onClick={() => loadRun(run)}
-                  title="Load sweep results"
+                  className="hover:bg-muted/40"
                 >
-                  <td className="text-muted-foreground whitespace-nowrap">{fmtCreated(run.created_at)}</td>
-                  <td className="whitespace-nowrap">{run.symbol}</td>
-                  <td className="whitespace-nowrap">{run.strategy}</td>
-                  <td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={compareIds.includes(run.id)}
+                      onCheckedChange={() => toggleCompare(run)}
+                      aria-label={`Compare ${run.symbol}`}
+                    />
+                  </td>
+                  <td
+                    className="text-muted-foreground whitespace-nowrap cursor-pointer"
+                    onClick={() => loadRun(run)}
+                    title="Load sweep results"
+                  >
+                    {fmtCreated(run.created_at)}
+                  </td>
+                  <td className="whitespace-nowrap cursor-pointer" onClick={() => loadRun(run)}>{run.symbol}</td>
+                  <td className="whitespace-nowrap cursor-pointer" onClick={() => loadRun(run)}>{run.strategy}</td>
+                  <td className="cursor-pointer" onClick={() => loadRun(run)}>
                     <Badge variant="outline" className="h-4 px-1 text-xs">
                       {OBJECTIVE_LABELS[run.objective] ?? run.objective}
                     </Badge>
                   </td>
-                  <td className="num-mono text-right">{run.results?.length ?? '—'}</td>
+                  <td className="num-mono text-right cursor-pointer" onClick={() => loadRun(run)}>
+                    {run.results?.length ?? '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {compareLoading && (
+        <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
+          <Loader2 size={12} className="animate-spin" /> Loading compare…
+        </p>
+      )}
+      {compareRuns[0] && compareRuns[1] && !compareLoading && (
+        <OptimizationRunCompare
+          left={compareRuns[0]}
+          right={compareRuns[1]}
+          onClose={() => setCompareIds([])}
+        />
       )}
     </section>
   );

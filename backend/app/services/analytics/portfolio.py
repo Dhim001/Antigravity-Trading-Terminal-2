@@ -76,23 +76,23 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
     win_rate = round((win_count / exits) * 100, 1) if exits else 0.0
     expectancy = round(total_pnl / exits, 2) if exits else 0.0
 
-    # --- Sharpe & Sortino ratios (annualised, assuming ~252 trading days) ---
+    # --- Sharpe & Sortino ratios (annualised via trade count per year) ---
     sharpe_ratio = None
     sortino_ratio = None
     if exits >= 2:
         mean_r = total_pnl / exits
         variance = sum((p - mean_r) ** 2 for p in pnls) / (exits - 1)
         std_dev = math.sqrt(variance) if variance > 0 else 0.0
+        # Annualize using trades-per-year estimate rather than fixed sqrt(252)
+        ann_factor = math.sqrt(exits)  # fallback: sqrt(N)
         if std_dev > 0:
-            sharpe_ratio = round((mean_r / std_dev) * math.sqrt(252), 2)
-        downside = [p for p in pnls if p < 0]
-        downside_var = (
-            sum((p - mean_r) ** 2 for p in downside) / (exits - 1)
-            if downside else 0.0
-        )
+            sharpe_ratio = round((mean_r / std_dev) * ann_factor, 2)
+        # Zero-threshold downside deviation: squared negative PnLs / N
+        downside_sq = [p ** 2 for p in pnls if p < 0]
+        downside_var = sum(downside_sq) / exits if downside_sq else 0.0
         downside_dev = math.sqrt(downside_var) if downside_var > 0 else 0.0
         if downside_dev > 0:
-            sortino_ratio = round((mean_r / downside_dev) * math.sqrt(252), 2)
+            sortino_ratio = round((mean_r / downside_dev) * ann_factor, 2)
 
     # --- Max drawdown (from cumulative P&L curve) ---
     cum = 0.0
@@ -111,7 +111,7 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
             max_dd_pct = dd_pct
 
     # --- Win / loss streaks ---
-    cur_streak = 0
+    # (cur_streak tracked via streak_val below)
     max_win_streak = 0
     max_loss_streak = 0
     cur_win = 0
@@ -213,7 +213,7 @@ def _fetch_account_exit_trades(account_history: dict | list, cutoff: float) -> l
         trades = []
     out = []
     for t in trades:
-        if t.get("status") != "FILLED" or t.get("side") != "SELL":
+        if t.get("status") != "FILLED" or t.get("side") not in ("SELL", "BUY"):
             continue
         pnl = t.get("realized_pnl")
         if pnl is None:

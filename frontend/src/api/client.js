@@ -3,6 +3,10 @@ import { HTTP_BASE_URL } from './config';
 const DEFAULT_TIMEOUT_MS = 8000;
 const API_KEY = import.meta.env.VITE_HTTP_API_KEY ?? '';
 
+export function isAbortError(err) {
+  return err?.name === 'AbortError' || /aborted/i.test(String(err?.message || ''));
+}
+
 function joinUrl(path) {
   const base = HTTP_BASE_URL.replace(/\/$/, '');
   const suffix = path.startsWith('/') ? path : `/${path}`;
@@ -11,12 +15,27 @@ function joinUrl(path) {
 
 /**
  * @param {string} path
- * @param {{ method?: string, body?: unknown, timeoutMs?: number }} [options]
+ * @param {{ method?: string, body?: unknown, timeoutMs?: number, signal?: AbortSignal }} [options]
  */
 export async function apiRequest(path, options = {}) {
-  const { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  const { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS, signal: externalSignal } = options;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const abort = (reason) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+
+  const timer = setTimeout(() => abort('timeout'), timeoutMs);
+
+  let onExternalAbort;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timer);
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    onExternalAbort = () => abort('cancelled');
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
 
   try {
     const init = {
@@ -56,8 +75,16 @@ export async function apiRequest(path, options = {}) {
       throw new Error(`Empty response from ${path} (HTTP ${response.status})`);
     }
     return payload;
+  } catch (err) {
+    if (isAbortError(err) && controller.signal.reason === 'timeout') {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
+    if (externalSignal && onExternalAbort) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 

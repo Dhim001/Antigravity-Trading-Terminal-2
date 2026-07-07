@@ -1,7 +1,7 @@
 /**
  * Backtest Lab — resizable right sheet with Results | Optimizer | Jobs tabs.
  */
-import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Activity, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
@@ -10,10 +10,11 @@ import { useStore } from '../store/useStore';
 import { Button } from '@/components/ui/button';
 import BacktestProgressBar from './BacktestProgressBar';
 import ErrorBoundary from './ErrorBoundary';
+import { lazyImport } from '../lib/lazyImport';
 
-const BacktestResultsPanel = lazy(() => import('./BacktestResultsPanel'));
-const BacktestSweepPanel = lazy(() => import('./BacktestSweepPanel'));
-const BacktestJobHistory = lazy(() => import('./BacktestJobHistory'));
+const BacktestResultsPanel = lazyImport(() => import('./BacktestResultsPanel'), 'backtest-results');
+const BacktestSweepPanel = lazyImport(() => import('./BacktestSweepPanel'), 'backtest-sweep');
+const BacktestJobHistory = lazyImport(() => import('./BacktestJobHistory'), 'backtest-jobs');
 
 function LabPanelFallback() {
   return <p className="backtest-lab__loading px-3 pt-2">Loading panel…</p>;
@@ -211,17 +212,19 @@ function BacktestLabSheetInner() {
             )}
 
             {labTab === 'optimizer' && (
-              <div className="backtest-lab__optimizer px-1 pt-2">
-                <Suspense fallback={<LabPanelFallback />}>
-                  <BacktestSweepPanel
-                    symbol={symbol}
-                    strategy={strategy}
-                    days={days != null ? String(days) : backtestDays}
-                    timeframe={timeframe}
-                    oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
-                    results={backtestResults}
-                  />
-                </Suspense>
+              <div className="backtest-lab__optimizer">
+                <ErrorBoundary name="Optimizer panel">
+                  <Suspense fallback={<LabPanelFallback />}>
+                    <BacktestSweepPanel
+                      symbol={symbol}
+                      strategy={strategy}
+                      days={days != null ? String(days) : backtestDays}
+                      timeframe={timeframe}
+                      oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
+                      results={backtestResults}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               </div>
             )}
 

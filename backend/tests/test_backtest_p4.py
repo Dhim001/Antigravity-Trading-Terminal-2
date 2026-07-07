@@ -182,9 +182,9 @@ class TestWalkForward(unittest.TestCase):
             call_count["n"] += 1
             pnl = float(cfg.get("a", 0)) * 10
             return {
-                "summary": {"total_pnl": pnl, "sharpe_ratio": pnl / 10, "total_trades": 5},
+                "summary": {"total_pnl": pnl, "sharpe_ratio": pnl / 10, "total_trades": 35},
                 "total_pnl": pnl,
-                "trade_count": 5,
+                "trade_count": 35,
             }
 
         result = run_walk_forward(

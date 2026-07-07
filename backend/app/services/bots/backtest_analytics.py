@@ -25,8 +25,9 @@ def sortino_ratio(equity_curve: list[dict]) -> float | None:
     if len(returns) < 2:
         return None
     mean_r = sum(returns) / len(returns)
-    downside = [min(0.0, r) for r in returns]
-    down_var = sum(d ** 2 for d in downside) / len(downside)
+    # Zero-threshold downside deviation: squared negative returns / N
+    downside_sq = [r ** 2 for r in returns if r < 0]
+    down_var = sum(downside_sq) / len(returns) if downside_sq else 0.0
     down_std = down_var ** 0.5
     if down_std < 1e-12:
         return None

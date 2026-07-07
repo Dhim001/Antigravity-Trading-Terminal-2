@@ -66,7 +66,13 @@ function DeployButton({
 
   const gate = useMemo(
     () => evaluateDeployGate({
-      results: { ...results, walk_forward: walkForward, run_id: runId },
+      results: {
+        ...results,
+        walk_forward: walkForward,
+        final_holdout: results?.final_holdout ?? walkForward?.final_holdout,
+        pbo_audit: results?.pbo_audit ?? walkForward?.pbo_audit,
+        run_id: runId,
+      },
       symbol,
       strategy,
       timeframe,
@@ -182,8 +188,12 @@ export default function BacktestWalkForwardPanel({
   if (!walkForward) return null;
 
   const folds = walkForward.folds ?? [];
+  const wfMode = walkForward.wf_mode ?? walkForward.validation?.wf_mode ?? 'rolling';
   const rolling = (walkForward.rolling_folds ?? 1) > 1;
   const aggregate = walkForward.aggregate ?? {};
+  const validation = walkForward.validation ?? {};
+  const finalHoldout = walkForward.final_holdout ?? results?.final_holdout;
+  const pboAudit = walkForward.pbo_audit ?? results?.pbo_audit;
   const is = walkForward.in_sample ?? {};
   const oos = walkForward.out_of_sample ?? {};
   const isSummary = is.summary ?? {};
@@ -193,10 +203,37 @@ export default function BacktestWalkForwardPanel({
   return (
     <section className="algo-backtest-wf">
       <p className="algo-backtest-wf__title">
-        {rolling
-          ? `Rolling walk-forward (${walkForward.rolling_folds} folds, ${walkForward.train_pct ?? 70}% train per fold)`
-          : `Walk-forward (${walkForward.train_pct ?? 70}% train → OOS test)`}
+        {rolling && wfMode === 'anchored'
+          ? `Anchored walk-forward (${walkForward.rolling_folds} folds, expanding IS)`
+          : rolling
+            ? `Rolling walk-forward (${walkForward.rolling_folds} folds, ${walkForward.train_pct ?? 70}% train per fold)`
+            : `Walk-forward (${walkForward.train_pct ?? 70}% train → OOS test)`}
+        {validation.purged_splits ? ' · purged' : ''}
+        {validation.holdout_pct ? ` · ${validation.holdout_pct}% holdout reserved` : ''}
       </p>
+
+      {(finalHoldout && !finalHoldout.skipped) || pboAudit?.pbo != null ? (
+        <div className="algo-backtest-wf__validation mb-2 rounded border border-border/50 p-2 text-xs">
+          {finalHoldout && !finalHoldout.skipped && (
+            <p className={finalHoldout.passed === false ? 'text-trading-down' : 'text-trading-up'}>
+              Final holdout: ${Number(finalHoldout.total_pnl ?? 0).toFixed(2)}
+              , {finalHoldout.trade_count ?? 0} trades
+              {finalHoldout.passed === false ? ' (failed)' : ' (passed)'}
+            </p>
+          )}
+          {pboAudit?.pbo != null && (
+            <p className={
+              Number(pboAudit.pbo) >= 0.5
+                ? 'text-trading-down'
+                : Number(pboAudit.pbo) >= 0.35
+                  ? 'text-trading-warn'
+                  : 'text-muted-foreground'
+            }>
+              PBO: {(Number(pboAudit.pbo) * 100).toFixed(0)}% ({pboAudit.risk_label || 'low'} overfit risk)
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {rolling && folds.length > 0 && (
         <div className="algo-backtest-table-scroll overflow-x-auto mb-2">
@@ -280,6 +317,25 @@ export default function BacktestWalkForwardPanel({
                   : '—'}
               </strong>
             </span>
+            {aggregate.walk_forward_efficiency != null && (
+              <span>
+                WFE:{' '}
+                <strong className={Number(aggregate.walk_forward_efficiency) >= 0.5 ? 'text-trading-up' : 'text-trading-down'}>
+                  {Number(aggregate.walk_forward_efficiency).toFixed(2)}
+                </strong>
+                <span className="text-muted-foreground ml-1">(OOS/IS)</span>
+              </span>
+            )}
+            {(aggregate.deflated_sharpe_ratio ?? aggregate.selection_bias?.deflated_sharpe_ratio) != null && (
+              <span>
+                DSR:{' '}
+                <strong>
+                  {(
+                    (aggregate.deflated_sharpe_ratio ?? aggregate.selection_bias?.deflated_sharpe_ratio) * 100
+                  ).toFixed(1)}%
+                </strong>
+              </span>
+            )}
           </div>
           <BacktestOosStitchChart stitchCurve={walkForward.oos_equity_stitch} className="mt-2" />
         </div>

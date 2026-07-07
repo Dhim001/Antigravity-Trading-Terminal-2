@@ -24,15 +24,16 @@ def _sweep_combo_count(sweep: dict | list | None) -> int:
     if not sweep:
         return 1
     if isinstance(sweep, dict):
+        from app.services.bots.backtest_trial_budget import resolve_max_trials
+
         mode = str(sweep.get("sweep_mode") or "grid").lower()
-        max_combos = int(sweep.get("max_combos") or 24)
-        if mode in ("random", "lhs"):
-            return max(1, min(max_combos, 100))
+        if mode in ("random", "lhs", "bayesian"):
+            return resolve_max_trials(sweep, mode)
         total = 1
         for vals in sweep.values():
             if isinstance(vals, list) and vals:
                 total *= len(vals)
-        return max(1, min(total, 24))
+        return max(1, min(total, resolve_max_trials(sweep, "grid")))
     if isinstance(sweep, list):
         return max(1, len(sweep))
     return 1
@@ -82,13 +83,17 @@ def is_heavy_backtest(
     meta_label_walk_forward: bool = False,
 ) -> bool:
     """True when the run should execute in a background task (not block the WS handler)."""
+    from app.config import BACKTEST_FORCE_DEFER_OPTIMIZATION
+
+    if BACKTEST_FORCE_DEFER_OPTIMIZATION and (sweep or walk_forward or meta_label_walk_forward):
+        return True
     if not BACKTEST_DEFER_HEAVY:
         return False
     if portfolio_symbols and len(portfolio_symbols) > 1:
         return True
     if reasoning:
         return True
-    if walk_forward and sweep:
+    if walk_forward:
         return True
     if sweep:
         return True
