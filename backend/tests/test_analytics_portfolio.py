@@ -10,6 +10,7 @@ import app.db.connection as db_conn
 from app.database import get_connection, init_db
 from app.services.analytics.portfolio import (
     MANUAL_STRATEGY,
+    _fetch_account_exit_trades,
     collect_exit_trades,
     get_breakdown_stats,
     get_daily_pnl_calendar,
@@ -88,6 +89,41 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         trades = collect_exit_trades(self.account_history, source="bot")
         self.assertEqual(len(trades), 2)
         self.assertTrue(all(t["source"] == "bot" for t in trades))
+
+    def test_account_exit_trades_use_realized_pnl_not_side(self):
+        ts = datetime.now(timezone.utc).isoformat()
+        history = {
+            "trades": [
+                {
+                    "id": "buy-entry",
+                    "symbol": "ETHUSDT",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "realized_pnl": None,
+                    "timestamp": ts,
+                },
+                {
+                    "id": "sell-exit",
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 5.0,
+                    "timestamp": ts,
+                },
+                {
+                    "id": "cover-exit",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "status": "FILLED",
+                    "realized_pnl": 10.0,
+                    "timestamp": ts,
+                },
+            ],
+        }
+        exits = _fetch_account_exit_trades(history, 0.0)
+        self.assertEqual(len(exits), 2)
+        pnls = sorted(t["pnl"] for t in exits)
+        self.assertEqual(pnls, [5.0, 10.0])
 
     def test_correlation_respects_symbol_universe(self):
         from app.services.analytics.portfolio import get_correlation_matrix

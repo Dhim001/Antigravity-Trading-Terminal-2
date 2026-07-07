@@ -3,6 +3,8 @@
 const DEFAULT_BACKTEST_TIMEOUT_MS = 120_000;
 const DEFAULT_BACKTEST_CHART_AGENT_TIMEOUT_MS = 300_000;
 const DEFAULT_BACKTEST_REASONING_TIMEOUT_MS = 900_000;
+/** Parameter sweep + walk-forward (IS/OOS per fold) — well above the 2 min default guard. */
+const DEFAULT_BACKTEST_WALK_FORWARD_TIMEOUT_MS = 900_000;
 /** CHART_AGENT meta-label WF runs ~1 + (3 × folds) full replays — needs a longer guard. */
 const DEFAULT_BACKTEST_META_LABEL_WF_TIMEOUT_MS = 600_000;
 /** Portfolio backtest runs one full replay per symbol (sequential). */
@@ -20,12 +22,25 @@ function readEnvMs(key, fallback) {
 }
 
 /**
- * @param {{ reasoning?: boolean, metaLabelWalkForward?: boolean, chartAgent?: boolean, strategy?: string, days?: number, portfolioSymbolCount?: number }} [opts]
+ * @param {{
+ *   reasoning?: boolean,
+ *   metaLabelWalkForward?: boolean,
+ *   walkForward?: boolean,
+ *   rollingFolds?: number,
+ *   comboCount?: number,
+ *   chartAgent?: boolean,
+ *   strategy?: string,
+ *   days?: number,
+ *   portfolioSymbolCount?: number,
+ * }} [opts]
  * @returns {number}
  */
 export function getBacktestClientTimeoutMs({
   reasoning = false,
   metaLabelWalkForward = false,
+  walkForward = false,
+  rollingFolds = 1,
+  comboCount = 1,
   chartAgent = false,
   strategy = '',
   days = 7,
@@ -35,6 +50,8 @@ export function getBacktestClientTimeoutMs({
   const extraPerDayMs = 30_000;
   const symbolCount = Math.max(0, Math.floor(Number(portfolioSymbolCount) || 0));
   const isChartAgent = chartAgent || String(strategy).toUpperCase() === 'CHART_AGENT';
+  const folds = Math.max(1, Math.floor(Number(rollingFolds) || 1));
+  const combos = Math.max(1, Math.min(12, Math.floor(Number(comboCount) || 1)));
 
   if (reasoning) {
     const base = readEnvMs('VITE_BACKTEST_REASONING_TIMEOUT_MS', DEFAULT_BACKTEST_REASONING_TIMEOUT_MS);
@@ -47,6 +64,18 @@ export function getBacktestClientTimeoutMs({
       DEFAULT_BACKTEST_META_LABEL_WF_TIMEOUT_MS,
     );
     return base + Math.max(0, parsedDays - 7) * 45_000;
+  }
+
+  if (walkForward) {
+    const base = readEnvMs(
+      'VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS',
+      DEFAULT_BACKTEST_WALK_FORWARD_TIMEOUT_MS,
+    );
+    return (
+      base
+      + Math.max(0, parsedDays - 7) * 45_000
+      + folds * combos * 120_000
+    );
   }
 
   if (isChartAgent) {
@@ -65,7 +94,7 @@ export function getBacktestClientTimeoutMs({
     );
   }
 
-  return perSymbolMs;
+  return combos > 1 ? perSymbolMs * combos : perSymbolMs;
 }
 
 export function clearBacktestClientTimeout() {
@@ -76,12 +105,25 @@ export function clearBacktestClientTimeout() {
 }
 
 /**
- * @param {{ reasoning?: boolean, metaLabelWalkForward?: boolean, days?: number, portfolioSymbolCount?: number, timeoutMs?: number, onTimeout: (timeoutMs: number) => void }} opts
+ * @param {{
+ *   reasoning?: boolean,
+ *   metaLabelWalkForward?: boolean,
+ *   walkForward?: boolean,
+ *   rollingFolds?: number,
+ *   comboCount?: number,
+ *   days?: number,
+ *   portfolioSymbolCount?: number,
+ *   timeoutMs?: number,
+ *   onTimeout: (timeoutMs: number) => void,
+ * }} opts
  * @returns {number} scheduled timeoutMs
  */
 export function scheduleBacktestClientTimeout({
   reasoning,
   metaLabelWalkForward,
+  walkForward,
+  rollingFolds,
+  comboCount,
   days,
   portfolioSymbolCount,
   timeoutMs,
@@ -91,6 +133,9 @@ export function scheduleBacktestClientTimeout({
   const resolvedMs = timeoutMs ?? getBacktestClientTimeoutMs({
     reasoning,
     metaLabelWalkForward,
+    walkForward,
+    rollingFolds,
+    comboCount,
     days,
     portfolioSymbolCount,
   });
@@ -110,6 +155,7 @@ export function formatBacktestTimeoutLabel(ms) {
 export function backtestTimeoutHint({
   reasoning = false,
   metaLabelWalkForward = false,
+  walkForward = false,
   chartAgent = false,
   strategy = '',
   portfolioSymbolCount = 0,
@@ -122,6 +168,9 @@ export function backtestTimeoutHint({
   }
   if (metaLabelWalkForward) {
     return `Backtest timed out after ${label} — meta-label walk-forward runs multiple replays; increase VITE_BACKTEST_META_LABEL_WF_TIMEOUT_MS or reduce days`;
+  }
+  if (walkForward) {
+    return `Walk-forward timed out after ${label} — runs IS/OOS sweeps per fold; increase VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS, reduce folds/combos, or shorten days`;
   }
   if (isChartAgent) {
     return `CHART_AGENT backtest timed out after ${label} — increase VITE_BACKTEST_CHART_AGENT_TIMEOUT_MS or reduce days`;

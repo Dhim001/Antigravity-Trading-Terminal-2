@@ -15,6 +15,7 @@ import { formatPortfolioRunEstimate, uniqueSymbols } from './portfolioBacktest';
  *   metaLabelWalkForward?: boolean,
  *   sweepCombos?: number,
  *   walkForward?: boolean,
+ *   rollingFolds?: number,
  *   deferred?: boolean,
  * }} opts
  */
@@ -26,6 +27,7 @@ export function estimateRunDurationMs({
   metaLabelWalkForward = false,
   sweepCombos = 0,
   walkForward = false,
+  rollingFolds = 3,
   deferred = false,
 } = {}) {
   const parsedDays = parseInt(String(days), 10) || 7;
@@ -36,15 +38,15 @@ export function estimateRunDurationMs({
   let ms = getBacktestClientTimeoutMs({
     reasoning,
     metaLabelWalkForward,
+    walkForward,
+    rollingFolds,
+    comboCount: sweepCombos,
     days: parsedDays,
     portfolioSymbolCount: symbolCount,
   });
 
-  if (sweepCombos > 1) {
+  if (sweepCombos > 1 && !walkForward) {
     ms = Math.max(ms, ms * Math.min(sweepCombos, 12) * 0.35);
-  }
-  if (walkForward && !metaLabelWalkForward) {
-    ms = Math.max(ms, ms * 1.8);
   }
   if (deferred || symbolCount >= 2 || parsedDays >= 30 || reasoning || walkForward) {
     ms = Math.max(ms, 60_000);

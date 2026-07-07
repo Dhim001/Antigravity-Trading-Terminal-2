@@ -23,3 +23,26 @@ describe('getBacktestClientTimeoutMs — portfolio scaling', () => {
       .toBe(PORTFOLIO_TIMEOUT_PER_SYMBOL_MS * 8);
   });
 });
+
+describe('getBacktestClientTimeoutMs — walk-forward', () => {
+  it('uses 15 min+ base for WF rigorous (30d, 3 folds, 1 combo)', () => {
+    const ms = getBacktestClientTimeoutMs({
+      walkForward: true,
+      days: 30,
+      rollingFolds: 3,
+      comboCount: 1,
+    });
+    expect(ms).toBeGreaterThanOrEqual(900_000);
+    expect(ms).toBe(900_000 + 23 * 45_000 + 3 * 1 * 120_000);
+  });
+
+  it('scales with fold and combo count', () => {
+    const ms = getBacktestClientTimeoutMs({
+      walkForward: true,
+      days: 7,
+      rollingFolds: 3,
+      comboCount: 6,
+    });
+    expect(ms).toBe(900_000 + 3 * 6 * 120_000);
+  });
+});

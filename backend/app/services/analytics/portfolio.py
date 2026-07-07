@@ -213,8 +213,10 @@ def _fetch_account_exit_trades(account_history: dict | list, cutoff: float) -> l
         trades = []
     out = []
     for t in trades:
-        if t.get("status") != "FILLED" or t.get("side") not in ("SELL", "BUY"):
+        if t.get("status") != "FILLED":
             continue
+        # Closing fills only: long exits are SELL, short covers are BUY.
+        # Entry opens never persist realized_pnl (see fifo_pnl / sim_oms).
         pnl = t.get("realized_pnl")
         if pnl is None:
             continue

@@ -288,17 +288,31 @@ export default function BacktestSweepPanel({
       message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
     });
     const parsedDays = parseInt(days, 10) || 7;
-    const timeoutMs = getBacktestClientTimeoutMs({ reasoning, days: parsedDays })
-      * Math.max(1, Math.min(comboCount, 12));
+    const wfFolds = walkForward ? (rollingWf ? rollingFolds : 1) : 1;
+    const timeoutMs = getBacktestClientTimeoutMs({
+      reasoning,
+      days: parsedDays,
+      walkForward,
+      rollingFolds: wfFolds,
+      comboCount,
+      strategy,
+    });
     scheduleBacktestClientTimeout({
       reasoning,
       days: parsedDays,
+      walkForward,
+      rollingFolds: wfFolds,
+      comboCount,
       timeoutMs,
       onTimeout: (elapsedMs) => {
         if (!useStore.getState().backtestRunning) return;
         useStore.getState().setBacktestRunning(false);
         useStore.getState().setBacktestProgress(null);
-        toast.error(`Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`);
+        toast.error(
+          walkForward
+            ? `Walk-forward timed out after ${formatBacktestTimeoutLabel(elapsedMs)} — try fewer folds/combos or increase VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS`
+            : `Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`,
+        );
       },
     });
     const portfolioSymbols = portfolioSweep
