@@ -4,6 +4,12 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
+import {
+  useLiveCandleRevision,
+  useHistoryCandleRevision,
+  subscribeLiveRevisions,
+} from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme, hexToRgba } from '../settings/applySettings';
 import {
@@ -121,9 +127,9 @@ export default function ChartWidget() {
   const terminalMode = useStore(state => state.terminalMode);
   const useNativeHt = isLiveMassiveMode(terminalMode) && isHigherTimeframe(timeframe);
   const chartBufKey = useNativeHt ? candleBufferKey(activeSymbol, timeframe) : activeSymbol;
-  const historyRev = useStore(state => state.candleHistoryRevision[chartBufKey] || 0);
-  const candleRev = useStore(state => state.candleRevision[chartBufKey] || 0);
-  const oneMinRev = useStore(state => state.candleRevision[activeSymbol] || 0);
+  const historyRev = useHistoryCandleRevision(chartBufKey);
+  const candleRev = useLiveCandleRevision(chartBufKey);
+  const oneMinRev = useLiveCandleRevision(activeSymbol);
   const lastCandleTime = useMemo(() => {
     const intervalSecs = chartTimeframeSecs(timeframe);
     const candles = getCandles(activeSymbol, useNativeHt ? timeframe : '1m', intervalSecs);
@@ -147,10 +153,9 @@ export default function ChartWidget() {
     }
     return key;
   });
-  const tradeHistory = useStore(state => state.tradeHistory);
   const selectedBotId = useStore(state => state.selectedBotId);
   const botDetail = useStore(state => state.botDetail);
-  const agentInsights = useStore(state => state.agentInsights);
+  const agentInsights = useResearchStore(state => state.agentInsights);
   const agentInsight = useMemo(
     () => selectAgentInsight(agentInsights, activeSymbol, timeframe),
     [agentInsights, activeSymbol, timeframe],
@@ -183,8 +188,8 @@ export default function ChartWidget() {
       (t) => `${t.id}:${t.signal_bar_time ?? ''}:${t.signal_id ?? ''}:${t.side}`,
     ).join(';');
   });
-  const backtestOverlay = useStore(state => state.backtestOverlay);
-  const backtestOverlayKey = useStore(state => {
+  const backtestOverlay = useResearchStore(state => state.backtestOverlay);
+  const backtestOverlayKey = useResearchStore(state => {
     const o = state.backtestOverlay;
     if (!o) return '';
     return `${o.visible ? 1 : 0}:${o.runId ?? ''}:${o.trades?.length ?? 0}:${o.symbol ?? ''}:${o.equityCurve?.length ?? 0}`;
@@ -498,11 +503,9 @@ export default function ChartWidget() {
 
   // Comparison-symbol candle revision (the active-symbol historyRev won't fire
   // when only the comparison symbol's data arrives).
-  const compareRev = useStore((state) => {
-    if (!compareSymbol) return 0;
-    return (state.candleHistoryRevision[compareSymbol] || 0)
-      + (state.candleRevision[compareSymbol] || 0);
-  });
+  const compareHistRev = useHistoryCandleRevision(compareSymbol || '');
+  const compareLiveRev = useLiveCandleRevision(compareSymbol || '');
+  const compareRev = compareHistRev + compareLiveRev;
 
   // Comparison-symbol candles aggregated to the active timeframe.
   // Bumped after comparison history is (re)loaded so the memo recomputes even
@@ -1190,6 +1193,7 @@ export default function ChartWidget() {
       && selectedBotId
       && botDetail?.bot?.symbol === activeSymbol
       && botDetail?.trades?.length;
+    const tradeHistory = useStore.getState().tradeHistory;
     const tradeMarkers = overlays.trades !== false
       ? buildTradeMarkers(
         tradeHistory,
@@ -1227,7 +1231,7 @@ export default function ChartWidget() {
     } catch (err) {
       console.warn('[ChartWidget] overlay patch failed:', err);
     }
-  }, [activeSymbol, timeframe, symbolPosition, tradeHistory, selectedBotId, botDetail, botOverlayKey, backtestOverlay, backtestOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
+  }, [activeSymbol, timeframe, symbolPosition, tradeOverlayKey, selectedBotId, botDetail, botOverlayKey, backtestOverlay, backtestOverlayKey, agentInsight, agentOverlayKey, settings.chartLayout?.overlays]);
 
   // Render the graphic overlay layer (Volume Profile + drawings) in pixel space.
   // Recomputed on configure, zoom/pan, resize, and when drawings/VPVR change.
@@ -1770,7 +1774,7 @@ export default function ChartWidget() {
       }
 
       // Merge by series id only — never replaceMerge (drops indicator series not in patch)
-      chart.setOption(patch, { lazyUpdate: false });
+      chart.setOption(patch, { lazyUpdate: true });
       if (isNewBar && suppressDataZoomEventsRef.current > 0) {
         requestAnimationFrame(() => {
           suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);
@@ -1816,16 +1820,13 @@ export default function ChartWidget() {
   useEffect(() => {
     const symbol = activeSymbol;
     const bufKey = chartBufKey;
-    const unsubscribe = useStore.subscribe(
-      (state) => `${state.candleRevision[symbol] || 0}:${state.candleRevision[bufKey] || 0}`,
-      () => {
-        if (liveRafRef.current != null) return;
-        liveRafRef.current = requestAnimationFrame(() => {
-          liveRafRef.current = null;
-          pumpLiveCandleUpdate();
-        });
-      },
-    );
+    const unsubscribe = subscribeLiveRevisions(symbol, bufKey, () => {
+      if (liveRafRef.current != null) return;
+      liveRafRef.current = requestAnimationFrame(() => {
+        liveRafRef.current = null;
+        pumpLiveCandleUpdate();
+      });
+    });
     return () => {
       unsubscribe();
       if (liveRafRef.current != null) {

@@ -4,6 +4,7 @@ import { apiAction } from './client';
 import { applyHttpEnvelope, getStoreActions } from './dispatch';
 import { sendWebSocketAction } from '../services/websocket';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 
 /** @typedef {{ method: string, path: (p: object) => string, body?: (p: object) => object | undefined }} HttpRoute */
 
@@ -279,7 +280,7 @@ function isNotFoundError(err) {
 /** Wait for SCAN_RESULTS after a WebSocket market_scan dispatch. */
 export function waitForScanResults({ timeoutMs = 30000, previousAt = null } = {}) {
   return new Promise((resolve, reject) => {
-    const current = useStore.getState().scanResults;
+    const current = useResearchStore.getState().scanResults;
     if (current?.scanned_at && current.scanned_at !== previousAt) {
       resolve(current);
       return;
@@ -305,11 +306,11 @@ export function waitForScanResults({ timeoutMs = 30000, previousAt = null } = {}
  * Run market scan — HTTP first (reliable response), WebSocket fallback if HTTP route is missing.
  */
 export async function runMarketScan(payload) {
-  const previousAt = useStore.getState().scanResults?.scanned_at ?? null;
+  const previousAt = useResearchStore.getState().scanResults?.scanned_at ?? null;
 
   try {
     await invokeHttpAction(Action.MARKET_SCAN, payload);
-    return useStore.getState().scanResults;
+    return useResearchStore.getState().scanResults;
   } catch (err) {
     if (!isNotFoundError(err)) throw err;
   }

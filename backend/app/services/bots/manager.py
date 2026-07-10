@@ -23,7 +23,7 @@ from app.services.bots.bar_events import BarCloseTracker
 from app.services.agent.bar_time import coerce_bar_time
 from app.services.bots.candle_source import candles_for_timeframe, get_bot_candles
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe
-from app.services.bots.risk_gate import RiskGate
+from app.services.bots.risk_gate import RiskGate, get_bot_entry_hold
 from app.services.bots.risk_sizing import RISK_PCT
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
@@ -433,6 +433,9 @@ class BotManagerService:
             "trades": bot_analytics.get_trades(bot_id, 50),
             "snapshots": bot_analytics.get_snapshots(bot_id, 30),
             "consecutive_losses": bot_analytics.get_recent_consecutive_losses(bot_id),
+            "risk_hold": get_bot_entry_hold(
+                {**bot, "total_pnl": float(stats.get("total_pnl") or 0)},
+            ),
             "model_staleness": self._get_model_staleness(bot_id),
         }
 
@@ -797,8 +800,25 @@ class BotManagerService:
                 pos_size = float(bot_pos.get("size") or 0.0)
                 eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
 
-                signal_data = strat.evaluate(eval_row)
-                signal = signal_data.get("signal")
+                # ── Time Stop Check ──
+                signal = None
+                signal_data = {}
+                time_stop_bars = int((bot_config or {}).get("time_stop_bars") or 0)
+                if pos_size != 0 and time_stop_bars > 0:
+                    opened_at = float(bot_pos.get("opened_at") or 0.0)
+                    if opened_at > 0 and bar_time is not None:
+                        from app.services.market.timeframes import timeframe_to_ms
+                        tf_ms = timeframe_to_ms(timeframe)
+                        if tf_ms > 0:
+                            bars_elapsed = (bar_time - opened_at) / tf_ms
+                            if bars_elapsed >= time_stop_bars:
+                                signal = "CLOSE"
+                                signal_data = {"signal": "CLOSE", "reasons": [f"Time stop reached ({time_stop_bars} bars)"]}
+                                await self.log_bot_event(bot_id, "INFO", f"Time stop reached ({time_stop_bars} bars), forcing CLOSE")
+                
+                if not signal:
+                    signal_data = strat.evaluate(eval_row)
+                    signal = signal_data.get("signal")
                 if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
                     reject = signal_data.get("reject_reason")
                     if reject:
@@ -950,8 +970,24 @@ class BotManagerService:
             if ctx is None:
                 continue
 
-            signal_data = strat.evaluate(ctx, price)
-            signal = signal_data.get("signal")
+            bot_pos = self._get_bot_position(bot_id, symbol)
+            pos_size = float(bot_pos.get("size") or 0.0)
+            
+            signal = None
+            signal_data = {}
+            time_stop_sec = int(cfg.get("time_stop_sec", 0))
+            if pos_size != 0 and time_stop_sec > 0:
+                opened_at = float(bot_pos.get("opened_at") or 0.0)
+                if opened_at > 0:
+                    elapsed_sec = (time_ms - opened_at) / 1000.0
+                    if elapsed_sec >= time_stop_sec:
+                        signal = "CLOSE"
+                        signal_data = {"signal": "CLOSE", "reasons": [f"Time stop reached ({time_stop_sec}s)"]}
+                        await self.log_bot_event(bot_id, "INFO", f"Time stop reached ({time_stop_sec}s), forcing CLOSE")
+
+            if not signal:
+                signal_data = strat.evaluate(ctx, price)
+                signal = signal_data.get("signal")
             if signal not in ("BUY", "SELL", "CLOSE"):
                 continue
 
@@ -1093,6 +1129,14 @@ class BotManagerService:
                     ml_scale = max(0.5, min(1.5, ml_scale))
                     quantity *= ml_scale
 
+            # 3.4-A: Regime-Adaptive Sizing (Kelly scaling during drawdowns)
+            if bot_cfg.get("use_regime_sizing", True):
+                from app.services.bots.positions import get_recent_closed_trades_pnl
+                recent_pnls = get_recent_closed_trades_pnl(bot_id, limit=3)
+                if len(recent_pnls) == 3 and all(pnl < 0 for pnl in recent_pnls):
+                    quantity *= 0.5
+                    await self.log_bot_event(bot_id, "INFO", "Bot in drawdown (3 consecutive losses). Halving allocation size.")
+
         pos_size = self._get_bot_position_size(bot_id, symbol)
         decision = self._risk_gate.validate_trade(
             bot,
@@ -1110,6 +1154,18 @@ class BotManagerService:
             _record_order_blocked(bot, decision.reason)
             if "Daily loss limit" in decision.reason:
                 await self._halt_bot(bot_id, decision.reason)
+            elif "Consecutive-loss streak" in decision.reason and bot.get("status") == "RUNNING":
+                await self._set_bot_status(bot_id, "PAUSED")
+                await self.log_bot_event(
+                    bot_id,
+                    "WARN",
+                    f"Auto-paused after loss streak — {decision.reason}",
+                )
+            if (
+                "Consecutive-loss streak" in decision.reason
+                or "Cooling-off" in decision.reason
+            ):
+                await publish_bots_update(self.broadcast_cb, self.list_bots_public())
             return
 
         quantity = decision.quantity if decision.quantity is not None else quantity
@@ -1616,6 +1672,31 @@ class BotManagerService:
             await self.stop_bot(bot_id)
         return len(all_ids)
 
+    def _public_bot_row(self, bot: dict, stats: dict) -> dict:
+        bot_id = bot["id"]
+        total_pnl = float(stats.get("total_pnl") or 0)
+        streak = bot_analytics.get_recent_consecutive_losses(bot_id)
+        row = {
+            "id": bot_id,
+            "strategy": bot["strategy"],
+            "symbol": bot["symbol"],
+            "timeframe": bot["timeframe"],
+            "status": bot["status"],
+            "allocation": bot["allocation"],
+            "config": bot.get("config", {}),
+            "execution_mode": bot.get("execution_mode", "BAR_CLOSE"),
+            "daily_pnl": stats["daily_pnl"],
+            "total_pnl": total_pnl,
+            "trade_count": stats["trade_count"],
+            "win_rate": stats["win_rate"],
+            "last_signal_at": bot.get("last_signal_at"),
+            "consecutive_losses": streak,
+        }
+        hold = get_bot_entry_hold({**bot, "total_pnl": total_pnl})
+        if hold:
+            row["risk_hold"] = hold
+        return row
+
     def list_bots_public(self) -> list:
         bot_ids = [bot["id"] for bot in self.active_bots.values()]
         stats_map = bot_analytics.get_all_bot_stats(bot_ids)
@@ -1623,21 +1704,7 @@ class BotManagerService:
         for bot in self.active_bots.values():
             bot_id = bot["id"]
             stats = stats_map.get(bot_id, bot_analytics.get_bot_stats(bot_id))
-            out.append({
-                "id": bot_id,
-                "strategy": bot["strategy"],
-                "symbol": bot["symbol"],
-                "timeframe": bot["timeframe"],
-                "status": bot["status"],
-                "allocation": bot["allocation"],
-                "config": bot.get("config", {}),
-                "execution_mode": bot.get("execution_mode", "BAR_CLOSE"),
-                "daily_pnl": stats["daily_pnl"],
-                "total_pnl": stats["total_pnl"],
-                "trade_count": stats["trade_count"],
-                "win_rate": stats["win_rate"],
-                "last_signal_at": bot.get("last_signal_at"),
-            })
+            out.append(self._public_bot_row(bot, stats))
         return out
 
     def list_all_bots_public(self, limit: int = 100) -> list:
@@ -1666,23 +1733,10 @@ class BotManagerService:
                     "config": json.loads(row.get("config") or "{}"),
                 }
             stats = stats_map.get(bot_id, bot_analytics.get_bot_stats(bot_id))
-            out.append({
-                "id": bot_id,
-                "strategy": bot["strategy"],
-                "symbol": bot["symbol"],
-                "timeframe": bot["timeframe"],
-                "status": bot["status"],
-                "allocation": bot["allocation"],
-                "config": bot.get("config", {}),
-                "execution_mode": bot.get("execution_mode") or row.get("execution_mode", "BAR_CLOSE"),
-                "daily_pnl": stats["daily_pnl"],
-                "total_pnl": stats["total_pnl"],
-                "trade_count": stats["trade_count"],
-                "win_rate": stats["win_rate"],
-                "exit_count": stats["exit_count"],
-                "created_at": row.get("created_at"),
-                "last_signal_at": bot.get("last_signal_at"),
-            })
+            public = self._public_bot_row(bot, stats)
+            public["exit_count"] = stats.get("exit_count")
+            public["created_at"] = row.get("created_at")
+            out.append(public)
         return out
 
     async def handle_sl_tp_exits(self, bot_exits: list[dict]):

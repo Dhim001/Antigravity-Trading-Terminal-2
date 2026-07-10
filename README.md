@@ -237,6 +237,15 @@ Run **simulated** and **IB feed** terminals in parallel without editing repo-roo
 | IB | `.\scripts\start-ib.ps1` | http://127.0.0.1:5174 | 8775 / 8776 | `backend/trading-ib.db` |
 | Massive | `.\scripts\start-massive.ps1` | http://127.0.0.1:5175 | 8785 / 8786 | `backend/trading-massive.db` |
 
+**Desktop window (Electron)** — same UI in a standalone app window without browser tabs:
+
+```powershell
+.\scripts\start-desktop.ps1                  # Sim (default)
+.\scripts\start-desktop.ps1 -Profile Massive
+```
+
+Starts backend + Vite if needed, then opens an Electron shell. First run installs `desktop/` dependencies once. See `desktop/README.md`. PWA install in Chrome/Edge remains an alternative.
+
 `start-ib.ps1` checks that IB Gateway is reachable on `127.0.0.1:4002` first (edit `env.profiles/ib.env` for your port).
 
 The **Massive** instance streams US equities (`AM`/`T`/`Q` on `/stocks`) and crypto 24/7 (`XA`/`XT`/`XQ` on `/crypto`). Set `MASSIVE_API_KEY` in repo-root `.env`. If your plan excludes WebSocket access, the feed automatically falls back to REST polling (`MASSIVE_POLL_FALLBACK=true`). Execution stays simulated (feed-only).

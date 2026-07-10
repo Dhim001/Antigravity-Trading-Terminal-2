@@ -90,6 +90,36 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "sentiment_filter_enabled": False,
         "min_sentiment_score": 0.0,
     },
+    "CVD_DIVERGENCE": {
+        "pivot_lookback": 5,
+        "adx_length": 14,
+        "adx_threshold": 40,
+        "atr_length": 14,
+    },
+    "WYCKOFF_SPRING": {
+        "range_lookback": 30,
+        "atr_length": 14,
+        "volume_surge_mult": 1.5,
+    },
+    "VPOC_REVERSION": {
+        "profile_lookback": 100,
+        "value_area_pct": 0.7,
+        "rsi_length": 14,
+        "adx_length": 14,
+        "adx_trend_filter": 35,
+        "atr_length": 14,
+    },
+    "ORDERFLOW_IMBALANCE": {
+        "bair_threshold": 0.3,
+        "mlofi_threshold": 0.2,
+        "volume_surge_mult": 1.3,
+        "rsi_length": 14,
+        "atr_length": 14,
+    },
+    "ABSORPTION_AGENT": {
+        "atr_length": 14,
+        "volume_ma_length": 20,
+    },
 }
 
 MIN_WARMUP_BARS = 50
@@ -183,7 +213,6 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
         # FVG detection needs bar[-2] high and low
         out["prev2_high"] = out["high"].shift(2)
         out["prev2_low"] = out["low"].shift(2)
-        out["prev2_low"] = out["low"].shift(2)
         # Liquidity sweep needs rolling high/low
         sweep_lb = int(cfg.get("sweep_lookback", 20))
         out[f"rolling_low_{sweep_lb}"] = out["low"].rolling(sweep_lb).min().shift(1)
@@ -199,6 +228,22 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
             out[f"dc_low_{exit_len}"] = out["low"].rolling(exit_len).min().shift(1)
     elif key == "MARKET_MAKING":
         pass  # Market making uses only standard OHLC + ATR columns
+    elif key == "CVD_DIVERGENCE":
+        hl_range = out["high"] - out["low"]
+        buy_pct = (out["close"] - out["low"]) / hl_range.replace(0, 1)
+        buy_vol = out["volume"] * buy_pct
+        sell_vol = out["volume"] * (1 - buy_pct)
+        out["delta"] = buy_vol - sell_vol
+        out["cvd"] = out["delta"].cumsum()
+    elif key == "WYCKOFF_SPRING":
+        pass  # Everything will be done in the StrategyV2 state
+    elif key == "VPOC_REVERSION":
+        pass  # Vol profile handled in state
+    elif key == "ORDERFLOW_IMBALANCE":
+        pass  # Uses orderbook from context/state
+    elif key == "ABSORPTION_AGENT":
+        vol_ma = int(cfg.get("volume_ma_length", 20))
+        out[f"volume_ma_{vol_ma}"] = out["volume"].rolling(vol_ma).mean().shift(1)
 
     return out
 

@@ -2,7 +2,7 @@
  * Post-trade explain card (A4) — shared by bot detail and history.
  */
 import React, { useState } from 'react';
-import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { Action } from '../api/protocol';
 import { invokeHttpAction } from '../api/transport';
 import { withLlmModel } from '../api/endpoints';
@@ -56,7 +56,7 @@ export default function TradeExplainCard({
   compact = false,
 }) {
   const tradeKey = tradeIdKey(trade);
-  const explain = useStore((s) => (tradeKey ? s.tradeExplains[tradeKey] : null));
+  const explain = useResearchStore((s) => (tradeKey ? s.tradeExplains[tradeKey] : null));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 

@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import SubReportCards from './SubReportCards';
 import LlmNarrativeBlock from './LlmNarrativeBlock';
 import { findInsightForLog } from '@/lib/botLogInsight';
@@ -15,7 +16,7 @@ import { Lightbulb } from 'lucide-react';
 export default function SignalInsightDrawer() {
   const [open, setOpen] = useState(false);
   const [logEntry, setLogEntry] = useState(null);
-  const agentInsightHistory = useStore((s) => s.agentInsightHistory);
+  const agentInsightHistory = useResearchStore((s) => s.agentInsightHistory);
 
   useEffect(() => {
     const onOpen = (e) => {

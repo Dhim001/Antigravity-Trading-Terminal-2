@@ -1,0 +1,16 @@
+{
+  "name": "trading-terminal-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Desktop window shell for Antigravity Trading Terminal",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:sim": "electron . --profile=sim",
+    "start:ib": "electron . --profile=ib",
+    "start:massive": "electron . --profile=massive"
+  },
+  "devDependencies": {
+    "electron": "^35.1.2"
+  }
+}

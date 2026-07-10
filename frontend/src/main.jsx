@@ -6,6 +6,8 @@ import { Toaster } from '@/components/ui/sonner'
 import { setupHmrAccept } from './services/hmrState'
 import { forceMarketSnapshotSave } from './services/marketSnapshot'
 import { useStore } from './store/useStore'
+import { useResearchStore } from './store/useResearchStore'
+import { startMemoryGuard } from './services/memoryGuard'
 import './index.css'
 import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -17,9 +19,16 @@ if (typeof window !== 'undefined') {
     forceMarketSnapshotSave(() => useStore.getState());
   });
 
-  if ('serviceWorker' in navigator) {
+  if ('serviceWorker' in navigator && !window.terminalDesktop?.isDesktop) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
+  } else if ('serviceWorker' in navigator && window.terminalDesktop?.isDesktop) {
+    // SW + Vite dev server conflict in Electron — clear any prior registration.
+    navigator.serviceWorker.getRegistrations()
+      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+      .catch(() => {});
   }
+
+  startMemoryGuard(() => useStore, () => useResearchStore);
 }
 
 createRoot(document.getElementById('root')).render(

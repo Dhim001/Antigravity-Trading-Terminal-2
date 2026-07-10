@@ -2,6 +2,7 @@
  * ChartContextStrip — contextual breadcrumb under chart (UX-7).
  */
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { Badge } from '@/components/ui/badge';
@@ -12,7 +13,7 @@ import ChartSymbolSwitcher from './chart/ChartSymbolSwitcher';
 
 export default function ChartContextStrip() {
   const activeSymbol = useStore((s) => s.activeSymbol);
-  const agentInsights = useStore((s) => s.agentInsights);
+  const agentInsights = useResearchStore((s) => s.agentInsights);
   const activeBots = useStore((s) => s.activeBots);
   const isBotRunning = useStore((s) => s.isBotRunning);
   const chartLayout = useSettingsStore((s) => s.settings.chartLayout);

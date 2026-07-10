@@ -364,6 +364,27 @@ def ensure_opened_at(bot_id: str, symbol: str) -> float | None:
     return opened_at
 
 
+def get_recent_closed_trades_pnl(bot_id: str, limit: int = 3) -> list[float]:
+    """Return a list of PNLs for the bot's most recent closed trades."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT pnl 
+            FROM bot_trades 
+            WHERE bot_id = ? AND is_exit = 1 AND pnl IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (bot_id, limit),
+        )
+        rows = cursor.fetchall()
+        return [float(row["pnl"]) if isinstance(row, dict) else float(row[0]) for row in rows]
+    finally:
+        conn.close()
+
+
 def update_bot_risk(
     bot_id: str,
     symbol: str,

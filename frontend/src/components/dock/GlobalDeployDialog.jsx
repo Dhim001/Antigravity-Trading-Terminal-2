@@ -7,6 +7,7 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../../store/useStore';
+import { useResearchStore } from '../../store/useResearchStore';
 import { sendAction } from '../../api/transport';
 import { Action } from '../../api/protocol';
 import { Button } from '@/components/ui/button';
@@ -20,11 +21,11 @@ import { buildDeployPayload } from '@/lib/deployGate';
 import { useShallow } from 'zustand/react/shallow';
 
 export default function GlobalDeployDialog({ switchToAlgoTab }) {
-  const pendingDeploy = useStore((s) => s.pendingDeploy);
-  const setPendingDeploy = useStore((s) => s.setPendingDeploy);
+  const pendingDeploy = useResearchStore((s) => s.pendingDeploy);
+  const setPendingDeploy = useResearchStore((s) => s.setPendingDeploy);
   const {
     botStrategy, botConfig, activeSymbol, botExecutionMode, botTimeframe,
-    isLive, allowLiveBots, backtestResults, backtestSnapshot, backtestDays,
+    isLive, allowLiveBots,
   } = useStore(useShallow((s) => ({
     botStrategy: s.botStrategy,
     botConfig: s.botConfig,
@@ -33,6 +34,10 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
     botTimeframe: s.botTimeframe,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
+  })));
+  const {
+    backtestResults, backtestSnapshot, backtestDays,
+  } = useResearchStore(useShallow((s) => ({
     backtestResults: s.backtestResults,
     backtestSnapshot: s.backtestSnapshot,
     backtestDays: s.backtestDays,

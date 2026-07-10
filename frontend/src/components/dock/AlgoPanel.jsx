@@ -4,6 +4,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../../store/useStore';
+import { useResearchStore } from '../../store/useResearchStore';
 import { sendAction } from '../../api/transport';
 import { Action } from '../../api/protocol';
 import { fetchBots, withLlmModel } from '../../api/endpoints';
@@ -12,7 +13,7 @@ import { selectCashTotal } from '../../store/selectors';
 import { useShallow } from 'zustand/react/shallow';
 import {
   Cpu, Play, Settings, Trash2, XSquare, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Activity, Loader2, Maximize2,
+  RefreshCw, AlertTriangle, Activity, Loader2, Maximize2, Bot,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -57,6 +58,7 @@ import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import BotRiskHoldBadge from '../BotRiskHoldBadge';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
@@ -70,11 +72,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const {
     activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
     setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
-    strategyTemplates, backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
-    backtestLabOpen, backtestLastError, backtestLastRequest, backtestJobId,
-    setBacktestRunning, setBacktestProgress, setBacktestSnapshot,
-    openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
-    clearBacktestLastError, setBacktestLastError,
+    strategyTemplates,
     setChartInteractionMode,
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
     executionMode,
@@ -96,22 +94,6 @@ export function AlgoTab({ hideToolbar = false }) {
     clearBotLogs: s.clearBotLogs,
     botLogs: s.botLogs,
     strategyTemplates: s.strategyTemplates,
-    backtestResults: s.backtestResults,
-    backtestRuns: s.backtestRuns,
-    backtestRunning: s.backtestRunning,
-    backtestSnapshot: s.backtestSnapshot,
-    backtestLabOpen: s.backtestLabOpen,
-    backtestLastError: s.backtestLastError,
-    backtestLastRequest: s.backtestLastRequest,
-    backtestJobId: s.backtestJobId,
-    setBacktestRunning: s.setBacktestRunning,
-    setBacktestProgress: s.setBacktestProgress,
-    setBacktestSnapshot: s.setBacktestSnapshot,
-    openBacktestLab: s.openBacktestLab,
-    setStoreBacktestDays: s.setBacktestDays,
-    setStoreBacktestOos: s.setBacktestOos,
-    clearBacktestLastError: s.clearBacktestLastError,
-    setBacktestLastError: s.setBacktestLastError,
     setChartInteractionMode: s.setChartInteractionMode,
     isLive: s.isLive,
     allowLiveBots: s.allowLiveBots,
@@ -128,8 +110,32 @@ export function AlgoTab({ hideToolbar = false }) {
     setBotDrawerOpen: s.setBotDrawerOpen,
     ambiguousOrders: s.ambiguousOrders,
   })));
+  const {
+    backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
+    backtestLabOpen, backtestLastError, backtestLastRequest, backtestJobId,
+    setBacktestRunning, setBacktestProgress, setBacktestSnapshot,
+    openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
+    clearBacktestLastError, setBacktestLastError,
+  } = useResearchStore(useShallow((s) => ({
+    backtestResults: s.backtestResults,
+    backtestRuns: s.backtestRuns,
+    backtestRunning: s.backtestRunning,
+    backtestSnapshot: s.backtestSnapshot,
+    backtestLabOpen: s.backtestLabOpen,
+    backtestLastError: s.backtestLastError,
+    backtestLastRequest: s.backtestLastRequest,
+    backtestJobId: s.backtestJobId,
+    setBacktestRunning: s.setBacktestRunning,
+    setBacktestProgress: s.setBacktestProgress,
+    setBacktestSnapshot: s.setBacktestSnapshot,
+    openBacktestLab: s.openBacktestLab,
+    setStoreBacktestDays: s.setBacktestDays,
+    setStoreBacktestOos: s.setBacktestOos,
+    clearBacktestLastError: s.clearBacktestLastError,
+    setBacktestLastError: s.setBacktestLastError,
+  })));
   const positions = useStore((state) => state.positions);
-  const agentInsights = useStore((state) => state.agentInsights);
+  const agentInsights = useResearchStore((state) => state.agentInsights);
   const tickerPrice = useStore((state) => state.tickerData[state.activeSymbol]?.price);
   const cashTotal = useStore(selectCashTotal);
 
@@ -154,6 +160,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const [logFilter, setLogFilter] = useState('all');
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
+  const [botCategoryTab, setBotCategoryTab] = useState('normal');
   const logScrollRef = useRef(null);
   const logCountRef = useRef(0);
   const filteredBotLogs = useMemo(() => {
@@ -252,7 +259,7 @@ export function AlgoTab({ hideToolbar = false }) {
       setBacktestLiveParity,
       setMetaLabelWalkForward,
       openBacktestLab,
-      setOptimizerPreset: useStore.getState().setOptimizerPreset,
+      setOptimizerPreset: useResearchStore.getState().setOptimizerPreset,
     });
     if (ok) {
       setActiveWorkflowPreset(presetId);
@@ -318,7 +325,7 @@ export function AlgoTab({ hideToolbar = false }) {
       days: request?.days,
       portfolioSymbolCount: request?.portfolio_symbols?.length ?? 0,
       onTimeout: (timeoutMs) => {
-        if (useStore.getState().backtestRunning) {
+        if (useResearchStore.getState().backtestRunning) {
           stopBacktestJobPolling();
           setBacktestRunning(false);
           setBacktestProgress(null);
@@ -365,7 +372,7 @@ export function AlgoTab({ hideToolbar = false }) {
       days,
       portfolioSymbolCount,
       onTimeout: (timeoutMs) => {
-        if (useStore.getState().backtestRunning) {
+        if (useResearchStore.getState().backtestRunning) {
           stopBacktestJobPolling();
           setBacktestRunning(false);
           setBacktestProgress(null);
@@ -399,7 +406,7 @@ export function AlgoTab({ hideToolbar = false }) {
     clearBacktestClientTimeout();
     setBacktestRunning(false);
     setBacktestProgress(null);
-    const jobId = useStore.getState().backtestJobId;
+    const jobId = useResearchStore.getState().backtestJobId;
     sendAction(Action.CANCEL_BACKTEST, jobId ? { job_id: jobId } : {});
   };
 
@@ -430,7 +437,7 @@ export function AlgoTab({ hideToolbar = false }) {
       allocation: botConfig.allocation,
       executionMode: botExecutionMode,
       config: botConfig,
-      results: useStore.getState().backtestResults,
+      results: useResearchStore.getState().backtestResults,
       snapshot: backtestSnapshot,
       days,
       forceDeploy,
@@ -440,7 +447,8 @@ export function AlgoTab({ hideToolbar = false }) {
 
   const filteredTemplates = strategyTemplates.filter(
     (t) => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode
-      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
+      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom))
+      && (botCategoryTab === 'agentic' ? t.category === 'agent' : t.category !== 'agent'),
   );
 
   const selectTemplate = (template) => {
@@ -685,7 +693,26 @@ export function AlgoTab({ hideToolbar = false }) {
             )}
 
             <div className="algo-deploy-field">
-              <Label className="algo-field-label">Strategy Templates</Label>
+              <div className="flex items-center justify-between mb-2">
+                <Label className="algo-field-label mb-0">Strategy Templates</Label>
+                <div className="flex bg-slate-950/50 rounded-md p-0.5 border border-slate-800/60">
+                  <button
+                    className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors ${botCategoryTab === 'normal' ? 'bg-slate-800 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                    onClick={() => setBotCategoryTab('normal')}
+                    type="button"
+                  >
+                    Normal
+                  </button>
+                  <button
+                    className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors flex items-center gap-1.5 ${botCategoryTab === 'agentic' ? 'bg-slate-800 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                    onClick={() => setBotCategoryTab('agentic')}
+                    type="button"
+                  >
+                    <Bot size={12} />
+                    Agentic
+                  </button>
+                </div>
+              </div>
               <div className="algo-template-grid">
                 {filteredTemplates.map(t => (
                   <StrategyTemplateCard
@@ -1363,7 +1390,12 @@ export function AlgoTab({ hideToolbar = false }) {
                     key={bot.id}
                     rowVariant="dock"
                     deferred
-                    className={cn('algo-bot-row cursor-pointer', selectedBotId === bot.id && 'row-active')}
+                    className={cn(
+                      'algo-bot-row cursor-pointer',
+                      selectedBotId === bot.id && 'row-active',
+                      bot.risk_hold?.kind === 'cooloff' && 'algo-bot-row--cooloff',
+                      bot.risk_hold?.kind === 'streak_limit' && 'algo-bot-row--streak-hold',
+                    )}
                     onClick={() => selectBot(bot.id)}
                   >
                     <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
@@ -1412,7 +1444,10 @@ export function AlgoTab({ hideToolbar = false }) {
                       })()}
                     </DataTableCell>
                     <DataTableCell align="center">
-                      <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
+                      <div className="algo-bot-status-cell">
+                        <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
+                        <BotRiskHoldBadge hold={bot.risk_hold} compact />
+                      </div>
                     </DataTableCell>
                     <DataTableCell align="center" onClick={e => e.stopPropagation()}>
                       <div className="algo-bot-actions">

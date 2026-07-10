@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { fetchAgentInsights } from '../api/endpoints';
@@ -54,7 +55,13 @@ import {
   Minimize2,
   FlaskConical,
   AlertTriangle,
+  Snowflake,
 } from 'lucide-react';
+import BotRiskHoldBadge from './BotRiskHoldBadge';
+import {
+  riskHoldDetailMessage,
+  useRiskHoldRemaining,
+} from '@/lib/botRiskHold';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
 const DRAWER_HEIGHT_KEY = 'terminal_bot_drawer_height';
@@ -168,15 +175,21 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const selectedBotId = useStore(s => s.selectedBotId);
   const setSelectedBotId = useStore(s => s.setSelectedBotId);
   const setBotDetail = useStore(s => s.setBotDetail);
-  const agentInsights = useStore(s => s.agentInsights);
-  const agentInsightHistory = useStore(s => s.agentInsightHistory);
-  const setAgentInsightHistory = useStore(s => s.setAgentInsightHistory);
+  const agentInsights = useResearchStore(s => s.agentInsights);
+  const agentInsightHistory = useResearchStore(s => s.agentInsightHistory);
+  const setAgentInsightHistory = useResearchStore(s => s.setAgentInsightHistory);
 
   const bot = botDetail?.bot;
   const position = botDetail?.position;
   const stats = botDetail?.stats;
   const trades = botDetail?.trades ?? [];
   const snapshots = botDetail?.snapshots ?? [];
+  const activeBots = useStore((s) => s.activeBots);
+  const riskHold = botDetail?.risk_hold
+    ?? activeBots.find((b) => b.id === bot?.id)?.risk_hold
+    ?? null;
+  const cooloffRemaining = useRiskHoldRemaining(riskHold?.kind === 'cooloff' ? riskHold : null);
+  const riskHoldMessage = riskHoldDetailMessage(riskHold, cooloffRemaining);
   const strategyMeta = bot ? getStrategyMeta(bot.strategy) : null;
   const loading = open && selectedBotId && !bot;
   const hasOpenPosition = position && Number(position.size) > 0;
@@ -386,6 +399,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 <Badge variant={bot.status === 'RUNNING' ? 'buy' : 'secondary'} className="shrink-0">
                   {bot.status}
                 </Badge>
+                <BotRiskHoldBadge hold={riskHold} />
               </>
             ) : (
               <span className="text-muted-foreground">Bot detail</span>
@@ -452,6 +466,20 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             </div>
           </SheetDescription>
         </SheetHeader>
+
+        {riskHoldMessage && (
+          <Alert
+            variant={riskHold?.kind === 'streak_limit' ? 'destructive' : 'default'}
+            className="bot-detail-drawer__risk-hold mx-4 mb-2"
+          >
+            <Snowflake className="size-4" aria-hidden />
+            <AlertTitle className="flex flex-wrap items-center gap-2">
+              {riskHold?.kind === 'cooloff' ? 'Cooling off' : 'Loss streak hold'}
+              <BotRiskHoldBadge hold={riskHold} />
+            </AlertTitle>
+            <AlertDescription>{riskHoldMessage}</AlertDescription>
+          </Alert>
+        )}
 
         {loading && (
           <div className="bot-detail-drawer__loading" aria-live="polite">

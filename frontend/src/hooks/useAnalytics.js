@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { invokeHttpAction, sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 
@@ -11,9 +11,9 @@ const INVALIDATE_DEBOUNCE_MS = 650;
  * Pass `invalidateKey` to debounce-refresh when live portfolio data changes.
  */
 export function useAnalytics(report = 'dashboard', params = {}, { enabled = true, invalidateKey } = {}) {
-  const analyticsReport = useStore((s) => s.analyticsReport);
-  const loading = useStore((s) => s.analyticsLoading);
-  const setAnalyticsLoading = useStore((s) => s.setAnalyticsLoading);
+  const analyticsReport = useResearchStore((s) => s.analyticsReport);
+  const loading = useResearchStore((s) => s.analyticsLoading);
+  const setAnalyticsLoading = useResearchStore((s) => s.setAnalyticsLoading);
   const [error, setError] = useState(null);
   const paramsKey = JSON.stringify(params);
   const prevInvalidateKey = useRef(invalidateKey);
@@ -40,7 +40,7 @@ export function useAnalytics(report = 'dashboard', params = {}, { enabled = true
     if (!enabled) return undefined;
     refresh();
     const timer = setTimeout(() => {
-      if (useStore.getState().analyticsLoading) {
+      if (useResearchStore.getState().analyticsLoading) {
         setAnalyticsLoading(false);
         setError((prev) => prev || 'Analytics timed out — restart the backend to load new routes.');
       }
@@ -64,7 +64,7 @@ export function useAnalytics(report = 'dashboard', params = {}, { enabled = true
 }
 
 export function useJournal(options = {}, { enabled = true } = {}) {
-  const entries = useStore((s) => s.journalEntries);
+  const entries = useResearchStore((s) => s.journalEntries);
   const optionsKey = JSON.stringify(options);
 
   const refresh = useCallback(async () => {

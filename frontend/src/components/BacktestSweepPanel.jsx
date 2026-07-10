@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { withLlmModel } from '../api/endpoints';
@@ -173,12 +174,12 @@ export default function BacktestSweepPanel({
   oosPct,
   results,
 }) {
-  const backtestRunning = useStore((s) => s.backtestRunning);
+  const backtestRunning = useResearchStore((s) => s.backtestRunning);
   const botConfig = useStore((s) => s.botConfig);
-  const optimizerPreset = useStore((s) => s.optimizerPreset);
-  const clearOptimizerPreset = useStore((s) => s.clearOptimizerPreset);
+  const optimizerPreset = useResearchStore((s) => s.optimizerPreset);
+  const clearOptimizerPreset = useResearchStore((s) => s.clearOptimizerPreset);
   const updateBotConfig = useStore((s) => s.updateBotConfig);
-  const setPendingDeploy = useStore((s) => s.setPendingDeploy);
+  const setPendingDeploy = useResearchStore((s) => s.setPendingDeploy);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
 
   const paramDefs = useMemo(
@@ -281,8 +282,8 @@ export default function BacktestSweepPanel({
       return;
     }
     if (backtestRunning) return;
-    useStore.getState().setBacktestRunning(true);
-    useStore.getState().setBacktestProgress({
+    useResearchStore.getState().setBacktestRunning(true);
+    useResearchStore.getState().setBacktestProgress({
       pct: 0,
       phase: 'sweep',
       message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
@@ -305,9 +306,9 @@ export default function BacktestSweepPanel({
       comboCount,
       timeoutMs,
       onTimeout: (elapsedMs) => {
-        if (!useStore.getState().backtestRunning) return;
-        useStore.getState().setBacktestRunning(false);
-        useStore.getState().setBacktestProgress(null);
+        if (!useResearchStore.getState().backtestRunning) return;
+        useResearchStore.getState().setBacktestRunning(false);
+        useResearchStore.getState().setBacktestProgress(null);
         toast.error(
           walkForward
             ? `Walk-forward timed out after ${formatBacktestTimeoutLabel(elapsedMs)} — try fewer folds/combos or increase VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS`
@@ -359,8 +360,8 @@ export default function BacktestSweepPanel({
     if (!ok && error) toast.error(error);
     if (!ok) {
       clearBacktestClientTimeout();
-      useStore.getState().setBacktestRunning(false);
-      useStore.getState().setBacktestProgress(null);
+      useResearchStore.getState().setBacktestRunning(false);
+      useResearchStore.getState().setBacktestProgress(null);
     }
   };
 

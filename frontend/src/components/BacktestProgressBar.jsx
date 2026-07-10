@@ -3,7 +3,7 @@
  */
 import React from 'react';
 import { cn } from '@/lib/utils';
-import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 
 const PHASE_LABELS = {
   resolve: 'Loading candles',
@@ -17,8 +17,8 @@ const PHASE_LABELS = {
 };
 
 export default function BacktestProgressBar({ className, compact = false }) {
-  const running = useStore((s) => s.backtestRunning);
-  const progress = useStore((s) => s.backtestProgress);
+  const running = useResearchStore((s) => s.backtestRunning);
+  const progress = useResearchStore((s) => s.backtestProgress);
 
   if (!running) return null;
 

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText, Sparkles } from 'lucide-react';
 import { openBacktestLabResults } from '../lib/backtestLab';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -505,10 +506,10 @@ export default function BacktestResultsPanel({
   advisorBotId = null,
   agentLlmAvailable = false,
 }) {
-  const setBacktestResults = useStore((s) => s.setBacktestResults);
-  const setBacktestOverlay = useStore((s) => s.setBacktestOverlay);
+  const setBacktestResults = useResearchStore((s) => s.setBacktestResults);
+  const setBacktestOverlay = useResearchStore((s) => s.setBacktestOverlay);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
-  const backtestOverlay = useStore((s) => s.backtestOverlay);
+  const backtestOverlay = useResearchStore((s) => s.backtestOverlay);
   const botConfig = useStore((s) => s.botConfig);
   const activeBots = useStore((s) => s.activeBots);
   const activeSymbol = useStore((s) => s.activeSymbol);
@@ -1236,7 +1237,7 @@ export default function BacktestResultsPanel({
         <button
           type="button"
           className="algo-backtest-sweep-teaser text-[0.62rem] text-primary hover:underline text-left px-1 py-1"
-          onClick={() => useStore.getState().openBacktestLab('optimizer')}
+          onClick={() => useResearchStore.getState().openBacktestLab('optimizer')}
         >
           {results.sweep.configs_tested ?? results.sweep.results.length} configs tested → Open optimizer
         </button>

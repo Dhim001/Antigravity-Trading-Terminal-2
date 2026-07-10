@@ -55,6 +55,27 @@ class TestDbConnection(unittest.TestCase):
         applied = get_applied_revisions()
         self.assertIn(BASELINE_REVISION, applied)
 
+    def test_sqlite_lock_retry_backoff_between_attempts(self):
+        """Wrapper retries must sleep between lock errors, not spin."""
+        import sqlite3
+        from unittest.mock import MagicMock, patch
+
+        from app.db.connection import _CursorWrapper
+
+        mock_cursor = MagicMock()
+        mock_cursor.execute.side_effect = [
+            sqlite3.OperationalError("database is locked"),
+            sqlite3.OperationalError("database is locked"),
+            mock_cursor,
+        ]
+        wrapper = _CursorWrapper(mock_cursor)
+        with patch("app.db.connection.time.sleep") as sleep_mock:
+            wrapper.execute("SELECT 1")
+        self.assertEqual(mock_cursor.execute.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+        sleep_mock.assert_any_call(0.025)
+        sleep_mock.assert_any_call(0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

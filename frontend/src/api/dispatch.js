@@ -1,9 +1,11 @@
 import { toast } from 'sonner';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
+import { saveFullBacktestResults } from '../services/backtestStorage';
 import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
 import { queueMarketUpdate } from '../services/marketUpdateBatch';
 
@@ -39,6 +41,7 @@ export function resetBacktestRunState(storeActions, { errorMessage = null, reque
 /** Snapshot of Zustand actions for WS / HTTP message dispatch. */
 export function getStoreActions() {
   const s = useStore.getState();
+  const r = useResearchStore.getState();
   return {
     setConnectionStatus: s.setConnectionStatus,
     updateHistory: s.updateHistory,
@@ -54,34 +57,34 @@ export function getStoreActions() {
     setSelectedLlmModel: s.setSelectedLlmModel,
     setBots: s.setBots,
     setBotLogs: s.setBotLogs,
-    setBacktestResults: s.setBacktestResults,
-    setBacktestRuns: s.setBacktestRuns,
-    setBacktestRunning: s.setBacktestRunning,
-    setBacktestProgress: s.setBacktestProgress,
-    setBacktestJobId: s.setBacktestJobId,
-    setBacktestLabOpen: s.setBacktestLabOpen,
-    setBacktestSnapshot: s.setBacktestSnapshot,
-    setBacktestLastError: s.setBacktestLastError,
-    clearBacktestLastError: s.clearBacktestLastError,
-    setBacktestOverlay: s.setBacktestOverlay,
-    clearBacktestOverlay: s.clearBacktestOverlay,
+    setBacktestResults: r.setBacktestResults,
+    setBacktestRuns: r.setBacktestRuns,
+    setBacktestRunning: r.setBacktestRunning,
+    setBacktestProgress: r.setBacktestProgress,
+    setBacktestJobId: r.setBacktestJobId,
+    setBacktestLabOpen: r.setBacktestLabOpen,
+    setBacktestSnapshot: r.setBacktestSnapshot,
+    setBacktestLastError: r.setBacktestLastError,
+    clearBacktestLastError: r.clearBacktestLastError,
+    setBacktestOverlay: r.setBacktestOverlay,
+    clearBacktestOverlay: r.clearBacktestOverlay,
     setStrategyCatalog: s.setStrategyCatalog,
     setBotDetail: s.setBotDetail,
     setAmbiguousOrders: s.setAmbiguousOrders,
     setTickData: s.setTickData,
     setBotHistory: s.setBotHistory,
-    setAgentInsight: s.setAgentInsight,
-    setAgentInsightHistory: s.setAgentInsightHistory,
-    setAgentDeepReasoning: s.setAgentDeepReasoning,
-    setTradeExplain: s.setTradeExplain,
-    setScanResults: s.setScanResults,
-    setVisionReport: s.setVisionReport,
+    setAgentInsight: r.setAgentInsight,
+    setAgentInsightHistory: r.setAgentInsightHistory,
+    setAgentDeepReasoning: r.setAgentDeepReasoning,
+    setTradeExplain: r.setTradeExplain,
+    setScanResults: r.setScanResults,
+    setVisionReport: r.setVisionReport,
     setChartDrawings: s.setChartDrawings,
-    setAnalyticsReport: s.setAnalyticsReport,
-    setAnalyticsLoading: s.setAnalyticsLoading,
-    setJournalEntries: s.setJournalEntries,
-    upsertJournalEntry: s.upsertJournalEntry,
-    removeJournalEntry: s.removeJournalEntry,
+    setAnalyticsReport: r.setAnalyticsReport,
+    setAnalyticsLoading: r.setAnalyticsLoading,
+    setJournalEntries: r.setJournalEntries,
+    upsertJournalEntry: r.upsertJournalEntry,
+    removeJournalEntry: r.removeJournalEntry,
   };
 }
 
@@ -129,7 +132,10 @@ export function applyServerMessage(type, data, storeActions, meta) {
         if (data.level === 'ERROR') toast.error(data.message);
         else if (data.level === 'SUCCESS') toast.success(data.message);
         else if (data.level === 'WARN' && /daily loss|blocked/i.test(data.message)) {
-          toast.warning(data.message);
+          // Cooloff/streak holds are shown on the Active Bots panel — skip repeat toasts.
+          if (!/Cooling-off|Consecutive-loss streak|Auto-paused after loss streak/i.test(data.message)) {
+            toast.warning(data.message);
+          }
         }
       }
       break;
@@ -168,6 +174,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
       if (data?.status === 'success' && data?.results && !data.results.error) {
         storeActions.clearBacktestLastError?.();
         const results = trimBacktestPayload(data.results);
+        saveFullBacktestResults(results);
         storeActions.setBacktestResults(results);
         const sym = results?.meta?.symbol;
         const pnl = results?.total_pnl;
@@ -182,7 +189,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
         toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
           action: {
             label: 'Open Lab',
-            onClick: () => useStore.getState().openBacktestLab('results'),
+            onClick: () => useResearchStore.getState().openBacktestLab('results'),
           },
         });
         const overlay = buildBacktestOverlay(results);
@@ -203,7 +210,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
         toast.error(msg, {
           action: {
             label: 'Recovery',
-            onClick: () => useStore.getState().openBacktestLab('results'),
+            onClick: () => useResearchStore.getState().openBacktestLab('results'),
           },
         });
       }
@@ -259,7 +266,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.setAnalyticsLoading(false);
       const errMsg = data?.message ?? (typeof data === 'string' ? data : null) ?? 'Server error';
       console.error('Server execution error:', errMsg);
-      if (useStore.getState().backtestRunning) {
+      if (useResearchStore.getState().backtestRunning) {
         if (errorAffectsBacktestRun(errMsg)) {
           resetBacktestRunState(storeActions, { errorMessage: errMsg });
           toast.error(errMsg);

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Cpu, GripVertical } from 'lucide-react';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { openBacktestLabResults } from '../lib/backtestLab';
 import { fetchBots } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
@@ -34,7 +35,7 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
   const startW = useRef(0);
 
   const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
-  const backtestResults = useStore((s) => s.backtestResults);
+  const backtestResults = useResearchStore((s) => s.backtestResults);
 
   useEffect(() => {
     try { localStorage.setItem(STUDIO_WIDTH_KEY, String(panelWidth)); } catch (_) {}

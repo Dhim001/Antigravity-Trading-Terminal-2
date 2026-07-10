@@ -11,6 +11,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense, lazy } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
@@ -124,7 +125,8 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
   const paperExecution = useStore((s) => isPaperExecutionMode(s.terminalMode, s.executionMode));
   const isBotRunning = useStore((s) => s.isBotRunning);
   const isLive = useStore((s) => s.isLive);
-  const analystBadge = useStore((s) => (s.agentInsightHistory[s.activeSymbol] ?? []).length || null);
+  const activeSymbol = useStore((s) => s.activeSymbol);
+  const analystBadge = useResearchStore((s) => (s.agentInsightHistory[activeSymbol] ?? []).length || null);
   const workspaceTab = normalizeDockTab(
     useSettingsStore(state => state.settings.workspace?.dockActiveTab || 'positions'),
   );
@@ -285,7 +287,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
   }, [updateWorkspace]);
 
-  const scanBadge = useStore((s) => {
+  const scanBadge = useResearchStore((s) => {
     const rows = s.scanResults?.rows ?? [];
     return rows.filter((r) => r.signal && r.signal !== 'NONE').length || null;
   });

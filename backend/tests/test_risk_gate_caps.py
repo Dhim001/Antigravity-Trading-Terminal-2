@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app.config import MAX_ORDER_VALUE
-from app.services.bots.risk_gate import RiskGate
+from app.services.bots.risk_gate import RiskGate, get_bot_entry_hold
 
 
 class RiskGateNotionalCapTests(unittest.TestCase):
@@ -75,6 +75,34 @@ class RiskGateNotionalCapTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertAlmostEqual(decision.quantity, MAX_ORDER_VALUE / price, places=6)
         self.assertIn("MAX_ORDER_VALUE", decision.reason)
+
+
+class BotEntryHoldTests(unittest.TestCase):
+    @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=3)
+    @patch("app.services.bots.analytics.last_exit_timestamp", return_value="2026-07-10T11:58:00Z")
+    def test_cooloff_hold_payload(self, _last_exit, _streak):
+        bot = {
+            "id": "bot-cool",
+            "status": "RUNNING",
+            "config": {"loss_cooloff_sec": 300, "max_consecutive_losses": 5},
+        }
+        hold = get_bot_entry_hold(bot)
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold["kind"], "cooloff")
+        self.assertGreater(hold["remaining_sec"], 0)
+        self.assertIn("cooloff_until", hold)
+
+    @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=5)
+    def test_streak_limit_hold_payload(self, _streak):
+        bot = {
+            "id": "bot-streak",
+            "status": "PAUSED",
+            "config": {"max_consecutive_losses": 5, "loss_cooloff_sec": 300},
+        }
+        hold = get_bot_entry_hold(bot)
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold["kind"], "streak_limit")
+        self.assertEqual(hold["consecutive_losses"], 5)
 
 
 if __name__ == "__main__":

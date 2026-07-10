@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import { Brain, Loader2, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import LlmAttribution from './LlmAttribution';
 import {
   enrichReasoningTrades,
@@ -35,8 +35,8 @@ export default function BacktestReasoningPanel({
   results = null,
   className,
 }) {
-  const backtestRunning = useStore((s) => s.backtestRunning);
-  const progress = useStore((s) => s.backtestProgress);
+  const backtestRunning = useResearchStore((s) => s.backtestRunning);
+  const progress = useResearchStore((s) => s.backtestProgress);
   const reasoningPhase = backtestRunning && progress?.phase === 'reasoning';
 
   const requested = reasoningRequested || reasoning?.requested || reasoning?.available != null;

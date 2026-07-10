@@ -6,6 +6,7 @@ import {
   CANDLE_LRU_MAX_SYMBOLS,
   HT_BUFFER_MAX_BARS,
 } from './memoryBudget';
+import { CompactBarSeries, materializeBars, barCount } from './compactBarSeries';
 
 const MAX_BARS = CANDLE_BUFFER_MAX_BARS;
 const HT_MAX_BARS = HT_BUFFER_MAX_BARS;
@@ -181,9 +182,10 @@ function storeBars(symbol, candles, intervalSecs = DEFAULT_BAR_SECS, maxBars = M
   if (deduped.length > maxBars) {
     deduped.splice(0, deduped.length - maxBars);
   }
-  buffers.set(symbol, deduped);
+  const series = CompactBarSeries.fromCandles(deduped);
+  buffers.set(symbol, series);
   touchSymbol(symbol);
-  return deduped;
+  return series;
 }
 
 function storeHtBars(key, candles, intervalSecs) {
@@ -201,7 +203,11 @@ function restoreBuffersFromHmr() {
   const saved = import.meta.hot.data.candleBuffers;
   if (!(saved instanceof Map)) return;
   for (const [sym, bars] of saved) {
-    if (Array.isArray(bars) && bars.length) buffers.set(sym, dedupeCandles(bars));
+    if (Array.isArray(bars) && bars.length) {
+      buffers.set(sym, CompactBarSeries.fromCandles(dedupeCandles(bars)));
+    } else if (CompactBarSeries.isSeries(bars) && bars.length) {
+      buffers.set(sym, bars);
+    }
   }
   const htSaved = import.meta.hot?.data?.htCandleBuffers;
   if (htSaved instanceof Map) {
@@ -223,7 +229,11 @@ restoreBuffersFromHmr();
 if (import.meta.hot) {
   import.meta.hot.accept();
   import.meta.hot.dispose((data) => {
-    data.candleBuffers = new Map(buffers);
+    const serialized = new Map();
+    for (const [sym, buf] of buffers) {
+      serialized.set(sym, materializeBars(buf));
+    }
+    data.candleBuffers = serialized;
     data.htCandleBuffers = new Map(htBuffers);
     data.pinnedCandleSymbol = pinnedSymbol;
     data.symbolAccessOrder = [...symbolAccessOrder];
@@ -255,13 +265,14 @@ export function mergeCandleHistory(symbol, incoming, timeframe = '1m', intervalS
   const existing = buffers.get(symbol);
   const normalizedIncoming = dedupeCandles(incoming, intervalSecs);
 
-  if (!existing?.length) {
+  if (!barCount(existing)) {
     storeBars(symbol, normalizedIncoming, intervalSecs);
     return { changed: true, fullRebuild: true };
   }
 
+  const existingBars = materializeBars(existing);
   const lastIncoming = normalizedIncoming[normalizedIncoming.length - 1]?.time;
-  const lastExisting = existing[existing.length - 1]?.time;
+  const lastExisting = existingBars[existingBars.length - 1]?.time;
   if (lastIncoming == null || lastExisting == null) {
     storeBars(symbol, normalizedIncoming, intervalSecs);
     return { changed: true, fullRebuild: true };
@@ -271,22 +282,27 @@ export function mergeCandleHistory(symbol, incoming, timeframe = '1m', intervalS
     return { changed: false, fullRebuild: false };
   }
 
-  const merged = dedupeCandles([...existing, ...normalizedIncoming], intervalSecs);
+  const merged = dedupeCandles([...existingBars, ...normalizedIncoming], intervalSecs);
   if (merged.length > MAX_BARS) {
     merged.splice(0, merged.length - MAX_BARS);
   }
 
   const lastMerged = merged[merged.length - 1];
+  const lastExistingBar = existingBars[existingBars.length - 1];
   const changed =
-    merged.length !== existing.length
+    merged.length !== existingBars.length
     || lastMerged?.time !== lastExisting
-    || lastMerged?.close !== existing[existing.length - 1]?.close;
+    || lastMerged?.close !== lastExistingBar?.close;
 
-  buffers.set(symbol, merged);
+  if (CompactBarSeries.isSeries(existing)) {
+    existing.replaceFrom(merged);
+  } else {
+    buffers.set(symbol, CompactBarSeries.fromCandles(merged));
+  }
   touchSymbol(symbol);
 
   const fullRebuild =
-    Math.abs(merged.length - existing.length) > 5
+    Math.abs(merged.length - existingBars.length) > 5
     || lastIncoming > lastExisting + 60;
 
   return { changed, fullRebuild };
@@ -335,7 +351,7 @@ export function hasCandleHistory(symbol, timeframe = '1m') {
     const buf = htBuffers.get(candleBufferKey(symbol, timeframe));
     return Boolean(buf && buf.length > 0);
   }
-  return buffers.has(symbol) && buffers.get(symbol).length > 0;
+  return buffers.has(symbol) && barCount(buffers.get(symbol)) > 0;
 }
 
 /** True when WS/REST history is sufficient — safe to skip redundant HTTP candles fetch. */
@@ -345,7 +361,7 @@ export function hasChartReadyHistory(symbol, minBars = CHART_READY_MIN_BARS, tim
     return Boolean(buf && buf.length >= minBars);
   }
   const buf = buffers.get(symbol);
-  return Boolean(buf && buf.length >= minBars);
+  return Boolean(buf && barCount(buf) >= minBars);
 }
 
 export function getCandles(symbol, timeframe = '1m', intervalSecs = DEFAULT_BAR_SECS) {
@@ -360,7 +376,17 @@ export function getCandles(symbol, timeframe = '1m', intervalSecs = DEFAULT_BAR_
   }
 
   const buf = buffers.get(symbol);
-  if (!buf?.length) return [];
+  if (!barCount(buf)) return [];
+
+  if (CompactBarSeries.isSeries(buf)) {
+    const needsNormalize = buf.some(
+      (c) => c.time !== normalizeBarTime(c.time, intervalSecs),
+    );
+    if (!needsNormalize) return buf.toArray();
+    const fixed = dedupeCandles(materializeBars(buf), intervalSecs);
+    buf.replaceFrom(fixed);
+    return buf.toArray();
+  }
 
   const needsNormalize = buf.some(
     (c) => c.time !== normalizeBarTime(c.time, intervalSecs),
@@ -381,9 +407,45 @@ export function applyLiveCandle(symbol, incoming, timeframe = '1m', intervalSecs
   }
 
   const buf = buffers.get(symbol);
-  if (!buf?.length) return false;
+  if (!barCount(buf)) return false;
 
   const bar = normalizeCandle(incoming, intervalSecs);
+  if (CompactBarSeries.isSeries(buf)) {
+    const last = buf.getLast();
+    const lastBucket = normalizeBarTime(last.time, intervalSecs);
+
+    if (lastBucket === bar.time) {
+      const updated = {
+        time: bar.time,
+        open: last.open,
+        high: Math.max(last.high, bar.high),
+        low: Math.min(last.low, bar.low),
+        close: bar.close,
+        volume: bar.volume ?? last.volume,
+      };
+      if (
+        last.time === updated.time
+        && last.open === updated.open
+        && last.high === updated.high
+        && last.low === updated.low
+        && last.close === updated.close
+        && last.volume === updated.volume
+      ) {
+        return false;
+      }
+      buf.updateLast(updated);
+      touchSymbol(symbol);
+      return true;
+    }
+
+    if (bar.time < lastBucket) return false;
+
+    buf.push(bar);
+    while (buf.length > MAX_BARS) buf.shift();
+    touchSymbol(symbol);
+    return true;
+  }
+
   const last = buf[buf.length - 1];
   const lastBucket = normalizeBarTime(last.time, intervalSecs);
 
@@ -466,9 +528,17 @@ export function patchFormingBarFromPrice(symbol, price) {
   if (!symbol || price == null || !Number.isFinite(Number(price))) return false;
 
   const buf = buffers.get(symbol);
-  if (!buf?.length) return false;
+  if (!barCount(buf)) return false;
 
   const live = Number(price);
+  if (CompactBarSeries.isSeries(buf)) {
+    if (buf.patchLastFromPrice(live)) {
+      touchSymbol(symbol);
+      return true;
+    }
+    return false;
+  }
+
   const last = buf[buf.length - 1];
   const updated = {
     ...last,
@@ -554,10 +624,12 @@ export function patchHtFormingBar(symbol, timeframe, intervalSecs) {
   const raw1m = buffers.get(symbol);
   const htKey = candleBufferKey(symbol, timeframe);
   const htBuf = htBuffers.get(htKey);
-  if (!raw1m?.length || !htBuf?.length) return false;
+  if (!barCount(raw1m) || !htBuf?.length) return false;
 
-  const tailBars = Math.min(raw1m.length, Math.ceil(intervalSecs / 60) + 2);
-  const rawSlice = raw1m.slice(-tailBars);
+  const tailBars = Math.min(barCount(raw1m), Math.ceil(intervalSecs / 60) + 2);
+  const rawSlice = CompactBarSeries.isSeries(raw1m)
+    ? raw1m.sliceTail(tailBars)
+    : raw1m.slice(-tailBars);
   const aggregated = aggregateBucketFrom1m(rawSlice, intervalSecs);
   if (!aggregated) return false;
 
@@ -660,13 +732,14 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
     return { changed: true, added: olderOnly.length };
   }
 
-  const existing = buffers.get(symbol) || [];
+  const existingBuf = buffers.get(symbol);
   const normalized = dedupeCandles(incoming, intervalSecs);
-  if (!existing.length) {
+  if (!barCount(existingBuf)) {
     storeBars(symbol, normalized, intervalSecs);
     return { changed: true, added: normalized.length };
   }
 
+  const existing = materializeBars(existingBuf);
   const oldestExisting = existing[0].time;
   const olderOnly = normalized.filter((c) => c.time < oldestExisting);
   if (!olderOnly.length) {
@@ -678,7 +751,11 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
   if (merged.length > cap) {
     merged.splice(0, merged.length - cap);
   }
-  buffers.set(symbol, merged);
+  if (CompactBarSeries.isSeries(existingBuf)) {
+    existingBuf.replaceFrom(merged);
+  } else {
+    buffers.set(symbol, CompactBarSeries.fromCandles(merged));
+  }
   touchSymbol(symbol);
   return { changed: true, added: olderOnly.length };
 }
@@ -735,7 +812,7 @@ export function getBufferedSymbolCountForTests() {
 /** Lightweight stats for dev memory badge. */
 export function getCandleBufferStats() {
   let bars1m = 0;
-  for (const buf of buffers.values()) bars1m += buf.length;
+  for (const buf of buffers.values()) bars1m += barCount(buf);
   let htKeys = 0;
   let htBars = 0;
   for (const [key, buf] of htBuffers) {

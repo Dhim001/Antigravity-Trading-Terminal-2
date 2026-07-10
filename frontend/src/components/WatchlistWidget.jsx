@@ -4,6 +4,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
+import { useLiveCandleRevision } from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
 import { massiveWatchlistBadge } from '../lib/massiveMarket';
@@ -168,7 +169,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
 }) {
   const info = useStore((state) => state.tickerData[symbol]);
   const direction = useStore((state) => state.priceDirections[symbol]);
-  const candleRev = useStore((state) => state.candleRevision[symbol] || 0);
+  const candleRev = useLiveCandleRevision(symbol);
   const activeSymbol = useStore((state) => state.activeSymbol);
 
   const [flashState, setFlashState] = useState(null);

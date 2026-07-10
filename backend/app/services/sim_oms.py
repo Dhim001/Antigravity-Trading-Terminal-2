@@ -578,7 +578,8 @@ class SimulatedOMSService(BaseOMSService):
         order_value = price * quantity
 
         cursor.execute(
-            "SELECT size, avg_price, stop_loss_percent, take_profit_percent FROM positions WHERE symbol = ?",
+            "SELECT size, avg_price, stop_loss_percent, take_profit_percent, "
+            "high_watermark, low_watermark FROM positions WHERE symbol = ?",
             (symbol,),
         )
         pos_row = cursor.fetchone()
@@ -668,8 +669,8 @@ class SimulatedOMSService(BaseOMSService):
                     tp_price = new_avg * (1 + tp_pct / 100) if new_size > 0 else new_avg * (1 - tp_pct / 100)
                 # Preserve existing watermark when adding to same-direction position;
                 # only initialise for new positions or direction flips.
-                existing_high = pos_row.get("high_watermark")
-                existing_low = pos_row.get("low_watermark")
+                existing_high = pos_row["high_watermark"]
+                existing_low = pos_row["low_watermark"]
                 if new_size > 0:
                     high_wm = max(existing_high or new_avg, new_avg) if current_size > 0 else new_avg
                     low_wm = None

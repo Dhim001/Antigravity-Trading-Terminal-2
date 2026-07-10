@@ -14,11 +14,24 @@ import {
 } from '../services/marketSnapshot';
 import { emitLivePrice } from '../services/livePriceChannel';
 import { getHmrData } from '../services/hmrState';
-import { agentInsightKey, normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { normalizeBotLogEntry } from '../lib/botLogInsight';
+import {
+  bumpLiveRevision,
+  bumpHistoryRevision,
+  clearRevisionsForKey,
+  seedRevisions,
+  snapshotRevisions,
+} from '../services/candleRevisions';
+import { isOrderBookRetentionEnabled } from '../services/orderBookInterest';
 
 const initialSnapshot = hydrateFromSnapshot();
-const hmrStore = getHmrData()?.zustandSnapshot;
+const hmrRev = getHmrData()?.zustandSnapshot;
+if (initialSnapshot.candleRevision || initialSnapshot.candleHistoryRevision) {
+  seedRevisions(initialSnapshot.candleRevision, initialSnapshot.candleHistoryRevision);
+} else if (hmrRev?.candleRevision || hmrRev?.candleHistoryRevision) {
+  seedRevisions(hmrRev.candleRevision, hmrRev.candleHistoryRevision);
+}
+const hmrStore = hmrRev;
 
 const getLocal = (key, fallback) => {
   try {
@@ -35,20 +48,14 @@ const setLocal = (key, val) => {
   } catch (_) {}
 };
 
-/** Memory-efficient revision bump — mutates a shallow clone only when needed.
- *  Prunes keys that exceed MAX_REVISION_KEYS to prevent unbounded growth. */
-const MAX_REVISION_KEYS = 30;
-export function bumpRevision(revisions, symbol) {
-  const next = { ...revisions, [symbol]: (revisions[symbol] || 0) + 1 };
-  const keys = Object.keys(next);
-  if (keys.length > MAX_REVISION_KEYS) {
-    // Drop oldest keys (first inserted — JS object key order is insertion-order)
-    for (const k of keys.slice(0, keys.length - MAX_REVISION_KEYS)) {
-      delete next[k];
-    }
-  }
-  return next;
-}
+/** Max symbols to keep orderBook data for (active + recently viewed). */
+const MAX_ORDERBOOK_SYMBOLS = 6;
+/** Max trade history entries retained client-side. */
+const MAX_TRADE_HISTORY = 500;
+/** Max symbols with chart drawings. */
+const MAX_CHART_DRAWING_SYMBOLS = 8;
+/** Max drawing primitives per symbol. */
+const MAX_DRAWINGS_PER_SYMBOL = 200;
 
 export const useStore = create(subscribeWithSelector((set, get) => ({
   connectionStatus: 'disconnected',
@@ -86,10 +93,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   tickerData: hmrStore?.tickerData ?? initialSnapshot.tickerData ?? {},
   priceDirections: hmrStore?.priceDirections ?? initialSnapshot.priceDirections ?? {},
   orderBooks: hmrStore?.orderBooks ?? {},
-  /** Bumped on live ticks — drives incremental chart patches */
-  candleRevision: hmrStore?.candleRevision ?? initialSnapshot.candleRevision ?? {},
-  /** Bumped only on history load — drives full chart rebuild */
-  candleHistoryRevision: hmrStore?.candleHistoryRevision ?? initialSnapshot.candleHistoryRevision ?? {},
 
   // Account states
   balances: {},
@@ -116,35 +119,18 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   }),
   botLogs: [],
 
-  backtestResults: null,
-  backtestRuns: [],
-  backtestRunning: false,
-  backtestProgress: null,
-  backtestJobId: null,
-  backtestLabOpen: false,
-  backtestLabTab: 'results',
-  backtestDays: '7',
-  backtestOos: false,
-  pendingDeploy: false,
-  /** Fingerprint of params used for the last completed backtest run */
-  backtestSnapshot: null,
-  backtestOverlay: null,
-  backtestLastError: null,
-  backtestLastRequest: null,
-  /** One-shot optimizer UI preset from workflow chips (Tier 4) */
-  optimizerPreset: null,
   chartInteractionMode: 'normal',
   strategyTemplates: [
-    { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
-    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND_ADX', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent' } },
-    { id: 't3', name: 'Mean Reversion Scalp', strategy: 'BRS_SCALPING', execution_mode: 'BAR_CLOSE', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1, tp_mode: 'strategy' } },
-    { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', execution_mode: 'BAR_CLOSE', allocation: 1500, config: { trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent' } },
-    { id: 't5', name: 'Tick Momentum', strategy: 'TICK_MOMENTUM', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 20, tick_cooldown_sec: 10, take_profit_percent: 0.2, tp_mode: 'percent' } },
-    { id: 't6', name: 'Tick Mean Revert', strategy: 'TICK_MEAN_REVERT', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 30, tick_cooldown_sec: 15, take_profit_percent: 0.15, tp_mode: 'percent' } },
-    { id: 't7', name: 'Chart Analyst Agent', strategy: 'CHART_AGENT', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { min_confidence: 0.55, use_llm: false, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
-    { id: 't8', name: 'ICT Smart Money', strategy: 'ICT_SMC', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { ob_lookback: 10, fvg_min_gap_pct: 0.0005, sweep_lookback: 20, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
-    { id: 't9', name: 'Donchian Breakout', strategy: 'DONCHIAN_BREAKOUT', execution_mode: 'BAR_CLOSE', allocation: 3000, config: { breakout_length: 20, exit_length: 10, atr_confirm_mult: 1.0, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent', direction_mode: 'BOTH' } },
-    { id: 't10', name: 'Market Maker', strategy: 'MARKET_MAKING', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { spread_pct: 0.002, max_skew: 0.5, vol_shutdown_mult: 2.5, inventory_target: 0, trailing_stop_percent: 1, tp_mode: 'none', direction_mode: 'BOTH' } },
+    { id: 't1', name: 'Bull Market Scalper', strategy: 'MACD_RSI', category: 'trend', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { rsi_length: 14, macd_fast: 12, macd_slow: 26, trailing_stop_percent: 1.5, take_profit_percent: 3, tp_mode: 'percent' } },
+    { id: 't2', name: 'Trend Follower', strategy: 'SUPERTREND_ADX', category: 'trend', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { st_length: 14, st_multiplier: 3, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent' } },
+    { id: 't3', name: 'Mean Reversion Scalp', strategy: 'BRS_SCALPING', category: 'scalp', execution_mode: 'BAR_CLOSE', allocation: 1000, config: { bb_length: 20, bb_std: 2, trailing_stop_percent: 1, tp_mode: 'strategy' } },
+    { id: 't4', name: 'VWAP Pullback', strategy: 'VWAP_PULLBACK', category: 'intraday', execution_mode: 'BAR_CLOSE', allocation: 1500, config: { trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent' } },
+    { id: 't5', name: 'Tick Momentum', strategy: 'TICK_MOMENTUM', category: 'tick', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 20, tick_cooldown_sec: 10, take_profit_percent: 0.2, tp_mode: 'percent' } },
+    { id: 't6', name: 'Tick Mean Revert', strategy: 'TICK_MEAN_REVERT', category: 'tick', execution_mode: 'TICK', allocation: 1000, config: { lookback_ticks: 30, tick_cooldown_sec: 15, take_profit_percent: 0.15, tp_mode: 'percent' } },
+    { id: 't7', name: 'Chart Analyst Agent', strategy: 'CHART_AGENT', category: 'agent', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { min_confidence: 0.55, use_llm: false, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
+    { id: 't8', name: 'ICT Smart Money', strategy: 'ICT_SMC', category: 'smc', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { ob_lookback: 10, fvg_min_gap_pct: 0.0005, sweep_lookback: 20, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
+    { id: 't9', name: 'Donchian Breakout', strategy: 'DONCHIAN_BREAKOUT', category: 'breakout', execution_mode: 'BAR_CLOSE', allocation: 3000, config: { breakout_length: 20, exit_length: 10, atr_confirm_mult: 1.0, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent', direction_mode: 'BOTH' } },
+    { id: 't10', name: 'Market Maker', strategy: 'MARKET_MAKING', category: 'market_making', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { spread_pct: 0.002, max_skew: 0.5, vol_shutdown_mult: 2.5, inventory_target: 0, trailing_stop_percent: 1, tp_mode: 'none', direction_mode: 'BOTH' } },
   ],
   selectedBotId: null,
   botDetail: null,
@@ -152,54 +138,20 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   botHistory: [],
   tickData: {},
   tickMeta: null,
-  agentInsights: {},
-  agentInsightHistory: {},
-  tradeExplains: {},
-  scanResults: null,
-  visionReports: {},
   chartDrawings: {},
-  analyticsReport: null,
-  analyticsBenchmarks: null,
-  analyticsLoading: false,
-  journalEntries: [],
   orderPrefill: null,
   /** Draft SL/TP dragged on chart or mirrored from order ticket — { symbol, side, stop_loss_price?, take_profit_price?, source } */
   chartSlTpDraft: null,
 
-  setScanResults: (data) => set({ scanResults: data }),
-  setVisionReport: (key, report) => set((state) => {
-    const next = { ...state.visionReports, [key]: report };
-    // FIX 1: Cap to 10 entries — vision reports contain large base64 images
+  setChartDrawings: (symbol, drawings) => set((state) => {
+    const list = Array.isArray(drawings) ? drawings.slice(0, MAX_DRAWINGS_PER_SYMBOL) : drawings;
+    const next = { ...state.chartDrawings, [symbol]: list };
     const keys = Object.keys(next);
-    if (keys.length > 10) {
-      for (const k of keys.slice(0, keys.length - 10)) delete next[k];
+    if (keys.length > MAX_CHART_DRAWING_SYMBOLS) {
+      for (const k of keys.slice(0, keys.length - MAX_CHART_DRAWING_SYMBOLS)) delete next[k];
     }
-    return { visionReports: next };
+    return { chartDrawings: next };
   }),
-  setChartDrawings: (symbol, drawings) => set((state) => ({
-    chartDrawings: { ...state.chartDrawings, [symbol]: drawings },
-  })),
-  setAnalyticsReport: (data) => set((state) => {
-    if (data?.report === 'benchmarks') {
-      return { analyticsBenchmarks: data.benchmarks, analyticsLoading: false };
-    }
-    if (data?.report === 'dashboard') {
-      return { analyticsReport: data, analyticsLoading: false };
-    }
-    return {
-      analyticsReport: { ...(state.analyticsReport || {}), ...data },
-      analyticsLoading: false,
-    };
-  }),
-  setAnalyticsLoading: (loading) => set({ analyticsLoading: loading }),
-  setJournalEntries: (entries) => set({ journalEntries: Array.isArray(entries) ? entries : [] }),
-  upsertJournalEntry: (entry) => set((state) => {
-    const list = state.journalEntries.filter((e) => e.id !== entry.id);
-    return { journalEntries: [entry, ...list] };
-  }),
-  removeJournalEntry: (id) => set((state) => ({
-    journalEntries: state.journalEntries.filter((e) => e.id !== id),
-  })),
 
   setOrderPrefill: (prefill) => set({ orderPrefill: prefill }),
   clearOrderPrefill: () => set({ orderPrefill: null }),
@@ -224,9 +176,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   },
 
   updateHistory: (historyData, meta) => {
-    set((state) => {
-      let candleRevision = state.candleRevision;
-      let candleHistoryRevision = state.candleHistoryRevision;
+    set(() => {
       let anyChange = false;
       const tf = resolveHistoryTimeframe(meta);
       const intervalSecs = chartTimeframeSecs(tf);
@@ -236,32 +186,29 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         const { changed, fullRebuild } = mergeCandleHistory(symbol, candles, tf, intervalSecs);
         if (!changed) continue;
         anyChange = true;
-        candleRevision = bumpRevision(candleRevision, key);
+        bumpLiveRevision(key);
         if (fullRebuild) {
-          candleHistoryRevision = bumpRevision(candleHistoryRevision, key);
+          bumpHistoryRevision(key);
         }
       }
 
-      if (!anyChange) return {};
-      return { candleRevision, candleHistoryRevision };
+      return anyChange ? {} : {};
     });
     scheduleMarketSnapshotSave(get);
   },
 
   prependHistory: (historyData) => {
-    set((state) => {
-      let candleHistoryRevision = state.candleHistoryRevision;
+    set(() => {
       let anyChange = false;
 
       for (const [symbol, candles] of Object.entries(historyData)) {
         const { changed } = prependCandleHistory(symbol, candles);
         if (!changed) continue;
         anyChange = true;
-        candleHistoryRevision = bumpRevision(candleHistoryRevision, symbol);
+        bumpHistoryRevision(symbol);
       }
 
-      if (!anyChange) return {};
-      return { candleHistoryRevision };
+      return anyChange ? {} : {};
     });
     scheduleMarketSnapshotSave(get);
   },
@@ -285,7 +232,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         ts = Date.now();
       }
       return { ...t, timestamp: ts };
-    });
+    }).slice(0, MAX_TRADE_HISTORY);
 
     const filledTrades = trades.filter(t => t.status === 'FILLED');
     const sellsWithPnl = filledTrades.filter(t => t.side === 'SELL' && t.realized_pnl != null);
@@ -368,17 +315,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     set({ selectedLlmModel: model });
   },
 
-  agentDeepReasoning: {},
-  setAgentDeepReasoning: (insightId, data) => set((state) => {
-    const next = { ...state.agentDeepReasoning, [insightId]: data };
-    // FIX 2: Cap to 20 entries — LLM reasoning text accumulates
-    const keys = Object.keys(next);
-    if (keys.length > 20) {
-      for (const k of keys.slice(0, keys.length - 20)) delete next[k];
-    }
-    return { agentDeepReasoning: next };
-  }),
-
   setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),
 
   setSymbolsList: (list) => set({ symbolsList: list }),
@@ -423,33 +359,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   }),
   clearBotLogs: () => set({ botLogs: [] }),
 
-  setBacktestResults: (results) => set({ backtestResults: results }),
-  setBacktestRuns: (runs) => set({ backtestRuns: Array.isArray(runs) ? runs : [] }),
-  setBacktestRunning: (running) => set({ backtestRunning: Boolean(running) }),
-  setBacktestProgress: (progress) => set({ backtestProgress: progress ?? null }),
-  setBacktestJobId: (jobId) => set({ backtestJobId: jobId ?? null }),
-  setBacktestLabOpen: (open) => set({ backtestLabOpen: Boolean(open) }),
-  setBacktestLabTab: (tab) => set({
-    backtestLabTab: ['results', 'optimizer', 'jobs'].includes(tab) ? tab : 'results',
-  }),
-  openBacktestLab: (tab = 'results') => set({
-    backtestLabOpen: true,
-    backtestLabTab: ['results', 'optimizer', 'jobs'].includes(tab) ? tab : 'results',
-  }),
-  setBacktestDays: (days) => set({ backtestDays: String(days ?? '7') }),
-  setBacktestOos: (oos) => set({ backtestOos: Boolean(oos) }),
-  setPendingDeploy: (pending) => set({ pendingDeploy: Boolean(pending) }),
-  setBacktestSnapshot: (snapshot) => set({ backtestSnapshot: snapshot }),
-  setBacktestLastError: (error, request) => set({
-    backtestLastError: error ?? null,
-    backtestLastRequest: request ?? null,
-  }),
-  clearBacktestLastError: () => set({ backtestLastError: null, backtestLastRequest: null }),
-  setBacktestOverlay: (overlay) => set({ backtestOverlay: overlay }),
-  setOptimizerPreset: (preset) => set({ optimizerPreset: preset ?? null }),
-  clearOptimizerPreset: () => set({ optimizerPreset: null }),
-  clearBacktestOverlay: () => set({ backtestOverlay: null }),
-
   setStrategyCatalog: (strategies) => {
     if (!Array.isArray(strategies) || strategies.length === 0) return;
     const templates = strategies
@@ -458,6 +367,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         id: `catalog-${s.id}`,
         name: s.name,
         strategy: s.id,
+        category: s.category,
         execution_mode: s.execution_mode || 'BAR_CLOSE',
         allocation: 1000,
         config: { ...(s.defaults || {}), allocation: 1000 },
@@ -472,54 +382,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setBotDrawerOpen: (open) => set({ botDrawerOpen: !!open }),
   setBotHistory: (bots) => set({ botHistory: Array.isArray(bots) ? bots : [] }),
 
-  setAgentInsight: (symbol, insight) => set((state) => {
-    const sym = String(symbol || insight?.symbol || '').toUpperCase();
-    const key = agentInsightKey(sym, insight?.timeframe || '1m');
-    const history = state.agentInsightHistory[sym] ?? [];
-    const id = insight?.insight_id;
-    const nextHistory = id && history.some((h) => h.insight_id === id)
-      ? history
-      : insight
-        ? [insight, ...history].slice(0, 50)
-        : history;
-    const nextInsights = { ...state.agentInsights, [key]: insight };
-    // Legacy symbol-only key for 1m consumers not yet migrated
-    if (normalizeAnalystTimeframe(insight?.timeframe) === '1m') {
-      nextInsights[sym] = insight;
-    }
-    // FIX 4: Cap agentInsights to 30 keys
-    const iKeys = Object.keys(nextInsights);
-    if (iKeys.length > 30) {
-      for (const k of iKeys.slice(0, iKeys.length - 30)) delete nextInsights[k];
-    }
-    // Cap agentInsightHistory to 15 symbols
-    const nextHistoryMap = { ...state.agentInsightHistory, [sym]: nextHistory };
-    const hKeys = Object.keys(nextHistoryMap);
-    if (hKeys.length > 15) {
-      for (const k of hKeys.slice(0, hKeys.length - 15)) delete nextHistoryMap[k];
-    }
-    return {
-      agentInsights: nextInsights,
-      agentInsightHistory: nextHistoryMap,
-    };
-  }),
-
-  setAgentInsightHistory: (symbol, insights) => set((state) => ({
-    agentInsightHistory: {
-      ...state.agentInsightHistory,
-      [symbol]: Array.isArray(insights) ? insights : [],
-    },
-  })),
-
-  setTradeExplain: (tradeId, data) => set((state) => {
-    const key = String(tradeId);
-    const next = { ...state.tradeExplains, [key]: data };
-    const keys = Object.keys(next);
-    if (keys.length > 100) {
-      for (const k of keys.slice(0, keys.length - 100)) delete next[k];
-    }
-    return { tradeExplains: next };
-  }),
   setTickData: (data, meta) => set({
     tickData: data && typeof data === 'object' ? { ...data } : {},
     tickMeta: meta ?? null,
@@ -532,28 +394,47 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     }, 4000);
   },
 
-  updateOrderBooks: (orderBookData) => set((state) => ({
-    orderBooks: { ...state.orderBooks, ...orderBookData },
-  })),
+  updateOrderBooks: (orderBookData) => {
+    if (!isOrderBookRetentionEnabled()) return;
+    set((state) => {
+    const merged = { ...state.orderBooks, ...orderBookData };
+    // Prune to MAX_ORDERBOOK_SYMBOLS — keep active + most recently added
+    const obKeys = Object.keys(merged);
+    if (obKeys.length > MAX_ORDERBOOK_SYMBOLS) {
+      const activeSymbol = state.activeSymbol;
+      const keep = new Set([activeSymbol]);
+      // Keep the most recently updated symbols
+      for (const k of obKeys.slice(-MAX_ORDERBOOK_SYMBOLS)) keep.add(k);
+      for (const k of obKeys) {
+        if (!keep.has(k)) delete merged[k];
+      }
+    }
+      return { orderBooks: merged };
+    });
+  },
 
   updateMarketData: (marketData) => {
+    const retainOrderBooks = isOrderBookRetentionEnabled();
     set((state) => {
       const tickerData = state.tickerData;
       const priceDirections = state.priceDirections;
       const massive = isLiveMassiveMode(state.terminalMode);
-      let candleRevision = null;
-      let candleHistoryRevision = null;
       let tickerChanged = false;
       let directionChanged = false;
       let orderBooksChanged = false;
       let nextTickers = tickerData;
       let nextDirections = priceDirections;
       let nextOrderBooks = state.orderBooks;
+      let candlesTouched = false;
 
       for (const [symbol, info] of Object.entries(marketData)) {
         if (!info) continue;
 
-        if (info.orderbook?.bids?.length && info.orderbook?.asks?.length) {
+        if (
+          retainOrderBooks
+          && info.orderbook?.bids?.length
+          && info.orderbook?.asks?.length
+        ) {
           const prevOb = state.orderBooks[symbol];
           if (prevOb !== info.orderbook) {
             if (!orderBooksChanged) {
@@ -561,29 +442,44 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
               orderBooksChanged = true;
             }
             nextOrderBooks[symbol] = info.orderbook;
+            const obKeys = Object.keys(nextOrderBooks);
+            if (obKeys.length > MAX_ORDERBOOK_SYMBOLS) {
+              const activeSymbol = state.activeSymbol;
+              let excess = obKeys.length - MAX_ORDERBOOK_SYMBOLS;
+              for (const k of obKeys) {
+                if (excess <= 0) break;
+                if (k !== activeSymbol && k !== symbol) {
+                  delete nextOrderBooks[k];
+                  excess--;
+                }
+              }
+            }
           }
         }
 
         const prev = tickerData[symbol];
-        if (
-          !prev
-          || prev.price !== info.price
-          || prev.change_24h !== info.change_24h
-          || prev.volume_24h !== info.volume_24h
-          || prev.high_24h !== info.high_24h
-          || prev.low_24h !== info.low_24h
-        ) {
-          if (!tickerChanged) {
-            nextTickers = { ...tickerData };
-            tickerChanged = true;
+        const tickerFields = ['price', 'change_24h', 'volume_24h', 'high_24h', 'low_24h'];
+        const tickerDirty = !prev || tickerFields.some((k) => prev[k] !== info[k]);
+        if (tickerDirty) {
+          if (prev) {
+            for (const k of tickerFields) {
+              if (info[k] !== undefined) prev[k] = info[k];
+            }
+            nextTickers = tickerData;
+          } else {
+            if (!tickerChanged) {
+              nextTickers = { ...tickerData };
+              tickerChanged = true;
+            }
+            nextTickers[symbol] = {
+              price: info.price,
+              change_24h: info.change_24h,
+              volume_24h: info.volume_24h,
+              high_24h: info.high_24h,
+              low_24h: info.low_24h,
+            };
           }
-          nextTickers[symbol] = {
-            price: info.price,
-            change_24h: info.change_24h,
-            volume_24h: info.volume_24h,
-            high_24h: info.high_24h,
-            low_24h: info.low_24h,
-          };
+          tickerChanged = true;
         }
 
         if (info.price !== undefined) {
@@ -595,24 +491,21 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
             dir = 'flat';
           }
           if (dir !== priceDirections[symbol]) {
-            if (!directionChanged) {
-              nextDirections = { ...priceDirections };
-              directionChanged = true;
-            }
-            nextDirections[symbol] = dir;
+            priceDirections[symbol] = dir;
+            nextDirections = priceDirections;
+            directionChanged = true;
           }
         }
 
         if (info.candle && !hasCandleHistory(symbol)) {
           setCandleHistory(symbol, [info.candle]);
-          candleRevision = bumpRevision(candleRevision ?? state.candleRevision, symbol);
-          candleHistoryRevision = bumpRevision(
-            candleHistoryRevision ?? state.candleHistoryRevision,
-            symbol,
-          );
+          bumpLiveRevision(symbol);
+          bumpHistoryRevision(symbol);
+          candlesTouched = true;
         } else if (hasCandleHistory(symbol)) {
           if (info.candle && applyLiveCandle(symbol, info.candle)) {
-            candleRevision = bumpRevision(candleRevision ?? state.candleRevision, symbol);
+            bumpLiveRevision(symbol);
+            candlesTouched = true;
           }
           if (info.price !== undefined) {
             const priceMoved = prev?.price === undefined || prev.price !== info.price;
@@ -620,10 +513,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
               const keys = applyLivePrice(symbol, info.price);
               if (massive) {
                 emitLivePrice(symbol, info.price);
+                bumpLiveRevision(symbol);
+                candlesTouched = true;
               } else {
                 for (const key of keys) {
-                  candleRevision = bumpRevision(candleRevision ?? state.candleRevision, key);
+                  bumpLiveRevision(key);
                 }
+                if (keys.length) candlesTouched = true;
               }
             }
           }
@@ -634,10 +530,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       if (tickerChanged) updates.tickerData = nextTickers;
       if (directionChanged) updates.priceDirections = nextDirections;
       if (orderBooksChanged) updates.orderBooks = nextOrderBooks;
-      if (candleRevision) updates.candleRevision = candleRevision;
-      if (candleHistoryRevision) updates.candleHistoryRevision = candleHistoryRevision;
 
-      if (candleRevision || candleHistoryRevision) {
+      if (candlesTouched) {
         scheduleMarketSnapshotSave(get);
       }
 
@@ -649,14 +543,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 initCandleBufferCache(getLocal('terminal_active_symbol', 'BTCUSDT'));
 
 onCandleBufferEvict((symbol) => {
+  clearRevisionsForKey(symbol);
   useStore.setState((state) => {
-    // FIX 5: Prune orderBooks and tickerData for evicted symbols
     const nextOrderBooks = { ...state.orderBooks };
     delete nextOrderBooks[symbol];
+    const nextDrawings = { ...state.chartDrawings };
+    delete nextDrawings[symbol];
     return {
-      candleRevision: bumpRevision(state.candleRevision, symbol),
-      candleHistoryRevision: bumpRevision(state.candleHistoryRevision, symbol),
       orderBooks: nextOrderBooks,
+      chartDrawings: nextDrawings,
     };
   });
 });
@@ -664,12 +559,13 @@ onCandleBufferEvict((symbol) => {
 if (import.meta.hot) {
   import.meta.hot.dispose((data) => {
     const s = useStore.getState();
+    const rev = snapshotRevisions();
     data.zustandSnapshot = {
       tickerData: s.tickerData,
       priceDirections: s.priceDirections,
       orderBooks: s.orderBooks,
-      candleRevision: s.candleRevision,
-      candleHistoryRevision: s.candleHistoryRevision,
+      candleRevision: rev.candleRevision,
+      candleHistoryRevision: rev.candleHistoryRevision,
       apiStatus: s.apiStatus,
     };
     forceMarketSnapshotSave(() => useStore.getState());

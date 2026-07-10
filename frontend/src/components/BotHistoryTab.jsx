@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useCallback, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { Button } from '@/components/ui/button';
@@ -38,8 +39,8 @@ function formatTradeTime(timestamp) {
 export default function BotHistoryTab() {
   const botHistory = useStore(s => s.botHistory);
   const botDetail = useStore(s => s.botDetail);
-  const agentInsights = useStore(s => s.agentInsights);
-  const agentInsightHistory = useStore(s => s.agentInsightHistory);
+  const agentInsights = useResearchStore(s => s.agentInsights);
+  const agentInsightHistory = useResearchStore(s => s.agentInsightHistory);
   const setSelectedBotId = useStore(s => s.setSelectedBotId);
   const setBotDrawerOpen = useStore(s => s.setBotDrawerOpen);
 

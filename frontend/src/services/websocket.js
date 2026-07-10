@@ -1,4 +1,5 @@
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { Action, MessageType } from '../api/protocol';
 import { applyServerMessage, getStoreActions, resetBacktestRunState, errorAffectsBacktestRun } from '../api/dispatch';
 import { toast } from 'sonner';
@@ -128,7 +129,7 @@ function attachWebSocketHandlers(socket) {
       if (type === MessageType.ERROR) {
         const errMsg = message || data?.message || 'Server error';
         console.error('Server execution error:', errMsg);
-        if (useStore.getState().backtestRunning) {
+        if (useResearchStore.getState().backtestRunning) {
           if (errorAffectsBacktestRun(errMsg)) {
             resetBacktestRunState(storeActions, { errorMessage: errMsg });
             toast.error(errMsg);

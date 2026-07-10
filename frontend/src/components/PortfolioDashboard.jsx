@@ -21,6 +21,7 @@ import { useAnalytics, fetchBenchmarks } from '@/hooks/useAnalytics';
 import { invokeHttpAction, sendAction } from '@/api/transport';
 import { Action } from '@/api/protocol';
 import { useStore } from '@/store/useStore';
+import { useResearchStore } from '@/store/useResearchStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { StatCard } from './StatCard';
 import PnlCalendar from './analytics/PnlCalendar';
@@ -144,7 +145,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
   const [showBtc, setShowBtc] = useState(true);
   const [correlationMode, setCorrelationMode] = useState('auto');
 
-  const analyticsBenchmarks = useStore((s) => s.analyticsBenchmarks);
+  const analyticsBenchmarks = useResearchStore((s) => s.analyticsBenchmarks);
   const tradeHistory = useStore((s) => s.tradeHistory);
   const tradeStats = useStore((s) => s.tradeStats);
   const positions = useStore((s) => s.positions);

@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Activity, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { Button } from '@/components/ui/button';
 import BacktestProgressBar from './BacktestProgressBar';
 import ErrorBoundary from './ErrorBoundary';
@@ -50,26 +51,26 @@ function readLabWidth() {
 }
 
 export default function BacktestLabSheet() {
-  const open = useStore((s) => s.backtestLabOpen);
+  const open = useResearchStore((s) => s.backtestLabOpen);
   if (!open) return null;
   return <BacktestLabSheetInner />;
 }
 
 function BacktestLabSheetInner() {
-  const open = useStore((s) => s.backtestLabOpen);
-  const setOpen = useStore((s) => s.setBacktestLabOpen);
-  const labTab = useStore((s) => s.backtestLabTab);
-  const setBacktestLabTab = useStore((s) => s.setBacktestLabTab);
-  const backtestResults = useStore((s) => s.backtestResults);
+  const open = useResearchStore((s) => s.backtestLabOpen);
+  const setOpen = useResearchStore((s) => s.setBacktestLabOpen);
+  const labTab = useResearchStore((s) => s.backtestLabTab);
+  const setBacktestLabTab = useResearchStore((s) => s.setBacktestLabTab);
+  const backtestResults = useResearchStore((s) => s.backtestResults);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
-  const backtestRuns = useStore((s) => s.backtestRuns);
-  const backtestRunning = useStore((s) => s.backtestRunning);
+  const backtestRuns = useResearchStore((s) => s.backtestRuns);
+  const backtestRunning = useResearchStore((s) => s.backtestRunning);
   const activeSymbol = useStore((s) => s.activeSymbol);
   const botStrategy = useStore((s) => s.botStrategy);
   const botTimeframe = useStore((s) => s.botTimeframe);
-  const backtestSnapshot = useStore((s) => s.backtestSnapshot);
-  const backtestDays = useStore((s) => s.backtestDays);
-  const backtestOos = useStore((s) => s.backtestOos);
+  const backtestSnapshot = useResearchStore((s) => s.backtestSnapshot);
+  const backtestDays = useResearchStore((s) => s.backtestDays);
+  const backtestOos = useResearchStore((s) => s.backtestOos);
   const selectedBotId = useStore((s) => s.selectedBotId);
 
   const [panelWidth, setPanelWidth] = useState(() => readLabWidth());

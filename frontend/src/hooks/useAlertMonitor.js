@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 
 /**
@@ -15,7 +16,9 @@ export function useAlertMonitor() {
   const prevRef = useRef({ prices: {}, signals: {} });
 
   useEffect(() => {
-    const evaluate = (state) => {
+    const evaluate = () => {
+      const state = useStore.getState();
+      const research = useResearchStore.getState();
       const rules = alertsRef.current;
       if (!rules.length) return;
 
@@ -43,7 +46,7 @@ export function useAlertMonitor() {
         }
 
         if (rule.type === 'signal_change') {
-          const sig = state.agentInsights[sym]?.signal;
+          const sig = research.agentInsights[sym]?.signal;
           const want = rule.signal || 'BUY';
           const was = prev.signals[sym];
           if (sig && sig !== was && sig === want) {
@@ -54,7 +57,12 @@ export function useAlertMonitor() {
       }
     };
 
-    evaluate(useStore.getState());
-    return useStore.subscribe(evaluate);
+    evaluate();
+    const unsubMarket = useStore.subscribe(evaluate);
+    const unsubResearch = useResearchStore.subscribe(evaluate);
+    return () => {
+      unsubMarket();
+      unsubResearch();
+    };
   }, []);
 }

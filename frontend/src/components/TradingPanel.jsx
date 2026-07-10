@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PanelRightClose, PanelRightOpen, ArrowLeftRight, BookOpen, LineChart } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { registerOrderBookConsumer } from '../services/orderBookInterest';
 
 export default function TradingPanel({ hidden = false }) {
   const workspace = useSettingsStore((s) => s.settings.workspace);
@@ -23,6 +24,13 @@ export default function TradingPanel({ hidden = false }) {
     window.addEventListener('trading-panel-expand', onExpand);
     return () => window.removeEventListener('trading-panel-expand', onExpand);
   }, [updateWorkspace]);
+
+  useEffect(() => {
+    if (tab === 'book' || tab === 'depth') {
+      return registerOrderBookConsumer();
+    }
+    return undefined;
+  }, [tab]);
 
   if (hidden) return null;
 

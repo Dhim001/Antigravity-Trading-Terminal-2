@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Radar, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { sendAction, runMarketScan } from '../api/transport';
 import { Action } from '../api/protocol';
 import { pipelineScanDeploy } from '../api/endpoints';
@@ -62,13 +63,13 @@ function formatScannedAt(iso) {
 
 export default function ScannerTab() {
   const symbolsList = useStore((s) => s.symbolsList);
-  const scanResults = useStore((s) => s.scanResults);
+  const scanResults = useResearchStore((s) => s.scanResults);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
   const setOrderPrefill = useStore((s) => s.setOrderPrefill);
-  const agentInsights = useStore((s) => s.agentInsights);
+  const agentInsights = useResearchStore((s) => s.agentInsights);
   const tickerData = useStore((s) => s.tickerData);
   const setBotStrategy = useStore((s) => s.setBotStrategy);
-  const openBacktestLab = useStore((s) => s.openBacktestLab);
+  const openBacktestLab = useResearchStore((s) => s.openBacktestLab);
   const botConfig = useStore((s) => s.botConfig);
   const botTimeframe = useStore((s) => s.botTimeframe);
 

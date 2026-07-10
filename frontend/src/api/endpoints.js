@@ -3,9 +3,11 @@ import { applyHttpEnvelope } from './dispatch';
 import { Action, MessageType } from './protocol';
 import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
+import { saveFullBacktestResults } from '../services/backtestStorage';
 import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
 import { toast } from 'sonner';
 import { normalizeOrderCapabilities } from '../lib/positionActions';
@@ -566,6 +568,7 @@ export function startBacktestJobPolling(jobId, storeActions) {
             ...fresh.results,
             run_id: fresh.run_id ?? fresh.results.run_id,
           });
+          saveFullBacktestResults(wire);
           storeActions.setBacktestResults(wire);
           storeActions.setBacktestRunning(false);
           storeActions.setBacktestProgress(null);
@@ -576,7 +579,7 @@ export function startBacktestJobPolling(jobId, storeActions) {
           const trades = wire?.trade_count ?? 0;
           toast.success(
             `Background backtest complete · ${pnl != null ? `$${Number(pnl).toFixed(2)}` : '—'} · ${trades} trades`,
-            { action: { label: 'Open Lab', onClick: () => useStore.getState().openBacktestLab('results') } },
+            { action: { label: 'Open Lab', onClick: () => useResearchStore.getState().openBacktestLab('results') } },
           );
           return;
         }

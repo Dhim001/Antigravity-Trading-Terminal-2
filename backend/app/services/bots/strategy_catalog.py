@@ -67,6 +67,41 @@ _BAR_BUILTIN = [
         "category": "market_making",
         "execution_mode": "BAR_CLOSE",
     },
+    {
+        "id": "CVD_DIVERGENCE",
+        "name": "CVD Divergence",
+        "description": "Detects divergence between price pivots and Cumulative Volume Delta to find hidden buying/selling.",
+        "category": "microstructure",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "WYCKOFF_SPRING",
+        "name": "Wyckoff Spring/Upthrust",
+        "description": "Detects false breakdowns (Springs) and false breakouts (Upthrusts) using volume absorption.",
+        "category": "smc",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "VPOC_REVERSION",
+        "name": "Volume POC Reversion",
+        "description": "Mean reversion towards the Volume Profile Point of Control from outside the Value Area.",
+        "category": "intraday",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "ORDERFLOW_IMBALANCE",
+        "name": "Order Flow Imbalance",
+        "description": "Detects aggressive bid/ask pressure at the top of the orderbook.",
+        "category": "microstructure",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "ABSORPTION_AGENT",
+        "name": "Absorption Agent",
+        "description": "Multi-domain bot that scores volume absorption and exhaustion to spot institutional footprints.",
+        "category": "agent",
+        "execution_mode": "BAR_CLOSE",
+    },
 ]
 
 _TICK_BUILTIN = [

@@ -52,6 +52,19 @@ describe('marketUpdateBatch', () => {
     });
   });
 
+  it('reuses symbol entry object when merging ticks in one frame', () => {
+    const apply = vi.fn();
+    queueMarketUpdate({ BTCUSDT: { price: 1 } }, apply);
+    queueMarketUpdate({ BTCUSDT: { price: 2, change_24h: 0.5 } }, apply);
+    rafCb?.(0);
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    const entry = apply.mock.calls[0][0].BTCUSDT;
+    expect(entry.price).toBe(2);
+    expect(entry.change_24h).toBe(0.5);
+    expect(entry.symbol).toBe('BTCUSDT');
+  });
+
   it('applies immediately when batching is disabled for the terminal mode', () => {
     useStore.setState({ terminalMode: 'OFFLINE' });
 

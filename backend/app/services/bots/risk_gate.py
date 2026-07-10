@@ -1,6 +1,7 @@
 """Pre-trade risk checks for algo bot orders."""
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -28,6 +29,81 @@ class RiskDecision:
     allowed: bool
     reason: str
     quantity: float | None = None
+
+
+def _parse_event_ts(ts) -> datetime | None:
+    if ts is None:
+        return None
+    try:
+        if isinstance(ts, (int, float)):
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        if isinstance(ts, str):
+            raw = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+            return datetime.fromisoformat(raw)
+    except (TypeError, ValueError, OSError):
+        return None
+    return None
+
+
+def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | None:
+    """Active entry hold for UI — loss streak limit or post-loss cooloff."""
+    bot_id = bot.get("id", "")
+    status = str(bot.get("status") or "").upper()
+    if not bot_id or status not in ("RUNNING", "PAUSED"):
+        return None
+
+    cfg = RiskGate._parse_bot_config(bot)
+    max_streak = int(cfg.get("max_consecutive_losses", BOT_MAX_CONSECUTIVE_LOSSES))
+    cooloff_sec = int(cfg.get("loss_cooloff_sec", BOT_LOSS_COOLOFF_SEC))
+    if max_streak <= 0 and cooloff_sec <= 0:
+        return None
+
+    from app.services.bots import analytics as bot_analytics
+
+    streak = bot_analytics.get_recent_consecutive_losses(bot_id)
+
+    if max_streak > 0 and streak >= max_streak:
+        block_reason = (
+            f"Consecutive-loss streak ({streak}) reached limit ({max_streak}). "
+            "Auto-paused — resume manually or wait for cooloff."
+        )
+        return {
+            "kind": "streak_limit",
+            "consecutive_losses": streak,
+            "max_consecutive_losses": max_streak,
+            "reason": f"Loss streak {streak}/{max_streak}",
+            "block_reason": block_reason,
+        }
+
+    if cooloff_sec > 0 and streak > 0 and status == "RUNNING":
+        last_exit_ts = bot_analytics.last_exit_timestamp(bot_id)
+        exit_dt = _parse_event_ts(last_exit_ts)
+        if exit_dt is not None:
+            elapsed = time.time() - exit_dt.timestamp()
+            if elapsed < cooloff_sec:
+                remaining = max(0, int(cooloff_sec - elapsed))
+                until = datetime.fromtimestamp(
+                    exit_dt.timestamp() + cooloff_sec,
+                    tz=timezone.utc,
+                )
+                block_reason = (
+                    f"Cooling-off after loss: {remaining}s remaining "
+                    f"(streak {streak}, cooloff {cooloff_sec}s)."
+                )
+                return {
+                    "kind": "cooloff",
+                    "consecutive_losses": streak,
+                    "cooloff_sec": cooloff_sec,
+                    "remaining_sec": remaining,
+                    "cooloff_until": until.isoformat().replace("+00:00", "Z"),
+                    "reason": (
+                        f"Cooling off after {streak} consecutive "
+                        f"loss{'es' if streak != 1 else ''}"
+                    ),
+                    "block_reason": block_reason,
+                }
+
+    return None
 
 
 class RiskGate:
@@ -237,67 +313,10 @@ class RiskGate:
     # ── Streak & cooling-off gate ──────────────────────────────────────────
 
     def _check_streak_and_cooloff(self, bot: dict) -> RiskDecision | None:
-        """Block entry if the bot is on a consecutive-loss streak or in cooling-off.
-
-        Configurable via BOT_MAX_CONSECUTIVE_LOSSES (default 5) and
-        BOT_LOSS_COOLOFF_SEC (default 300 = 5 min).
-        """
-        bot_id = bot.get("id", "")
-        if not bot_id:
-            return None
-
-        max_streak = int(
-            (bot.get("config") or {}).get(
-                "max_consecutive_losses", BOT_MAX_CONSECUTIVE_LOSSES
-            )
-        )
-        cooloff_sec = int(
-            (bot.get("config") or {}).get(
-                "loss_cooloff_sec", BOT_LOSS_COOLOFF_SEC
-            )
-        )
-
-        # Skip if disabled (0 = no limit)
-        if max_streak <= 0 and cooloff_sec <= 0:
-            return None
-
-        from app.services.bots import analytics as bot_analytics
-
-        streak = bot_analytics.get_recent_consecutive_losses(bot_id)
-
-        # Consecutive-loss gate
-        if max_streak > 0 and streak >= max_streak:
-            return RiskDecision(
-                False,
-                f"Consecutive-loss streak ({streak}) reached limit ({max_streak}). "
-                "Auto-paused — resume manually or wait for cooloff.",
-            )
-
-        # Cooling-off gate: after a losing exit, wait cooloff_sec before next entry
-        if cooloff_sec > 0 and streak > 0:
-            last_exit_ts = bot_analytics.last_exit_timestamp(bot_id)
-            if last_exit_ts:
-                import time
-                from datetime import datetime, timezone
-
-                try:
-                    if isinstance(last_exit_ts, str):
-                        if last_exit_ts.endswith("Z"):
-                            last_exit_ts = last_exit_ts[:-1] + "+00:00"
-                        dt = datetime.fromisoformat(last_exit_ts)
-                    else:
-                        dt = datetime.fromtimestamp(float(last_exit_ts), tz=timezone.utc)
-                    elapsed = time.time() - dt.timestamp()
-                    if elapsed < cooloff_sec:
-                        remaining = int(cooloff_sec - elapsed)
-                        return RiskDecision(
-                            False,
-                            f"Cooling-off after loss: {remaining}s remaining "
-                            f"(streak {streak}, cooloff {cooloff_sec}s).",
-                        )
-                except (TypeError, ValueError, OSError):
-                    pass
-
+        """Block entry if the bot is on a consecutive-loss streak or in cooling-off."""
+        hold = get_bot_entry_hold(bot)
+        if hold and hold.get("block_reason"):
+            return RiskDecision(False, hold["block_reason"])
         return None
 
     # ── Config helper ────────────────────────────────────────────────────

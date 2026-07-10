@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { fetchOptimizationRuns, fetchOptimizationRun } from '../api/endpoints';
 import OptimizationRunCompare from './OptimizationRunCompare';
 import { toast } from 'sonner';
@@ -27,9 +28,9 @@ function fmtCreated(ts) {
 }
 
 export default function OptimizationHistory() {
-  const backtestResults = useStore((s) => s.backtestResults);
-  const setBacktestResults = useStore((s) => s.setBacktestResults);
-  const backtestRunning = useStore((s) => s.backtestRunning);
+  const backtestResults = useResearchStore((s) => s.backtestResults);
+  const setBacktestResults = useResearchStore((s) => s.setBacktestResults);
+  const backtestRunning = useResearchStore((s) => s.backtestRunning);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [compareIds, setCompareIds] = useState([]);

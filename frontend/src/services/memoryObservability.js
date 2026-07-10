@@ -36,12 +36,25 @@ export function collectClientMemoryStats() {
   };
 }
 
-/** @param {ReturnType<typeof collectClientMemoryStats>} stats */
-export function memoryPressureLevel(stats) {
+/** Heap-only level — drives snapshot pause and critical trims. */
+export function heapPressureLevel(stats) {
   if (stats.heapPct != null && stats.heapPct >= 85) return 'critical';
   if (stats.heapPct != null && stats.heapPct >= 70) return 'warn';
-  if (stats.symbols1m >= stats.budgets.maxSymbols) return 'warn';
-  if (stats.bars1m > stats.budgets.maxBars1m * stats.budgets.maxSymbols * 0.9) return 'warn';
+  return 'ok';
+}
+
+/** Buffer at designed capacity — trim cold-path data, do not pause snapshots. */
+export function bufferPressureNeedsTrim(stats) {
+  if (stats.symbols1m >= stats.budgets.maxSymbols) return true;
+  if (stats.bars1m > stats.budgets.maxBars1m * stats.budgets.maxSymbols * 0.9) return true;
+  return false;
+}
+
+/** Combined level for UI badges (heap + buffer signals). */
+export function memoryPressureLevel(stats) {
+  const heap = heapPressureLevel(stats);
+  if (heap !== 'ok') return heap;
+  if (bufferPressureNeedsTrim(stats)) return 'warn';
   return 'ok';
 }
 

@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { openBacktestLabJobs, openBacktestLabResults } from '../lib/backtestLab';
-import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { getStoreActions } from '../api/dispatch';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
@@ -47,8 +47,8 @@ function extractMetrics(job) {
 }
 
 export default function BacktestJobHistory() {
-  const backtestRunning = useStore((s) => s.backtestRunning);
-  const backtestJobId = useStore((s) => s.backtestJobId);
+  const backtestRunning = useResearchStore((s) => s.backtestRunning);
+  const backtestJobId = useResearchStore((s) => s.backtestJobId);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');

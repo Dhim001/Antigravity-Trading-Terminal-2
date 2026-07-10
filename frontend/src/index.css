@@ -7905,6 +7905,49 @@ body {
   z-index: 3;
 }
 
+.algo-bot-status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.algo-bot-risk-hold {
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.algo-bot-risk-hold--compact {
+  max-width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.algo-bot-risk-hold--cooloff {
+  border-color: color-mix(in oklab, var(--chart-4) 55%, transparent);
+  color: var(--chart-4);
+  background: color-mix(in oklab, var(--chart-4) 10%, transparent);
+}
+
+.algo-bot-risk-hold--streak {
+  border-color: color-mix(in oklab, var(--destructive) 45%, transparent);
+  color: var(--destructive);
+}
+
+.terminal-table tr.algo-bot-row--cooloff > td {
+  background: color-mix(in oklab, var(--chart-4) 6%, var(--surface-1));
+}
+
+.terminal-table tr.algo-bot-row--streak-hold > td {
+  background: color-mix(in oklab, var(--destructive) 5%, var(--surface-1));
+}
+
+.bot-detail-drawer__risk-hold {
+  border-style: dashed;
+}
+
 .algo-last-signal {
   font-size: 0.62rem;
   color: var(--text-muted);

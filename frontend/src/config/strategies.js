@@ -76,6 +76,46 @@ export const STRATEGY_CATALOG = Object.freeze({
     tagline: 'Spread capture with inventory skew',
     style: 'market-making',
   },
+  CVD_DIVERGENCE: {
+    label: 'CVD Divergence',
+    shortLabel: 'CVD',
+    icon: TrendingUp,
+    color: '#f97316',
+    tagline: 'Spot hidden buying/selling',
+    style: 'microstructure',
+  },
+  WYCKOFF_SPRING: {
+    label: 'Wyckoff Spring',
+    shortLabel: 'Wyckoff',
+    icon: Target,
+    color: '#10b981',
+    tagline: 'Institutional stop-runs & absorption',
+    style: 'smc',
+  },
+  VPOC_REVERSION: {
+    label: 'Volume POC Reversion',
+    shortLabel: 'VPOC',
+    icon: ArrowDownToLine,
+    color: '#8b5cf6',
+    tagline: 'Mean reversion to Value Area POC',
+    style: 'intraday',
+  },
+  ORDERFLOW_IMBALANCE: {
+    label: 'Order Flow Imbalance',
+    shortLabel: 'Imbalance',
+    icon: Zap,
+    color: '#ef4444',
+    tagline: 'Bid/Ask pressure at top of book',
+    style: 'microstructure',
+  },
+  ABSORPTION_AGENT: {
+    label: 'Absorption Agent',
+    shortLabel: 'Absorb',
+    icon: Bot,
+    color: '#6366f1',
+    tagline: 'Multi-domain footprint scoring',
+    style: 'agent',
+  },
 });
 
 const FALLBACK = Object.freeze({

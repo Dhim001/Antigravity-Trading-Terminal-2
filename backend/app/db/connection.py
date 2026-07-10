@@ -44,6 +44,17 @@ def lock_retry_total() -> int:
         return _lock_retry_total
 
 
+def _lock_retry_backoff_sec(attempt: int) -> float:
+    """Exponential delay between wrapper-level retries (attempt is 0-based)."""
+    return _LOCK_RETRY_BASE_SEC * (2 ** attempt)
+
+
+def _pause_before_lock_retry(attempt: int) -> None:
+    """Backoff between execute attempts after busy_timeout is exhausted."""
+    _inc_lock_retries()
+    time.sleep(_lock_retry_backoff_sec(attempt))
+
+
 def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     """Apply standard SQLite PRAGMAs for WAL concurrency (single source of truth)."""
     conn.execute("PRAGMA foreign_keys = ON")
@@ -87,17 +98,16 @@ class _CursorWrapper:
             except sqlite3.OperationalError as exc:
                 if not _is_sqlite_locked(exc) or attempt >= max_attempts - 1:
                     raise
-                _inc_lock_retries()
-                # PRAGMA busy_timeout already blocks inside SQLite — avoid stacking
-                # time.sleep() on the asyncio event loop during lock storms.
+                # busy_timeout blocks inside each attempt; backoff between attempts
+                # avoids a tight CPU loop if the pragma is misconfigured or expires.
+                _pause_before_lock_retry(attempt)
                 continue
             except Exception as exc:
                 if DB_DRIVER != "postgres" or not _is_transient_postgres_error(exc):
                     raise
                 if attempt >= max_attempts - 1:
                     raise
-                _inc_lock_retries()
-                time.sleep(_LOCK_RETRY_BASE_SEC * (2 ** attempt))
+                _pause_before_lock_retry(attempt)
         return None
 
     def executemany(self, sql: str, params_seq):

@@ -5,6 +5,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Brain, RefreshCw, GitCompare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { selectAgentInsight, normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { sendAction } from '../api/transport';
@@ -86,8 +87,8 @@ function reasonPreview(reasons) {
 export default function AnalystTab() {
   const activeSymbol = useStore((s) => s.activeSymbol);
   const symbolsList = useStore((s) => s.symbolsList);
-  const agentInsights = useStore((s) => s.agentInsights);
-  const agentInsightHistory = useStore((s) => s.agentInsightHistory);
+  const agentInsights = useResearchStore((s) => s.agentInsights);
+  const agentInsightHistory = useResearchStore((s) => s.agentInsightHistory);
   const setActiveSymbol = useStore((s) => s.setActiveSymbol);
   const [symbol, setSymbol] = useState(activeSymbol);
   const [loading, setLoading] = useState(false);
@@ -96,13 +97,13 @@ export default function AnalystTab() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const setOrderPrefill = useStore((s) => s.setOrderPrefill);
   const tickerData = useStore((s) => s.tickerData);
-  const visionReports = useStore((s) => s.visionReports);
+  const visionReports = useResearchStore((s) => s.visionReports);
   const [visionLoading, setVisionLoading] = useState(false);
   const [deepReasonLoading, setDeepReasonLoading] = useState(null);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
   const agentVisionEnabled = useStore((s) => s.agentVisionEnabled);
-  const agentDeepReasoning = useStore((s) => s.agentDeepReasoning);
+  const agentDeepReasoning = useResearchStore((s) => s.agentDeepReasoning);
   const [visionTf, setVisionTf] = useState('4h');
   const [compareMode, setCompareMode] = useState(false);
   const [compareSymbol, setCompareSymbol] = useState(
@@ -123,14 +124,14 @@ export default function AnalystTab() {
         setActiveSymbol(sym);
       }
       if (expandLatest) {
-        const history = useStore.getState().agentInsightHistory[sym || symbol] ?? [];
+        const history = useResearchStore.getState().agentInsightHistory[sym || symbol] ?? [];
         const first = history[0];
         if (first) {
           setExpandedId(first.insight_id || `${first.symbol}:${first.bar_time}`);
         }
       }
       if (preview && sym) {
-        const row = (useStore.getState().agentInsightHistory[sym] ?? [])[0];
+        const row = (useResearchStore.getState().agentInsightHistory[sym] ?? [])[0];
         if (row && (row.signal === 'BUY' || row.signal === 'SELL')) {
           const draft = buildOrderDraftFromInsight(row, {
             tickerPrice: useStore.getState().tickerData[sym]?.price,
@@ -177,7 +178,7 @@ export default function AnalystTab() {
   const loadHistory = useCallback(async (signal) => {
     setLoading(true);
     try {
-      await fetchAgentInsights(symbol, useStore.getState(), 40, analysisTf, { signal });
+      await fetchAgentInsights(symbol, useResearchStore.getState(), 40, analysisTf, { signal });
     } catch (err) {
       if (err?.name === 'AbortError') return;
       toast.error(err?.message || 'Failed to load analyst history');

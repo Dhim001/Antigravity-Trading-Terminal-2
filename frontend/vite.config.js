@@ -112,6 +112,9 @@ export default defineConfig(({ mode }) => {
       port: devPort,
       strictPort: true,
       hmr: {
+        host: '127.0.0.1',
+        port: devPort,
+        clientPort: devPort,
         overlay: false,
       },
       proxy,

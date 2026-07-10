@@ -12,10 +12,23 @@ function downsampleSeries(series, maxPoints) {
   return series.filter((_, i) => i % step === 0 || i === series.length - 1);
 }
 
+/** Max trade entries retained in store (UI only renders a table — 500 is plenty). */
+const MAX_TRADES = 500;
+/** Per-fold equity curve cap inside walk_forward results. */
+const MAX_WF_FOLD_EQUITY = 200;
+/** Per-fold trade array cap inside walk_forward results. */
+const MAX_WF_FOLD_TRADES = 100;
+
 /** Trim large arrays before storing backtest results (shared by WS + job poll). */
 export function trimBacktestPayload(results) {
   if (!results || typeof results !== 'object') return results;
   const out = { ...results };
+
+  // Cap main trades array
+  if (Array.isArray(out.trades) && out.trades.length > MAX_TRADES) {
+    out.trades_total = out.trades_total ?? out.trades.length;
+    out.trades = out.trades.slice(0, MAX_TRADES);
+  }
 
   if (Array.isArray(out.equity_curve) && out.equity_curve.length > MAX_EQUITY_POINTS) {
     out.equity_curve = downsampleSeries(out.equity_curve, MAX_EQUITY_POINTS);
@@ -33,6 +46,45 @@ export function trimBacktestPayload(results) {
       ...out.sweep,
       results: out.sweep.results.slice(0, 48),
       results_truncated: out.sweep.results.length,
+    };
+  }
+
+  // Trim walk-forward fold entries — these contain per-fold equity curves + trades
+  if (out.walk_forward?.folds && Array.isArray(out.walk_forward.folds)) {
+    out.walk_forward = {
+      ...out.walk_forward,
+      folds: out.walk_forward.folds.map((fold) => {
+        const trimmed = { ...fold };
+        // Trim IS equity curves
+        if (trimmed.in_sample?.equity_curve?.length > MAX_WF_FOLD_EQUITY) {
+          trimmed.in_sample = {
+            ...trimmed.in_sample,
+            equity_curve: downsampleSeries(trimmed.in_sample.equity_curve, MAX_WF_FOLD_EQUITY),
+          };
+        }
+        // Trim OOS equity curves
+        if (trimmed.out_of_sample?.equity_curve?.length > MAX_WF_FOLD_EQUITY) {
+          trimmed.out_of_sample = {
+            ...trimmed.out_of_sample,
+            equity_curve: downsampleSeries(trimmed.out_of_sample.equity_curve, MAX_WF_FOLD_EQUITY),
+          };
+        }
+        // Trim IS trades
+        if (Array.isArray(trimmed.in_sample?.trades) && trimmed.in_sample.trades.length > MAX_WF_FOLD_TRADES) {
+          trimmed.in_sample = {
+            ...trimmed.in_sample,
+            trades: trimmed.in_sample.trades.slice(0, MAX_WF_FOLD_TRADES),
+          };
+        }
+        // Trim OOS trades
+        if (Array.isArray(trimmed.out_of_sample?.trades) && trimmed.out_of_sample.trades.length > MAX_WF_FOLD_TRADES) {
+          trimmed.out_of_sample = {
+            ...trimmed.out_of_sample,
+            trades: trimmed.out_of_sample.trades.slice(0, MAX_WF_FOLD_TRADES),
+          };
+        }
+        return trimmed;
+      }),
     };
   }
 
@@ -68,7 +120,7 @@ export function buildBacktestOverlay(results) {
     meta: results.meta,
     trades: trades.slice(0, MAX_OVERLAY_TRADES),
     tradesTotal: results.trades_total ?? trades.length,
-    equityCurve: downsampleSeries(results.equity_curve, MAX_EQUITY_POINTS),
+    equityCurve: downsampleSeries(results.equity_curve, MAX_DOCK_EQUITY_POINTS),
     visible: false,
   };
 }

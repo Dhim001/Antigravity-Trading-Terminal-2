@@ -224,6 +224,25 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
 
         return MarketMakingStrategy(config or {})
 
+    if key in ("CVD_DIVERGENCE", "WYCKOFF_SPRING", "VPOC_REVERSION", "ORDERFLOW_IMBALANCE", "ABSORPTION_AGENT"):
+        from app.services.bots.strategies_microstructure import (
+            CvdDivergenceStrategy,
+            WyckoffStrategy,
+            VpocReversionStrategy,
+            OrderFlowImbalanceStrategy,
+            AbsorptionAgentStrategy,
+        )
+        if key == "CVD_DIVERGENCE":
+            return CvdDivergenceStrategy(config or {})
+        elif key == "WYCKOFF_SPRING":
+            return WyckoffStrategy(config or {})
+        elif key == "VPOC_REVERSION":
+            return VpocReversionStrategy(config or {})
+        elif key == "ORDERFLOW_IMBALANCE":
+            return OrderFlowImbalanceStrategy(config or {})
+        elif key == "ABSORPTION_AGENT":
+            return AbsorptionAgentStrategy(config or {})
+
     if key == "CUSTOM":
         from app.services.bots.custom_loader import get_custom_strategy
 

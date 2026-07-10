@@ -14,6 +14,8 @@ import { Action } from '../api/protocol';
 import { sendAction } from '../api/transport';
 import { withLlmModel } from '../api/endpoints';
 import { useStore } from '../store/useStore';
+import { useResearchStore } from '../store/useResearchStore';
+import { useLiveCandleRevision } from '../services/candleRevisions';
 import LlmNarrativeBlock from './LlmNarrativeBlock';
 import LlmDeepReasoningBlock from './LlmDeepReasoningBlock';
 import LlmFeatureHint from './LlmFeatureHint';
@@ -56,15 +58,15 @@ function fallbackFromCandles(candles) {
 }
 
 export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAgent }) {
-  const agentInsights = useStore((state) => state.agentInsights);
+  const agentInsights = useResearchStore((state) => state.agentInsights);
   const agentInsight = selectAgentInsight(agentInsights, symbol, timeframe);
   const chartTf = normalizeAnalystTimeframe(timeframe);
-  const agentDeepReasoning = useStore((state) => state.agentDeepReasoning);
+  const agentDeepReasoning = useResearchStore((state) => state.agentDeepReasoning);
   const agentLlmEnabled = useStore((state) => state.agentLlmEnabled);
   const agentLlmAvailable = useStore((state) => state.agentLlmAvailable);
   const agentVisionEnabled = useStore((state) => state.agentVisionEnabled);
-  const backtestRunning = useStore((state) => state.backtestRunning);
-  const visionReports = useStore((state) => state.visionReports);
+  const backtestRunning = useResearchStore((state) => state.backtestRunning);
+  const visionReports = useResearchStore((state) => state.visionReports);
   const setOrderPrefill = useStore((state) => state.setOrderPrefill);
   const ticker = useStore((state) => state.tickerData[symbol]);
   const [refreshing, setRefreshing] = useState(false);
@@ -78,12 +80,12 @@ export default function ChartAnalystBadge({ symbol, timeframe = '1m', onDeployAg
     visionTf,
     barTime: agentInsight?.bar_time,
   });
-  const lastCandleTime = useStore((state) => {
-    const rev = state.candleRevision[symbol];
-    if (!rev) return 0;
+  const candleRev = useLiveCandleRevision(symbol);
+  const lastCandleTime = useMemo(() => {
+    if (!candleRev) return 0;
     const candles = getCandles(symbol);
     return candles.length > 0 ? candles[candles.length - 1].time : 0;
-  });
+  }, [candleRev, symbol]);
 
   const localFallback = useMemo(() => {
     const candles = getCandles(symbol);

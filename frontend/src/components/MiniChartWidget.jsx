@@ -4,6 +4,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { useStore } from '../store/useStore';
+import { subscribeLiveRevisions, subscribeHistoryRevision } from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { getChartEchartsTheme } from '../settings/applySettings';
 import { getIndicatorTheme, emaLineStyle } from '../settings/indicatorThemes';
@@ -582,16 +583,13 @@ export default function MiniChartWidget({
 
   useEffect(() => {
     const sym = symbol;
-    const unsubscribe = useStore.subscribe(
-      (state) => state.candleRevision[sym] || 0,
-      () => {
-        if (liveRafRef.current != null) return;
-        liveRafRef.current = requestAnimationFrame(() => {
-          liveRafRef.current = null;
-          pumpLiveUpdate();
-        });
-      },
-    );
+    const unsubscribe = subscribeLiveRevisions(sym, '', () => {
+      if (liveRafRef.current != null) return;
+      liveRafRef.current = requestAnimationFrame(() => {
+        liveRafRef.current = null;
+        pumpLiveUpdate();
+      });
+    });
     return () => {
       unsubscribe();
       if (liveRafRef.current != null) {
@@ -603,13 +601,10 @@ export default function MiniChartWidget({
 
   useEffect(() => {
     const sym = symbol;
-    const unsubscribe = useStore.subscribe(
-      (state) => state.candleHistoryRevision[sym] || 0,
-      () => {
-        if (!chartRef.current) return;
-        configureChart({ resetZoom: false });
-      },
-    );
+    const unsubscribe = subscribeHistoryRevision(sym, () => {
+      if (!chartRef.current) return;
+      configureChart({ resetZoom: false });
+    });
     return unsubscribe;
   }, [symbol, configureChart]);
 

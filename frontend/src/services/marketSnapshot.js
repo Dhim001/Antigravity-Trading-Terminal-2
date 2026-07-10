@@ -3,11 +3,12 @@
  * Profile-scoped key so sim / ib / massive instances do not cross-contaminate.
  */
 import { getCandles, setCandleHistory } from './candleBuffer';
+import { isSnapshotPaused } from './memoryGuard';
 
 const PROFILE = import.meta.env.VITE_TERMINAL_PROFILE || 'default';
 const KEY = `terminal_market_snapshot_${PROFILE}`;
-const MAX_CANDLES_PER_SYMBOL = 300;
-const SAVE_DEBOUNCE_MS = 2000;
+const MAX_CANDLES_PER_SYMBOL = 150;
+const SAVE_DEBOUNCE_MS = 10000;
 
 let saveTimer = null;
 
@@ -43,6 +44,7 @@ export function hydrateFromSnapshot() {
 }
 
 export function scheduleMarketSnapshotSave(getState) {
+  if (isSnapshotPaused()) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -66,8 +68,12 @@ function saveMarketSnapshot(getState) {
   const payload = {
     v: 1,
     savedAt: Date.now(),
-    tickerData: state.tickerData,
-    priceDirections: state.priceDirections,
+    tickerData: Object.fromEntries(
+      [...symbols].filter(Boolean).map((sym) => [sym, state.tickerData[sym]]).filter(([, v]) => v),
+    ),
+    priceDirections: Object.fromEntries(
+      [...symbols].filter(Boolean).map((sym) => [sym, state.priceDirections[sym]]).filter(([, v]) => v),
+    ),
     candles,
   };
 
@@ -79,8 +85,8 @@ function saveMarketSnapshot(getState) {
       const trimmed = {
         v: 1,
         savedAt: Date.now(),
-        tickerData: state.tickerData,
-        priceDirections: state.priceDirections,
+        tickerData: active ? { [active]: state.tickerData[active] } : {},
+        priceDirections: active ? { [active]: state.priceDirections[active] } : {},
         candles: active && candles[active] ? { [active]: candles[active] } : {},
       };
       sessionStorage.setItem(KEY, JSON.stringify(trimmed));

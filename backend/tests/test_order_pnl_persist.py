@@ -57,6 +57,18 @@ class OrderPnlPersistTests(unittest.TestCase):
             })
         )
 
+    def test_second_buy_add_to_position(self):
+        """Regression: sqlite3.Row has no .get() — add-to-long must not fail."""
+        first = self._place("BUY", 1.0, 100.0)
+        self.assertEqual(first["status"], "success")
+        second = self._place("BUY", 0.5, 105.0)
+        self.assertEqual(second["status"], "success")
+
+        account = self.oms.get_account_data()
+        pos = account["positions"]["BTCUSDT"]
+        self.assertAlmostEqual(float(pos["size"]), 1.5)
+        self.assertAlmostEqual(float(pos["avg_price"]), 101.66666666666667, places=4)
+
     def test_sell_persists_realized_pnl_on_fill(self):
         buy = self._place("BUY", 1.0, 100.0)
         self.assertEqual(buy["status"], "success")
