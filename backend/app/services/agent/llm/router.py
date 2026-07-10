@@ -27,7 +27,7 @@ from app.services.agent.llm.base import (
     parse_json_object,
     strip_reasoning_process,
 )
-from app.services.agent.llm.model_registry import enrich_models_response
+from app.services.agent.llm.model_registry import enrich_models_response, lookup_model_meta
 from app.services.agent.llm.ollama import OllamaProvider
 from app.services.agent.llm.openrouter import OpenRouterProvider
 from app.services.agent.llm.payloads import (
@@ -59,19 +59,67 @@ def get_preferred_model() -> str | None:
     return _preferred_model
 
 
-def resolve_model(explicit: str | None = None, task: LlmTask = "narrator") -> str:
-    """Pick model: UI override > preferred > task tier > default."""
+def _ollama_task_default(task: LlmTask) -> str:
+    if task == "deep":
+        return OLLAMA_MODEL_DEEP or OLLAMA_MODEL
+    return OLLAMA_MODEL_NARRATOR or OLLAMA_MODEL
+
+
+def resolve_model(
+    explicit: str | None = None,
+    task: LlmTask = "narrator",
+    *,
+    provider: str | None = None,
+) -> str:
+    """Pick model: UI override > preferred > provider tier > default."""
     if explicit:
         return explicit
     if _preferred_model:
         return _preferred_model
+
+    pname = (provider or "").lower()
+    use_ollama = pname == "ollama" or (
+        not pname and LLM_PROVIDER in ("ollama", "auto")
+    )
+
     if task == "deep":
-        if LLM_PROVIDER in ("ollama", "auto") and TERMINAL_MODE == "SIMULATED":
-            return OLLAMA_MODEL_DEEP or OLLAMA_MODEL
+        if use_ollama:
+            return _ollama_task_default("deep")
         return AGENT_LLM_MODEL_DEEP or AGENT_LLM_MODEL
-    if LLM_PROVIDER in ("ollama", "auto") and TERMINAL_MODE == "SIMULATED":
-        return OLLAMA_MODEL_NARRATOR or OLLAMA_MODEL
+    if use_ollama:
+        return _ollama_task_default("narrator")
     return AGENT_LLM_MODEL
+
+
+async def _coerce_ollama_model(wanted: str, *, task: LlmTask = "narrator") -> str:
+    """Map cloud/preferred ids to an installed Ollama tag when possible."""
+    models = await _ollama.list_models()
+    if not models:
+        return wanted or _ollama_task_default(task)
+
+    if wanted and wanted in models:
+        return wanted
+
+    if wanted:
+        base = wanted.split(":")[0].lower()
+        for name in models:
+            if name.lower() == wanted.lower() or name.lower().startswith(f"{base}:"):
+                return name
+
+    default = _ollama_task_default(task)
+    if default in models:
+        return default
+    default_base = default.split(":")[0].lower()
+    for name in models:
+        if name.lower().startswith(f"{default_base}:"):
+            return name
+
+    for name in models:
+        meta = lookup_model_meta(name)
+        if meta.get("tier") == ("deep" if task == "deep" else "narrator") and meta.get("recommended"):
+            return name
+
+    return models[0]
 
 
 async def _pick_provider() -> tuple[Any, str] | tuple[None, str]:
@@ -119,7 +167,9 @@ async def get_llm_status() -> dict[str, Any]:
             models = await _ollama.list_models()
         except Exception:
             models = []
-    active_model = resolve_model()
+    active_model = resolve_model(provider=name if provider else "off")
+    if name == "ollama":
+        active_model = await _coerce_ollama_model(active_model, task="narrator")
     return enrich_models_response({
         "provider": name if provider else "off",
         "configured_provider": LLM_PROVIDER,
@@ -138,13 +188,19 @@ async def get_llm_status() -> dict[str, Any]:
 async def list_all_models() -> dict[str, Any]:
     ollama_models = await _ollama.list_models() if await _ollama.is_available() else []
     openrouter_models = await _openrouter.list_models() if await _openrouter.is_available() else []
+    _, provider_name = await _pick_provider()
+    if provider_name == "off":
+        if ollama_models:
+            provider_name = "ollama"
+        elif openrouter_models:
+            provider_name = "openrouter"
     return enrich_models_response({
         "ollama": ollama_models,
         "openrouter": openrouter_models,
-        "active_model": resolve_model(),
+        "active_model": resolve_model(provider=provider_name),
         "preferred_model": _preferred_model,
-        "narrator_model": resolve_model(task="narrator"),
-        "deep_model": resolve_model(task="deep"),
+        "narrator_model": resolve_model(task="narrator", provider=provider_name),
+        "deep_model": resolve_model(task="deep", provider=provider_name),
     })
 
 
@@ -158,11 +214,13 @@ async def _chat(
     temperature: float = 0.3,
     json_mode: bool = False,
 ) -> LLMResult:
-    provider, _ = await _pick_provider()
+    provider, provider_name = await _pick_provider()
     if provider is None:
         return LLMResult(text=None, model=None, provider="off")
 
-    chosen = resolve_model(model, task=task)
+    chosen = resolve_model(model, task=task, provider=provider_name)
+    if provider.name == "ollama":
+        chosen = await _coerce_ollama_model(chosen, task=task)
     result = await provider.chat(
         system=system,
         user=user,

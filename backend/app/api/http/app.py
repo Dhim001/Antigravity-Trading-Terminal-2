@@ -978,6 +978,58 @@ async def _binding_handler(request: Request) -> JSONResponse:
     return JSONResponse(body, status_code=status)
 
 
+async def market_footprint_handler(request: Request) -> JSONResponse:
+    from app.services.archive.query import query_footprint
+    symbol = request.query_params.get("symbol")
+    if not symbol:
+        return JSONResponse({"ok": False, "error": "symbol is required"}, status_code=400)
+    
+    try:
+        from_ts = int(request.query_params.get("from_ts", 0))
+        to_ts = int(request.query_params.get("to_ts", 0))
+        price_step = float(request.query_params.get("price_step", 0.0))
+        time_bucket_ms = int(request.query_params.get("time_bucket_ms", 60000))
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid numeric parameters"}, status_code=400)
+        
+    import asyncio
+    try:
+        footprint = await asyncio.to_thread(
+            query_footprint, 
+            symbol.upper(), 
+            from_ts, 
+            to_ts, 
+            price_step, 
+            time_bucket_ms
+        )
+        return JSONResponse({"ok": True, "footprint": footprint})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+async def generate_daily_briefing_handler(request: Request) -> JSONResponse:
+    from app.services.agent.briefing import generate_daily_briefing
+    import asyncio
+    
+    state: AppState = request.app.state.terminal
+    
+    try:
+        result = await generate_daily_briefing(state)
+        if result.get("ok"):
+            return JSONResponse({
+                "ok": True,
+                "briefing": result.get("briefing"),
+                "stats": result.get("stats"),
+            })
+        else:
+            # Return 200 so the frontend handles it gracefully without a loud console error
+            return JSONResponse({"ok": False, "error": result.get("error", "Unknown error")})
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Briefing generation failed: {e}", exc_info=True)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 def _make_endpoint(binding):
     async def endpoint(request: Request):
         request.scope["http_binding"] = binding
@@ -1023,6 +1075,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/workspaces", get_workspaces_handler, methods=["GET"]),
         Route("/api/v1/workspaces", save_workspace_handler, methods=["POST"]),
         Route("/api/v1/workspaces/{workspace_id}", delete_workspace_handler, methods=["DELETE"]),
+        Route("/api/v1/market/footprint", market_footprint_handler, methods=["GET"]),
+        Route("/api/v1/journal/briefing/generate", generate_daily_briefing_handler, methods=["POST"]),
     ]
 
     seen: set[tuple[str, str]] = set()

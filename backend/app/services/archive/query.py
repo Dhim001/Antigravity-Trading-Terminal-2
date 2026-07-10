@@ -95,6 +95,54 @@ def query_market_history(
     return [deduped[t] for t in sorted(deduped)]
 
 
+def query_footprint(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    price_step: float,
+    time_bucket_ms: int = 60000,
+) -> list[dict[str, Any]]:
+    """
+    Aggregate market ticks into a volume footprint heatmap.
+    Returns a list of dicts: { "time": int, "price": float, "volume": float }
+    """
+    if price_step <= 0 or time_bucket_ms <= 0:
+        return []
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # We use CAST(price / price_step AS INTEGER) * price_step to bucket prices
+        # and (time_ms / time_bucket_ms) * time_bucket_ms to bucket time.
+        cursor.execute(
+            f"""
+            SELECT 
+                (time_ms / ?) * ? AS bucket_time,
+                CAST(price / ? AS INTEGER) * ? AS bucket_price,
+                SUM(volume) as total_volume
+            FROM market_ticks
+            WHERE symbol = ? AND time_ms >= ? AND time_ms <= ?
+            GROUP BY bucket_time, bucket_price
+            ORDER BY bucket_time, bucket_price
+            """,
+            (time_bucket_ms, time_bucket_ms, price_step, price_step, symbol, from_ts, to_ts),
+        )
+        return [
+            {
+                "time": int(row[0]),
+                "price": float(row[1]),
+                "volume": float(row[2]),
+            }
+            for row in cursor.fetchall()
+        ]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Footprint query failed: {e}")
+        return []
+    finally:
+        conn.close()
+
+
 def get_archive_stats() -> dict[str, Any]:
     conn = get_connection()
     cursor = conn.cursor()

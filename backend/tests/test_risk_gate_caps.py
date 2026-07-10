@@ -92,6 +92,18 @@ class BotEntryHoldTests(unittest.TestCase):
         self.assertGreater(hold["remaining_sec"], 0)
         self.assertIn("cooloff_until", hold)
 
+    @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=3)
+    @patch("app.services.bots.analytics.last_exit_timestamp", return_value="2026-07-10T11:58:00Z")
+    def test_cooloff_hold_while_paused(self, _last_exit, _streak):
+        bot = {
+            "id": "bot-paused-cool",
+            "status": "PAUSED",
+            "config": {"loss_cooloff_sec": 300, "max_consecutive_losses": 5},
+        }
+        hold = get_bot_entry_hold(bot)
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold["kind"], "cooloff")
+
     @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=5)
     def test_streak_limit_hold_payload(self, _streak):
         bot = {
@@ -103,6 +115,31 @@ class BotEntryHoldTests(unittest.TestCase):
         self.assertIsNotNone(hold)
         self.assertEqual(hold["kind"], "streak_limit")
         self.assertEqual(hold["consecutive_losses"], 5)
+
+    @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=0)
+    def test_drawdown_hold_payload(self, _streak):
+        bot = {
+            "id": "bot-dd",
+            "status": "PAUSED",
+            "allocation": 1000.0,
+            "config": {"max_drawdown_pct": 10.0},
+        }
+        hold = get_bot_entry_hold(bot, total_pnl=-150.0)
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold["kind"], "drawdown")
+        self.assertAlmostEqual(hold["drawdown_pct"], 15.0)
+        self.assertEqual(hold["max_drawdown_pct"], 10.0)
+
+    @patch("app.services.bots.analytics.get_recent_consecutive_losses", return_value=0)
+    def test_drawdown_hold_skipped_when_under_limit(self, _streak):
+        bot = {
+            "id": "bot-ok",
+            "status": "RUNNING",
+            "allocation": 1000.0,
+            "config": {"max_drawdown_pct": 20.0},
+        }
+        hold = get_bot_entry_hold(bot, total_pnl=-50.0)
+        self.assertIsNone(hold)
 
 
 if __name__ == "__main__":

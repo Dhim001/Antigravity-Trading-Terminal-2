@@ -2,16 +2,18 @@
  * TradingPanel — tabbed right rail with collapse (UX-3).
  */
 import { useSettingsStore } from '../store/useSettingsStore';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import OrderBookWidget from './OrderBookWidget';
 import DepthChartWidget from './DepthChartWidget';
 import OrderEntryWidget from './OrderEntryWidget';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { PanelRightClose, PanelRightOpen, ArrowLeftRight, BookOpen, LineChart } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen, ArrowLeftRight, BookOpen, LineChart, Grid3x3 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { registerOrderBookConsumer } from '../services/orderBookInterest';
+import FootprintChartWidget from './chart/FootprintChartWidget';
+import { useStore } from '../store/useStore';
 
 export default function TradingPanel({ hidden = false }) {
   const workspace = useSettingsStore((s) => s.settings.workspace);
@@ -91,6 +93,10 @@ export default function TradingPanel({ hidden = false }) {
               <LineChart data-icon="inline-start" />
               Depth
             </TabsTrigger>
+            <TabsTrigger value="footprint" className="text-xs">
+              <Grid3x3 data-icon="inline-start" />
+              Footprint
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         <Button
@@ -107,7 +113,31 @@ export default function TradingPanel({ hidden = false }) {
         {tab === 'trade' && <OrderEntryWidget />}
         {tab === 'book' && <OrderBookWidget />}
         {tab === 'depth' && <DepthChartWidget />}
+        {tab === 'footprint' && <FootprintPanel />}
       </div>
     </section>
+  );
+}
+
+function FootprintPanel() {
+  const { account } = useStore();
+  const symbol = account?.symbol || 'BTCUSDT';
+  
+  // Stabilize timestamps to prevent infinite re-renders and flickering
+  const { fromTs, toTs } = useMemo(() => {
+    const to = Date.now();
+    return { toTs: to, fromTs: to - 3600 * 1000 };
+  }, [symbol]);
+  
+  return (
+    <div className="w-full h-full">
+      <FootprintChartWidget 
+        symbol={symbol} 
+        fromTs={fromTs} 
+        toTs={toTs} 
+        priceStep={0.5} 
+        timeBucketMs={60000} 
+      />
+    </div>
   );
 }

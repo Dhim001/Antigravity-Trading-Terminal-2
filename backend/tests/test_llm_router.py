@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.services.agent.llm.router import (
+    _coerce_ollama_model,
     _pick_provider,
     get_preferred_model,
     resolve_model,
@@ -25,14 +26,34 @@ class TestLLMRouter(unittest.TestCase):
             with patch("app.services.agent.llm.router.OLLAMA_MODEL_NARRATOR", "llama3.2:3b"):
                 with patch("app.services.agent.llm.router.LLM_PROVIDER", "ollama"):
                     with patch("app.services.agent.llm.router.TERMINAL_MODE", "SIMULATED"):
-                        self.assertEqual(resolve_model(task="narrator"), "llama3.2:3b")
+                        self.assertEqual(resolve_model(task="narrator", provider="ollama"), "llama3.2:3b")
+
+    def test_resolve_model_narrator_live_massive_uses_ollama(self):
+        with patch("app.services.agent.llm.router._preferred_model", None):
+            with patch("app.services.agent.llm.router.OLLAMA_MODEL_NARRATOR", "gemma3:4b"):
+                with patch("app.services.agent.llm.router.AGENT_LLM_MODEL", "openai/gpt-4o-mini"):
+                    with patch("app.services.agent.llm.router.LLM_PROVIDER", "auto"):
+                        with patch("app.services.agent.llm.router.TERMINAL_MODE", "LIVE_MASSIVE"):
+                            self.assertEqual(resolve_model(task="narrator", provider="ollama"), "gemma3:4b")
+                            self.assertEqual(resolve_model(task="narrator", provider="openrouter"), "openai/gpt-4o-mini")
+
+    def test_coerce_ollama_model_maps_cloud_id_to_local(self):
+        async def _run():
+            mock_ollama = AsyncMock()
+            mock_ollama.list_models.return_value = ["gemma3:4b", "deepseek-r1:8b"]
+            with patch("app.services.agent.llm.router._ollama", mock_ollama):
+                chosen = await _coerce_ollama_model("openai/gpt-4o-mini", task="narrator")
+                self.assertEqual(chosen, "gemma3:4b")
+
+        import asyncio
+        asyncio.run(_run())
 
     def test_resolve_model_deep_tier(self):
         with patch("app.services.agent.llm.router._preferred_model", None):
             with patch("app.services.agent.llm.router.OLLAMA_MODEL_DEEP", "qwen2.5:7b"):
                 with patch("app.services.agent.llm.router.LLM_PROVIDER", "ollama"):
                     with patch("app.services.agent.llm.router.TERMINAL_MODE", "SIMULATED"):
-                        self.assertEqual(resolve_model(task="deep"), "qwen2.5:7b")
+                        self.assertEqual(resolve_model(task="deep", provider="ollama"), "qwen2.5:7b")
 
     def test_preferred_model_override(self):
         set_preferred_model("phi3:mini")

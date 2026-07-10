@@ -534,6 +534,35 @@ class BotManagerService:
         await self._set_bot_status(bot_id, "ERROR")
         await self.log_bot_event(bot_id, "ERROR", reason)
 
+    async def _maybe_auto_pause_on_entry_hold(self, bot_id: str) -> bool:
+        """Pause immediately when a trade pushes the bot into streak or drawdown hold.
+
+        Returns True if the bot was paused.
+        """
+        bot = self.active_bots.get(bot_id)
+        if not bot or bot.get("status") != "RUNNING":
+            return False
+        stats = bot_analytics.get_bot_stats(bot_id)
+        hold = get_bot_entry_hold(
+            {**bot, "total_pnl": float(stats.get("total_pnl") or 0)},
+        )
+        if not hold or hold.get("kind") not in ("streak_limit", "drawdown"):
+            return False
+        await self._set_bot_status(bot_id, "PAUSED")
+        if hold["kind"] == "drawdown":
+            await self.log_bot_event(
+                bot_id,
+                "WARN",
+                f"Auto-paused at max drawdown — {hold.get('block_reason') or hold.get('reason')}",
+            )
+        else:
+            await self.log_bot_event(
+                bot_id,
+                "WARN",
+                f"Auto-paused after loss streak — {hold.get('block_reason') or hold.get('reason')}",
+            )
+        return True
+
     async def process_market_tick(self, symbol: str, ohlcv_1m: list | None = None, *, feed=None):
         try:
             from app.services.notifications.alert_rules.engine import maybe_evaluate_alert_rules
@@ -1138,8 +1167,10 @@ class BotManagerService:
                     await self.log_bot_event(bot_id, "INFO", "Bot in drawdown (3 consecutive losses). Halving allocation size.")
 
         pos_size = self._get_bot_position_size(bot_id, symbol)
+        risk_stats = bot_analytics.get_bot_stats(bot_id)
+        bot_for_risk = {**bot, "total_pnl": float(risk_stats.get("total_pnl") or 0)}
         decision = self._risk_gate.validate_trade(
-            bot,
+            bot_for_risk,
             side,
             quantity,
             current_price,
@@ -1154,16 +1185,27 @@ class BotManagerService:
             _record_order_blocked(bot, decision.reason)
             if "Daily loss limit" in decision.reason:
                 await self._halt_bot(bot_id, decision.reason)
-            elif "Consecutive-loss streak" in decision.reason and bot.get("status") == "RUNNING":
+            elif bot.get("status") == "RUNNING" and (
+                "Consecutive-loss streak" in decision.reason
+                or "Max drawdown circuit breaker" in decision.reason
+            ):
                 await self._set_bot_status(bot_id, "PAUSED")
-                await self.log_bot_event(
-                    bot_id,
-                    "WARN",
-                    f"Auto-paused after loss streak — {decision.reason}",
-                )
+                if "Max drawdown circuit breaker" in decision.reason:
+                    await self.log_bot_event(
+                        bot_id,
+                        "WARN",
+                        f"Auto-paused at max drawdown — {decision.reason}",
+                    )
+                else:
+                    await self.log_bot_event(
+                        bot_id,
+                        "WARN",
+                        f"Auto-paused after loss streak — {decision.reason}",
+                    )
             if (
                 "Consecutive-loss streak" in decision.reason
                 or "Cooling-off" in decision.reason
+                or "Max drawdown circuit breaker" in decision.reason
             ):
                 await publish_bots_update(self.broadcast_cb, self.list_bots_public())
             return
@@ -1374,6 +1416,7 @@ class BotManagerService:
                                     )
                         except Exception:
                             pass
+                        await self._maybe_auto_pause_on_entry_hold(bot_id)
                     self.record_snapshot_for_bot(bot_id)
                     signal_ledger.mark_signal_filled(signal_id, order_id=order_id)
 
@@ -1790,6 +1833,7 @@ class BotManagerService:
                 "INFO",
                 f"{trigger} exit {side} {qty:.4f} @ {price:.4f} (PnL {trade_pnl:+.2f}).",
             )
+            await self._maybe_auto_pause_on_entry_hold(bot_id)
 
         await publish_post_trade_bundle(
             self.broadcast_cb,

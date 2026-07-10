@@ -59,6 +59,7 @@ import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import BotRiskHoldBadge from '../BotRiskHoldBadge';
+import { useEffectiveRiskHold } from '@/lib/botRiskHold';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
@@ -66,6 +67,135 @@ import { buildDeployPayload } from '@/lib/deployGate';
 import DeployGatePanel from '../DeployGatePanel';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
+
+function statusBadgeVariant(status) {
+  if (status === 'RUNNING') return 'buy';
+  if (status === 'PAUSED') return 'secondary';
+  if (status === 'ERROR') return 'destructive';
+  return 'sell';
+}
+
+function ActiveBotRow({
+  bot,
+  pos,
+  selected,
+  agentInsights,
+  onSelect,
+  onPause,
+  onResume,
+  onStop,
+  onSetStopLoss,
+  onSetTakeProfit,
+}) {
+  const inPosition = pos && Math.abs(pos.size) > 0;
+  const { hold: riskHold, remaining } = useEffectiveRiskHold(bot.risk_hold);
+
+  return (
+    <DataTableRow
+      rowVariant="dock"
+      deferred
+      className={cn(
+        'algo-bot-row cursor-pointer',
+        selected && 'row-active',
+        riskHold?.kind === 'cooloff' && 'algo-bot-row--cooloff',
+        riskHold?.kind === 'streak_limit' && 'algo-bot-row--streak-hold',
+        riskHold?.kind === 'drawdown' && 'algo-bot-row--drawdown-hold',
+      )}
+      onClick={() => onSelect(bot.id)}
+    >
+      <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
+      <DataTableCell className="text-xs">
+        <StrategyBadge strategy={bot.strategy} compact />
+        {bot.execution_mode === 'TICK' && (
+          <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.65rem]">TICK</Badge>
+        )}
+      </DataTableCell>
+      <DataTableCell align="center" className="text-xs num-mono text-muted-foreground">
+        {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
+      </DataTableCell>
+      <DataTableCell align="center">
+        {inPosition ? (
+          <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
+            {pos.size > 0 ? 'LONG' : 'SHORT'}
+          </Badge>
+        ) : (
+          <span className="text-secondary-foreground text-xs">FLAT</span>
+        )}
+      </DataTableCell>
+      <DataTableCell numeric align="right">${bot.allocation.toLocaleString()}</DataTableCell>
+      <DataTableCell
+        numeric
+        align="right"
+        className={cn(
+          'font-semibold',
+          (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
+        )}
+      >
+        {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
+      </DataTableCell>
+      <DataTableCell className="algo-last-signal">
+        <span title={bot.last_signal_at || undefined}>{formatLastSignal(bot.last_signal_at)}</span>
+        {bot.strategy === 'CHART_AGENT' && (() => {
+          const insight = selectAgentInsight(
+            agentInsights,
+            bot.symbol,
+            bot.execution_mode === 'TICK' ? '1m' : bot.timeframe,
+          );
+          return insight?.confidence != null ? (
+            <span className="ml-1 text-xs text-muted-foreground">
+              ({Math.round(insight.confidence * 100)}% conf)
+            </span>
+          ) : null;
+        })()}
+      </DataTableCell>
+      <DataTableCell align="center">
+        <div className="algo-bot-status-cell">
+          <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
+          <BotRiskHoldBadge hold={riskHold} remainingSec={remaining} compact />
+        </div>
+      </DataTableCell>
+      <DataTableCell align="center" onClick={(e) => e.stopPropagation()}>
+        <div className="algo-bot-actions">
+          {bot.status === 'RUNNING' && (
+            <Button variant="outline" size="xs" onClick={() => onPause(bot.id)} title="Pause bot">
+              <Pause />
+            </Button>
+          )}
+          {bot.status === 'PAUSED' && (
+            <Button variant="outline" size="xs" onClick={() => onResume(bot.id)} title="Resume bot">
+              <PlayCircle />
+            </Button>
+          )}
+          {bot.status !== 'STOPPED' && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => onSetStopLoss(bot)}
+              title="Set stop loss on chart"
+            >
+              SL
+            </Button>
+          )}
+          {bot.status !== 'STOPPED' && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => onSetTakeProfit(bot)}
+              title="Set take profit on chart"
+            >
+              TP
+            </Button>
+          )}
+          {bot.status !== 'STOPPED' && (
+            <Button variant="destructive" size="xs" onClick={() => onStop(bot.id)} title="Stop bot">
+              STOP
+            </Button>
+          )}
+        </div>
+      </DataTableCell>
+    </DataTableRow>
+  );
+}
 
 // ── Algo Bot Tab ──────────────────────────────────────────────────
 export function AlgoTab({ hideToolbar = false }) {
@@ -493,13 +623,6 @@ export function AlgoTab({ hideToolbar = false }) {
   const confirmStopAll = () => {
     setStopAllOpen(false);
     sendAction(Action.BOT_STOP_ALL, {});
-  };
-
-  const statusBadgeVariant = (status) => {
-    if (status === 'RUNNING') return 'buy';
-    if (status === 'PAUSED') return 'secondary';
-    if (status === 'ERROR') return 'destructive';
-    return 'sell';
   };
 
   const logLineClassLocal = (log) => logLineClass(log);
@@ -1382,115 +1505,21 @@ export function AlgoTab({ hideToolbar = false }) {
                   </DataTableCell>
                 </DataTableRow>
               ) : (
-                activeBots.map(bot => {
-                  const pos = positions[bot.symbol];
-                  const inPosition = pos && Math.abs(pos.size) > 0;
-                  return (
-                  <DataTableRow
+                activeBots.map((bot) => (
+                  <ActiveBotRow
                     key={bot.id}
-                    rowVariant="dock"
-                    deferred
-                    className={cn(
-                      'algo-bot-row cursor-pointer',
-                      selectedBotId === bot.id && 'row-active',
-                      bot.risk_hold?.kind === 'cooloff' && 'algo-bot-row--cooloff',
-                      bot.risk_hold?.kind === 'streak_limit' && 'algo-bot-row--streak-hold',
-                    )}
-                    onClick={() => selectBot(bot.id)}
-                  >
-                    <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
-                    <DataTableCell className="text-xs">
-                      <StrategyBadge strategy={bot.strategy} compact />
-                      {bot.execution_mode === 'TICK' && (
-                        <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.65rem]">TICK</Badge>
-                      )}
-                    </DataTableCell>
-                    <DataTableCell align="center" className="text-xs num-mono text-muted-foreground">
-                      {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
-                    </DataTableCell>
-                    <DataTableCell align="center">
-                      {inPosition ? (
-                        <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
-                          {pos.size > 0 ? 'LONG' : 'SHORT'}
-                        </Badge>
-                      ) : (
-                        <span className="text-secondary-foreground text-xs">FLAT</span>
-                      )}
-                    </DataTableCell>
-                    <DataTableCell numeric align="right">${bot.allocation.toLocaleString()}</DataTableCell>
-                    <DataTableCell
-                      numeric
-                      align="right"
-                      className={cn(
-                        'font-semibold',
-                        (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-                      )}
-                    >
-                      {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
-                    </DataTableCell>
-                    <DataTableCell className="algo-last-signal">
-                      <span title={bot.last_signal_at || undefined}>{formatLastSignal(bot.last_signal_at)}</span>
-                      {bot.strategy === 'CHART_AGENT' && (() => {
-                        const insight = selectAgentInsight(
-                          agentInsights,
-                          bot.symbol,
-                          bot.execution_mode === 'TICK' ? '1m' : bot.timeframe,
-                        );
-                        return insight?.confidence != null ? (
-                          <span className="ml-1 text-xs text-muted-foreground">
-                            ({Math.round(insight.confidence * 100)}% conf)
-                          </span>
-                        ) : null;
-                      })()}
-                    </DataTableCell>
-                    <DataTableCell align="center">
-                      <div className="algo-bot-status-cell">
-                        <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
-                        <BotRiskHoldBadge hold={bot.risk_hold} compact />
-                      </div>
-                    </DataTableCell>
-                    <DataTableCell align="center" onClick={e => e.stopPropagation()}>
-                      <div className="algo-bot-actions">
-                        {bot.status === 'RUNNING' && (
-                          <Button variant="outline" size="xs" onClick={() => handlePauseBot(bot.id)} title="Pause bot">
-                            <Pause />
-                          </Button>
-                        )}
-                        {bot.status === 'PAUSED' && (
-                          <Button variant="outline" size="xs" onClick={() => handleResumeBot(bot.id)} title="Resume bot">
-                            <PlayCircle />
-                          </Button>
-                        )}
-                        {bot.status !== 'STOPPED' && (
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => handleSetBotStopLoss(bot)}
-                            title="Set stop loss on chart"
-                          >
-                            SL
-                          </Button>
-                        )}
-                        {bot.status !== 'STOPPED' && (
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => handleSetBotTakeProfit(bot)}
-                            title="Set take profit on chart"
-                          >
-                            TP
-                          </Button>
-                        )}
-                        {bot.status !== 'STOPPED' && (
-                          <Button variant="destructive" size="xs" onClick={() => handleStopBot(bot.id)} title="Stop bot">
-                            STOP
-                          </Button>
-                        )}
-                      </div>
-                    </DataTableCell>
-                  </DataTableRow>
-                  );
-                })
+                    bot={bot}
+                    pos={positions[bot.symbol]}
+                    selected={selectedBotId === bot.id}
+                    agentInsights={agentInsights}
+                    onSelect={selectBot}
+                    onPause={handlePauseBot}
+                    onResume={handleResumeBot}
+                    onStop={handleStopBot}
+                    onSetStopLoss={handleSetBotStopLoss}
+                    onSetTakeProfit={handleSetBotTakeProfit}
+                  />
+                ))
               )}
             </DataTableBody>
           </DataTableRoot>

@@ -3,6 +3,7 @@ import {
   formatCooloffRemaining,
   remainingCooloffSec,
   riskHoldBadgeLabel,
+  effectiveRiskHold,
 } from './botRiskHold';
 
 describe('botRiskHold', () => {
@@ -40,5 +41,40 @@ describe('botRiskHold', () => {
       consecutive_losses: 5,
       max_consecutive_losses: 5,
     })).toBe('LOSS STREAK · 5/5');
+  });
+
+  it('effectiveRiskHold drops expired cooloff', () => {
+    const hold = {
+      kind: 'cooloff',
+      cooloff_until: '2026-07-10T11:59:00.000Z',
+      remaining_sec: 0,
+    };
+    expect(effectiveRiskHold(hold)).toBeNull();
+    expect(riskHoldBadgeLabel(hold)).toBeNull();
+  });
+
+  it('effectiveRiskHold keeps active cooloff and streak', () => {
+    expect(effectiveRiskHold({
+      kind: 'cooloff',
+      cooloff_until: '2026-07-10T12:01:00.000Z',
+    })?.kind).toBe('cooloff');
+    expect(effectiveRiskHold({
+      kind: 'streak_limit',
+      consecutive_losses: 5,
+      max_consecutive_losses: 5,
+    })?.kind).toBe('streak_limit');
+    expect(effectiveRiskHold({
+      kind: 'drawdown',
+      drawdown_pct: 15,
+      max_drawdown_pct: 10,
+    })?.kind).toBe('drawdown');
+  });
+
+  it('builds drawdown badge label', () => {
+    expect(riskHoldBadgeLabel({
+      kind: 'drawdown',
+      drawdown_pct: 15,
+      max_drawdown_pct: 10,
+    })).toBe('MAX DD · 15%/10%');
   });
 });

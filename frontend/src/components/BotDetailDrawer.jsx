@@ -60,7 +60,7 @@ import {
 import BotRiskHoldBadge from './BotRiskHoldBadge';
 import {
   riskHoldDetailMessage,
-  useRiskHoldRemaining,
+  useEffectiveRiskHold,
 } from '@/lib/botRiskHold';
 
 const DRAWER_WIDTH_KEY = 'terminal_bot_drawer_width';
@@ -185,10 +185,10 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const trades = botDetail?.trades ?? [];
   const snapshots = botDetail?.snapshots ?? [];
   const activeBots = useStore((s) => s.activeBots);
-  const riskHold = botDetail?.risk_hold
+  const rawRiskHold = botDetail?.risk_hold
     ?? activeBots.find((b) => b.id === bot?.id)?.risk_hold
     ?? null;
-  const cooloffRemaining = useRiskHoldRemaining(riskHold?.kind === 'cooloff' ? riskHold : null);
+  const { hold: riskHold, remaining: cooloffRemaining } = useEffectiveRiskHold(rawRiskHold);
   const riskHoldMessage = riskHoldDetailMessage(riskHold, cooloffRemaining);
   const strategyMeta = bot ? getStrategyMeta(bot.strategy) : null;
   const loading = open && selectedBotId && !bot;
@@ -399,7 +399,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 <Badge variant={bot.status === 'RUNNING' ? 'buy' : 'secondary'} className="shrink-0">
                   {bot.status}
                 </Badge>
-                <BotRiskHoldBadge hold={riskHold} />
+                <BotRiskHoldBadge hold={riskHold} remainingSec={cooloffRemaining} />
               </>
             ) : (
               <span className="text-muted-foreground">Bot detail</span>
@@ -469,13 +469,17 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
 
         {riskHoldMessage && (
           <Alert
-            variant={riskHold?.kind === 'streak_limit' ? 'destructive' : 'default'}
+            variant={riskHold?.kind === 'cooloff' ? 'default' : 'destructive'}
             className="bot-detail-drawer__risk-hold mx-4 mb-2"
           >
             <Snowflake className="size-4" aria-hidden />
             <AlertTitle className="flex flex-wrap items-center gap-2">
-              {riskHold?.kind === 'cooloff' ? 'Cooling off' : 'Loss streak hold'}
-              <BotRiskHoldBadge hold={riskHold} />
+              {riskHold?.kind === 'cooloff'
+                ? 'Cooling off'
+                : riskHold?.kind === 'drawdown'
+                  ? 'Max drawdown hold'
+                  : 'Loss streak hold'}
+              <BotRiskHoldBadge hold={riskHold} remainingSec={cooloffRemaining} />
             </AlertTitle>
             <AlertDescription>{riskHoldMessage}</AlertDescription>
           </Alert>

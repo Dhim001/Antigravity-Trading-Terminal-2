@@ -73,6 +73,25 @@ export async function fetchMassiveFeedHealth() {
   return apiRequest('/health/massive');
 }
 
+/** GET /api/v1/market/footprint — fetch aggregated footprint volume heatmap */
+export async function fetchFootprint(symbol, from_ts, to_ts, price_step, time_bucket_ms) {
+  const query = new URLSearchParams({
+    symbol,
+    from_ts: Math.floor(from_ts),
+    to_ts: Math.floor(to_ts),
+    price_step,
+    time_bucket_ms: Math.floor(time_bucket_ms),
+  });
+  const res = await apiRequest(`/api/v1/market/footprint?${query.toString()}`);
+  return res?.ok && res.footprint ? res.footprint : [];
+}
+
+/** POST /api/v1/journal/briefing/generate — trigger the daily briefing agent */
+export async function generateBriefing() {
+  const res = await apiRequest('/api/v1/journal/briefing/generate', { method: 'POST', timeoutMs: 60000 });
+  return res;
+}
+
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');
@@ -298,34 +317,26 @@ export async function fetchOptimizationRun(runId) {
 }
 
 export async function getOptimizationRun(runId) {
-  const res = await fetch(`${API_BASE_URL}/api/v1/backtest/optimizations/${runId}`, { headers: getHeaders() });
-  if (!res.ok) throw new Error('Failed to fetch optimization run');
-  return res.json();
+  const body = await apiRequest(`/api/v1/backtest/optimizations/${encodeURIComponent(runId)}`);
+  if (!body?.ok || !body?.run) throw new Error(body?.error || 'Failed to fetch optimization run');
+  return body.run;
 }
 
 export async function fetchWorkspaces() {
-  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces`, { headers: getHeaders() });
-  if (!res.ok) throw new Error('Failed to fetch workspaces');
-  return res.json();
+  return apiRequest('/api/v1/workspaces');
 }
 
 export async function saveWorkspace(id, name, state) {
-  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces`, {
+  return apiRequest('/api/v1/workspaces', {
     method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ id, name, state }),
+    body: { id, name, state },
   });
-  if (!res.ok) throw new Error('Failed to save workspace');
-  return res.json();
 }
 
 export async function deleteWorkspace(id) {
-  const res = await fetch(`${API_BASE_URL}/api/v1/workspaces/${id}`, {
+  return apiRequest(`/api/v1/workspaces/${encodeURIComponent(id)}`, {
     method: 'DELETE',
-    headers: getHeaders(),
   });
-  if (!res.ok) throw new Error('Failed to delete workspace');
-  return res.json();
 }
 
 /** GET /api/v1/bots/calibration — closed-trade win rates by setup bucket. */

@@ -39,14 +39,60 @@ def _parse_event_ts(ts) -> datetime | None:
             return datetime.fromtimestamp(float(ts), tz=timezone.utc)
         if isinstance(ts, str):
             raw = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
-            return datetime.fromisoformat(raw)
+            dt = datetime.fromisoformat(raw)
+            # SQLite CURRENT_TIMESTAMP is UTC without tzinfo — treat naive as UTC.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
     except (TypeError, ValueError, OSError):
         return None
     return None
 
 
+def _resolve_bot_total_pnl(bot: dict, total_pnl: float | None = None) -> float:
+    if total_pnl is not None:
+        return float(total_pnl)
+    return float(bot.get("total_pnl") or bot.get("pnl") or 0)
+
+
+def _compute_drawdown_hold(bot: dict, total_pnl: float | None = None) -> dict | None:
+    """Return drawdown circuit-breaker hold when cumulative loss exceeds the limit."""
+    cfg = RiskGate._parse_bot_config(bot)
+    max_dd_pct = float(cfg.get("max_drawdown_pct", BOT_MAX_DRAWDOWN_PCT))
+    if max_dd_pct <= 0:
+        return None
+
+    allocation = float(bot.get("allocation") or 0)
+    if allocation <= 0:
+        return None
+
+    pnl = _resolve_bot_total_pnl(bot, total_pnl)
+    if pnl >= 0:
+        return None
+
+    dd_pct = abs(pnl) / allocation * 100.0
+    if dd_pct < max_dd_pct:
+        return None
+
+    block_reason = (
+        f"Max drawdown circuit breaker: bot DD {dd_pct:.1f}% "
+        f"exceeds limit {max_dd_pct:.1f}%. Auto-paused."
+    )
+    return {
+        "kind": "drawdown",
+        "drawdown_pct": round(dd_pct, 2),
+        "max_drawdown_pct": max_dd_pct,
+        "total_pnl": round(pnl, 2),
+        "reason": f"Drawdown {dd_pct:.1f}% / {max_dd_pct:.1f}%",
+        "block_reason": block_reason,
+    }
+
+
 def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | None:
-    """Active entry hold for UI — loss streak limit or post-loss cooloff."""
+    """Active entry hold for UI — streak limit, post-loss cooloff, or max drawdown.
+
+    Cooloff is shown for RUNNING and PAUSED so a manual pause does not hide the timer.
+    """
     bot_id = bot.get("id", "")
     status = str(bot.get("status") or "").upper()
     if not bot_id or status not in ("RUNNING", "PAUSED"):
@@ -55,8 +101,6 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
     cfg = RiskGate._parse_bot_config(bot)
     max_streak = int(cfg.get("max_consecutive_losses", BOT_MAX_CONSECUTIVE_LOSSES))
     cooloff_sec = int(cfg.get("loss_cooloff_sec", BOT_LOSS_COOLOFF_SEC))
-    if max_streak <= 0 and cooloff_sec <= 0:
-        return None
 
     from app.services.bots import analytics as bot_analytics
 
@@ -75,7 +119,7 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
             "block_reason": block_reason,
         }
 
-    if cooloff_sec > 0 and streak > 0 and status == "RUNNING":
+    if cooloff_sec > 0 and streak > 0:
         last_exit_ts = bot_analytics.last_exit_timestamp(bot_id)
         exit_dt = _parse_event_ts(last_exit_ts)
         if exit_dt is not None:
@@ -103,7 +147,7 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
                     "block_reason": block_reason,
                 }
 
-    return None
+    return _compute_drawdown_hold(bot, total_pnl)
 
 
 class RiskGate:
@@ -335,33 +379,10 @@ class RiskGate:
     # ── Max drawdown circuit breaker ──────────────────────────────────────
 
     def _check_max_drawdown(self, bot: dict) -> RiskDecision | None:
-        """Block entries if the bot's cumulative drawdown exceeds BOT_MAX_DRAWDOWN_PCT.
-
-        Looks at the bot's total PnL relative to its allocation.  If cumulative
-        losses exceed the configured percentage, the bot is paused.
-        """
-        bot_cfg = self._parse_bot_config(bot)
-        max_dd_pct = float(
-            bot_cfg.get("max_drawdown_pct", BOT_MAX_DRAWDOWN_PCT)
-        )
-        if max_dd_pct <= 0:
-            return None
-
-        allocation = float(bot.get("allocation") or 0)
-        if allocation <= 0:
-            return None
-
-        total_pnl = float(bot.get("total_pnl") or bot.get("pnl") or 0)
-        if total_pnl >= 0:
-            return None  # no drawdown
-
-        dd_pct = abs(total_pnl) / allocation * 100.0
-        if dd_pct >= max_dd_pct:
-            return RiskDecision(
-                False,
-                f"Max drawdown circuit breaker: bot DD {dd_pct:.1f}% "
-                f"exceeds limit {max_dd_pct:.1f}%. Auto-paused.",
-            )
+        """Block entries if the bot's cumulative drawdown exceeds BOT_MAX_DRAWDOWN_PCT."""
+        hold = _compute_drawdown_hold(bot)
+        if hold and hold.get("block_reason"):
+            return RiskDecision(False, hold["block_reason"])
         return None
 
     # ── Per-symbol bot concentration ─────────────────────────────────────

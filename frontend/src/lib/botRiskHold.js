@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-/** @typedef {{ kind: 'cooloff' | 'streak_limit', reason?: string, remaining_sec?: number, cooloff_until?: string, consecutive_losses?: number, max_consecutive_losses?: number }} BotRiskHold */
+/** @typedef {{ kind: 'cooloff' | 'streak_limit' | 'drawdown', reason?: string, remaining_sec?: number, cooloff_until?: string, consecutive_losses?: number, max_consecutive_losses?: number, drawdown_pct?: number, max_drawdown_pct?: number, total_pnl?: number, block_reason?: string }} BotRiskHold */
 
 export function formatCooloffRemaining(totalSec) {
   const sec = Math.max(0, Math.floor(Number(totalSec) || 0));
@@ -28,6 +28,18 @@ export function remainingCooloffSec(hold) {
   return Math.max(0, Number(hold.remaining_sec) || 0);
 }
 
+/**
+ * Drop expired cooloff holds client-side so row tint / badges clear without
+ * waiting for the next bots_update.
+ * @param {BotRiskHold | null | undefined} hold
+ * @returns {BotRiskHold | null}
+ */
+export function effectiveRiskHold(hold) {
+  if (!hold?.kind) return null;
+  if (hold.kind === 'cooloff' && remainingCooloffSec(hold) <= 0) return null;
+  return hold;
+}
+
 /** Live countdown for cooloff holds (ticks every second). */
 export function useRiskHoldRemaining(hold) {
   const [remaining, setRemaining] = useState(() => remainingCooloffSec(hold));
@@ -46,32 +58,56 @@ export function useRiskHoldRemaining(hold) {
   return remaining;
 }
 
+/**
+ * Single hook for UI: effective hold + live remaining seconds.
+ * @param {BotRiskHold | null | undefined} hold
+ */
+export function useEffectiveRiskHold(hold) {
+  const remaining = useRiskHoldRemaining(hold?.kind === 'cooloff' ? hold : null);
+  if (!hold?.kind) return { hold: null, remaining: 0 };
+  if (hold.kind === 'cooloff' && remaining <= 0) {
+    return { hold: null, remaining: 0 };
+  }
+  return { hold, remaining };
+}
+
 export function riskHoldBadgeLabel(hold, remainingSec = null) {
-  if (!hold?.kind) return null;
-  if (hold.kind === 'cooloff') {
-    const rem = remainingSec ?? remainingCooloffSec(hold);
+  const active = effectiveRiskHold(hold);
+  if (!active?.kind) return null;
+  if (active.kind === 'cooloff') {
+    const rem = remainingSec ?? remainingCooloffSec(active);
     if (rem <= 0) return null;
     return `COOLING OFF · ${formatCooloffRemaining(rem)}`;
   }
-  if (hold.kind === 'streak_limit') {
-    const cur = hold.consecutive_losses ?? '?';
-    const max = hold.max_consecutive_losses ?? '?';
+  if (active.kind === 'streak_limit') {
+    const cur = active.consecutive_losses ?? '?';
+    const max = active.max_consecutive_losses ?? '?';
     return `LOSS STREAK · ${cur}/${max}`;
   }
-  return hold.reason || null;
+  if (active.kind === 'drawdown') {
+    const dd = active.drawdown_pct ?? '?';
+    const max = active.max_drawdown_pct ?? '?';
+    return `MAX DD · ${dd}%/${max}%`;
+  }
+  return active.reason || null;
 }
 
 export function riskHoldDetailMessage(hold, remainingSec = null) {
-  if (!hold?.kind) return null;
-  if (hold.kind === 'cooloff') {
-    const rem = remainingSec ?? remainingCooloffSec(hold);
+  const active = effectiveRiskHold(hold);
+  if (!active?.kind) return null;
+  if (active.kind === 'cooloff') {
+    const rem = remainingSec ?? remainingCooloffSec(active);
     if (rem <= 0) return null;
-    const losses = hold.consecutive_losses ?? 0;
+    const losses = active.consecutive_losses ?? 0;
     return `Cooling off after ${losses} consecutive loss${losses === 1 ? '' : 'es'}. New entries resume in ${formatCooloffRemaining(rem)}.`;
   }
-  if (hold.kind === 'streak_limit') {
-    return hold.block_reason
-      || `Loss streak limit reached (${hold.consecutive_losses}/${hold.max_consecutive_losses}). Resume manually when ready.`;
+  if (active.kind === 'streak_limit') {
+    return active.block_reason
+      || `Loss streak limit reached (${active.consecutive_losses}/${active.max_consecutive_losses}). Resume alone will re-pause until the streak clears or the limit is raised.`;
   }
-  return hold.reason || null;
+  if (active.kind === 'drawdown') {
+    return active.block_reason
+      || `Max drawdown reached (${active.drawdown_pct}% of allocation vs ${active.max_drawdown_pct}% limit). Resume alone will re-pause until PnL recovers or the limit is raised.`;
+  }
+  return active.reason || null;
 }

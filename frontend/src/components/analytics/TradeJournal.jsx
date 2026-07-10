@@ -67,11 +67,15 @@ function JournalEditor({ entry, onSave, onCancel }) {
   );
 }
 
+import { generateBriefing } from '../../api/endpoints';
+import { toast } from 'sonner';
+
 export default function TradeJournal({ className = '', seedEntry = null, enabled = true }) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(null);
   const [showNew, setShowNew] = useState(false);
-  const { entries, saveEntry, deleteEntry } = useJournal(
+  const [generating, setGenerating] = useState(false);
+  const { entries, saveEntry, deleteEntry, refresh } = useJournal(
     { query: query || undefined, limit: 100 },
     { enabled },
   );
@@ -91,6 +95,26 @@ export default function TradeJournal({ className = '', seedEntry = null, enabled
     setEditing(seedEntry || {});
     setShowNew(true);
   };
+  
+  const handleGenerateBriefing = async () => {
+    setGenerating(true);
+    try {
+      const res = await generateBriefing();
+      if (res?.ok) {
+        const preview = typeof res.briefing === 'string'
+          ? res.briefing.split('\n').find((l) => l.trim())?.slice(0, 120)
+          : null;
+        toast.success(preview ? `Daily Briefing: ${preview}` : 'Daily Briefing generated');
+        if (refresh) refresh();
+      } else {
+        toast.error(`Briefing failed: ${res?.error || 'Unknown error'}`);
+      }
+    } catch (e) {
+      toast.error(`Briefing failed: ${e.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <div className={cn('flex flex-col gap-2', className)}>
@@ -106,6 +130,9 @@ export default function TradeJournal({ className = '', seedEntry = null, enabled
             className="h-7 pl-7 text-xs"
           />
         </div>
+        <Button variant="outline" size="sm" onClick={handleGenerateBriefing} disabled={generating} title="Generate Daily Briefing">
+          {generating ? <span className="animate-pulse flex items-center gap-1"><BookOpen size={12} /> Gen...</span> : 'Briefing'}
+        </Button>
         <Button variant="outline" size="sm" onClick={startNew}>
           <Plus size={12} /> New
         </Button>
@@ -127,13 +154,19 @@ export default function TradeJournal({ className = '', seedEntry = null, enabled
             <div className="mb-1 flex items-center gap-2">
               <span className="font-semibold num-mono">{entry.symbol || '—'}</span>
               {(entry.tags || []).map((t) => (
-                <Badge key={t} variant="secondary" className="h-4 px-1 text-[0.6rem]">{t}</Badge>
+                <Badge key={t} variant={t === 'daily-briefing' ? 'default' : 'secondary'} className="h-4 px-1 text-[0.6rem]">{t}</Badge>
               ))}
               <Button variant="ghost" size="icon" className="ml-auto h-6 w-6" onClick={() => deleteEntry(entry.id)}>
                 <Trash2 size={12} />
               </Button>
             </div>
-            {entry.note && <p className="text-foreground/90">{entry.note}</p>}
+            {entry.note && (
+               (entry.tags || []).includes('daily-briefing') ? (
+                 <pre className="text-foreground/90 whitespace-pre-wrap font-sans text-xs bg-muted/20 p-2 rounded-md">{entry.note}</pre>
+               ) : (
+                 <p className="text-foreground/90">{entry.note}</p>
+               )
+            )}
             {entry.lesson && <p className="mt-1 text-muted-foreground italic">{entry.lesson}</p>}
             {entry.screenshot_url && (
               <img src={entry.screenshot_url} alt="" className="mt-2 max-h-24 rounded object-contain" />

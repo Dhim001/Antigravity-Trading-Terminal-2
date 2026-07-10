@@ -57,21 +57,21 @@ export function queueMarketUpdate(data, apply) {
   }
 
   if (rafId != null) return;
-  rafId = requestAnimationFrame(() => {
+  rafId = setTimeout(() => {
     rafId = null;
     const batch = pending;
     pending = null;
     if (batch && Object.keys(batch).length > 0) {
       apply(batch);
     }
-  });
+  }, 250);
 }
 
 /** @internal */
 export function resetMarketUpdateBatchForTests() {
   pending = null;
   if (rafId != null) {
-    cancelAnimationFrame(rafId);
+    clearTimeout(rafId);
     rafId = null;
   }
 }

@@ -221,7 +221,21 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTradeHistory: (data) => {
     const rawTrades = Array.isArray(data) ? data : (data.trades || []);
-    const trades = rawTrades.map(t => {
+    const trades = [];
+    let wins = 0;
+    let losses = 0;
+    let total_sells = 0;
+    let total_pnl = 0;
+    let totalWinPnl = 0;
+    let totalLossPnl = 0;
+    let best_trade = 0;
+    let worst_trade = 0;
+    let total_fills = 0;
+    let gross_volume = 0;
+
+    const limit = Math.min(rawTrades.length, MAX_TRADE_HISTORY);
+    for (let i = 0; i < limit; i++) {
+      const t = rawTrades[i];
       let ts = t.timestamp;
       if (typeof ts === 'number') {
         ts = ts < 10000000000 ? ts * 1000 : ts;
@@ -231,34 +245,37 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       } else {
         ts = Date.now();
       }
-      return { ...t, timestamp: ts };
-    }).slice(0, MAX_TRADE_HISTORY);
+      
+      const trade = { ...t, timestamp: ts };
+      trades.push(trade);
 
-    const filledTrades = trades.filter(t => t.status === 'FILLED');
-    const sellsWithPnl = filledTrades.filter(t => t.side === 'SELL' && t.realized_pnl != null);
+      if (trade.status === 'FILLED') {
+        total_fills++;
+        gross_volume += (trade.trade_value || 0);
 
-    const winsList = sellsWithPnl.filter(t => t.realized_pnl > 0);
-    const lossesList = sellsWithPnl.filter(t => t.realized_pnl < 0);
+        if (trade.side === 'SELL' && trade.realized_pnl != null) {
+          total_sells++;
+          const pnl = trade.realized_pnl;
+          total_pnl += pnl;
+          
+          if (pnl > best_trade || total_sells === 1) best_trade = pnl;
+          if (pnl < worst_trade || total_sells === 1) worst_trade = pnl;
 
-    const wins = winsList.length;
-    const losses = lossesList.length;
-    const total_sells = sellsWithPnl.length;
+          if (pnl > 0) {
+            wins++;
+            totalWinPnl += pnl;
+          } else if (pnl < 0) {
+            losses++;
+            totalLossPnl += pnl;
+          }
+        }
+      }
+    }
+
     const win_rate = total_sells > 0 ? (wins / total_sells) * 100 : 0.0;
-
-    const total_pnl = sellsWithPnl.reduce((sum, t) => sum + t.realized_pnl, 0);
-
-    const totalWinPnl = winsList.reduce((sum, t) => sum + t.realized_pnl, 0);
-    const totalLossPnl = lossesList.reduce((sum, t) => sum + t.realized_pnl, 0);
     const profit_factor = Math.abs(totalLossPnl) > 0 ? (totalWinPnl / Math.abs(totalLossPnl)) : (totalWinPnl > 0 ? 99.9 : 0.0);
-
-    const best_trade = sellsWithPnl.reduce((max, t) => t.realized_pnl > max ? t.realized_pnl : max, 0.0);
-    const worst_trade = sellsWithPnl.reduce((min, t) => t.realized_pnl < min ? t.realized_pnl : min, 0.0);
-
     const avg_win = wins > 0 ? totalWinPnl / wins : 0.0;
     const avg_loss = losses > 0 ? totalLossPnl / losses : 0.0;
-
-    const total_fills = filledTrades.length;
-    const gross_volume = filledTrades.reduce((sum, t) => sum + (t.trade_value || 0), 0);
 
     set({
       tradeHistory: trades,
@@ -461,16 +478,17 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         const tickerFields = ['price', 'change_24h', 'volume_24h', 'high_24h', 'low_24h'];
         const tickerDirty = !prev || tickerFields.some((k) => prev[k] !== info[k]);
         if (tickerDirty) {
+          if (!tickerChanged) {
+            nextTickers = { ...tickerData };
+            tickerChanged = true;
+          }
           if (prev) {
+            const nextPrev = { ...prev };
             for (const k of tickerFields) {
-              if (info[k] !== undefined) prev[k] = info[k];
+              if (info[k] !== undefined) nextPrev[k] = info[k];
             }
-            nextTickers = tickerData;
+            nextTickers[symbol] = nextPrev;
           } else {
-            if (!tickerChanged) {
-              nextTickers = { ...tickerData };
-              tickerChanged = true;
-            }
             nextTickers[symbol] = {
               price: info.price,
               change_24h: info.change_24h,
@@ -479,7 +497,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
               low_24h: info.low_24h,
             };
           }
-          tickerChanged = true;
         }
 
         if (info.price !== undefined) {

@@ -133,7 +133,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
         else if (data.level === 'SUCCESS') toast.success(data.message);
         else if (data.level === 'WARN' && /daily loss|blocked/i.test(data.message)) {
           // Cooloff/streak holds are shown on the Active Bots panel — skip repeat toasts.
-          if (!/Cooling-off|Consecutive-loss streak|Auto-paused after loss streak/i.test(data.message)) {
+          if (!/Cooling-off|Consecutive-loss streak|Auto-paused after loss streak|Max drawdown circuit breaker|Auto-paused at max drawdown/i.test(data.message)) {
             toast.warning(data.message);
           }
         }
