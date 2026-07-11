@@ -1070,11 +1070,12 @@ async def _binding_handler(request: Request) -> JSONResponse:
 
 
 async def market_footprint_handler(request: Request) -> JSONResponse:
-    from app.services.archive.query import query_footprint
+    from app.services.archive.query import query_footprint_detailed
+
     symbol = request.query_params.get("symbol")
     if not symbol:
         return JSONResponse({"ok": False, "error": "symbol is required"}, status_code=400)
-    
+
     try:
         from_ts = int(request.query_params.get("from_ts", 0))
         to_ts = int(request.query_params.get("to_ts", 0))
@@ -1082,18 +1083,33 @@ async def market_footprint_handler(request: Request) -> JSONResponse:
         time_bucket_ms = int(request.query_params.get("time_bucket_ms", 60000))
     except ValueError:
         return JSONResponse({"ok": False, "error": "invalid numeric parameters"}, status_code=400)
-        
-    import asyncio
-    try:
-        footprint = await asyncio.to_thread(
-            query_footprint, 
-            symbol.upper(), 
-            from_ts, 
-            to_ts, 
-            price_step, 
-            time_bucket_ms
+
+    if price_step <= 0 or time_bucket_ms <= 0:
+        return JSONResponse(
+            {"ok": False, "error": "price_step and time_bucket_ms must be > 0"},
+            status_code=400,
         )
-        return JSONResponse({"ok": True, "footprint": footprint})
+
+    import asyncio
+
+    try:
+        footprint, meta = await asyncio.to_thread(
+            query_footprint_detailed,
+            symbol.upper(),
+            from_ts,
+            to_ts,
+            price_step,
+            time_bucket_ms,
+        )
+        if meta.get("error"):
+            return JSONResponse(
+                {"ok": False, "error": meta["error"], "meta": meta},
+                status_code=500,
+            )
+        body: dict = {"ok": True, "footprint": footprint, "meta": meta}
+        if meta.get("range_note"):
+            body["message"] = meta["range_note"]
+        return JSONResponse(body)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

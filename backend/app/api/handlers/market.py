@@ -5,7 +5,7 @@ from app.api.protocol import Action
 from app.api.responses import send_error, send_history_update, send_to
 from app.api.outbound import history_update, orderbook_update, ticks_update
 from app.api.router import route
-from app.services.archive.query import query_market_history
+from app.services.archive.query import query_market_history_detailed
 from app.config import (
     ARCHIVE_RETENTION_1M_DAYS,
     MARKET_CANDLE_SNAPSHOT_LIMIT,
@@ -115,7 +115,15 @@ async def get_market_history(ctx: RequestContext) -> None:
     to_ts = _parse_ts(ctx.message.get("to"))
     interval = ctx.message.get("interval") or "auto"
 
-    bars = query_market_history(symbol, from_ts=from_ts, to_ts=to_ts, interval=interval)
+    from app.services.archive.query import query_market_history_detailed
+
+    bars, qmeta = query_market_history_detailed(
+        symbol,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        interval=interval,
+        purpose="ui",
+    )
     payload = history_update({symbol: bars})
     meta = {
         "symbol": symbol,
@@ -124,6 +132,9 @@ async def get_market_history(ctx: RequestContext) -> None:
         "interval": interval,
         "count": len(bars),
         "retention_1m_days": ARCHIVE_RETENTION_1M_DAYS,
+        "purpose": "ui",
+        "truncated": bool(qmeta.get("truncated")),
+        "limit": qmeta.get("limit"),
     }
     if bars:
         meta["oldest"] = bars[0]["time"]
@@ -134,7 +145,7 @@ async def get_market_history(ctx: RequestContext) -> None:
 
 @route(Action.GET_MARKET_TICKS, tags=["market"])
 async def get_market_ticks(ctx: RequestContext) -> None:
-    from app.config import ARCHIVE_TICKS_ENABLED
+    from app.config import ARCHIVE_TICKS_ENABLED, ARCHIVE_TICK_QUERY_LIMIT
     from app.services.archive.tick_writer import query_ticks
 
     if not ARCHIVE_TICKS_ENABLED:
@@ -159,8 +170,18 @@ async def get_market_ticks(ctx: RequestContext) -> None:
     now_ms = int(time.time() * 1000)
     from_ms = _parse_ms(ctx.message.get("from"), now_ms - 3600_000)
     to_ms = _parse_ms(ctx.message.get("to"), now_ms)
-    ticks = query_ticks(symbol, from_ms, to_ms)
+    tick_meta: dict = {}
+    ticks = query_ticks(
+        symbol, from_ms, to_ms, limit=ARCHIVE_TICK_QUERY_LIMIT, result_meta=tick_meta
+    )
     await send_to(ctx, ticks_update(
         {symbol: ticks},
-        meta={"symbol": symbol, "from_ms": from_ms, "to_ms": to_ms, "count": len(ticks)},
+        meta={
+            "symbol": symbol,
+            "from_ms": from_ms,
+            "to_ms": to_ms,
+            "count": len(ticks),
+            "truncated": bool(tick_meta.get("truncated")),
+            "limit": tick_meta.get("limit"),
+        },
     ))

@@ -36,8 +36,10 @@ def resolve_max_trials(sweep: dict | None, sweep_mode: str) -> int:
     env_cap = BACKTEST_SWEEP_MAX_TRIALS if mode != "grid" else BACKTEST_SWEEP_MAX_GRID
 
     requested = int(sweep.get("max_combos") or legacy_cap)
-    max_trials = int(sweep.get("max_trials") or env_cap)
-    return max(1, min(requested, max_trials, env_cap))
+    has_budget = "max_trials" in sweep or "time_budget_sec" in sweep
+    effective_cap = env_cap if has_budget else legacy_cap
+    max_trials = int(sweep.get("max_trials") or effective_cap)
+    return max(1, min(requested, max_trials, effective_cap))
 
 
 def resolve_trial_budget(sweep: dict | None) -> dict[str, Any]:

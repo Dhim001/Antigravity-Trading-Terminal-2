@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from app.config import ARCHIVE_ENABLED, ARCHIVE_RETENTION_1M_DAYS
 from app.services.archive.query import query_market_history
@@ -11,30 +11,50 @@ from app.services.market.resample import resample_candles_for_timeframe
 from app.services.market.timeframes import is_valid_timeframe, normalize_timeframe, timeframe_to_secs
 
 
-def merge_candle_series(*series: list[dict], align_secs: int = 60) -> list[dict]:
-    """Merge multiple OHLCV lists; later series win on duplicate timestamps."""
+def fold_candles_into(
+    by_time: dict[int, dict],
+    candles: Iterable[Mapping[str, Any]] | None,
+    *,
+    align_secs: int = 60,
+) -> None:
+    """Fold OHLCV bars into a time→bar map (later bars win on the same aligned ts)."""
+    if not candles:
+        return
     step = max(1, int(align_secs))
+    for bar in candles:
+        if bar.get("time") is None:
+            continue
+        t = (int(bar["time"]) // step) * step
+        by_time[t] = {
+            "time": t,
+            "open": float(bar["open"]),
+            "high": float(bar["high"]),
+            "low": float(bar["low"]),
+            "close": float(bar["close"]),
+            "volume": float(bar.get("volume") or 0),
+        }
 
-    def _align(t: int) -> int:
-        return (int(t) // step) * step
 
+def materialize_candle_window(
+    by_time: dict[int, dict],
+    *,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+) -> list[dict]:
+    """Materialize a sorted candle list from a merge map, optionally windowed."""
+    if from_ts is None and to_ts is None:
+        return [by_time[t] for t in sorted(by_time)]
+    lo = from_ts if from_ts is not None else -(1 << 62)
+    hi = to_ts if to_ts is not None else (1 << 62)
+    return [by_time[t] for t in sorted(by_time) if lo <= t <= hi]
+
+
+def merge_candle_series(*series: Iterable[Mapping[str, Any]] | None, align_secs: int = 60) -> list[dict]:
+    """Merge multiple OHLCV series; later series win on duplicate timestamps."""
     by_time: dict[int, dict] = {}
     for candles in series:
-        if not candles:
-            continue
-        for bar in candles:
-            if bar.get("time") is None:
-                continue
-            t = _align(bar["time"])
-            by_time[t] = {
-                "time": t,
-                "open": float(bar["open"]),
-                "high": float(bar["high"]),
-                "low": float(bar["low"]),
-                "close": float(bar["close"]),
-                "volume": float(bar.get("volume") or 0),
-            }
-    return [by_time[t] for t in sorted(by_time)]
+        fold_candles_into(by_time, candles, align_secs=align_secs)
+    return materialize_candle_window(by_time)
 
 
 def resolve_candles_for_range(
@@ -66,8 +86,11 @@ def resolve_candles_for_range(
         live = feed.get_candles(symbol) or []
 
     archived: list[dict] = []
+    archive_meta: dict[str, Any] = {}
     if ARCHIVE_ENABLED:
-        archived = query_market_history(symbol, from_ts, to_ts, interval=interval)
+        archived = query_market_history(
+            symbol, from_ts, to_ts, interval=interval, result_meta=archive_meta
+        )
 
     merged = merge_candle_series(archived, live)
     windowed = [b for b in merged if from_ts <= b["time"] <= to_ts]
@@ -81,7 +104,10 @@ def resolve_candles_for_range(
         "archived_bars": len(archived),
         "interval": interval,
         "archive_enabled": ARCHIVE_ENABLED,
+        "truncated": bool(archive_meta.get("truncated")),
     }
+    if archive_meta.get("limit") is not None:
+        meta["archive_limit"] = archive_meta["limit"]
     if windowed:
         meta["oldest"] = windowed[0]["time"]
         meta["newest"] = windowed[-1]["time"]
@@ -154,6 +180,27 @@ def _attach_backtest_range_meta(
         )
 
 
+def _fold_broker_pages(
+    by_time: dict[int, dict],
+    symbol: str,
+    fetch_from: int,
+    fetch_to: int,
+    tf_key: str,
+    *,
+    align_secs: int,
+) -> int:
+    """Stream broker candle pages into ``by_time``. Returns pages folded."""
+    from app.services.archive.broker_fetch import iter_broker_tf_candle_pages
+
+    pages = 0
+    for page in iter_broker_tf_candle_pages(symbol, fetch_from, fetch_to, tf_key):
+        if not page:
+            continue
+        fold_candles_into(by_time, page, align_secs=align_secs)
+        pages += 1
+    return pages
+
+
 def _broker_fill_candles(
     symbol: str,
     local: list[dict],
@@ -162,9 +209,11 @@ def _broker_fill_candles(
     to_ts: int,
     timeframe: str,
 ) -> tuple[list[dict], str | None]:
-    """Fetch missing history from broker REST; merge with local (local wins on overlap)."""
-    from app.services.archive.broker_fetch import fetch_broker_tf_candles
+    """Fetch missing history from broker REST; stream-merge with local (local wins).
 
+    Remote pages fold into one time map as they arrive — no full remote list is
+    retained before merge. Only the final windowed series is materialized.
+    """
     requested_days = max(1, (to_ts - from_ts) // 86400)
     if _coverage_ok(local, requested_days):
         return local, None
@@ -183,14 +232,21 @@ def _broker_fill_candles(
         if newest >= to_ts - 2 * 86400 and oldest > from_ts + align:
             fetch_to = oldest
 
-    remote = fetch_broker_tf_candles(symbol, fetch_from, fetch_to, tf_key)
-    if not remote and (fetch_from, fetch_to) != (from_ts, to_ts):
-        remote = fetch_broker_tf_candles(symbol, from_ts, to_ts, tf_key)
-    if not remote:
+    by_time: dict[int, dict] = {}
+    pages = _fold_broker_pages(
+        by_time, symbol, fetch_from, fetch_to, tf_key, align_secs=align
+    )
+    if not pages and (fetch_from, fetch_to) != (from_ts, to_ts):
+        by_time.clear()
+        pages = _fold_broker_pages(
+            by_time, symbol, from_ts, to_ts, tf_key, align_secs=align
+        )
+    if not pages:
         return local, None
 
-    merged = merge_candle_series(remote, local, align_secs=align)
-    windowed = [b for b in merged if from_ts <= b["time"] <= to_ts]
+    # Local wins on overlap.
+    fold_candles_into(by_time, local, align_secs=align)
+    windowed = materialize_candle_window(by_time, from_ts=from_ts, to_ts=to_ts)
     return windowed, f"broker REST {tf_key}"
 
 

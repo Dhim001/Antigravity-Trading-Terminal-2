@@ -116,6 +116,11 @@ class _CursorWrapper:
     def fetchone(self):
         return self._cursor.fetchone()
 
+    def fetchmany(self, size: int | None = None):
+        if size is None:
+            return self._cursor.fetchmany()
+        return self._cursor.fetchmany(size)
+
     def fetchall(self):
         return self._cursor.fetchall()
 

@@ -88,7 +88,12 @@ export async function fetchFootprint(symbol, from_ts, to_ts, price_step, time_bu
     time_bucket_ms: Math.floor(time_bucket_ms),
   });
   const res = await apiRequest(`/api/v1/market/footprint?${query.toString()}`);
-  return res?.ok && res.footprint ? res.footprint : [];
+  if (!res?.ok) return { footprint: [], meta: null };
+  return {
+    footprint: Array.isArray(res.footprint) ? res.footprint : [],
+    meta: res.meta || null,
+    message: res.message || null,
+  };
 }
 
 /** POST /api/v1/journal/briefing/generate — trigger the daily briefing agent */

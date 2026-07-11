@@ -266,6 +266,46 @@ def _fetch_massive_aggs(
     return all_aggs
 
 
+def iter_massive_tf_candle_pages(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str = "1m",
+    *,
+    symbol_info: dict | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield OHLCV candle pages from Massive REST (one converted page at a time).
+
+    Peak RAM stays near one raw aggs page + one converted candle page — callers
+    that fold into a merge map never need a full remote list.
+    """
+    try:
+        tf = normalize_timeframe(timeframe)
+    except ValueError:
+        return
+    if tf == "tick":
+        return
+
+    multiplier, timespan = timeframe_to_massive_range(tf)
+    convert = aggs_to_candles if tf == "1m" else aggs_to_candles_native
+
+    for page in _iter_massive_agg_pages(
+        symbol,
+        from_ts,
+        to_ts,
+        multiplier=multiplier,
+        timespan=timespan,
+        symbol_info=symbol_info,
+    ):
+        candles: list[dict[str, Any]] = []
+        for c in convert(page):
+            t = int(c["time"])
+            if from_ts <= t <= to_ts:
+                candles.append(c)
+        if candles:
+            yield candles
+
+
 def fetch_massive_tf_candles(
     symbol: str,
     from_ts: int,
@@ -278,31 +318,13 @@ def fetch_massive_tf_candles(
 
     Converts each REST page to candles immediately so peak RAM stays near
     one page of aggs + the growing candle list (not aggs+candles of the full range).
+    Prefer ``iter_massive_tf_candle_pages`` when merging into resolve.
     """
-    try:
-        tf = normalize_timeframe(timeframe)
-    except ValueError:
-        return []
-    if tf == "tick":
-        return []
-
-    multiplier, timespan = timeframe_to_massive_range(tf)
-    convert = aggs_to_candles if tf == "1m" else aggs_to_candles_native
     candles: list[dict[str, Any]] = []
-
-    for page in _iter_massive_agg_pages(
-        symbol,
-        from_ts,
-        to_ts,
-        multiplier=multiplier,
-        timespan=timespan,
-        symbol_info=symbol_info,
+    for page in iter_massive_tf_candle_pages(
+        symbol, from_ts, to_ts, timeframe, symbol_info=symbol_info
     ):
-        for c in convert(page):
-            t = int(c["time"])
-            if from_ts <= t <= to_ts:
-                candles.append(c)
-
+        candles.extend(page)
     return candles
 
 
@@ -391,6 +413,7 @@ def fetch_broker_1m_bars(
     *,
     symbol_info: dict | None = None,
     prefer: str | None = None,
+    skip_massive: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Fetch 1m bars using the best available provider for the symbol/mode.
@@ -418,7 +441,7 @@ def fetch_broker_1m_bars(
         if rows:
             return rows
 
-    if MASSIVE_API_KEY or source == "massive":
+    if not skip_massive and (MASSIVE_API_KEY or source == "massive"):
         rows = fetch_massive_1m_bars(symbol, from_ts, to_ts, symbol_info=symbol_info)
         if rows:
             return rows
@@ -430,6 +453,86 @@ def fetch_broker_1m_bars(
         return fetch_alpaca_1m_bars(symbol, from_ts, to_ts)
 
     return []
+
+
+def iter_broker_tf_candle_pages(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str,
+    *,
+    symbol_info: dict | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield ephemeral OHLCV pages for backtest resolve merge.
+
+    Massive path streams page-by-page. On Massive miss (or no key), yields a
+    single non-Massive fallback batch so Massive is not fetched twice.
+    """
+    if to_ts <= from_ts:
+        return
+
+    try:
+        tf = normalize_timeframe(timeframe)
+    except ValueError:
+        return
+    if tf == "tick":
+        tf = "1m"
+
+    massive_tried = False
+    if MASSIVE_API_KEY:
+        massive_tried = True
+        any_page = False
+        for page in iter_massive_tf_candle_pages(
+            symbol, from_ts, to_ts, tf, symbol_info=symbol_info
+        ):
+            any_page = True
+            yield page
+        if any_page:
+            return
+
+    batch = _fetch_broker_tf_candles_fallback(
+        symbol,
+        from_ts,
+        to_ts,
+        tf,
+        symbol_info=symbol_info,
+        skip_massive=massive_tried,
+    )
+    if batch:
+        yield batch
+
+
+def _fetch_broker_tf_candles_fallback(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str,
+    *,
+    symbol_info: dict | None = None,
+    skip_massive: bool = False,
+) -> list[dict[str, Any]]:
+    """Non-streaming list fetch for the page iterator (Alpaca/Binance or Massive)."""
+    if timeframe != "1m":
+        return []
+
+    rows = fetch_broker_1m_bars(
+        symbol,
+        from_ts,
+        to_ts,
+        symbol_info=symbol_info,
+        skip_massive=skip_massive,
+    )
+    return [
+        {
+            "time": int(r["time"]),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": float(r.get("volume") or 0),
+        }
+        for r in rows
+    ]
 
 
 def fetch_broker_tf_candles(
@@ -445,39 +548,14 @@ def fetch_broker_tf_candles(
 
     Prefers Massive native aggs when configured. For 1m, falls back to the
     same broker chain as archive ingestion (Massive / Alpaca / Binance).
+    Prefer ``iter_broker_tf_candle_pages`` when merging into resolve.
     """
-    if to_ts <= from_ts:
-        return []
-
-    try:
-        tf = normalize_timeframe(timeframe)
-    except ValueError:
-        return []
-    if tf == "tick":
-        tf = "1m"
-
-    if MASSIVE_API_KEY:
-        candles = fetch_massive_tf_candles(
-            symbol, from_ts, to_ts, tf, symbol_info=symbol_info
-        )
-        if candles:
-            return candles
-
-    if tf != "1m":
-        return []
-
-    rows = fetch_broker_1m_bars(symbol, from_ts, to_ts, symbol_info=symbol_info)
-    return [
-        {
-            "time": int(r["time"]),
-            "open": float(r["open"]),
-            "high": float(r["high"]),
-            "low": float(r["low"]),
-            "close": float(r["close"]),
-            "volume": float(r.get("volume") or 0),
-        }
-        for r in rows
-    ]
+    candles: list[dict[str, Any]] = []
+    for page in iter_broker_tf_candle_pages(
+        symbol, from_ts, to_ts, timeframe, symbol_info=symbol_info
+    ):
+        candles.extend(page)
+    return candles
 
 
 def chunk_date_ranges(from_ts: int, to_ts: int, *, chunk_days: int = 30) -> list[tuple[int, int]]:

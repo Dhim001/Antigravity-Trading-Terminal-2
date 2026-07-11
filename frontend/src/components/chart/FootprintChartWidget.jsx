@@ -4,6 +4,7 @@ import { fetchFootprint } from '../../api/endpoints';
 
 export default function FootprintChartWidget({ symbol, fromTs, toTs, priceStep = 10, timeBucketMs = 60000 }) {
   const [data, setData] = useState([]);
+  const [rangeNote, setRangeNote] = useState(null);
   const [loading, setLoading] = useState(false);
   const containerRef = useRef(null);
   const chartInstanceRef = useRef(null);
@@ -15,7 +16,10 @@ export default function FootprintChartWidget({ symbol, fromTs, toTs, priceStep =
     setLoading(true);
     fetchFootprint(symbol, fromTs, toTs, priceStep, timeBucketMs).then((res) => {
       if (!active) return;
-      setData(res || []);
+      const cells = Array.isArray(res?.footprint) ? res.footprint : [];
+      setData(cells);
+      const note = res?.message || res?.meta?.range_note || null;
+      setRangeNote(note);
       setLoading(false);
     }).catch(err => {
       console.error("Footprint fetch error:", err);
@@ -171,6 +175,11 @@ export default function FootprintChartWidget({ symbol, fromTs, toTs, priceStep =
 
   return (
     <div className="w-full h-full relative bg-[#0d0e12]" style={{ minHeight: '300px' }}>
+      {rangeNote ? (
+        <div className="absolute top-1 left-2 right-2 z-10 text-[10px] text-amber-400/90 truncate pointer-events-none">
+          {rangeNote}
+        </div>
+      ) : null}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );

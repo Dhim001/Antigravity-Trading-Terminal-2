@@ -1,6 +1,9 @@
 /**
  * Client-side memory budgets — aligned with pro-terminal tiered buffers.
  * Hot: visible chart window; warm: per-symbol LRU; cold: server archive on pan.
+ *
+ * Keep these as hard caps (lists/LRU). Do not “stream” chart buffers.
+ * Full inventory + backend env caps: docs/MEMORY_16GB.md
  */
 
 /** In-memory 1m buffer cap per symbol (warm tier). */

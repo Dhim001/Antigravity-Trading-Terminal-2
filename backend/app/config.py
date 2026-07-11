@@ -233,6 +233,17 @@ ARCHIVE_TICKS_ENABLED = os.environ.get("ARCHIVE_TICKS_ENABLED", "false").lower()
 ARCHIVE_TICK_RETENTION_HOURS = int(os.environ.get("ARCHIVE_TICK_RETENTION_HOURS", "24"))
 ARCHIVE_TICK_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_TICK_FLUSH_INTERVAL", "30"))
 ARCHIVE_TICK_BATCH_MAX = int(os.environ.get("ARCHIVE_TICK_BATCH_MAX", "5000"))
+# Archive range reads: fetchmany batch for one-pass iterators (bars stay capped by LIMIT).
+ARCHIVE_QUERY_BATCH_SIZE = int(os.environ.get("ARCHIVE_QUERY_BATCH_SIZE", "2000"))
+# Default / backtest resolve cap (≈35d of 1m bars).
+ARCHIVE_QUERY_LIMIT = int(os.environ.get("ARCHIVE_QUERY_LIMIT", "50000"))
+# Chart / WS history pan — keep smaller than backtest resolve.
+ARCHIVE_QUERY_LIMIT_UI = int(os.environ.get("ARCHIVE_QUERY_LIMIT_UI", "10000"))
+ARCHIVE_TICK_QUERY_LIMIT = int(os.environ.get("ARCHIVE_TICK_QUERY_LIMIT", "10000"))
+# Footprint heatmap: time-chunked SQLite aggregates + hard caps (ms / cells).
+FOOTPRINT_MAX_RANGE_MS = int(os.environ.get("FOOTPRINT_MAX_RANGE_MS", str(24 * 3600 * 1000)))
+FOOTPRINT_CHUNK_MS = int(os.environ.get("FOOTPRINT_CHUNK_MS", str(60 * 60 * 1000)))
+FOOTPRINT_MAX_CELLS = int(os.environ.get("FOOTPRINT_MAX_CELLS", "50000"))
 
 # Data quality monitoring (stale feeds, candle gaps, abnormal spreads)
 DATA_QUALITY_ENABLED = os.environ.get("DATA_QUALITY_ENABLED", "true").lower() in (

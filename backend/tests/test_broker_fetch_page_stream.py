@@ -173,6 +173,19 @@ class TestMassivePageStream(unittest.TestCase):
             )
             self.assertEqual(bf.fetch_massive_tf_candles("BTCUSDT", 1, 100, "1m"), [])
 
+    def test_massive_miss_skips_second_massive_fetch(self) -> None:
+        """After Massive yields nothing, fallback must not re-call Massive."""
+        with patch.object(bf, "MASSIVE_API_KEY", "test-key"), patch.object(
+            bf, "iter_massive_tf_candle_pages", return_value=iter([])
+        ), patch.object(bf, "fetch_massive_1m_bars") as massive_1m, patch.object(
+            bf, "fetch_binance_1m_bars", return_value=[]
+        ), patch.object(bf, "fetch_alpaca_1m_bars", return_value=[]):
+            pages = list(
+                bf.iter_broker_tf_candle_pages("AAPL", 1_700_000_000, 1_700_100_000, "1m")
+            )
+            self.assertEqual(pages, [])
+            massive_1m.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -130,8 +130,8 @@ class ResolveBacktestLongHorizonTests(unittest.TestCase):
         ]
 
         with patch(
-            "app.services.archive.broker_fetch.fetch_broker_tf_candles",
-            return_value=remote,
+            "app.services.archive.broker_fetch.iter_broker_tf_candle_pages",
+            side_effect=lambda *a, **k: iter([remote]),
         ) as mock_fetch:
             candles, meta = resolve_backtest_candles(
                 "AAPL", _Feed(), days=90, timeframe="5m"
@@ -159,8 +159,8 @@ class ResolveBacktestLongHorizonTests(unittest.TestCase):
         ]
 
         with patch(
-            "app.services.archive.broker_fetch.fetch_broker_tf_candles",
-            return_value=older,
+            "app.services.archive.broker_fetch.iter_broker_tf_candle_pages",
+            side_effect=lambda *a, **k: iter([older]),
         ):
             candles, meta = resolve_backtest_candles(
                 "AAPL", _Feed(), days=90, timeframe="1m"
@@ -179,8 +179,8 @@ class ResolveBacktestLongHorizonTests(unittest.TestCase):
                 return []
 
         with patch(
-            "app.services.archive.broker_fetch.fetch_broker_tf_candles",
-            return_value=[],
+            "app.services.archive.broker_fetch.iter_broker_tf_candle_pages",
+            side_effect=lambda *a, **k: iter([]),
         ), patch(
             "app.services.archive.resolve.resolve_candles_for_range",
         ) as mock_range:

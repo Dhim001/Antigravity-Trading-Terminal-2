@@ -131,6 +131,7 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
             cur_win = 0
             cur_loss = 0
     # Current streak: positive = wins, negative = losses
+    cur_streak = 0
     if pnls:
         streak_val = 0
         for p in reversed(pnls):

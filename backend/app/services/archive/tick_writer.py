@@ -143,19 +143,34 @@ def maybe_flush_ticks() -> int:
     return flush_ticks()
 
 
-def query_ticks(symbol: str, from_ms: int, to_ms: int, limit: int = 10000) -> list[dict]:
+def query_ticks(
+    symbol: str,
+    from_ms: int,
+    to_ms: int,
+    limit: int | None = None,
+    *,
+    result_meta: dict | None = None,
+) -> list[dict]:
+    from app.config import ARCHIVE_TICK_QUERY_LIMIT
+
+    lim = max(1, int(limit if limit is not None else ARCHIVE_TICK_QUERY_LIMIT))
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Newest-N (+1 for truncation detect), return ASC.
         cursor.execute(
             """
             SELECT symbol, time_ms, price, volume, source, bid, ask, spread, tick_type
-            FROM market_ticks
-            WHERE symbol = ? AND time_ms >= ? AND time_ms <= ?
-            ORDER BY time_ms
-            LIMIT ?
+            FROM (
+                SELECT symbol, time_ms, price, volume, source, bid, ask, spread, tick_type
+                FROM market_ticks
+                WHERE symbol = ? AND time_ms >= ? AND time_ms <= ?
+                ORDER BY time_ms DESC
+                LIMIT ?
+            ) AS newest
+            ORDER BY time_ms ASC
             """,
-            (symbol, from_ms, to_ms, limit),
+            (symbol, from_ms, to_ms, lim + 1),
         )
         rows = cursor.fetchall()
         out = []
@@ -184,6 +199,13 @@ def query_ticks(symbol: str, from_ms: int, to_ms: int, limit: int = 10000) -> li
                     "spread": row[7] if len(row) > 7 else None,
                     "tick_type": row[8] if len(row) > 8 else None,
                 })
+        truncated = len(out) > lim
+        if truncated:
+            out = out[-lim:]
+        if result_meta is not None:
+            result_meta["truncated"] = truncated
+            result_meta["limit"] = lim
+            result_meta["count"] = len(out)
         return out
     finally:
         conn.close()
