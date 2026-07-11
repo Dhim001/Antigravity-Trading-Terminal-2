@@ -294,6 +294,37 @@ def suggest_thresholds(
     return suggestions
 
 
+def suggestion_already_met(suggestion: dict[str, Any], config: dict | None) -> bool:
+    """True when bot config already meets or exceeds the advisory threshold."""
+    cfg = config if isinstance(config, dict) else {}
+    kind = suggestion.get("kind")
+    if kind == "min_confidence":
+        try:
+            wanted = float(suggestion.get("suggested_min_confidence"))
+            current = float(cfg.get("min_confidence", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return current + 1e-9 >= wanted
+    if kind == "min_score":
+        try:
+            wanted = int(suggestion.get("suggested_min_score"))
+            current = int(cfg.get("min_score", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return current >= wanted
+    if kind == "block_elevated_vol":
+        return bool(cfg.get("block_elevated_vol"))
+    return False
+
+
+def filter_open_suggestions(
+    suggestions: list[dict[str, Any]],
+    config: dict | None,
+) -> list[dict[str, Any]]:
+    """Drop suggestions that the current bot config already satisfies."""
+    return [s for s in suggestions if not suggestion_already_met(s, config)]
+
+
 def fetch_trades_for_calibration(
     *,
     bot_id: str | None = None,
@@ -376,6 +407,10 @@ def get_calibration(
         "with_insight_context": len(with_context),
     }
 
+    bot_config: dict[str, Any] = {}
+    if bot_id:
+        bot_config = _load_bot_config(bot_id)
+
     symbol_thresholds: dict[str, dict[str, Any]] = {}
     for sym_row in symbol_buckets:
         sym = sym_row["symbol"]
@@ -384,15 +419,16 @@ def get_calibration(
         sym_closed = [t for t in closed if t.symbol == sym]
         sym_wins = sum(1 for t in sym_closed if t.win)
         sym_n = len(sym_closed)
+        raw_suggestions = suggest_thresholds(
+            [b for b in all_buckets if b.get("symbol") == sym],
+            min_samples=min_samples,
+        )
         symbol_thresholds[sym] = {
             "sample_size": sym_n,
             "win_rate": round(sym_wins / sym_n, 4) if sym_n else 0.0,
             "wilson_lower": wilson_lower_bound(sym_wins, sym_n),
             "total_pnl": round(sum(t.pnl for t in sym_closed), 2),
-            "suggestions": suggest_thresholds(
-                [b for b in all_buckets if b.get("symbol") == sym],
-                min_samples=min_samples,
-            ),
+            "suggestions": filter_open_suggestions(raw_suggestions, bot_config),
         }
 
     return {
@@ -400,9 +436,45 @@ def get_calibration(
         "buckets": filtered,
         "symbol_summary": symbol_buckets,
         "symbol_thresholds": symbol_thresholds,
-        "suggestions": suggest_thresholds(filtered, min_samples=min_samples),
+        "suggestions": filter_open_suggestions(
+            suggest_thresholds(filtered, min_samples=min_samples),
+            bot_config,
+        ),
+        "config_snapshot": _config_snapshot(bot_config),
         "recent_closed": [t.to_dict() for t in closed[-20:]],
     }
+
+
+def _config_snapshot(cfg: dict | None) -> dict[str, Any]:
+    bot_config = cfg if isinstance(cfg, dict) else {}
+    return {
+        "min_confidence": bot_config.get("min_confidence"),
+        "min_score": bot_config.get("min_score"),
+        "block_elevated_vol": bool(bot_config.get("block_elevated_vol")),
+        "calibration_gate_enabled": bool(bot_config.get("calibration_gate_enabled")),
+    }
+
+
+def _load_bot_config(bot_id: str) -> dict[str, Any]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT config FROM bots WHERE id = ?", (bot_id,))
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        raw = row["config"] if isinstance(row, dict) else row[0]
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    finally:
+        conn.close()
 
 
 def _empty_reject_counts() -> dict[str, int]:
@@ -848,8 +920,14 @@ def build_config_patch_from_suggestions(
     symbol: str | None = None,
     kinds: set[str] | None = None,
     enable_gate: bool = True,
+    current_config: dict | None = None,
 ) -> dict[str, Any]:
-    """Merge advisory suggestions into a bot config patch."""
+    """Merge advisory suggestions into a bot config patch.
+
+    Skips suggestions already satisfied by ``current_config``. Numeric thresholds
+    take the max of current config and the suggestion (never lower an existing bar).
+    """
+    cfg = current_config if isinstance(current_config, dict) else {}
     patch: dict[str, Any] = {}
     applied: list[dict[str, Any]] = []
 
@@ -860,18 +938,30 @@ def build_config_patch_from_suggestions(
         kind = suggestion.get("kind")
         if kinds and kind not in kinds:
             continue
+        if suggestion_already_met(suggestion, cfg):
+            continue
 
         if kind == "min_confidence":
             val = suggestion.get("suggested_min_confidence")
             if val is not None:
-                cur = patch.get("min_confidence")
-                patch["min_confidence"] = max(float(cur) if cur is not None else 0.0, float(val))
+                try:
+                    current = float(cfg.get("min_confidence", 0) or 0)
+                except (TypeError, ValueError):
+                    current = 0.0
+                cur_patch = patch.get("min_confidence")
+                base = float(cur_patch) if cur_patch is not None else current
+                patch["min_confidence"] = max(base, float(val))
                 applied.append(suggestion)
         elif kind == "min_score":
             val = suggestion.get("suggested_min_score")
             if val is not None:
-                cur = patch.get("min_score")
-                patch["min_score"] = max(int(cur) if cur is not None else 0, int(val))
+                try:
+                    current = int(cfg.get("min_score", 0) or 0)
+                except (TypeError, ValueError):
+                    current = 0
+                cur_patch = patch.get("min_score")
+                base = int(cur_patch) if cur_patch is not None else current
+                patch["min_score"] = max(base, int(val))
                 applied.append(suggestion)
         elif kind == "block_elevated_vol":
             patch["block_elevated_vol"] = True
@@ -896,29 +986,39 @@ def compute_calibration_apply_patch(
         raise ValueError("bot_id is required")
 
     data = get_calibration(bot_id=bot_id, symbol=symbol, min_samples=min_samples)
-    suggestions: list[dict[str, Any]] = list(data.get("suggestions") or [])
-
+    # Rebuild from buckets so we can raise thresholds even if the open
+    # suggestion list was already filtered against current config.
+    raw = suggest_thresholds(data.get("buckets") or [], min_samples=min_samples)
     if symbol:
         sym_key = symbol.upper()
-        sym_row = (data.get("symbol_thresholds") or {}).get(sym_key)
-        if sym_row and sym_row.get("suggestions"):
-            suggestions = list(sym_row["suggestions"])
+        raw = [s for s in raw if str(s.get("symbol") or "").upper() == sym_key]
 
+    bot_config = _load_bot_config(bot_id)
     kind_set = None if apply_all or not kinds else set(kinds)
     result = build_config_patch_from_suggestions(
-        suggestions,
+        raw,
         symbol=symbol,
         kinds=kind_set,
         enable_gate=True,
+        current_config=bot_config,
     )
     if not result["patch"]:
+        already = any(suggestion_already_met(s, bot_config) for s in raw if (
+            kind_set is None or s.get("kind") in kind_set
+        ))
         return {
             "patch": {},
             "applied": [],
-            "message": "No applicable calibration suggestions for this bot/symbol.",
+            "message": (
+                "Thresholds already meet these suggestions — no config change needed."
+                if already or not raw
+                else "No applicable calibration suggestions for this bot/symbol."
+            ),
+            "config_snapshot": data.get("config_snapshot") or {},
         }
     return {
         "patch": result["patch"],
         "applied": result["applied"],
         "message": f"Ready to apply {len(result['applied'])} suggestion(s).",
+        "config_snapshot": data.get("config_snapshot") or {},
     }

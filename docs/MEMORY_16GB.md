@@ -46,6 +46,9 @@ Active symbol is **pinned** — switching watchlist evicts the oldest non-active
 | Stale chart / wrong backend proxy | Old Vite on :5175 | `start-massive.ps1 -Restart` |
 | `ws_clients = 0` with UI open | WS not connected | Hard refresh; confirm Vite maps 5175 → 8785 |
 | Heap > 70% sustained | Too many symbols / long session | Switch away from unused symbols; refresh |
+| Backend HTTP hangs / health timeouts | Full `/health` + SQLite archive COUNT under load | Prefer `/health/live`; Massive keeps `ARCHIVE_RETENTION_1M_DAYS=14` (90d backtests use broker REST / 1h archive, not local 1m) |
+
+Launch scripts and Docker healthchecks use **`/health/live`**. UI pollers (dev badge, memory settings, IB banner) use live/massive probes — not full `/health`.
 
 ## Backend / multi-profile RAM
 

@@ -75,6 +75,18 @@ class TestHttpBindings(unittest.TestCase):
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["service"], "trading-terminal")
+        self.assertIn("terminal_mode", body)
+        self.assertIn("ws_clients", body)
+
+    def test_health_is_cached(self):
+        first = self.client.get("/health?fresh=1")
+        self.assertEqual(first.status_code, 200)
+        self.assertFalse(first.json().get("cached"))
+        second = self.client.get("/health")
+        self.assertEqual(second.status_code, 200)
+        body = second.json()
+        self.assertTrue(body.get("ok"))
+        self.assertTrue(body.get("cached"))
 
     def test_session(self):
         resp = self.client.get("/api/v1/session")

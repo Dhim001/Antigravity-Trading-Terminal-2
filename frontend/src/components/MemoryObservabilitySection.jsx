@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchHealth } from '../api/endpoints';
+import { fetchHealthLive, fetchMassiveFeedHealth } from '../api/endpoints';
 import {
   collectClientMemoryStats,
   memoryPressureLevel,
@@ -34,9 +34,18 @@ export function useMemoryObservability() {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      fetchHealth(null)
-        .then((h) => { if (!cancelled) setHealth(h); })
-        .catch(() => {});
+      // Light probes only — full /health is reserved for Settings diagnostics / bootstrap.
+      Promise.all([
+        fetchHealthLive().catch(() => null),
+        fetchMassiveFeedHealth().catch(() => null),
+      ]).then(([live, massive]) => {
+        if (cancelled) return;
+        setHealth({
+          ...(live || {}),
+          ...(massive?.massive ? { massive: massive.massive } : {}),
+          ws_clients: live?.ws_clients ?? massive?.ws_clients,
+        });
+      });
     };
     load();
     const id = setInterval(load, 8000);

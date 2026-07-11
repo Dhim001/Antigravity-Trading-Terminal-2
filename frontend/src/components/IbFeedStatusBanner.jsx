@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { fetchHealth } from '../api/endpoints';
+import { fetchHealthLive } from '../api/endpoints';
 
 /**
  * LIVE_IB only — explains delayed/disconnected Gateway feed (sim terminal unaffected).
@@ -14,7 +14,7 @@ export default function IbFeedStatusBanner() {
     if (terminalMode !== 'LIVE_IB') return undefined;
     let cancelled = false;
     const poll = () => {
-      fetchHealth(null)
+      fetchHealthLive()
         .then((body) => {
           if (!cancelled) setHealth(body);
         })

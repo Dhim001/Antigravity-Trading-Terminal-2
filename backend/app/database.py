@@ -585,7 +585,7 @@ def reset_db():
     conn.commit()
     conn.close()
 
-def get_db_stats():
+def get_db_stats(*, include_archive: bool = True):
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -603,19 +603,20 @@ def get_db_stats():
         row = cursor.fetchone()
         stats["filled_trades_count"] = _row_val(row)
 
-        try:
-            from app.services.archive.query import get_archive_stats
-            from app.services.archive.writer import get_archive_writer
+        if include_archive:
+            try:
+                from app.services.archive.query import get_archive_stats
+                from app.services.archive.writer import get_archive_writer
 
-            archive_stats = get_archive_stats()
-            writer = get_archive_writer()
-            stats["archive"] = {
-                **archive_stats,
-                "pending_flush": writer.pending_count,
-                "total_flushed": writer.total_flushed,
-            }
-        except Exception:
-            pass
+                archive_stats = get_archive_stats()
+                writer = get_archive_writer()
+                stats["archive"] = {
+                    **archive_stats,
+                    "pending_flush": writer.pending_count,
+                    "total_flushed": writer.total_flushed,
+                }
+            except Exception:
+                pass
         try:
             from app.services.reconciliation import list_ambiguous_orders
 
@@ -630,13 +631,14 @@ def get_db_stats():
             stats["runtime"] = runtime_status_dict()
         except Exception:
             pass
-        try:
-            cursor.execute("SELECT COUNT(*) FROM market_ticks")
-            row = cursor.fetchone()
-            stats["archive"] = stats.get("archive") or {}
-            stats["archive"]["ticks"] = _row_val(row)
-        except Exception:
-            pass
+        if include_archive:
+            try:
+                cursor.execute("SELECT COUNT(*) FROM market_ticks")
+                row = cursor.fetchone()
+                stats["archive"] = stats.get("archive") or {}
+                stats["archive"]["ticks"] = _row_val(row)
+            except Exception:
+                pass
         try:
             from app.services.data_quality.loop import get_last_report
             from app.services.data_quality.monitor import data_quality_stats_from_report

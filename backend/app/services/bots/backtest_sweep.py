@@ -197,8 +197,8 @@ def expand_sweep_grid(base_config: dict, sweep: dict | None) -> list[dict]:
 
 
 def count_sweep_axes(sweep: dict | None) -> int:
-    """Number of swept parameter axes (excluding reserved keys)."""
-    return len(_build_axes({}, sweep or {}))
+    """Number of swept parameter axes with >1 candidate (single-value lists are not sweeps)."""
+    return sum(1 for _, vals in _build_axes({}, sweep or {}) if len(vals) > 1)
 
 
 def count_varying_param_axes(configs: list[dict]) -> int:

@@ -377,6 +377,13 @@ async def websocket_handler(websocket):
             close_code = websocket.close_code
             close_reason = websocket.close_reason or ""
         record_ws_disconnect(close_code, close_reason)
+        try:
+            from app.services.bots.backtest_jobs import cancel_job, clear_job
+
+            cancel_job(websocket)
+            clear_job(websocket)
+        except Exception as exc:
+            logging.debug("WS disconnect backtest cleanup skipped: %s", exc)
         manager.unregister(websocket)
 
 

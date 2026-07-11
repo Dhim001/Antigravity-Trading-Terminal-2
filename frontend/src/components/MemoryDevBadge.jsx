@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchHealth } from '../api/endpoints';
+import { fetchHealthLive, fetchMassiveFeedHealth } from '../api/endpoints';
 import {
   collectClientMemoryStats,
   memoryPressureLevel,
@@ -24,15 +24,18 @@ export default function MemoryDevBadge() {
     const clientId = setInterval(tickClient, 2000);
 
     const tickServer = () => {
-      fetchHealth(null)
-        .then((h) => {
-          setServer({
-            wsClients: h?.ws_clients ?? null,
-            cryptoLag: h?.massive?.crypto_lag_sec ?? h?.feed_lag_sec ?? null,
-            htCache: h?.massive?.ht_cache_entries ?? null,
-          });
-        })
-        .catch(() => {});
+      // Prefer light probes — never hit full /health from the 10s badge poller.
+      Promise.all([
+        fetchHealthLive().catch(() => null),
+        fetchMassiveFeedHealth().catch(() => null),
+      ]).then(([live, massive]) => {
+        const h = massive?.massive ? massive : live;
+        setServer({
+          wsClients: h?.ws_clients ?? live?.ws_clients ?? null,
+          cryptoLag: h?.massive?.crypto_lag_sec ?? h?.feed_lag_sec ?? null,
+          htCache: h?.massive?.ht_cache_entries ?? null,
+        });
+      });
     };
     tickServer();
     const serverId = setInterval(tickServer, 10000);

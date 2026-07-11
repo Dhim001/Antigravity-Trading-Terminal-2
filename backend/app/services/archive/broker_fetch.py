@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -21,8 +21,13 @@ from app.config import (
 )
 from app.services.alpaca_data import fallback_to_iex, is_sip_entitlement_error, resolve_equity_data_feed
 from app.services.archive.writer import align_bar_time
-from app.services.massive_bars import aggs_to_candles
+from app.services.massive_bars import (
+    aggs_to_candles,
+    aggs_to_candles_native,
+    timeframe_to_massive_range,
+)
 from app.services.massive_symbols import is_crypto_terminal_symbol, terminal_to_massive_rest_ticker
+from app.services.market.timeframes import normalize_timeframe
 
 logger = logging.getLogger(__name__)
 
@@ -160,26 +165,28 @@ def _rows_to_db_format(symbol: str, candles: list[dict], source: str) -> list[di
     return rows
 
 
-def fetch_massive_1m_bars(
+def _iter_massive_agg_pages(
     symbol: str,
     from_ts: int,
     to_ts: int,
     *,
+    multiplier: int,
+    timespan: str,
     symbol_info: dict | None = None,
-) -> list[dict[str, Any]]:
-    """Fetch 1m bars from Massive/Polygon REST with pagination."""
-    if not MASSIVE_API_KEY:
-        return []
+    max_pages: int = 40,
+) -> Iterator[list[dict]]:
+    """Yield Massive/Polygon v2 aggs pages (raw result objects) without retaining prior pages."""
+    if not MASSIVE_API_KEY or to_ts <= from_ts:
+        return
 
     from_d = datetime.fromtimestamp(from_ts, tz=timezone.utc).date().isoformat()
     to_d = datetime.fromtimestamp(to_ts, tz=timezone.utc).date().isoformat()
     ticker = terminal_to_massive_rest_ticker(symbol, symbol_info or SYMBOLS.get(symbol))
     base_url = (
         f"{MASSIVE_REST_URL.rstrip('/')}/v2/aggs/ticker/{ticker}/range/"
-        f"1/minute/{from_d}/{to_d}"
+        f"{multiplier}/{timespan}/{from_d}/{to_d}"
     )
 
-    all_aggs: list[dict] = []
     url: str | None = base_url
     params: dict[str, Any] | None = {
         "adjusted": "true",
@@ -187,10 +194,9 @@ def fetch_massive_1m_bars(
         "limit": 50000,
         "apiKey": MASSIVE_API_KEY,
     }
-    max_pages = 20
 
     try:
-        with httpx.Client(timeout=45.0) as client:
+        with httpx.Client(timeout=60.0) as client:
             pages = 0
             while url and pages < max_pages:
                 pages += 1
@@ -198,8 +204,8 @@ def fetch_massive_1m_bars(
                 resp.raise_for_status()
                 payload = resp.json()
                 chunk = payload.get("results") or []
-                if isinstance(chunk, list):
-                    all_aggs.extend(chunk)
+                if isinstance(chunk, list) and chunk:
+                    yield chunk
                 next_url = payload.get("next_url")
                 if next_url:
                     parsed = urlparse(next_url)
@@ -214,17 +220,104 @@ def fetch_massive_1m_bars(
                     url = None
             if pages >= max_pages and url:
                 logger.warning(
-                    "Massive 1m fetch for %s stopped at pagination cap (%d pages)",
+                    "Massive %s/%s fetch for %s stopped at pagination cap (%d pages)",
+                    multiplier,
+                    timespan,
                     symbol,
                     max_pages,
                 )
     except Exception as exc:
-        logger.warning("Massive 1m fetch failed for %s: %s", symbol, exc)
+        logger.warning(
+            "Massive %s/%s fetch failed for %s: %s",
+            multiplier,
+            timespan,
+            symbol,
+            exc,
+        )
+        return
+
+
+def _fetch_massive_aggs(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    *,
+    multiplier: int,
+    timespan: str,
+    symbol_info: dict | None = None,
+    max_pages: int = 40,
+) -> list[dict]:
+    """Paginated Massive/Polygon v2 aggs fetch (raw result objects).
+
+    Prefer page-wise conversion via ``_iter_massive_agg_pages`` for large ranges;
+    this helper remains for callers that still need a combined list.
+    """
+    all_aggs: list[dict] = []
+    for chunk in _iter_massive_agg_pages(
+        symbol,
+        from_ts,
+        to_ts,
+        multiplier=multiplier,
+        timespan=timespan,
+        symbol_info=symbol_info,
+        max_pages=max_pages,
+    ):
+        all_aggs.extend(chunk)
+    return all_aggs
+
+
+def fetch_massive_tf_candles(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str = "1m",
+    *,
+    symbol_info: dict | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch OHLCV candles at the requested timeframe from Massive REST (ephemeral).
+
+    Converts each REST page to candles immediately so peak RAM stays near
+    one page of aggs + the growing candle list (not aggs+candles of the full range).
+    """
+    try:
+        tf = normalize_timeframe(timeframe)
+    except ValueError:
+        return []
+    if tf == "tick":
         return []
 
-    candles = aggs_to_candles(all_aggs)
-    filtered = [c for c in candles if from_ts <= int(c["time"]) <= to_ts]
-    return _rows_to_db_format(symbol, filtered, _SOURCE_MASSIVE)
+    multiplier, timespan = timeframe_to_massive_range(tf)
+    convert = aggs_to_candles if tf == "1m" else aggs_to_candles_native
+    candles: list[dict[str, Any]] = []
+
+    for page in _iter_massive_agg_pages(
+        symbol,
+        from_ts,
+        to_ts,
+        multiplier=multiplier,
+        timespan=timespan,
+        symbol_info=symbol_info,
+    ):
+        for c in convert(page):
+            t = int(c["time"])
+            if from_ts <= t <= to_ts:
+                candles.append(c)
+
+    return candles
+
+
+def fetch_massive_1m_bars(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    *,
+    symbol_info: dict | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch 1m bars from Massive/Polygon REST with pagination (DB row shape)."""
+    candles = fetch_massive_tf_candles(
+        symbol, from_ts, to_ts, "1m", symbol_info=symbol_info
+    )
+    return _rows_to_db_format(symbol, candles, _SOURCE_MASSIVE)
 
 
 def fetch_binance_1m_bars(symbol: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
@@ -337,6 +430,54 @@ def fetch_broker_1m_bars(
         return fetch_alpaca_1m_bars(symbol, from_ts, to_ts)
 
     return []
+
+
+def fetch_broker_tf_candles(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str,
+    *,
+    symbol_info: dict | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Ephemeral OHLCV for backtests at the requested timeframe.
+
+    Prefers Massive native aggs when configured. For 1m, falls back to the
+    same broker chain as archive ingestion (Massive / Alpaca / Binance).
+    """
+    if to_ts <= from_ts:
+        return []
+
+    try:
+        tf = normalize_timeframe(timeframe)
+    except ValueError:
+        return []
+    if tf == "tick":
+        tf = "1m"
+
+    if MASSIVE_API_KEY:
+        candles = fetch_massive_tf_candles(
+            symbol, from_ts, to_ts, tf, symbol_info=symbol_info
+        )
+        if candles:
+            return candles
+
+    if tf != "1m":
+        return []
+
+    rows = fetch_broker_1m_bars(symbol, from_ts, to_ts, symbol_info=symbol_info)
+    return [
+        {
+            "time": int(r["time"]),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": float(r.get("volume") or 0),
+        }
+        for r in rows
+    ]
 
 
 def chunk_date_ranges(from_ts: int, to_ts: int, *, chunk_days: int = 30) -> list[tuple[int, int]]:

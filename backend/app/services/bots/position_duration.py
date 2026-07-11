@@ -7,6 +7,62 @@ import time
 from app.config import RISK_MAX_POSITION_HOURS, RISK_POSITION_DURATION_ENABLED
 
 
+def as_unix_seconds(ts: float | int | None) -> float | None:
+    """Normalize a timestamp to unix seconds (accepts seconds or milliseconds)."""
+    if ts is None:
+        return None
+    try:
+        val = float(ts)
+    except (TypeError, ValueError):
+        return None
+    if val <= 0:
+        return None
+    # Values past ~2001-09 in milliseconds exceed 1e12.
+    if val > 1_000_000_000_000:
+        val /= 1000.0
+    return val
+
+
+def bars_held_since_open(
+    opened_at: float | int | None,
+    bar_time: float | int | None,
+    timeframe: str,
+) -> float | None:
+    """Bars elapsed between position open and bar close (both unix seconds)."""
+    opened_sec = as_unix_seconds(opened_at)
+    bar_sec = as_unix_seconds(bar_time)
+    if opened_sec is None or bar_sec is None:
+        return None
+    from app.services.market.timeframes import timeframe_to_secs
+
+    try:
+        tf_secs = timeframe_to_secs(timeframe)
+    except ValueError:
+        return None
+    if tf_secs <= 0:
+        return None
+    return (bar_sec - opened_sec) / float(tf_secs)
+
+
+def seconds_held_since_open(
+    opened_at: float | int | None,
+    time_ms: float | int | None,
+) -> float | None:
+    """Wall-clock seconds held given opened_at (unix sec) and a tick time in ms."""
+    opened_sec = as_unix_seconds(opened_at)
+    if opened_sec is None or time_ms is None:
+        return None
+    try:
+        tick = float(time_ms)
+    except (TypeError, ValueError):
+        return None
+    if tick <= 0:
+        return None
+    # Tick path always passes epoch milliseconds; tolerate accidental seconds.
+    now_sec = tick / 1000.0 if tick > 1_000_000_000_000 else tick
+    return now_sec - opened_sec
+
+
 def resolve_max_position_hours(bot_config: dict | None) -> float | None:
     """Return effective max hold hours for a bot, or None when disabled."""
     cfg = bot_config or {}

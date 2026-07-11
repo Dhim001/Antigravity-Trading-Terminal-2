@@ -1,8 +1,9 @@
-import React, { useState, useCallback, useEffect, useRef, Suspense, lazy } from 'react';
+import React, { useState, useCallback, useEffect, useRef, Suspense } from 'react';
 import { useStore } from './store/useStore';
 import { useSettingsStore } from './store/useSettingsStore';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useBootstrap } from './hooks/useBootstrap';
+import { lazyImport } from './lib/lazyImport';
 
 import ResizableWatchlistSidebar from './components/ResizableWatchlistSidebar';
 import SettingsBootstrap     from './components/SettingsBootstrap';
@@ -22,16 +23,16 @@ import { applyLayoutMode } from './settings/layoutModes';
 import MemoryDevBadge from './components/MemoryDevBadge';
 import PwaInstallBanner from './components/PwaInstallBanner';
 
-const ChartWidget = lazy(() => import('./components/ChartWidget'));
-const MultiChartGrid = lazy(() => import('./components/MultiChartGrid'));
-const SystemControlPanel = lazy(() => import('./components/SystemControlPanel'));
-const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
-const InsightsHub = lazy(() => import('./components/InsightsHub'));
-const AutomationStudio = lazy(() => import('./components/AutomationStudio'));
-const PortfolioDashboard = lazy(() => import('./components/PortfolioDashboard'));
-const BotDetailDrawer = lazy(() => import('./components/BotDetailDrawer'));
-const TradingPanel = lazy(() => import('./components/TradingPanel'));
-const ResizableDock = lazy(() => import('./components/ResizableDock'));
+const ChartWidget = lazyImport(() => import('./components/ChartWidget'), 'chart');
+const MultiChartGrid = lazyImport(() => import('./components/MultiChartGrid'), 'multi-chart');
+const SystemControlPanel = lazyImport(() => import('./components/SystemControlPanel'), 'system-control');
+const SettingsPanel = lazyImport(() => import('./components/SettingsPanel'), 'settings');
+const InsightsHub = lazyImport(() => import('./components/InsightsHub'), 'insights');
+const AutomationStudio = lazyImport(() => import('./components/AutomationStudio'), 'automation');
+const PortfolioDashboard = lazyImport(() => import('./components/PortfolioDashboard'), 'portfolio');
+const BotDetailDrawer = lazyImport(() => import('./components/BotDetailDrawer'), 'bot-detail');
+const TradingPanel = lazyImport(() => import('./components/TradingPanel'), 'trading');
+const ResizableDock = lazyImport(() => import('./components/ResizableDock'), 'dock');
 
 function PanelFallback({ label = 'Loading…' }) {
   return (

@@ -528,7 +528,10 @@ def _resolve_min_trades(
     walk_forward: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """Apply trades-per-parameter floor (relaxed on WF IS windows)."""
-    axes = count_sweep_axes(sweep) or count_varying_param_axes(configs)
+    # Prefer axes that actually vary across combos; ignore single-value "sweep" lists.
+    axes = count_varying_param_axes(configs)
+    if axes <= 0:
+        axes = count_sweep_axes(sweep)
     per_param = WF_MIN_TRADES_PER_PARAM if walk_forward else MIN_TRADES_PER_PARAM
     effective = effective_min_trades(axes, base_min=min_trades, trades_per_param=per_param)
     meta = {
@@ -547,6 +550,8 @@ def _format_no_valid_is_error(
     effective_min: int,
     min_meta: dict,
     fold_idx: int | None = None,
+    train_bars: int | None = None,
+    candle_meta: dict | None = None,
 ) -> str:
     """Actionable message when every IS sweep row fails eligibility."""
     total = len(sweep_rows)
@@ -564,13 +569,29 @@ def _format_no_valid_is_error(
         if fold_idx is not None
         else "Walk-forward sweep"
     )
-    return (
+    msg = (
         f"{prefix} produced no valid in-sample runs "
         f"({total} tested: {errs} errors, {below} below min {effective_min} trades; "
         f"best IS trade count: {best_trades}). "
-        f"Floor is max(requested min, {per_param}×{axes} swept params). "
+        f"Floor is max(requested min, {per_param}×{axes} varying sweep params). "
         f"Try more days, lower min trades, fewer swept params, or disable final holdout."
     )
+    cm = candle_meta or {}
+    detail_bits: list[str] = []
+    if train_bars is not None:
+        detail_bits.append(f"IS bars={train_bars}")
+    if cm.get("replayed_days") is not None:
+        detail_bits.append(
+            f"history≈{cm.get('replayed_days')}d"
+            f" (requested {cm.get('days_requested') or cm.get('days') or '?'}d)"
+        )
+    if cm.get("resolution_note"):
+        detail_bits.append(str(cm["resolution_note"]))
+    if cm.get("range_note"):
+        detail_bits.append(str(cm["range_note"]))
+    if detail_bits:
+        msg = f"{msg} Data: {' · '.join(detail_bits)}."
+    return msg
 
 
 def _run_oos_backtest(
@@ -704,6 +725,8 @@ def _run_single_walk_forward(
             sweep_rows,
             effective_min=effective_min,
             min_meta=min_meta,
+            train_bars=len(train or []),
+            candle_meta=meta,
         )}
 
     def _oos_progress(done: int, total: int) -> None:
@@ -992,6 +1015,8 @@ def run_walk_forward(
                 effective_min=effective_min,
                 min_meta=min_meta,
                 fold_idx=fold_idx,
+                train_bars=len(train or []),
+                candle_meta=meta,
             )}
 
         if cancel_cb and cancel_cb():

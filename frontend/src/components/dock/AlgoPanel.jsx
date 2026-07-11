@@ -1264,15 +1264,17 @@ export function AlgoTab({ hideToolbar = false }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper">
-                  <SelectItem value="7" className="text-xs">7 days (in-memory + archive)</SelectItem>
-                  <SelectItem value="30" className="text-xs">30 days (archive 1m)</SelectItem>
-                  <SelectItem value="90" className="text-xs">90 days (archive 1m max)</SelectItem>
+                  <SelectItem value="7" className="text-xs">7 days (local buffer + archive)</SelectItem>
+                  <SelectItem value="30" className="text-xs">30 days</SelectItem>
+                  <SelectItem value="90" className="text-xs">90 days</SelectItem>
+                  <SelectItem value="180" className="text-xs">180 days (broker REST if needed)</SelectItem>
+                  <SelectItem value="365" className="text-xs">365 days (broker REST if needed)</SelectItem>
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
                 {botTimeframe === '1m'
-                  ? 'Uses archived 1m bars when range exceeds live buffer.'
-                  : 'Ranges above 90d are capped to 1m archive retention for accurate resampling.'}
+                  ? 'Long ranges fill older 1m gaps from Massive/broker REST when local archive is short.'
+                  : 'Higher TF long ranges use Massive native bars (not limited to local 1m retention).'}
               </span>
             </div>
 

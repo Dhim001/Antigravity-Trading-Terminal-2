@@ -180,6 +180,22 @@ class TestWfMinTradesFloor(unittest.TestCase):
         self.assertEqual(meta["trades_per_param_rule"], 5)
         self.assertTrue(meta["walk_forward_floor"])
 
+    def test_single_value_sweep_axes_do_not_inflate_floor(self):
+        from app.services.bots.backtest_walk_forward import _resolve_min_trades
+
+        effective, meta = _resolve_min_trades(
+            1,
+            [{"trailing_stop_percent": 1, "min_confidence": 0.55}],
+            {
+                "trailing_stop_percent": [1],
+                "min_confidence": [0.55],
+                "require_trend_alignment": [False],
+            },
+            walk_forward=True,
+        )
+        self.assertEqual(meta["swept_param_axes"], 0)
+        self.assertEqual(effective, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

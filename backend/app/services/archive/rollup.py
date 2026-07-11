@@ -235,6 +235,60 @@ def purge_expired_1h(cutoff_ts: int) -> int:
         conn.close()
 
 
+def purge_expired_1m(cutoff_ts: int, *, batch_limit: int = 200_000) -> int:
+    """Bulk-delete 1m bars older than retention cutoff (batched to limit lock time)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    total = 0
+    try:
+        while True:
+            if is_postgres():
+                cursor.execute(
+                    """
+                    DELETE FROM market_bars_1m
+                    WHERE ctid IN (
+                        SELECT ctid FROM market_bars_1m
+                        WHERE time < ?
+                        LIMIT ?
+                    )
+                    """,
+                    (cutoff_ts, batch_limit),
+                )
+            else:
+                cursor.execute(
+                    """
+                    DELETE FROM market_bars_1m
+                    WHERE rowid IN (
+                        SELECT rowid FROM market_bars_1m
+                        WHERE time < ?
+                        LIMIT ?
+                    )
+                    """,
+                    (cutoff_ts, batch_limit),
+                )
+            deleted = cursor.rowcount if cursor.rowcount is not None else 0
+            conn.commit()
+            total += max(0, deleted)
+            if deleted < batch_limit:
+                break
+        return total
+    finally:
+        conn.close()
+
+
+def checkpoint_wal() -> None:
+    """Truncate SQLite WAL after large deletes so disk/RSS can shrink."""
+    if is_postgres():
+        return
+    conn = get_connection()
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception as exc:
+        logger.debug("WAL checkpoint skipped: %s", exc)
+    finally:
+        conn.close()
+
+
 def run_rollup_job(symbols: list[str]) -> dict[str, Any]:
     if not ARCHIVE_ENABLED:
         return {"enabled": False}
@@ -253,11 +307,27 @@ def run_rollup_job(symbols: list[str]) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Rollup failed for %s: %s", symbol, exc)
 
+    bulk_deleted = 0
+    # Fast path: purge any remaining 1m rows past retention (covers gaps rollup missed).
+    try:
+        bulk_deleted = purge_expired_1m(cutoff_1m)
+        minutes_deleted += bulk_deleted
+        if bulk_deleted:
+            logger.info("Purged %d expired 1m bar(s) past retention", bulk_deleted)
+    except Exception as exc:
+        logger.warning("1m retention purge failed: %s", exc)
+
     try:
         hours_purged = purge_expired_1h(cutoff_1h)
     except Exception as exc:
         logger.warning("1h retention purge failed: %s", exc)
         hours_purged = 0
+
+    if minutes_deleted or hours_purged:
+        try:
+            checkpoint_wal()
+        except Exception:
+            pass
 
     return {
         "enabled": True,
@@ -266,4 +336,5 @@ def run_rollup_job(symbols: list[str]) -> dict[str, Any]:
         "hours_written": hours_written,
         "minutes_deleted": minutes_deleted,
         "hours_purged": hours_purged,
+        "bulk_1m_deleted": bulk_deleted,
     }

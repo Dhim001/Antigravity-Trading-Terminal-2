@@ -324,8 +324,12 @@ def pool_stats() -> dict[str, Any]:
     return stats
 
 
-def check_db_health() -> dict[str, Any]:
-    """Lightweight connectivity probe for /health and startup."""
+def check_db_health(*, light: bool = False) -> dict[str, Any]:
+    """Connectivity probe for /health.
+
+    light=True skips PRAGMA quick_check (expensive under WAL contention) and
+    uses SELECT 1 — preferred for the cached hot path.
+    """
     start = time.perf_counter()
     conn = get_connection()
     journal_mode = None
@@ -333,9 +337,14 @@ def check_db_health() -> dict[str, Any]:
     try:
         cur = conn.cursor()
         if DB_DRIVER == "sqlite":
-            cur.execute("PRAGMA quick_check(1)")
-            row = cur.fetchone()
-            ok = bool(row and (row[0] if not isinstance(row, dict) else list(row.values())[0]) == "ok")
+            if light:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+                ok = True
+            else:
+                cur.execute("PRAGMA quick_check(1)")
+                row = cur.fetchone()
+                ok = bool(row and (row[0] if not isinstance(row, dict) else list(row.values())[0]) == "ok")
             cur.execute("PRAGMA journal_mode")
             jrow = cur.fetchone()
             journal_mode = jrow[0] if jrow and not isinstance(jrow, dict) else (

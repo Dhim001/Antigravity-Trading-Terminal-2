@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useStore } from '../store/useStore';
 import FilterRejectsDashboard from './FilterRejectsDashboard';
 import BacktestMetaLabelWalkForwardPanel from './BacktestMetaLabelWalkForwardPanel';
 import {
@@ -20,6 +21,39 @@ import {
 function pct(value) {
   if (value == null || Number.isNaN(value)) return '—';
   return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+/** Mirror backend suggestion_already_met — hide advisories the bot config already satisfies. */
+function suggestionAlreadyMet(suggestion, config) {
+  const cfg = config && typeof config === 'object' ? config : {};
+  const kind = suggestion?.kind;
+  if (kind === 'min_confidence') {
+    const wanted = Number(suggestion?.suggested_min_confidence);
+    const current = Number(cfg.min_confidence ?? 0);
+    return Number.isFinite(wanted) && Number.isFinite(current) && current + 1e-9 >= wanted;
+  }
+  if (kind === 'min_score') {
+    const wanted = Number(suggestion?.suggested_min_score);
+    const current = Number(cfg.min_score ?? 0);
+    return Number.isFinite(wanted) && Number.isFinite(current) && current >= wanted;
+  }
+  if (kind === 'block_elevated_vol') {
+    return Boolean(cfg.block_elevated_vol);
+  }
+  return false;
+}
+
+function filterOpenSuggestions(suggestions, config) {
+  if (!Array.isArray(suggestions)) return [];
+  return suggestions.filter((s) => !suggestionAlreadyMet(s, config));
+}
+
+/** Apply API may return bot row or full get_bot_detail envelope. */
+function unwrapBotPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload.config && (payload.id || payload.strategy)) return payload;
+  if (payload.bot && typeof payload.bot === 'object') return payload.bot;
+  return payload;
 }
 
 function CalibrationTable({ buckets, emptyLabel }) {
@@ -87,6 +121,9 @@ export default function BotCalibrationPanel({
   const [wfLoading, setWfLoading] = useState(false);
   const [wfResult, setWfResult] = useState(null);
   const [operationalBusy, setOperationalBusy] = useState(null);
+  const botConfig = useStore((s) => (
+    s.botDetail?.bot?.id === botId ? s.botDetail.bot.config : null
+  ));
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -97,7 +134,18 @@ export default function BotCalibrationPanel({
         fetchFilterRejects({ botId, symbol, strategy }),
         fetchMetaLabelStatus(botId),
       ]);
-      setCalibration(cal);
+      const storeCfg = useStore.getState().botDetail?.bot?.id === botId
+        ? useStore.getState().botDetail?.bot?.config
+        : null;
+      const mergedSnap = {
+        ...(cal?.config_snapshot || {}),
+        ...(storeCfg && typeof storeCfg === 'object' ? storeCfg : {}),
+      };
+      setCalibration({
+        ...cal,
+        config_snapshot: mergedSnap,
+        suggestions: filterOpenSuggestions(cal?.suggestions ?? [], mergedSnap),
+      });
       setFilterData(fr);
       setMetaLabel(ml?.meta_label ?? null);
       setMetaLabelError(null);
@@ -131,13 +179,65 @@ export default function BotCalibrationPanel({
         kinds,
         applyAll,
       });
-      const patchKeys = Object.keys(result.patch || {});
+      const patch = result.patch || {};
+      const patchKeys = Object.keys(patch);
+      const botRow = unwrapBotPayload(result.bot) || unwrapBotPayload(result.detail);
+      const conf = {
+        ...(botRow?.config && typeof botRow.config === 'object' ? botRow.config : {}),
+        ...(result.config_snapshot || {}),
+        ...patch,
+      };
+
       if (patchKeys.length === 0) {
         toast.message(result.message || 'No suggestions to apply');
       } else {
-        toast.success(`Applied: ${patchKeys.join(', ')}`);
-        await loadData();
+        const parts = [];
+        if (patchKeys.includes('min_confidence')) {
+          parts.push(`min_confidence=${conf.min_confidence ?? patch.min_confidence}`);
+        }
+        if (patchKeys.includes('min_score')) {
+          parts.push(`min_score=${conf.min_score ?? patch.min_score}`);
+        }
+        if (patchKeys.includes('block_elevated_vol')) {
+          parts.push('block_elevated_vol=on');
+        }
+        if (patchKeys.includes('calibration_gate_enabled')) {
+          parts.push('calibration gate on');
+        }
+        toast.success(
+          parts.length
+            ? `Applied to live bot: ${parts.join(' · ')}`
+            : `Applied: ${patchKeys.join(', ')}`,
+        );
+
+        // Refresh drawer config so BotConfigPanel shows the new thresholds.
+        if (botRow) {
+          const prev = useStore.getState().botDetail;
+          if (prev?.bot?.id === botId) {
+            useStore.getState().setBotDetail({
+              ...prev,
+              bot: {
+                ...prev.bot,
+                ...botRow,
+                config: { ...(prev.bot?.config || {}), ...(botRow.config || {}), ...patch },
+              },
+            });
+          }
+        }
+
+        // Clear satisfied suggestions immediately (don't wait on a stale backend reload).
+        setCalibration((prev) => {
+          if (!prev) return prev;
+          const nextSnap = { ...(prev.config_snapshot || {}), ...conf };
+          return {
+            ...prev,
+            config_snapshot: nextSnap,
+            suggestions: filterOpenSuggestions(prev.suggestions, nextSnap),
+          };
+        });
       }
+
+      await loadData();
     } catch (e) {
       toast.error(e?.message || 'Failed to apply suggestions');
     } finally {
@@ -234,7 +334,11 @@ export default function BotCalibrationPanel({
   }
 
   const overall = calibration?.overall;
-  const suggestions = calibration?.suggestions ?? [];
+  const effectiveConfig = {
+    ...(calibration?.config_snapshot || {}),
+    ...(botConfig && typeof botConfig === 'object' ? botConfig : {}),
+  };
+  const suggestions = filterOpenSuggestions(calibration?.suggestions ?? [], effectiveConfig);
   const symbolThresholds = calibration?.symbol_thresholds ?? {};
   const liveRejects = filterData?.live;
   const backtestRejects = filterData?.backtest;

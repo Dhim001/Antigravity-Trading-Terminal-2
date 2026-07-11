@@ -1,22 +1,42 @@
 """Tests for trade calibration and filter-reject aggregation."""
 
+from __future__ import annotations
+
 import json
+import os
+import tempfile
 import unittest
 
-from app.database import get_connection, init_db
-from app.services.bots.calibration import (
+os.environ.setdefault("TERMINAL_MODE", "SIMULATED")
+os.environ["DATABASE_URL"] = ""
+# Never touch profile DBs (trading-massive.db / trading.db) from unit tests.
+_TEST_DIR = tempfile.mkdtemp()
+os.environ["SQLITE_DB_PATH"] = os.path.join(_TEST_DIR, "calibration_test.db")
+
+import app.config as app_config  # noqa: E402
+import app.db.connection as db_conn  # noqa: E402
+
+db_conn.DB_PATH = os.environ["SQLITE_DB_PATH"]
+db_conn.DB_DRIVER = "sqlite"
+db_conn._DATABASE_URL = ""
+app_config.DB_PATH = db_conn.DB_PATH
+
+from app.database import get_connection, init_db  # noqa: E402
+from app.services.bots.calibration import (  # noqa: E402
     CalibrationStore,
     aggregate_live_filter_rejects,
     build_config_patch_from_suggestions,
     check_meta_label_gate,
     compute_calibration_apply_patch,
     confidence_bucket,
+    filter_open_suggestions,
     get_calibration,
     get_calibration_store,
     pair_closed_trades,
     score_bucket,
     setup_bucket_key,
     suggest_thresholds,
+    suggestion_already_met,
     wilson_lower_bound,
 )
 
@@ -104,6 +124,58 @@ class TestSuggestThresholds(unittest.TestCase):
         hints = suggest_thresholds(buckets, min_samples=5)
         kinds = {h["kind"] for h in hints}
         self.assertIn("min_confidence", kinds)
+
+    def test_filters_suggestions_already_met_by_config(self):
+        hints = [
+            {
+                "symbol": "ADAUSDT",
+                "kind": "min_confidence",
+                "suggested_min_confidence": 0.65,
+            },
+            {
+                "symbol": "ADAUSDT",
+                "kind": "min_score",
+                "suggested_min_score": 3,
+            },
+        ]
+        open_hints = filter_open_suggestions(
+            hints,
+            {"min_confidence": 0.65, "min_score": 2},
+        )
+        self.assertEqual(len(open_hints), 1)
+        self.assertEqual(open_hints[0]["kind"], "min_score")
+        self.assertTrue(suggestion_already_met(hints[0], {"min_confidence": 0.7}))
+        self.assertEqual(
+            filter_open_suggestions(hints, {"min_confidence": 0.65, "min_score": 3}),
+            [],
+        )
+
+    def test_build_patch_maxes_against_current_config(self):
+        hints = [
+            {
+                "symbol": "ADAUSDT",
+                "kind": "min_confidence",
+                "suggested_min_confidence": 0.65,
+            },
+            {
+                "symbol": "ADAUSDT",
+                "kind": "min_score",
+                "suggested_min_score": 3,
+            },
+        ]
+        result = build_config_patch_from_suggestions(
+            hints,
+            current_config={"min_confidence": 0.55, "min_score": 1},
+        )
+        self.assertEqual(result["patch"]["min_confidence"], 0.65)
+        self.assertEqual(result["patch"]["min_score"], 3)
+        self.assertTrue(result["patch"]["calibration_gate_enabled"])
+
+        already = build_config_patch_from_suggestions(
+            hints,
+            current_config={"min_confidence": 0.7, "min_score": 4},
+        )
+        self.assertEqual(already["patch"], {})
 
 
 class TestCalibrationIntegration(unittest.TestCase):

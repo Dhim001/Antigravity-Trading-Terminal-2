@@ -132,9 +132,11 @@ def effective_min_trades(
     base_min: int = 0,
     trades_per_param: int = MIN_TRADES_PER_PARAM,
 ) -> int:
-    """Enforce min_trades >= trades_per_param × num_swept_params."""
+    """Enforce min_trades >= trades_per_param × num_swept_params when params vary."""
     base = max(0, int(base_min or 0))
-    params = max(1, int(num_swept_params or 1))
+    params = max(0, int(num_swept_params or 0))
+    if params <= 0:
+        return base
     return max(base, trades_per_param * params)
 
 

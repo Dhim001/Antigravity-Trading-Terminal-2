@@ -88,10 +88,27 @@ def _compute_drawdown_hold(bot: dict, total_pnl: float | None = None) -> dict | 
     }
 
 
+def _streak_hold_cleared(cfg: dict, last_exit_dt: datetime | None) -> bool:
+    """True when resume (or explicit clear) acknowledged losses through last_exit."""
+    raw = cfg.get("streak_hold_cleared_at")
+    if raw is None or last_exit_dt is None:
+        return False
+    cleared_dt = _parse_event_ts(raw)
+    if cleared_dt is None:
+        return False
+    # Small epsilon so float/ISO round-trips still count as "at or after" last exit.
+    return cleared_dt.timestamp() + 1e-3 >= last_exit_dt.timestamp()
+
+
 def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | None:
     """Active entry hold for UI — streak limit, post-loss cooloff, or max drawdown.
 
     Cooloff is shown for RUNNING and PAUSED so a manual pause does not hide the timer.
+
+    Streak-limit is not a permanent ban: after ``loss_cooloff_sec`` from the last
+    exit (or a manual resume that sets ``streak_hold_cleared_at``), entries are
+    allowed again. Otherwise bots that hit the limit could never trade a winner
+    to clear the streak.
     """
     bot_id = bot.get("id", "")
     status = str(bot.get("status") or "").upper()
@@ -105,11 +122,41 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
     from app.services.bots import analytics as bot_analytics
 
     streak = bot_analytics.get_recent_consecutive_losses(bot_id)
+    last_exit_ts = bot_analytics.last_exit_timestamp(bot_id)
+    exit_dt = _parse_event_ts(last_exit_ts)
+
+    if _streak_hold_cleared(cfg, exit_dt):
+        return _compute_drawdown_hold(bot, total_pnl)
 
     if max_streak > 0 and streak >= max_streak:
+        if cooloff_sec > 0 and exit_dt is not None:
+            elapsed = time.time() - exit_dt.timestamp()
+            if elapsed >= cooloff_sec:
+                # Cooloff elapsed — allow entries again (streak may still be high
+                # until a win; the next loss re-arms the hold).
+                return _compute_drawdown_hold(bot, total_pnl)
+            remaining = max(0, int(cooloff_sec - elapsed))
+            until = datetime.fromtimestamp(
+                exit_dt.timestamp() + cooloff_sec,
+                tz=timezone.utc,
+            )
+            block_reason = (
+                f"Consecutive-loss streak ({streak}) reached limit ({max_streak}). "
+                f"Entries blocked for {remaining}s — resume to clear early, or wait."
+            )
+            return {
+                "kind": "streak_limit",
+                "consecutive_losses": streak,
+                "max_consecutive_losses": max_streak,
+                "cooloff_sec": cooloff_sec,
+                "remaining_sec": remaining,
+                "cooloff_until": until.isoformat().replace("+00:00", "Z"),
+                "reason": f"Loss streak {streak}/{max_streak}",
+                "block_reason": block_reason,
+            }
         block_reason = (
             f"Consecutive-loss streak ({streak}) reached limit ({max_streak}). "
-            "Auto-paused — resume manually or wait for cooloff."
+            "Auto-paused — resume manually to clear the hold."
         )
         return {
             "kind": "streak_limit",
@@ -119,33 +166,30 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
             "block_reason": block_reason,
         }
 
-    if cooloff_sec > 0 and streak > 0:
-        last_exit_ts = bot_analytics.last_exit_timestamp(bot_id)
-        exit_dt = _parse_event_ts(last_exit_ts)
-        if exit_dt is not None:
-            elapsed = time.time() - exit_dt.timestamp()
-            if elapsed < cooloff_sec:
-                remaining = max(0, int(cooloff_sec - elapsed))
-                until = datetime.fromtimestamp(
-                    exit_dt.timestamp() + cooloff_sec,
-                    tz=timezone.utc,
-                )
-                block_reason = (
-                    f"Cooling-off after loss: {remaining}s remaining "
-                    f"(streak {streak}, cooloff {cooloff_sec}s)."
-                )
-                return {
-                    "kind": "cooloff",
-                    "consecutive_losses": streak,
-                    "cooloff_sec": cooloff_sec,
-                    "remaining_sec": remaining,
-                    "cooloff_until": until.isoformat().replace("+00:00", "Z"),
-                    "reason": (
-                        f"Cooling off after {streak} consecutive "
-                        f"loss{'es' if streak != 1 else ''}"
-                    ),
-                    "block_reason": block_reason,
-                }
+    if cooloff_sec > 0 and streak > 0 and exit_dt is not None:
+        elapsed = time.time() - exit_dt.timestamp()
+        if elapsed < cooloff_sec:
+            remaining = max(0, int(cooloff_sec - elapsed))
+            until = datetime.fromtimestamp(
+                exit_dt.timestamp() + cooloff_sec,
+                tz=timezone.utc,
+            )
+            block_reason = (
+                f"Cooling-off after loss: {remaining}s remaining "
+                f"(streak {streak}, cooloff {cooloff_sec}s)."
+            )
+            return {
+                "kind": "cooloff",
+                "consecutive_losses": streak,
+                "cooloff_sec": cooloff_sec,
+                "remaining_sec": remaining,
+                "cooloff_until": until.isoformat().replace("+00:00", "Z"),
+                "reason": (
+                    f"Cooling off after {streak} consecutive "
+                    f"loss{'es' if streak != 1 else ''}"
+                ),
+                "block_reason": block_reason,
+            }
 
     return _compute_drawdown_hold(bot, total_pnl)
 

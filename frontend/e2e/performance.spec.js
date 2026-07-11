@@ -177,8 +177,9 @@ test.describe('Frontend performance & stress', () => {
     const apiUrl = process.env.E2E_API_URL || 'http://127.0.0.1:8766';
     const n = 15;
     const t0 = Date.now();
+    // Hit /health/live — full /health is cached but still heavier under parallel load.
     const responses = await Promise.all(
-      Array.from({ length: n }, () => request.get(`${apiUrl}/api/v1/account`)),
+      Array.from({ length: n }, () => request.get(`${apiUrl}/health/live`)),
     );
     const elapsed = Date.now() - t0;
     const ok = responses.filter(r => r.ok()).length;

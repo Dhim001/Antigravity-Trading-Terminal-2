@@ -111,7 +111,8 @@ function Test-BackendHealth {
         [int]$TimeoutSec = 3
     )
     try {
-        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$HttpPort/health" -UseBasicParsing -TimeoutSec $TimeoutSec
+        # Prefer /health/live — full /health hits SQLite + LLM and can false-fail under load.
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$HttpPort/health/live" -UseBasicParsing -TimeoutSec $TimeoutSec
         return $resp.StatusCode -eq 200
     } catch {
         return $false

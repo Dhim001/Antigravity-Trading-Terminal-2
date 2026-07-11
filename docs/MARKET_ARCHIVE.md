@@ -17,6 +17,19 @@ Recent data stays at 1-minute resolution. Data **older than 90 days** is aggrega
 
 This matches a common platform pattern: fine granularity for recent windows, coarser bars for deep history.
 
+### Long backtests with short 1m retention (e.g. Massive `14d`)
+
+`resolve_backtest_candles` does **not** require 90 days of `market_bars_1m` on disk:
+
+| Request | Source |
+|---------|--------|
+| ≤ retention, any TF | Local 1m (+ resample) |
+| > retention, higher TF (`5m`…`1d`) | Massive **native** REST aggs for that TF (ephemeral) |
+| > retention, `1m` | Broker 1m REST fill for the older gap (ephemeral) |
+| Broker unavailable, `1h`/`4h`/`1d` | `market_bars_1h` (+ resample) |
+
+Fetched bars are merged for the run only — they are **not** re-written into the 1m archive, so the lean retention policy still shrinks the DB.
+
 ---
 
 ## Architecture

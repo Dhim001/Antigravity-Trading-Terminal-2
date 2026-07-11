@@ -355,6 +355,24 @@ async def _execute_backtest(
             await _finish("cancelled")
             return
 
+        # Long-horizon runs must not silently proceed on a short local archive.
+        from app.config import ARCHIVE_RETENTION_1M_DAYS
+
+        replayed = float((meta or {}).get("replayed_days") or 0.0)
+        bar_count_resolve = len(candles or [])
+        if days > int(ARCHIVE_RETENTION_1M_DAYS) and replayed < days * 0.5:
+            note = (meta or {}).get("range_note") or (meta or {}).get("resolution_note") or ""
+            await _finish(
+                "error",
+                message=(
+                    f"Not enough history for {days}d {timeframe} backtest "
+                    f"(got ≈{replayed:.1f}d, {bar_count_resolve} bars). "
+                    f"Broker REST fill may have failed — check MASSIVE_API_KEY and recycle the backend. "
+                    f"{note}".strip()
+                ),
+            )
+            return
+
         # Multi-symbol portfolio backtest (no sweep / walk-forward)
         if portfolio_symbols and len(portfolio_symbols) > 1 and not sweep and not walk_forward:
             from app.services.bots.backtest_portfolio import (

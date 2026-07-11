@@ -18,7 +18,7 @@ export function formatCooloffRemaining(totalSec) {
 }
 
 export function remainingCooloffSec(hold) {
-  if (!hold || hold.kind !== 'cooloff') return 0;
+  if (!hold || (hold.kind !== 'cooloff' && hold.kind !== 'streak_limit')) return 0;
   if (hold.cooloff_until) {
     const until = Date.parse(hold.cooloff_until);
     if (!Number.isNaN(until)) {
@@ -36,7 +36,13 @@ export function remainingCooloffSec(hold) {
  */
 export function effectiveRiskHold(hold) {
   if (!hold?.kind) return null;
-  if (hold.kind === 'cooloff' && remainingCooloffSec(hold) <= 0) return null;
+  if (
+    (hold.kind === 'cooloff' || hold.kind === 'streak_limit')
+    && hold.cooloff_until
+    && remainingCooloffSec(hold) <= 0
+  ) {
+    return null;
+  }
   return hold;
 }
 
@@ -45,7 +51,11 @@ export function useRiskHoldRemaining(hold) {
   const [remaining, setRemaining] = useState(() => remainingCooloffSec(hold));
 
   useEffect(() => {
-    if (!hold || hold.kind !== 'cooloff') {
+    if (!hold || (hold.kind !== 'cooloff' && hold.kind !== 'streak_limit')) {
+      setRemaining(0);
+      return undefined;
+    }
+    if (hold.kind === 'streak_limit' && !hold.cooloff_until && hold.remaining_sec == null) {
       setRemaining(0);
       return undefined;
     }
@@ -63,9 +73,12 @@ export function useRiskHoldRemaining(hold) {
  * @param {BotRiskHold | null | undefined} hold
  */
 export function useEffectiveRiskHold(hold) {
-  const remaining = useRiskHoldRemaining(hold?.kind === 'cooloff' ? hold : null);
+  const timed = hold?.kind === 'cooloff' || (hold?.kind === 'streak_limit' && (hold.cooloff_until || hold.remaining_sec != null))
+    ? hold
+    : null;
+  const remaining = useRiskHoldRemaining(timed);
   if (!hold?.kind) return { hold: null, remaining: 0 };
-  if (hold.kind === 'cooloff' && remaining <= 0) {
+  if (timed && remaining <= 0 && (hold.kind === 'cooloff' || hold.cooloff_until)) {
     return { hold: null, remaining: 0 };
   }
   return { hold, remaining };
@@ -80,8 +93,10 @@ export function riskHoldBadgeLabel(hold, remainingSec = null) {
     return `COOLING OFF · ${formatCooloffRemaining(rem)}`;
   }
   if (active.kind === 'streak_limit') {
+    const rem = remainingSec ?? remainingCooloffSec(active);
     const cur = active.consecutive_losses ?? '?';
     const max = active.max_consecutive_losses ?? '?';
+    if (rem > 0) return `LOSS STREAK · ${cur}/${max} · ${formatCooloffRemaining(rem)}`;
     return `LOSS STREAK · ${cur}/${max}`;
   }
   if (active.kind === 'drawdown') {
@@ -102,8 +117,13 @@ export function riskHoldDetailMessage(hold, remainingSec = null) {
     return `Cooling off after ${losses} consecutive loss${losses === 1 ? '' : 'es'}. New entries resume in ${formatCooloffRemaining(rem)}.`;
   }
   if (active.kind === 'streak_limit') {
+    const rem = remainingSec ?? remainingCooloffSec(active);
+    if (rem > 0) {
+      return active.block_reason
+        || `Loss streak limit reached (${active.consecutive_losses}/${active.max_consecutive_losses}). Entries blocked for ${formatCooloffRemaining(rem)} — resume to clear early.`;
+    }
     return active.block_reason
-      || `Loss streak limit reached (${active.consecutive_losses}/${active.max_consecutive_losses}). Resume alone will re-pause until the streak clears or the limit is raised.`;
+      || `Loss streak limit reached (${active.consecutive_losses}/${active.max_consecutive_losses}). Resume to clear the hold, or wait for cooloff.`;
   }
   if (active.kind === 'drawdown') {
     return active.block_reason

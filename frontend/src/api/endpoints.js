@@ -68,6 +68,11 @@ export function applySessionToStore(session, storeActions) {
   }
 }
 
+/** GET /health/live — fast liveness (+ cheap in-memory feed fields). */
+export async function fetchHealthLive() {
+  return apiRequest('/health/live');
+}
+
 /** GET /health/massive — lightweight Massive feed ops (no DB/LLM). */
 export async function fetchMassiveFeedHealth() {
   return apiRequest('/health/massive');

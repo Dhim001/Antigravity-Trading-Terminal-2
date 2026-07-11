@@ -830,21 +830,30 @@ class BotManagerService:
                 eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
 
                 # ── Time Stop Check ──
+                # opened_at and candle bar_time are both unix seconds; do not mix with ms.
                 signal = None
                 signal_data = {}
                 time_stop_bars = int((bot_config or {}).get("time_stop_bars") or 0)
                 if pos_size != 0 and time_stop_bars > 0:
-                    opened_at = float(bot_pos.get("opened_at") or 0.0)
-                    if opened_at > 0 and bar_time is not None:
-                        from app.services.market.timeframes import timeframe_to_ms
-                        tf_ms = timeframe_to_ms(timeframe)
-                        if tf_ms > 0:
-                            bars_elapsed = (bar_time - opened_at) / tf_ms
-                            if bars_elapsed >= time_stop_bars:
-                                signal = "CLOSE"
-                                signal_data = {"signal": "CLOSE", "reasons": [f"Time stop reached ({time_stop_bars} bars)"]}
-                                await self.log_bot_event(bot_id, "INFO", f"Time stop reached ({time_stop_bars} bars), forcing CLOSE")
-                
+                    from app.services.bots.position_duration import bars_held_since_open
+
+                    bars_elapsed = bars_held_since_open(
+                        bot_pos.get("opened_at"),
+                        bar_time,
+                        timeframe,
+                    )
+                    if bars_elapsed is not None and bars_elapsed >= time_stop_bars:
+                        signal = "CLOSE"
+                        signal_data = {
+                            "signal": "CLOSE",
+                            "reasons": [f"Time stop reached ({time_stop_bars} bars)"],
+                        }
+                        await self.log_bot_event(
+                            bot_id,
+                            "INFO",
+                            f"Time stop reached ({time_stop_bars} bars), forcing CLOSE",
+                        )
+
                 if not signal:
                     signal_data = strat.evaluate(eval_row)
                     signal = signal_data.get("signal")
@@ -1002,17 +1011,25 @@ class BotManagerService:
             bot_pos = self._get_bot_position(bot_id, symbol)
             pos_size = float(bot_pos.get("size") or 0.0)
             
+            # opened_at is unix seconds; tick clock is milliseconds.
             signal = None
             signal_data = {}
             time_stop_sec = int(cfg.get("time_stop_sec", 0))
             if pos_size != 0 and time_stop_sec > 0:
-                opened_at = float(bot_pos.get("opened_at") or 0.0)
-                if opened_at > 0:
-                    elapsed_sec = (time_ms - opened_at) / 1000.0
-                    if elapsed_sec >= time_stop_sec:
-                        signal = "CLOSE"
-                        signal_data = {"signal": "CLOSE", "reasons": [f"Time stop reached ({time_stop_sec}s)"]}
-                        await self.log_bot_event(bot_id, "INFO", f"Time stop reached ({time_stop_sec}s), forcing CLOSE")
+                from app.services.bots.position_duration import seconds_held_since_open
+
+                elapsed_sec = seconds_held_since_open(bot_pos.get("opened_at"), time_ms)
+                if elapsed_sec is not None and elapsed_sec >= time_stop_sec:
+                    signal = "CLOSE"
+                    signal_data = {
+                        "signal": "CLOSE",
+                        "reasons": [f"Time stop reached ({time_stop_sec}s)"],
+                    }
+                    await self.log_bot_event(
+                        bot_id,
+                        "INFO",
+                        f"Time stop reached ({time_stop_sec}s), forcing CLOSE",
+                    )
 
             if not signal:
                 signal_data = strat.evaluate(ctx, price)
@@ -1573,8 +1590,18 @@ class BotManagerService:
         bot = self.active_bots[bot_id]
         if bot.get("status") == "ERROR":
             raise ValueError("Bot is in ERROR state — stop and redeploy.")
+        # Acknowledge losses through now so streak/cooloff holds do not
+        # immediately re-block entries (resume used to be a no-op for gating).
+        await self.update_bot_config(
+            bot_id,
+            {"streak_hold_cleared_at": time.time()},
+        )
         await self._set_bot_status(bot_id, "RUNNING")
-        await self.log_bot_event(bot_id, "INFO", "Bot resumed.")
+        await self.log_bot_event(
+            bot_id,
+            "INFO",
+            "Bot resumed — loss-streak entry hold cleared until the next exit.",
+        )
 
     async def stop_bot(self, bot_id: str):
         if bot_id in self.active_bots:
