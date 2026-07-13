@@ -98,6 +98,7 @@ export const MessageType = Object.freeze({
   ANALYTICS_REPORT: 'analytics_report',
   JOURNAL_ENTRIES: 'journal_entries',
   JOURNAL_ENTRY: 'journal_entry',
+  COPILOT_AGENT_MESSAGE: 'copilot_agent_message',
   JOURNAL_DELETED: 'journal_deleted',
   ERROR: 'error',
 });

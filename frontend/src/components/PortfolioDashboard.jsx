@@ -29,7 +29,7 @@ import CorrelationMatrix from './analytics/CorrelationMatrix';
 import ExposureHeatmap from './analytics/ExposureHeatmap';
 import StatsBreakdownTable from './analytics/StatsBreakdownTable';
 import TradeJournal from './analytics/TradeJournal';
-import { ANALYTICS_PERIODS, buildPortfolioInvalidateKey, fmtPct, fmtUsd, pnlTone } from '@/lib/analytics/helpers';
+import { ANALYTICS_PERIODS, buildPortfolioInvalidateKey, fmtPct, fmtUsd, pnlTone, resolvePortfolioReturnDist } from '@/lib/analytics/helpers';
 
 function EChartPanel({ option, className, deps = [] }) {
   const ref = useRef(null);
@@ -144,6 +144,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
   const [showSpy, setShowSpy] = useState(true);
   const [showBtc, setShowBtc] = useState(true);
   const [correlationMode, setCorrelationMode] = useState('auto');
+  const [distView, setDistView] = useState('histogram'); // histogram | skew | qq
 
   const analyticsBenchmarks = useResearchStore((s) => s.analyticsBenchmarks);
   const tradeHistory = useStore((s) => s.tradeHistory);
@@ -482,6 +483,136 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     };
   }, [data?.distribution, bullishColor, bearishColor]);
 
+  const portfolioReturnDist = useMemo(
+    () => resolvePortfolioReturnDist(data?.distribution, data?.calendar?.days),
+    [data?.distribution, data?.calendar?.days],
+  );
+
+  const distMoments = portfolioReturnDist?.moments || {};
+
+  const skewDensityOption = useMemo(() => {
+    const density = portfolioReturnDist?.density || [];
+    if (!density.length) return null;
+    return {
+      backgroundColor: 'transparent',
+      grid: { left: '10%', right: '4%', top: '14%', bottom: '14%' },
+      legend: {
+        data: ['Empirical', 'Normal'],
+        textStyle: { color: '#9ca3af', fontSize: 10 },
+        top: 0,
+      },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params) => {
+          const x = params?.[0]?.axisValueLabel ?? params?.[0]?.name;
+          const lines = [`Daily portfolio P&L ≈ $${x}`];
+          for (const p of params || []) {
+            lines.push(`${p.seriesName}: <b>${Number(p.value).toFixed(6)}</b>`);
+          }
+          return lines.join('<br/>');
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: density.map((d) => d.x),
+        axisLabel: {
+          color: '#6b7280',
+          fontSize: 8,
+          rotate: 45,
+          formatter: (v) => `$${v}`,
+        },
+        name: 'Daily portfolio P&L',
+        nameTextStyle: { color: '#6b7280', fontSize: 9 },
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Density',
+        axisLabel: { color: '#6b7280', fontSize: 9 },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      },
+      series: [
+        {
+          name: 'Empirical',
+          type: 'line',
+          data: density.map((d) => d.empirical),
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 2, color: bullishColor },
+          areaStyle: { color: `${bullishColor}22` },
+        },
+        {
+          name: 'Normal',
+          type: 'line',
+          data: density.map((d) => d.normal),
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 1.5, type: 'dashed', color: '#94a3b8' },
+        },
+      ],
+    };
+  }, [portfolioReturnDist?.density, bullishColor]);
+
+  const skewQqOption = useMemo(() => {
+    const qq = portfolioReturnDist?.qq || [];
+    if (qq.length < 3) return null;
+    const lo = Math.min(...qq.flatMap((p) => [p.theoretical, p.sample]));
+    const hi = Math.max(...qq.flatMap((p) => [p.theoretical, p.sample]));
+    return {
+      backgroundColor: 'transparent',
+      grid: { left: '12%', right: '6%', top: '10%', bottom: '14%' },
+      tooltip: {
+        trigger: 'item',
+        formatter: (p) => {
+          const [th, sm] = p.value || [];
+          return `Normal: <b>$${Number(th).toFixed(2)}</b><br/>Sample day: <b>$${Number(sm).toFixed(2)}</b>`;
+        },
+      },
+      xAxis: {
+        type: 'value',
+        name: 'Normal quantile ($)',
+        nameTextStyle: { color: '#6b7280', fontSize: 9 },
+        axisLabel: { color: '#6b7280', fontSize: 8, formatter: (v) => `$${v}` },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        min: lo,
+        max: hi,
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Daily portfolio P&L ($)',
+        nameTextStyle: { color: '#6b7280', fontSize: 9 },
+        axisLabel: { color: '#6b7280', fontSize: 8, formatter: (v) => `$${v}` },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        min: lo,
+        max: hi,
+      },
+      series: [
+        {
+          name: 'y = x',
+          type: 'line',
+          data: [[lo, lo], [hi, hi]],
+          showSymbol: false,
+          lineStyle: { width: 1, type: 'dashed', color: '#64748b' },
+          tooltip: { show: false },
+          z: 1,
+        },
+        {
+          name: 'Q-Q',
+          type: 'scatter',
+          data: qq.map((p) => [p.theoretical, p.sample]),
+          symbolSize: 6,
+          itemStyle: { color: bearishColor },
+          z: 2,
+        },
+      ],
+    };
+  }, [portfolioReturnDist?.qq, bearishColor]);
+
+  const distDescription = distView === 'histogram'
+    ? 'Histogram of closed-trade P&L'
+    : distView === 'skew'
+      ? 'Daily portfolio returns vs normal — skew'
+      : 'Q-Q of daily portfolio returns — fat tails';
+
   const topBots = data?.bot_rankings?.top || [];
   const bottomBots = data?.bot_rankings?.bottom || [];
 
@@ -750,17 +881,60 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
 
                   <ChartCard
                     title="P&L Distribution"
-                    description="Histogram of trade returns — reveals skew and fat tails"
+                    description={distDescription}
                     className="portfolio-dashboard__bento-distribution"
                     contentClassName="min-h-[220px]"
+                    headerActions={(
+                      <ToggleGroup
+                        type="single"
+                        value={distView}
+                        onValueChange={(v) => { if (v) setDistView(v); }}
+                        size="sm"
+                        variant="outline"
+                        className="flex-wrap"
+                      >
+                        <ToggleGroupItem value="histogram" className="text-xs px-2">Histogram</ToggleGroupItem>
+                        <ToggleGroupItem value="skew" className="text-xs px-2">Skew</ToggleGroupItem>
+                        <ToggleGroupItem value="qq" className="text-xs px-2">Fat tails</ToggleGroupItem>
+                      </ToggleGroup>
+                    )}
                   >
-                    {distributionOption ? (
+                    {distView !== 'histogram' && distMoments?.n ? (
+                      <div className="mb-2 flex flex-wrap gap-1.5">
+                        <Badge variant="outline" className="text-[0.62rem] font-normal">
+                          {portfolioReturnDist?.n_days
+                            ? `${portfolioReturnDist.n_days} days`
+                            : `n=${distMoments.n}`}
+                        </Badge>
+                        <Badge variant="outline" className="text-[0.62rem] font-normal">
+                          skew {Number(distMoments.skewness ?? 0).toFixed(2)}
+                        </Badge>
+                        <Badge variant="outline" className="text-[0.62rem] font-normal">
+                          excess kurt {Number(distMoments.excess_kurtosis ?? 0).toFixed(2)}
+                        </Badge>
+                        <Badge variant="outline" className="text-[0.62rem] font-normal">
+                          mean ${Number(distMoments.mean ?? 0).toFixed(2)}
+                        </Badge>
+                        <Badge variant="outline" className="text-[0.62rem] font-normal">
+                          median ${Number(distMoments.median ?? 0).toFixed(2)}
+                        </Badge>
+                      </div>
+                    ) : null}
+                    {distView === 'histogram' && distributionOption ? (
                       <EChartPanel option={distributionOption} className="min-h-[220px] flex-1" />
+                    ) : distView === 'skew' && skewDensityOption ? (
+                      <EChartPanel option={skewDensityOption} className="min-h-[220px] flex-1" />
+                    ) : distView === 'qq' && skewQqOption ? (
+                      <EChartPanel option={skewQqOption} className="min-h-[220px] flex-1" />
                     ) : (
                       <Empty className="flex-1 border-0 py-8">
                         <EmptyHeader>
                           <EmptyTitle>Not enough trades</EmptyTitle>
-                          <EmptyDescription>Need at least 2 closed trades for distribution.</EmptyDescription>
+                          <EmptyDescription>
+                            {distView === 'histogram'
+                              ? 'Need at least 2 closed trades for the histogram.'
+                              : 'Need at least 2 trading days of portfolio P&L for skew / fat tails.'}
+                          </EmptyDescription>
                         </EmptyHeader>
                       </Empty>
                     )}

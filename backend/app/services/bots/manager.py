@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import logging
 import json
 import uuid
@@ -123,11 +124,18 @@ def _strategy_runtime_config(bot_id: str, bot: dict) -> dict:
 
 
 class BotManagerService:
-    def __init__(self, oms_service, screener_service, broadcast_cb):
+    def __init__(
+        self,
+        oms,
+        screener,
+        broadcast_cb=None,
+        agent_event_bus=None,
+    ) -> None:
         self.logger = logging.getLogger(__name__)
-        self.oms = oms_service
-        self.screener = screener_service
+        self.oms = oms
+        self.screener = screener
         self.broadcast_cb = broadcast_cb
+        self.agent_event_bus = agent_event_bus
         self.active_bots = {}
         self._bar_tracker = BarCloseTracker()
         self._risk_gate = RiskGate()
@@ -135,6 +143,10 @@ class BotManagerService:
         self._log_buffer: list[tuple[str, str, str]] = []
         self._log_flush_task = None
         self._tick_screener = TickScreener()
+
+        from app.services.bots.pretrade_intel import PreTradeIntel
+
+        self._pretrade_intel = PreTradeIntel(self, agent_event_bus=self.agent_event_bus)
 
     def _get_daily_pnl(self, bot_id: str) -> float:
         return bot_analytics.get_daily_pnl(bot_id)
@@ -191,6 +203,8 @@ class BotManagerService:
             else:
                 self.active_bots[bot_id]["strategy_instance"] = get_strategy(strategy, runtime_config)
                 self.active_bots[bot_id]["tick_strategy_instance"] = None
+            if "signal_history" not in self.active_bots[bot_id]:
+                self.active_bots[bot_id]["signal_history"] = deque(maxlen=20)
         stale_ids = [bot_id for bot_id in self.active_bots if bot_id not in loaded_ids]
         for bot_id in stale_ids:
             del self.active_bots[bot_id]
@@ -548,6 +562,25 @@ class BotManagerService:
         )
         if not hold or hold.get("kind") not in ("streak_limit", "drawdown"):
             return False
+        cfg = bot.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg) if cfg else {}
+            except json.JSONDecodeError:
+                cfg = {}
+        # Scanner auto-deploy bots: hard-stop on drawdown (proposal Agent 6).
+        if (
+            hold["kind"] == "drawdown"
+            and cfg.get("pipeline_source") in ("scanner_auto", "scanner")
+        ):
+            await self.stop_bot(bot_id)
+            await self.log_bot_event(
+                bot_id,
+                "WARN",
+                f"Scanner Auto-Deploy stopped at max drawdown — "
+                f"{hold.get('block_reason') or hold.get('reason')}",
+            )
+            return True
         await self._set_bot_status(bot_id, "PAUSED")
         if hold["kind"] == "drawdown":
             await self.log_bot_event(
@@ -860,6 +893,10 @@ class BotManagerService:
                 if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
                     reject = signal_data.get("reject_reason")
                     if reject:
+                        from app.services.bots.strategies_chart_agent import classify_filter_reject
+                        bucket = classify_filter_reject(reject)
+                        if bucket and bucket != "other":
+                            bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": "CHART_AGENT", "reason": "filter"})
                         await self.log_bot_event(
                             bot_id,
@@ -884,6 +921,7 @@ class BotManagerService:
                 if confirm_tf and signal in ("BUY", "SELL"):
                     htf_bias = await self._get_htf_bias(symbol, confirm_tf)
                     if signal == "BUY" and htf_bias == "BEAR":
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
                         await self.log_bot_event(
                             bot_id, "WARN",
@@ -891,6 +929,7 @@ class BotManagerService:
                         )
                         continue
                     if signal == "SELL" and htf_bias == "BULL":
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
                         await self.log_bot_event(
                             bot_id, "WARN",
@@ -903,6 +942,7 @@ class BotManagerService:
                 if strat_filter and signal in ("BUY", "SELL"):
                     allowed, reason = strat_filter.evaluate_gate(eval_row, signal)
                     if not allowed:
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "filter_gate"})
                         await self.log_bot_event(
                             bot_id, "WARN",
@@ -918,6 +958,7 @@ class BotManagerService:
                         symbol, bar_time, bot_config, is_exit=False,
                     )
                     if not gate_ok and gate_reason:
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc(
                             "bot_orders_blocked_total",
                             labels={"strategy": strat_key, "reason": gate_kind or "event"},
@@ -1121,6 +1162,17 @@ class BotManagerService:
         inc("bot_signals_total", labels={"strategy": strat_key, "signal": signal_kind})
 
         if not is_exit:
+            # --- Pre-Trade Intelligence Gating ---
+            verdict = await self._pretrade_intel.evaluate(bot, side, current_price, signal_data, bar_time)
+            
+            if verdict.get("verdict") == "VETO":
+                signal_ledger.release_signal(signal_id)
+                reason = f"Pre-Trade Intel VETO: {verdict.get('reasoning')}"
+                await self.log_bot_event(bot_id, "WARN", reason)
+                _record_order_blocked(bot, reason)
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                return
+
             account_balance = self.get_account_balance()
             risk_amount = account_balance * RISK_PCT
 
@@ -1154,6 +1206,10 @@ class BotManagerService:
                 conf_scale = max(0.5, min(1.5, conf_scale))
                 quantity *= conf_scale
 
+            if verdict.get("verdict") == "REDUCE_SIZE":
+                size_mult = float(verdict.get("size_multiplier") or 0.5)
+                quantity *= size_mult
+
             if bot_cfg.get("use_meta_label_sizing"):
                 snap = signal_data.get("insight_snapshot") or {
                     "score": signal_data.get("score"),
@@ -1183,6 +1239,34 @@ class BotManagerService:
                     quantity *= 0.5
                     await self.log_bot_event(bot_id, "INFO", "Bot in drawdown (3 consecutive losses). Halving allocation size.")
 
+            # Agent 4: Pre-Trade Intelligence — holistic last-mile entry filter.
+            pt = await self._pretrade_intel.evaluate(
+                bot,
+                side,
+                current_price,
+                signal_data,
+                bar_time=signal_data.get("time"),
+            )
+            verdict = pt.get("verdict")
+            reasoning = pt.get("reasoning")
+            reasoning_chain = pt.get("reasoning_chain")
+
+            if verdict == "VETO":
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                signal_ledger.release_signal(signal_id)
+                await self.log_bot_event(bot_id, "WARN", f"Pre-trade veto: {reasoning}", meta={"reasoning_chain": reasoning_chain})
+                _record_order_blocked(bot, f"Pre-trade veto: {reasoning}")
+                return
+            if verdict == "REDUCE_SIZE" and pt.get("size_multiplier", 1.0) < 1.0:
+                size_factor = pt.get("size_multiplier", 1.0)
+                quantity *= size_factor
+                await self.log_bot_event(
+                    bot_id,
+                    "INFO",
+                    f"Pre-trade reduce ×{size_factor:.2f}: {reasoning}",
+                    meta={"reasoning_chain": reasoning_chain}
+                )
+
         pos_size = self._get_bot_position_size(bot_id, symbol)
         risk_stats = bot_analytics.get_bot_stats(bot_id)
         bot_for_risk = {**bot, "total_pnl": float(risk_stats.get("total_pnl") or 0)}
@@ -1197,6 +1281,8 @@ class BotManagerService:
         )
 
         if not decision.allowed:
+            if not is_exit:
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
             signal_ledger.release_signal(signal_id)
             await self.log_bot_event(bot_id, "WARN", f"Risk blocked: {decision.reason}")
             _record_order_blocked(bot, decision.reason)
@@ -1350,10 +1436,28 @@ class BotManagerService:
                 },
             )
 
+        # Snapshot excursion marks before the exit fill clears the position.
+        exit_excursion: dict = {}
+        if is_exit:
+            try:
+                pos = bot_positions.get_bot_position(bot_id, symbol)
+                if pos:
+                    exit_excursion = {
+                        "high_watermark": pos.get("high_watermark"),
+                        "low_watermark": pos.get("low_watermark"),
+                        "entry_atr": pos.get("entry_atr"),
+                        "avg_price": pos.get("avg_price"),
+                        "size": pos.get("size"),
+                    }
+            except Exception:
+                pass
+
         try:
             result = await self.oms.place_order(order_req)
 
             if result.get("status") == "success":
+                if not is_exit:
+                    bot.setdefault("signal_history", deque(maxlen=20)).append(True)
                 if bar_time is not None:
                     bot["last_signal_bar_time"] = bar_time
                 order_id = result.get("order_id")
@@ -1434,6 +1538,20 @@ class BotManagerService:
                         except Exception:
                             pass
                         await self._maybe_auto_pause_on_entry_hold(bot_id)
+                        await self._run_posttrade_learner(
+                            bot_id,
+                            symbol=symbol,
+                            exit_side=side,
+                            exit_price=fill_price,
+                            entry_price=entry_price or exit_excursion.get("avg_price"),
+                            quantity=filled_qty,
+                            pnl=trade_pnl,
+                            trigger_type="SIGNAL",
+                            high_watermark=exit_excursion.get("high_watermark"),
+                            low_watermark=exit_excursion.get("low_watermark"),
+                            entry_insight=insight_snapshot or signal_data.get("insight_snapshot"),
+                            order_id=order_id,
+                        )
                     self.record_snapshot_for_bot(bot_id)
                     signal_ledger.mark_signal_filled(signal_id, order_id=order_id)
 
@@ -1558,6 +1676,7 @@ class BotManagerService:
             "last_signal_bar_time": None,
             "last_signal_at": None,
             "last_tick_signal_at": 0,
+            "signal_history": deque(maxlen=20),
         }
         if mode == "TICK":
             self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(
@@ -1809,6 +1928,44 @@ class BotManagerService:
             out.append(public)
         return out
 
+    async def _run_posttrade_learner(
+        self,
+        bot_id: str,
+        *,
+        symbol: str,
+        exit_side: str,
+        exit_price: float,
+        entry_price: float | None,
+        quantity: float,
+        pnl: float | None,
+        trigger_type: str | None = None,
+        high_watermark: float | None = None,
+        low_watermark: float | None = None,
+        entry_insight: dict | None = None,
+        order_id: str | None = None,
+    ) -> None:
+        """Agent 5: classify closed trade and optionally apply lessons."""
+        try:
+            from app.services.bots.posttrade_learner import learn_from_closed_trade
+
+            await learn_from_closed_trade(
+                self,
+                bot_id,
+                symbol=symbol,
+                exit_side=exit_side,
+                exit_price=exit_price,
+                entry_price=entry_price,
+                quantity=quantity,
+                pnl=pnl,
+                trigger_type=trigger_type,
+                high_watermark=high_watermark,
+                low_watermark=low_watermark,
+                entry_insight=entry_insight,
+                order_id=order_id,
+            )
+        except Exception as exc:
+            logger.debug("posttrade learner skipped for %s: %s", bot_id, exc)
+
     async def handle_sl_tp_exits(self, bot_exits: list[dict]):
         """Record SIM stop-loss / take-profit exits in bot analytics."""
         if not bot_exits:
@@ -1861,6 +2018,19 @@ class BotManagerService:
                 f"{trigger} exit {side} {qty:.4f} @ {price:.4f} (PnL {trade_pnl:+.2f}).",
             )
             await self._maybe_auto_pause_on_entry_hold(bot_id)
+            await self._run_posttrade_learner(
+                bot_id,
+                symbol=exit_info["symbol"],
+                exit_side=side,
+                exit_price=price,
+                entry_price=entry_price,
+                quantity=qty,
+                pnl=trade_pnl,
+                trigger_type=str(trigger),
+                high_watermark=exit_info.get("high_watermark"),
+                low_watermark=exit_info.get("low_watermark"),
+                order_id=exit_info.get("order_id"),
+            )
 
         await publish_post_trade_bundle(
             self.broadcast_cb,
@@ -1960,6 +2130,19 @@ class BotManagerService:
                 "SUCCESS",
                 f"Broker confirmed {p['side']} {filled_qty:.4f} @ {fill_price:.4f} (order {resolved_order_id}).",
             )
+            if is_exit:
+                await self._run_posttrade_learner(
+                    p["bot_id"],
+                    symbol=p["symbol"],
+                    exit_side=p["side"],
+                    exit_price=fill_price,
+                    entry_price=float(entry_price) if entry_price is not None else None,
+                    quantity=filled_qty,
+                    pnl=trade_pnl,
+                    trigger_type="BROKER",
+                    entry_insight=p.get("insight_snapshot") if isinstance(p.get("insight_snapshot"), dict) else None,
+                    order_id=resolved_order_id,
+                )
 
         if confirmed:
             for bot_id in touched:

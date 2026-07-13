@@ -248,6 +248,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.ANALYTICS_REPORT:
       storeActions.setAnalyticsReport(data);
       break;
+    case MessageType.COPILOT_AGENT_MESSAGE:
+      if (data?.message) {
+        storeActions.appendCopilotMessage(data.message);
+      }
+      break;
     case MessageType.JOURNAL_ENTRIES:
       storeActions.setJournalEntries(data?.entries);
       break;

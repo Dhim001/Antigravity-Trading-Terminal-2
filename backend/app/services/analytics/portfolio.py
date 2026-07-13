@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from statistics import NormalDist
 from typing import Literal
 
 from app.config import PORTFOLIO_MAX_GROSS_EXPOSURE_PCT, PORTFOLIO_MAX_GROUP_EXPOSURE_PCT
@@ -299,32 +300,116 @@ def get_breakdown_stats(
     return {"rows": rows, "group_by": group_by, "source": source, "period": period or "ALL"}
 
 
-def get_pnl_distribution(
-    account_history: dict | list,
+def _pnl_moments(pnls: list[float]) -> dict:
+    """Sample mean/median/std + Fisher-Pearson skewness and excess kurtosis."""
+    n = len(pnls)
+    if n < 2:
+        return {}
+    sorted_pnls = sorted(pnls)
+    mean = sum(pnls) / n
+    median = (
+        sorted_pnls[n // 2]
+        if n % 2
+        else 0.5 * (sorted_pnls[n // 2 - 1] + sorted_pnls[n // 2])
+    )
+    var = sum((x - mean) ** 2 for x in pnls) / (n - 1)
+    std = math.sqrt(var) if var > 0 else 0.0
+    skewness = 0.0
+    excess_kurtosis = 0.0
+    if std > 0 and n >= 3:
+        m3 = sum(((x - mean) / std) ** 3 for x in pnls)
+        skewness = (n / ((n - 1) * (n - 2))) * m3
+    if std > 0 and n >= 4:
+        m4 = sum(((x - mean) / std) ** 4 for x in pnls)
+        excess_kurtosis = (
+            (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3))) * m4
+            - (3.0 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+        )
+    return {
+        "n": n,
+        "mean": round(mean, 4),
+        "median": round(median, 4),
+        "std": round(std, 4),
+        "skewness": round(skewness, 4),
+        "excess_kurtosis": round(excess_kurtosis, 4),
+        "min": round(sorted_pnls[0], 4),
+        "max": round(sorted_pnls[-1], 4),
+    }
+
+
+def _pnl_density_and_qq(
+    pnls: list[float],
+    bins: list[dict],
+    moments: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Empirical density vs normal overlay + Q-Q points for fat-tail inspection."""
+    n = len(pnls)
+    mean = float(moments.get("mean") or 0.0)
+    std = float(moments.get("std") or 0.0)
+    density: list[dict] = []
+    for b in bins:
+        edge = float(b.get("edge") or 0.0)
+        upper = float(b.get("upper") if b.get("upper") is not None else edge)
+        width = max(upper - edge, 1e-12)
+        mid = (edge + upper) / 2.0
+        empirical = (int(b.get("count") or 0) / n) / width
+        normal = 0.0
+        if std > 0:
+            z = (mid - mean) / std
+            normal = math.exp(-0.5 * z * z) / (std * math.sqrt(2.0 * math.pi))
+        density.append({
+            "x": round(mid, 4),
+            "empirical": round(empirical, 8),
+            "normal": round(normal, 8),
+        })
+
+    qq: list[dict] = []
+    if std > 0 and n >= 3:
+        nd = NormalDist()
+        sorted_pnls = sorted(pnls)
+        for i, sample in enumerate(sorted_pnls):
+            # Blom plotting position — stable for small samples
+            p = (i + 0.375) / (n + 0.25)
+            p = min(max(p, 1e-6), 1.0 - 1e-6)
+            theoretical = mean + std * nd.inv_cdf(p)
+            qq.append({
+                "theoretical": round(theoretical, 4),
+                "sample": round(sample, 4),
+            })
+    return density, qq
+
+
+def _distribution_from_values(
+    values: list[float],
     *,
-    period: str | int | None = None,
-    source: SourceFilter = "combined",
     max_bins: int = 30,
 ) -> dict:
-    """Bin trade P&L values into a histogram for distribution analysis."""
-    trades = collect_exit_trades(account_history, period=period, source=source)
-    pnls = [t["pnl"] for t in trades]
-    if len(pnls) < 2:
-        return {"bins": [], "source": source, "period": period or "ALL"}
+    """Histogram bins + moments + density/QQ overlays for a numeric series."""
+    empty = {"bins": [], "moments": {}, "density": [], "qq": [], "n": 0}
+    if len(values) < 2:
+        return empty
 
-    lo, hi = min(pnls), max(pnls)
+    moments = _pnl_moments(values)
+    lo, hi = min(values), max(values)
     if lo == hi:
+        bins = [{
+            "edge": round(lo, 2),
+            "upper": round(lo, 2),
+            "count": len(values),
+            "is_positive": lo >= 0,
+        }]
         return {
-            "bins": [{"edge": round(lo, 2), "count": len(pnls), "is_positive": lo >= 0}],
-            "source": source,
-            "period": period or "ALL",
+            "bins": bins,
+            "moments": moments,
+            "density": [],
+            "qq": [],
+            "n": len(values),
         }
 
-    # Freedman-Diaconis bin width
-    sorted_pnls = sorted(pnls)
-    n = len(sorted_pnls)
-    q1 = sorted_pnls[n // 4]
-    q3 = sorted_pnls[(3 * n) // 4]
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    q1 = sorted_vals[n // 4]
+    q3 = sorted_vals[(3 * n) // 4]
     iqr = q3 - q1
     if iqr > 0:
         bin_width = 2.0 * iqr / (n ** (1.0 / 3.0))
@@ -338,9 +423,9 @@ def get_pnl_distribution(
         edge = lo + i * bin_width
         upper = edge + bin_width
         if i == num_bins - 1:
-            count = sum(1 for p in pnls if edge <= p <= upper)
+            count = sum(1 for p in values if edge <= p <= upper)
         else:
-            count = sum(1 for p in pnls if edge <= p < upper)
+            count = sum(1 for p in values if edge <= p < upper)
         bins.append({
             "edge": round(edge, 2),
             "upper": round(upper, 2),
@@ -348,7 +433,58 @@ def get_pnl_distribution(
             "is_positive": (edge + upper) / 2 >= 0,
         })
 
-    return {"bins": bins, "source": source, "period": period or "ALL"}
+    density, qq = _pnl_density_and_qq(values, bins, moments)
+    return {
+        "bins": bins,
+        "moments": moments,
+        "density": density,
+        "qq": qq,
+        "n": n,
+    }
+
+
+def _daily_portfolio_returns(
+    account_history: dict | list,
+    *,
+    period: str | int | None = None,
+    source: SourceFilter = "combined",
+) -> list[float]:
+    """Aggregate exit-trade P&L into one portfolio return per UTC day."""
+    trades = collect_exit_trades(account_history, period=period, source=source)
+    daily: dict[str, float] = defaultdict(float)
+    for t in trades:
+        daily[_day_key(t["timestamp"])] += float(t["pnl"] or 0.0)
+    return [daily[d] for d in sorted(daily.keys())]
+
+
+def get_pnl_distribution(
+    account_history: dict | list,
+    *,
+    period: str | int | None = None,
+    source: SourceFilter = "combined",
+    max_bins: int = 30,
+) -> dict:
+    """Trade P&L histogram plus portfolio daily-return skew / fat-tail overlays."""
+    trades = collect_exit_trades(account_history, period=period, source=source)
+    trade_pnls = [t["pnl"] for t in trades]
+    trade_dist = _distribution_from_values(trade_pnls, max_bins=max_bins)
+
+    daily_returns = _daily_portfolio_returns(
+        account_history, period=period, source=source,
+    )
+    portfolio_dist = _distribution_from_values(daily_returns, max_bins=max_bins)
+    portfolio_dist["unit"] = "daily_pnl"
+    portfolio_dist["n_days"] = len(daily_returns)
+
+    return {
+        "bins": trade_dist["bins"],
+        "moments": trade_dist["moments"],
+        "density": trade_dist["density"],
+        "qq": trade_dist["qq"],
+        "portfolio": portfolio_dist,
+        "source": source,
+        "period": period or "ALL",
+    }
 
 
 def _day_key(ts: float) -> str:

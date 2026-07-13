@@ -149,6 +149,73 @@ RISK_KILL_SWITCH_ENABLED = os.environ.get("RISK_KILL_SWITCH_ENABLED", "true").lo
 RISK_MAX_DRAWDOWN_PCT = float(os.environ.get("RISK_MAX_DRAWDOWN_PCT", "15.0"))
 RISK_MONITOR_INTERVAL_SEC = float(os.environ.get("RISK_MONITOR_INTERVAL_SEC", "30"))
 
+# Risk Sentinel Agent (proactive portfolio protection)
+RISK_SENTINEL_ENABLED = os.environ.get("RISK_SENTINEL_ENABLED", "true").lower() in ("1", "true", "yes")
+RISK_SENTINEL_MAX_VELOCITY = float(os.environ.get("RISK_SENTINEL_MAX_VELOCITY", "3.0"))
+RISK_SENTINEL_AUTO_PAUSE_ON_STREAK = os.environ.get("RISK_SENTINEL_AUTO_PAUSE_ON_STREAK", "true").lower() in ("1", "true", "yes")
+RISK_SENTINEL_MAX_CORRELATION_EXPOSURE_PCT = float(os.environ.get("RISK_SENTINEL_MAX_CORRELATION_EXPOSURE_PCT", "40.0"))
+
+# Regime Rotation Agent (automatic strategy rotation based on market conditions)
+REGIME_ROTATION_ENABLED = os.environ.get("REGIME_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes")
+REGIME_ROTATION_INTERVAL_SEC = float(os.environ.get("REGIME_ROTATION_INTERVAL_SEC", "300"))
+REGIME_ROTATION_FLATTEN_ON_ROTATE = os.environ.get("REGIME_ROTATION_FLATTEN_ON_ROTATE", "true").lower() in ("1", "true", "yes")
+
+# Alpha Decay Monitor Agent (automatically detect decaying strategy edge)
+ALPHA_DECAY_ENABLED = os.environ.get("ALPHA_DECAY_ENABLED", "true").lower() in ("1", "true", "yes")
+ALPHA_DECAY_INTERVAL_SEC = float(os.environ.get("ALPHA_DECAY_INTERVAL_SEC", "3600"))
+ALPHA_DECAY_MIN_TRADES = int(os.environ.get("ALPHA_DECAY_MIN_TRADES", "10"))
+ALPHA_DECAY_AUTO_PAUSE = os.environ.get("ALPHA_DECAY_AUTO_PAUSE", "true").lower() in ("1", "true", "yes")
+ALPHA_DECAY_AUTO_RETRAIN = os.environ.get("ALPHA_DECAY_AUTO_RETRAIN", "true").lower() in ("1", "true", "yes")
+
+# Pre-Trade Intelligence Agent (last-mile entry checklist)
+PRETRADE_INTEL_ENABLED = os.environ.get("PRETRADE_INTEL_ENABLED", "true").lower() in ("1", "true", "yes")
+PRETRADE_MACRO_WINDOW_MIN = float(os.environ.get("PRETRADE_MACRO_WINDOW_MIN", "30"))
+PRETRADE_SETUP_FAIL_LIMIT = int(os.environ.get("PRETRADE_SETUP_FAIL_LIMIT", "3"))
+PRETRADE_SETUP_LOOKBACK_HOURS = float(os.environ.get("PRETRADE_SETUP_LOOKBACK_HOURS", "24"))
+PRETRADE_SENTIMENT_THRESHOLD = float(os.environ.get("PRETRADE_SENTIMENT_THRESHOLD", "0.45"))
+PRETRADE_SENTIMENT_MIN_MENTIONS = int(os.environ.get("PRETRADE_SENTIMENT_MIN_MENTIONS", "3"))
+PRETRADE_PEER_DIVERGE_PCT = float(os.environ.get("PRETRADE_PEER_DIVERGE_PCT", "0.35"))
+PRETRADE_REDUCE_SIZE_FACTOR = float(os.environ.get("PRETRADE_REDUCE_SIZE_FACTOR", "0.5"))
+PRETRADE_GAP_VETO_PCT = float(os.environ.get("PRETRADE_GAP_VETO_PCT", "3.0"))
+
+# Post-Trade Learning Agent (close → classify → lesson → optional config apply)
+POSTTRADE_LEARNER_ENABLED = os.environ.get("POSTTRADE_LEARNER_ENABLED", "true").lower() in ("1", "true", "yes")
+POSTTRADE_LEARNER_USE_LLM = os.environ.get("POSTTRADE_LEARNER_USE_LLM", "true").lower() in ("1", "true", "yes")
+POSTTRADE_LEARNER_AUTO_APPLY = os.environ.get("POSTTRADE_LEARNER_AUTO_APPLY", "false").lower() in ("1", "true", "yes")
+POSTTRADE_LEARNER_AUTO_RETRAIN = os.environ.get("POSTTRADE_LEARNER_AUTO_RETRAIN", "true").lower() in ("1", "true", "yes")
+POSTTRADE_LEARNER_RETRAIN_EVERY_N = int(os.environ.get("POSTTRADE_LEARNER_RETRAIN_EVERY_N", "10"))
+POSTTRADE_LEARNER_STOP_WIDEN_PCT = float(os.environ.get("POSTTRADE_LEARNER_STOP_WIDEN_PCT", "0.25"))
+POSTTRADE_LEARNER_CONFIDENCE_BUMP = float(os.environ.get("POSTTRADE_LEARNER_CONFIDENCE_BUMP", "0.03"))
+
+# Scanner Auto-Deploy Agent (continuous scan → gate → create bots)
+SCANNER_DEPLOY_ENABLED = os.environ.get("SCANNER_DEPLOY_ENABLED", "false").lower() in ("1", "true", "yes")
+SCANNER_DEPLOY_INTERVAL_SEC = float(os.environ.get("SCANNER_DEPLOY_INTERVAL_SEC", "300"))
+SCANNER_DEPLOY_MIN_CONFIDENCE = float(os.environ.get("SCANNER_DEPLOY_MIN_CONFIDENCE", "0.65"))
+SCANNER_DEPLOY_MIN_SCORE = int(os.environ.get("SCANNER_DEPLOY_MIN_SCORE", "3"))
+SCANNER_DEPLOY_MAX_CORRELATION = float(os.environ.get("SCANNER_DEPLOY_MAX_CORRELATION", "0.6"))
+SCANNER_DEPLOY_MAX_PORTFOLIO_PCT = float(os.environ.get("SCANNER_DEPLOY_MAX_PORTFOLIO_PCT", "40.0"))
+SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION = float(os.environ.get("SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION", "10000.0"))
+SCANNER_DEPLOY_MAX_CONCURRENT_BOTS = int(os.environ.get("SCANNER_DEPLOY_MAX_CONCURRENT_BOTS", "5"))
+SCANNER_DEPLOY_BASE_ALLOCATION = float(os.environ.get("SCANNER_DEPLOY_BASE_ALLOCATION", "1000"))
+SCANNER_DEPLOY_MAX_ALLOCATION = float(os.environ.get("SCANNER_DEPLOY_MAX_ALLOCATION", "2500"))
+SCANNER_DEPLOY_MAX_PER_CYCLE = int(os.environ.get("SCANNER_DEPLOY_MAX_PER_CYCLE", "2"))
+SCANNER_DEPLOY_BACKTEST_DAYS = int(os.environ.get("SCANNER_DEPLOY_BACKTEST_DAYS", "7"))
+SCANNER_DEPLOY_MIN_WIN_RATE = float(os.environ.get("SCANNER_DEPLOY_MIN_WIN_RATE", "50"))
+SCANNER_DEPLOY_MIN_TRADES = int(os.environ.get("SCANNER_DEPLOY_MIN_TRADES", "3"))
+SCANNER_DEPLOY_STRATEGY = os.environ.get("SCANNER_DEPLOY_STRATEGY", "CHART_AGENT")
+SCANNER_DEPLOY_TIMEFRAME = os.environ.get("SCANNER_DEPLOY_TIMEFRAME", "1m")
+SCANNER_DEPLOY_MAX_DRAWDOWN_PCT = float(os.environ.get("SCANNER_DEPLOY_MAX_DRAWDOWN_PCT", "5.0"))
+SCANNER_DEPLOY_AUTO_STOP_ON_DD = os.environ.get("SCANNER_DEPLOY_AUTO_STOP_ON_DD", "true").lower() in ("1", "true", "yes")
+# Raw env (slash or USDT); normalized to *USDT after CRYPTO_SYMBOLS is defined.
+_SCANNER_DEPLOY_WATCHLIST_RAW = os.environ.get("SCANNER_DEPLOY_WATCHLIST")
+SCANNER_DEPLOY_WATCHLIST: list[str] = []
+
+# Trading Chatbot / Copilot
+TRADE_COPILOT_ENABLED = os.environ.get("TRADE_COPILOT_ENABLED", "true").lower() in ("1", "true", "yes")
+TRADE_COPILOT_USE_LLM = os.environ.get("TRADE_COPILOT_USE_LLM", "true").lower() in ("1", "true", "yes")
+TRADE_COPILOT_HISTORY_LIMIT = int(os.environ.get("TRADE_COPILOT_HISTORY_LIMIT", "40"))
+TRADE_COPILOT_PENDING_TTL_SEC = float(os.environ.get("TRADE_COPILOT_PENDING_TTL_SEC", "600"))
+
 # Time-based risk controls (equities only — crypto exempt from no-trade + weekend flatten)
 RISK_TIME_CONTROLS_ENABLED = os.environ.get("RISK_TIME_CONTROLS_ENABLED", "true").lower() in (
     "1", "true", "yes"
@@ -192,7 +259,11 @@ CORRELATION_GROUPS = {
     "TECH": ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL", "AMZN", "META", "NFLX"],
     "INDEX_ETF": ["SPY", "QQQ"],
     "CRYPTO_MAJOR": ["BTCUSDT", "ETHUSDT"],
-    "CRYPTO_ALT": ["SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "DOTUSDT", "LTCUSDT", "LINKUSDT"],
+    "CRYPTO_ALT": [
+        "BNBUSDT", "SOLUSDT", "XRPUSDT", "TRXUSDT", "DOGEUSDT", "ADAUSDT",
+        "AVAXUSDT", "LINKUSDT", "TONUSDT", "SHIBUSDT", "SUIUSDT", "DOTUSDT",
+        "BCHUSDT", "XLMUSDT", "LTCUSDT", "UNIUSDT", "APTUSDT", "NEARUSDT",
+    ],
 }
 
 # Long-term market bar archive (1m bars → DB, rollup to 1h after retention window)
@@ -479,18 +550,59 @@ EQUITY_SYMBOLS = {
     "DIS": {"price": 115.30, "volatility": 0.00014, "decimals": 2, "asset": "DIS", "quote": "USD"}
 }
 
+# Top-20 liquid spot cryptos by market cap + 24h volume (excl. stables),
+# limited to majors with reliable Massive/Polygon USD pairs and yfinance history.
+# Seed prices are approximate; live feeds overwrite on connect.
 CRYPTO_SYMBOLS = {
-    "BTCUSDT": {"price": 68500.0, "volatility": 0.00015, "decimals": 2, "asset": "BTC", "quote": "USDT"},
-    "ETHUSDT": {"price": 3520.0, "volatility": 0.0002, "decimals": 2, "asset": "ETH", "quote": "USDT"},
-    "SOLUSDT": {"price": 145.50, "volatility": 0.0004, "decimals": 2, "asset": "SOL", "quote": "USDT"},
-    "BNBUSDT": {"price": 580.20, "volatility": 0.00018, "decimals": 2, "asset": "BNB", "quote": "USDT"},
-    "XRPUSDT": {"price": 0.5200, "volatility": 0.00025, "decimals": 4, "asset": "XRP", "quote": "USDT"},
-    "ADAUSDT": {"price": 0.4500, "volatility": 0.00028, "decimals": 4, "asset": "ADA", "quote": "USDT"},
-    "DOGEUSDT": {"price": 0.1450, "volatility": 0.00045, "decimals": 4, "asset": "DOGE", "quote": "USDT"},
-    "DOTUSDT": {"price": 6.80, "volatility": 0.0003, "decimals": 2, "asset": "DOT", "quote": "USDT"},
-    "LTCUSDT": {"price": 82.40, "volatility": 0.00022, "decimals": 2, "asset": "LTC", "quote": "USDT"},
-    "LINKUSDT": {"price": 15.20, "volatility": 0.00032, "decimals": 2, "asset": "LINK", "quote": "USDT"}
+    "BTCUSDT": {"price": 63000.0, "volatility": 0.00015, "decimals": 2, "asset": "BTC", "quote": "USDT"},
+    "ETHUSDT": {"price": 1780.0, "volatility": 0.0002, "decimals": 2, "asset": "ETH", "quote": "USDT"},
+    "BNBUSDT": {"price": 570.0, "volatility": 0.00018, "decimals": 2, "asset": "BNB", "quote": "USDT"},
+    "XRPUSDT": {"price": 1.08, "volatility": 0.00025, "decimals": 4, "asset": "XRP", "quote": "USDT"},
+    "SOLUSDT": {"price": 77.0, "volatility": 0.0004, "decimals": 2, "asset": "SOL", "quote": "USDT"},
+    "TRXUSDT": {"price": 0.3300, "volatility": 0.00028, "decimals": 4, "asset": "TRX", "quote": "USDT"},
+    "DOGEUSDT": {"price": 0.0720, "volatility": 0.00045, "decimals": 4, "asset": "DOGE", "quote": "USDT"},
+    "ADAUSDT": {"price": 0.1600, "volatility": 0.00028, "decimals": 4, "asset": "ADA", "quote": "USDT"},
+    "AVAXUSDT": {"price": 22.50, "volatility": 0.0004, "decimals": 2, "asset": "AVAX", "quote": "USDT"},
+    "LINKUSDT": {"price": 8.00, "volatility": 0.00032, "decimals": 2, "asset": "LINK", "quote": "USDT"},
+    "TONUSDT": {"price": 1.60, "volatility": 0.00035, "decimals": 3, "asset": "TON", "quote": "USDT"},
+    "SHIBUSDT": {"price": 0.00001200, "volatility": 0.00055, "decimals": 8, "asset": "SHIB", "quote": "USDT"},
+    "SUIUSDT": {"price": 2.50, "volatility": 0.00042, "decimals": 3, "asset": "SUI", "quote": "USDT"},
+    "DOTUSDT": {"price": 5.20, "volatility": 0.0003, "decimals": 3, "asset": "DOT", "quote": "USDT"},
+    "BCHUSDT": {"price": 240.0, "volatility": 0.00028, "decimals": 2, "asset": "BCH", "quote": "USDT"},
+    "XLMUSDT": {"price": 0.1840, "volatility": 0.0003, "decimals": 4, "asset": "XLM", "quote": "USDT"},
+    "LTCUSDT": {"price": 44.00, "volatility": 0.00022, "decimals": 2, "asset": "LTC", "quote": "USDT"},
+    "UNIUSDT": {"price": 7.20, "volatility": 0.00035, "decimals": 3, "asset": "UNI", "quote": "USDT"},
+    "APTUSDT": {"price": 5.40, "volatility": 0.0004, "decimals": 3, "asset": "APT", "quote": "USDT"},
+    "NEARUSDT": {"price": 3.10, "volatility": 0.00038, "decimals": 3, "asset": "NEAR", "quote": "USDT"},
 }
+
+
+def _normalize_crypto_watch_symbol(sym: str) -> str:
+    """Map BTC/USD, BTC-USD, BTCUSD, BTC → BTCUSDT for scanner / watchlists."""
+    s = (sym or "").strip().upper().replace(" ", "")
+    if not s:
+        return ""
+    s = s.replace("-", "/")
+    if "/" in s:
+        return f"{s.split('/', 1)[0]}USDT"
+    if s.endswith("USD") and not s.endswith("USDT"):
+        return f"{s[:-3]}USDT"
+    if not s.endswith("USDT"):
+        return f"{s}USDT"
+    return s
+
+
+if _SCANNER_DEPLOY_WATCHLIST_RAW and str(_SCANNER_DEPLOY_WATCHLIST_RAW).strip():
+    SCANNER_DEPLOY_WATCHLIST = [
+        n
+        for n in (
+            _normalize_crypto_watch_symbol(x)
+            for x in str(_SCANNER_DEPLOY_WATCHLIST_RAW).split(",")
+        )
+        if n
+    ]
+else:
+    SCANNER_DEPLOY_WATCHLIST = list(CRYPTO_SYMBOLS.keys())
 
 # Supported Trading Symbols & Properties based on mode
 if TERMINAL_MODE == "LIVE_ALPACA":

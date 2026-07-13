@@ -16,6 +16,7 @@ class AppState:
     backtester: Any | None = None
     feed: Any | None = None
     event_bus: Any | None = None
+    agent_event_bus: Any | None = None
     screener: Any | None = None
     chart_analyst: Any | None = None
     bot_engine_uses_bar_hooks: bool = False

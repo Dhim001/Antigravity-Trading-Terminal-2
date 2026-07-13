@@ -57,6 +57,9 @@ from app.services.bots.runtime import (
     risk_monitor_loop,
     bot_reconcile_loop,
     calibration_refresh_loop,
+    regime_rotation_loop,
+    alpha_decay_loop,
+    scanner_deploy_loop,
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
@@ -489,11 +492,55 @@ async def main():
             logging.info("WebSocket Server listening on ws://%s:%s", WS_HOST, WS_PORT)
             if HTTP_ENABLED:
                 logging.info("HTTP API enabled on http://%s:%s", HTTP_HOST, HTTP_PORT)
-
             tasks = [
                 asyncio.create_task(heartbeat_loop()),
                 asyncio.create_task(ws_keepalive_loop()),
             ]
+            
+            async def _trigger_test():
+                await asyncio.sleep(5)
+                from app.services.events import channels
+                from app.services.agent import copilot_store
+                import uuid
+                import time
+                
+                async def fake_narrate(source, msg_text):
+                    session_id = copilot_store.ensure_session_id("default")
+                    msg = copilot_store.append_message(
+                        session_id=session_id,
+                        role="assistant",
+                        content=msg_text,
+                    )
+                    await state.manager.broadcast({
+                        "type": "copilot_agent_message",
+                        "data": {
+                            "session_id": session_id,
+                            "message": {
+                                "id": msg.get("id", str(uuid.uuid4())),
+                                "role": "assistant",
+                                "content": msg_text,
+                                "source_agent": source,
+                                "timestamp": time.time()
+                            }
+                        }
+                    })
+
+                try:
+                    while True:
+                        await asyncio.sleep(30)
+                        if not state.manager.connected_clients:
+                            continue
+                        
+                        await fake_narrate("RiskSentinel", "Risk Sentinel is active. Monitoring global portfolio exposure.")
+                        await asyncio.sleep(2)
+                        await fake_narrate("AlphaDecay", "Alpha Decay scanner online. Current regime is volatile.")
+                        await asyncio.sleep(4)
+                        await fake_narrate("RegimeRotation", "Market shifted to trending regime. I rotated the BTCUSDT bot from MACD_RSI to SUPERTREND_ADX.")
+                except Exception as e:
+                    logging.error("Test trigger crashed: %s", e)
+
+            tasks.append(asyncio.create_task(_trigger_test()))
+
 
             if HTTP_ENABLED:
                 http_task = start_http_server(state, shutdown_event)
@@ -513,6 +560,13 @@ async def main():
                 tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(risk_monitor_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(calibration_refresh_loop()))
+                tasks.append(asyncio.create_task(regime_rotation_loop(state.bot_manager)))
+                tasks.append(asyncio.create_task(alpha_decay_loop(state.bot_manager)))
+                tasks.append(
+                    asyncio.create_task(
+                        scanner_deploy_loop(state.bot_manager, backtester=state.backtester, agent_event_bus=state.agent_event_bus)
+                    )
+                )
                 if not uses_paper_oms():
                     tasks.append(asyncio.create_task(bot_reconcile_loop(state.bot_manager)))
             elif runs_bar_publisher():

@@ -11,17 +11,27 @@ logger = logging.getLogger(__name__)
 YF_SYMBOL_MAP = {
     "BTCUSDT": "BTC-USD",
     "ETHUSDT": "ETH-USD",
-    "SOLUSDT": "SOL-USD",
     "BNBUSDT": "BNB-USD",
     "XRPUSDT": "XRP-USD",
-    "ADAUSDT": "ADA-USD",
+    "SOLUSDT": "SOL-USD",
+    "TRXUSDT": "TRX-USD",
     "DOGEUSDT": "DOGE-USD",
-    "DOTUSDT": "DOT-USD",
-    "LTCUSDT": "LTC-USD",
+    "ADAUSDT": "ADA-USD",
+    "AVAXUSDT": "AVAX-USD",
     "LINKUSDT": "LINK-USD",
+    "TONUSDT": "TON-USD",
+    "SHIBUSDT": "SHIB-USD",
+    "SUIUSDT": "SUI-USD",
+    "DOTUSDT": "DOT-USD",
+    "BCHUSDT": "BCH-USD",
+    "XLMUSDT": "XLM-USD",
+    "LTCUSDT": "LTC-USD",
+    "UNIUSDT": "UNI-USD",
+    "APTUSDT": "APT-USD",
+    "NEARUSDT": "NEAR-USD",
     "AAPL": "AAPL",
     "TSLA": "TSLA",
-    "MSFT": "MSFT"
+    "MSFT": "MSFT",
 }
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")

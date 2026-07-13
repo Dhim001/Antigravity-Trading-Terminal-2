@@ -82,26 +82,32 @@ class OllamaProvider:
         max_tokens: int = 180,
         temperature: float = 0.3,
         json_mode: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        timeout: float | None = None,
     ) -> LLMResult:
         chosen = model or OLLAMA_MODEL
+        msgs = messages if messages is not None else [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
         payload: dict = {
             "model": chosen,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": msgs,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
         }
         if json_mode:
             payload["format"] = "json"
+        if tools:
+            payload["tools"] = tools
         if OLLAMA_REASONING_EFFORT:
             payload["reasoning_effort"] = OLLAMA_REASONING_EFFORT
 
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT_SEC) as client:
+            async with httpx.AsyncClient(timeout=timeout or TIMEOUT_SEC) as client:
                 resp = await client.post(self.chat_url, json=payload)
                 resp.raise_for_status()
                 body = resp.json()
@@ -113,7 +119,8 @@ class OllamaProvider:
                 choice = choices[0]
                 message = choice.get("message") or {}
                 text = extract_assistant_text(message)
-                if not text:
+                tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+                if not text and not tool_calls:
                     logger.warning(
                         "Ollama empty assistant text model=%s finish_reason=%s message_keys=%s",
                         chosen,
@@ -126,6 +133,8 @@ class OllamaProvider:
                     model=resolved,
                     provider=self.name,
                     latency_ms=(time.monotonic() - t0) * 1000,
+                    message=message if isinstance(message, dict) else None,
+                    tool_calls=tool_calls if isinstance(tool_calls, list) else None,
                 )
         except Exception as exc:
             logger.warning("Ollama LLM failed: %s", exc)

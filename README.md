@@ -11,7 +11,7 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 | Simulated market feed (SBBS + yfinance cache) | Done |
 | Live feeds: Alpaca, Binance, eToro | Done |
 | OMS: market/limit orders, SL/TP, FIFO P&L | Done |
-| 25 symbols (15 equities/ETFs + 10 crypto) | Done |
+| 35 symbols (15 equities/ETFs + 20 crypto) | Done |
 | Charting (ECharts) + 9 overlays + signal badge | Done |
 | Multi-chart grid view | Done |
 | Bottom dock: positions, orders, balances, algo, history, equity | Done |

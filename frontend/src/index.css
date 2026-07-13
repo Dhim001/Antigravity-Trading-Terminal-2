@@ -3235,6 +3235,367 @@ body {
   box-shadow: 0 0 12px color-mix(in srgb, var(--color-accent-light) 14%, transparent);
 }
 
+/* ── Copilot dock chat ─────────────────────────────────────────────── */
+.copilot-panel {
+  container-type: size;
+  container-name: copilot;
+  background: color-mix(in oklab, var(--bg-primary) 92%, var(--muted) 8%);
+  min-height: 0;
+}
+
+.copilot-panel > .dock-panel-tab__toolbar {
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  padding-block: clamp(0.3rem, 2.5cqh, 0.55rem);
+  padding-inline: clamp(0.45rem, 1.5cqi, 0.75rem);
+}
+
+.copilot-panel__scroll {
+  padding: 0 !important;
+  min-height: 0;
+}
+
+.copilot-panel__thread {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  padding:
+    clamp(0.4rem, 1.8cqh, 0.75rem)
+    clamp(0.55rem, 1.8cqi, 1rem)
+    clamp(0.5rem, 2cqh, 0.9rem);
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.copilot-panel__messages {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.4rem, 1.5cqh, 0.7rem);
+}
+
+.copilot-panel__row {
+  display: flex;
+  width: 100%;
+}
+
+.copilot-panel__row--bot {
+  justify-content: flex-start;
+}
+
+.copilot-panel__row--user {
+  justify-content: flex-end;
+}
+
+.copilot-panel__bubble {
+  /* Readable line length; still uses dock width on narrow panels */
+  max-width: min(100%, 40rem);
+  border-radius: 0.65rem;
+  padding: clamp(0.4rem, 1.2cqh, 0.6rem) clamp(0.55rem, 1.4cqi, 0.8rem);
+  font-size: clamp(0.75rem, 0.7rem + 0.35cqi, 0.875rem);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.copilot-panel__bubble--bot {
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border-color) 70%, transparent);
+  color: var(--text-primary);
+  border-bottom-left-radius: 0.25rem;
+}
+
+.copilot-panel__bubble--user {
+  max-width: min(78%, 32rem);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-bottom-right-radius: 0.25rem;
+  white-space: pre-wrap;
+}
+
+.copilot-panel__intent {
+  margin-bottom: 0.35rem;
+  height: 1.15rem;
+  padding-inline: 0.4rem;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.copilot-panel__rich {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.copilot-panel__bullet {
+  display: flex;
+  gap: 0.45rem;
+  padding-left: 0.1rem;
+}
+
+.copilot-panel__bullet-mark {
+  color: var(--text-muted);
+  user-select: none;
+  line-height: inherit;
+}
+
+.copilot-panel__num {
+  width: 1.1rem;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.copilot-panel__code {
+  border-radius: 0.25rem;
+  background: color-mix(in oklab, var(--bg-primary) 70%, transparent);
+  padding: 0.05rem 0.3rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.82em;
+}
+
+.copilot-panel__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid color-mix(in oklab, var(--border-color) 55%, transparent);
+}
+
+.copilot-panel__thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.25rem;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.copilot-panel__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: clamp(0.35rem, 2cqh, 0.85rem) 0.1rem clamp(0.5rem, 2.5cqh, 1rem);
+}
+
+.copilot-panel__empty-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.copilot-panel__empty-copy {
+  margin: 0;
+  max-width: min(28rem, 100%);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.copilot-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+  max-width: 100%;
+}
+
+.copilot-panel__chip {
+  border: 1px solid color-mix(in oklab, var(--border-color) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted) 35%, transparent);
+  color: var(--text-secondary);
+  font-size: clamp(10px, 2.2cqi, 11px);
+  line-height: 1.2;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.copilot-panel__chip:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--primary) 40%, var(--border-color));
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.copilot-panel__chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.copilot-panel__composer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in oklab, var(--surface-1, var(--bg-primary)) 88%, transparent);
+  padding:
+    clamp(0.35rem, 1.5cqh, 0.55rem)
+    clamp(0.45rem, 1.5cqi, 0.75rem)
+    clamp(0.25rem, 1.2cqh, 0.45rem);
+}
+
+.copilot-panel__composer-inner {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+  border: 1px solid color-mix(in oklab, var(--border-color) 85%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in oklab, var(--muted) 28%, transparent);
+  padding: 0.25rem 0.3rem 0.25rem 0.5rem;
+}
+
+.copilot-panel__input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.1rem !important;
+  font-size: clamp(0.75rem, 0.7rem + 0.3cqi, 0.875rem) !important;
+  line-height: 1.35 !important;
+  max-height: min(6.5rem, 28cqh) !important;
+}
+
+.copilot-panel__send {
+  border-radius: 0.5rem;
+  width: clamp(2rem, 8cqi, 2.25rem);
+  height: clamp(2rem, 8cqi, 2.25rem);
+}
+
+.copilot-panel__hint {
+  width: 100%;
+  margin: 0.25rem 0 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+.copilot-panel__clear-label {
+  display: inline;
+}
+
+/* Narrow dock / detached window */
+@container copilot (max-width: 28rem) {
+  .copilot-panel__bubble,
+  .copilot-panel__bubble--user {
+    max-width: 100%;
+  }
+
+  .copilot-panel__row--user .copilot-panel__bubble {
+    max-width: 94%;
+  }
+
+  .copilot-panel .dock-panel-tab__toolbar-subtitle {
+    display: none;
+  }
+
+  .copilot-panel__clear-label {
+    display: none;
+  }
+
+  .copilot-panel__chip {
+    white-space: normal;
+    text-align: left;
+  }
+}
+
+@container copilot (max-width: 20rem) {
+  .copilot-panel .dock-panel-tab__toolbar-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .copilot-panel__empty-copy {
+    display: none;
+  }
+
+  .copilot-panel__chips {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Short dock height — denser chrome */
+@container copilot (max-height: 22rem) {
+  .copilot-panel__empty {
+    padding-block: 0.35rem 0.55rem;
+  }
+
+  .copilot-panel__empty-copy {
+    display: none;
+  }
+
+  .copilot-panel__hint {
+    display: none;
+  }
+
+  .copilot-panel__composer {
+    padding-block: 0.3rem 0.25rem;
+  }
+
+  .copilot-panel__input {
+    max-height: 3.25rem !important;
+  }
+
+  .copilot-panel .dock-panel-tab__toolbar-subtitle {
+    display: none;
+  }
+}
+
+@container copilot (max-height: 16rem) {
+  .copilot-panel__empty-title {
+    font-size: var(--fs-xs);
+  }
+
+  .copilot-panel__chips {
+    gap: 0.25rem;
+  }
+
+  .copilot-panel__chip {
+    padding: 0.22rem 0.5rem;
+    font-size: 10px;
+  }
+}
+
+/* Wide dock — longer but still readable bubbles */
+@container copilot (min-width: 48rem) {
+  .copilot-panel__bubble {
+    max-width: min(72%, 46rem);
+  }
+
+  .copilot-panel__bubble--user {
+    max-width: min(55%, 36rem);
+  }
+}
+
+@container copilot (min-width: 64rem) {
+  .copilot-panel__bubble {
+    max-width: min(58%, 52rem);
+  }
+
+  .copilot-panel__bubble--user {
+    max-width: min(48%, 40rem);
+  }
+}
+
+@media (max-width: 640px) {
+  .copilot-panel__bubble,
+  .copilot-panel__bubble--user {
+    max-width: 100%;
+  }
+
+  .copilot-panel__row--user .copilot-panel__bubble {
+    max-width: 94%;
+  }
+}
+
 .dock-panel-tab__toolbar-title,
 .positions-tab__toolbar-title {
   font-size: var(--fs-xs);
@@ -10527,8 +10888,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  padding: 0.65rem 0.9rem 0.9rem;
+  padding: 0.65rem 0.9rem 1.15rem;
   border-top: 1px solid color-mix(in oklab, var(--border-subtle) 75%, transparent);
+}
+
+/* Keep interactive controls (Select, inputs) fully visible after async load. */
+.settings-accordion__item[data-state="open"] [data-slot="accordion-content"] {
+  overflow: visible;
 }
 
 .settings-color-grid {

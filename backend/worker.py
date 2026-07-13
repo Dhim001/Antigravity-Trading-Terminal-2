@@ -15,6 +15,8 @@ from app.services.bots.runtime import (
     create_feed_and_oms,
     register_worker_handlers,
     worker_keepalive,
+    alpha_decay_loop,
+    regime_rotation_loop,
 )
 from app.services.bots.execution_mode import uses_paper_oms
 from app.services.candle_feed_stub import CandleFeedStub
@@ -98,6 +100,8 @@ async def main():
     tasks = [
         asyncio.create_task(bot_snapshot_loop(bot_manager)),
         asyncio.create_task(risk_monitor_loop(bot_manager)),
+        asyncio.create_task(alpha_decay_loop(bot_manager)),
+        asyncio.create_task(regime_rotation_loop(bot_manager)),
         asyncio.create_task(worker_keepalive()),
     ]
     if TERMINAL_MODE != "SIMULATED" and not uses_paper_oms():

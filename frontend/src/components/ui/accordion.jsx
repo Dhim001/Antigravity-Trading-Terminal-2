@@ -64,9 +64,14 @@ function AccordionContent({
       data-slot="accordion-content"
       className="overflow-hidden text-sm data-open:animate-accordion-down data-closed:animate-accordion-up"
       {...props}>
+      {/*
+        Do not set h-(--radix-accordion-content-height) here — that freezes the
+        open height at first paint. Async children (e.g. LLM model Select) then
+        get clipped by overflow-hidden and never expand the settings scroll area.
+      */}
       <div
         className={cn(
-          "h-(--radix-accordion-content-height) pt-0 pb-2.5 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
+          "pt-0 pb-2.5 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
           className
         )}>
         {children}

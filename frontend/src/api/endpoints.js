@@ -102,6 +102,47 @@ export async function generateBriefing() {
   return res;
 }
 
+/** POST /api/v1/copilot/chat — TRADE_COPILOT conversational turn */
+export async function copilotChat({ message, session_id, active_symbol } = {}) {
+  return apiRequest('/api/v1/copilot/chat', {
+    method: 'POST',
+    timeoutMs: 300000,
+    // Pass a plain object — apiRequest JSON.stringifies once.
+    body: { message, session_id, active_symbol },
+  });
+}
+
+/** POST /api/v1/copilot/confirm — execute a pending mutating action */
+export async function copilotConfirm(pending_id) {
+  return apiRequest('/api/v1/copilot/confirm', {
+    method: 'POST',
+    timeoutMs: 60000,
+    body: { pending_id },
+  });
+}
+
+/** POST /api/v1/copilot/confirm — cancel pending action */
+export async function copilotCancel(pending_id) {
+  return apiRequest('/api/v1/copilot/confirm', {
+    method: 'POST',
+    body: { pending_id, cancel: true },
+  });
+}
+
+/** GET /api/v1/copilot/history */
+export async function fetchCopilotHistory(session_id, { limit = 40 } = {}) {
+  const qs = new URLSearchParams({ session_id, limit: String(limit) });
+  return apiRequest(`/api/v1/copilot/history?${qs}`);
+}
+
+/** POST /api/v1/copilot/clear */
+export async function clearCopilotSession(session_id) {
+  return apiRequest('/api/v1/copilot/clear', {
+    method: 'POST',
+    body: { session_id },
+  });
+}
+
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');

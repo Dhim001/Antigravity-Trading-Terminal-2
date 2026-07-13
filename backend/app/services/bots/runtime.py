@@ -72,10 +72,10 @@ def create_feed_and_oms():
     return feed, oms
 
 
-def create_bot_stack(broadcast_cb, oms):
+def create_bot_stack(broadcast_cb, oms, agent_event_bus=None):
     screener = MarketScreenerService()
     backtester = BacktesterService(screener)
-    bot_manager = BotManagerService(oms, screener, broadcast_cb)
+    bot_manager = BotManagerService(oms, screener, broadcast_cb, agent_event_bus=agent_event_bus)
     return screener, backtester, bot_manager
 
 
@@ -219,7 +219,8 @@ async def risk_monitor_loop(bot_manager: BotManagerService):
             await asyncio.sleep(3600)
         return
 
-    monitor = RiskMonitor()
+    agent_event_bus = getattr(bot_manager, "agent_event_bus", None)
+    monitor = RiskMonitor(agent_event_bus=agent_event_bus)
     logger.info("Starting risk monitor loop (interval=%.0fs)...", RISK_MONITOR_INTERVAL_SEC)
     while True:
         try:
@@ -266,3 +267,75 @@ async def calibration_refresh_loop(interval_sec: float | None = None):
         except Exception as exc:
             logger.error("Error in calibration refresh loop: %s", exc)
         await asyncio.sleep(interval)
+
+
+async def regime_rotation_loop(bot_manager: BotManagerService):
+    from app.config import REGIME_ROTATION_ENABLED, REGIME_ROTATION_INTERVAL_SEC
+    from app.services.bots.regime_rotation import RegimeRotationAgent
+
+    if not REGIME_ROTATION_ENABLED:
+        logger.info("Regime rotation loop disabled (REGIME_ROTATION_ENABLED=false) — loop idle.")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    # We retrieve agent_event_bus from the bot manager if available, or pass None
+    agent_event_bus = getattr(bot_manager, "agent_event_bus", None)
+    agent = RegimeRotationAgent(bot_manager, agent_event_bus=agent_event_bus)
+    logger.info("Starting regime rotation loop (interval=%.0fs)...", REGIME_ROTATION_INTERVAL_SEC)
+    while True:
+        try:
+            await agent.evaluate()
+        except Exception as exc:
+            logger.error("Error in regime rotation loop: %s", exc)
+        await asyncio.sleep(REGIME_ROTATION_INTERVAL_SEC)
+
+
+async def alpha_decay_loop(bot_manager: BotManagerService):
+    from app.config import ALPHA_DECAY_ENABLED, ALPHA_DECAY_INTERVAL_SEC
+    from app.services.bots.alpha_decay import AlphaDecayMonitor
+
+    if not ALPHA_DECAY_ENABLED:
+        logger.info("Alpha decay monitor loop disabled (ALPHA_DECAY_ENABLED=false) — loop idle.")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    monitor = AlphaDecayMonitor(bot_manager)
+    logger.info("Starting alpha decay monitor loop (interval=%.0fs)...", ALPHA_DECAY_INTERVAL_SEC)
+    while True:
+        try:
+            await monitor.evaluate()
+        except Exception as exc:
+            logger.error("Error in alpha decay monitor loop: %s", exc)
+        await asyncio.sleep(ALPHA_DECAY_INTERVAL_SEC)
+
+
+async def scanner_deploy_loop(
+    bot_manager: BotManagerService,
+    *,
+    backtester=None,
+    agent_event_bus=None,
+):
+    from app.config import SCANNER_DEPLOY_ENABLED, SCANNER_DEPLOY_INTERVAL_SEC
+    from app.services.bots.scanner_deploy import ScannerDeployAgent
+
+    if not SCANNER_DEPLOY_ENABLED:
+        logger.info("Scanner auto-deploy loop disabled (SCANNER_DEPLOY_ENABLED=false) — loop idle.")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    agent = ScannerDeployAgent(bot_manager, backtester=backtester, agent_event_bus=agent_event_bus)
+    logger.info(
+        "Starting scanner auto-deploy loop (interval=%.0fs)...",
+        SCANNER_DEPLOY_INTERVAL_SEC,
+    )
+    while True:
+        try:
+            await agent.evaluate()
+        except Exception as exc:
+            logger.error("Error in scanner auto-deploy loop: %s", exc)
+        await asyncio.sleep(SCANNER_DEPLOY_INTERVAL_SEC)
+
+

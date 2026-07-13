@@ -213,6 +213,9 @@ async def _chat(
     max_tokens: int = 180,
     temperature: float = 0.3,
     json_mode: bool = False,
+    messages: list[dict] | None = None,
+    tools: list[dict] | None = None,
+    timeout: float | None = None,
 ) -> LLMResult:
     provider, provider_name = await _pick_provider()
     if provider is None:
@@ -228,8 +231,11 @@ async def _chat(
         max_tokens=max_tokens,
         temperature=temperature,
         json_mode=json_mode,
+        messages=messages,
+        tools=tools,
+        timeout=timeout,
     )
-    if result.text:
+    if result.text or result.tool_calls:
         return result
 
     # Fallback: auto mode only, if primary was Ollama and cloud allowed
@@ -247,8 +253,11 @@ async def _chat(
             max_tokens=max_tokens,
             temperature=temperature,
             json_mode=json_mode,
+            messages=messages,
+            tools=tools,
+            timeout=timeout,
         )
-        if fb.text:
+        if fb.text or fb.tool_calls:
             fb.provider = "openrouter"
         return fb
 

@@ -124,6 +124,13 @@ async def get_market_history(ctx: RequestContext) -> None:
         interval=interval,
         purpose="ui",
     )
+    
+    raw_count = len(bars)
+    
+    if raw_count > 1500:
+        from app.utils.downsample import largest_triangle_three_buckets
+        bars = largest_triangle_three_buckets(bars, 1000, x_key="time", y_key="close")
+        
     payload = history_update({symbol: bars})
     meta = {
         "symbol": symbol,
@@ -135,6 +142,7 @@ async def get_market_history(ctx: RequestContext) -> None:
         "purpose": "ui",
         "truncated": bool(qmeta.get("truncated")),
         "limit": qmeta.get("limit"),
+        "downsampled": raw_count > 1500,
     }
     if bars:
         meta["oldest"] = bars[0]["time"]

@@ -189,7 +189,7 @@ export default function LlmSettingsSection({
       </dl>
 
       {sortedModels.length > 0 ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 pb-1">
           <Label className="text-xs text-muted-foreground">Preferred model</Label>
           <Select
             modal={false}
@@ -208,10 +208,10 @@ export default function LlmSettingsSection({
               }
             }}
           >
-            <SelectTrigger className="h-8 w-full text-xs">
+            <SelectTrigger className="h-8 w-full min-h-8 text-xs">
               <SelectValue placeholder="Select model" />
             </SelectTrigger>
-            <SelectContent position="popper" className="z-[100] max-h-72">
+            <SelectContent position="popper" sideOffset={4} className="z-[200] max-h-72">
               <SelectGroup>
                 <SelectLabel className="text-xs">Installed models</SelectLabel>
                 {sortedModels.map((m) => {

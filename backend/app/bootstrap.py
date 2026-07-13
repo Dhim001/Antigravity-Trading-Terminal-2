@@ -12,6 +12,7 @@ from app.services.bots.live_hooks import register_live_bot_hooks
 from app.services.bots.runtime import create_bot_stack, create_feed_and_oms, runs_bot_engine_inline
 from app.services.events.event_bus import create_event_bus
 from app.services.events import channels
+from app.services.agent.agent_event_bus import AgentEventBus
 from app.websocket.connection_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 def create_app_state() -> AppState:
     manager = ConnectionManager()
     event_bus = create_event_bus(REDIS_URL) if REDIS_URL and TERMINAL_ROLE == "server" else None
+    agent_event_bus = AgentEventBus()
 
     logger.info(
         "Initializing feed & OMS (mode=%s, role=%s, db=%s)...",
@@ -38,7 +40,7 @@ def create_app_state() -> AppState:
     if hasattr(oms, "register_broadcast_callback"):
         oms.register_broadcast_callback(broadcast_wrapper)
 
-    screener_service, backtester_service, bot_manager = create_bot_stack(broadcast_wrapper, oms)
+    screener_service, backtester_service, bot_manager = create_bot_stack(broadcast_wrapper, oms, agent_event_bus=agent_event_bus)
 
     chart_analyst = None
     if AGENT_ENABLED:
@@ -64,6 +66,7 @@ def create_app_state() -> AppState:
         backtester=backtester_service,
         feed=feed,
         event_bus=event_bus,
+        agent_event_bus=agent_event_bus,
         screener=screener_service,
         chart_analyst=chart_analyst,
         bot_engine_uses_bar_hooks=bot_engine_uses_bar_hooks,

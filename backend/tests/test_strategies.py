@@ -95,11 +95,91 @@ class TestStrategyEvaluate(unittest.TestCase):
         self.assertIsInstance(get_strategy("SUPERTREND", {}), SupertrendAdxStrategy)
         self.assertIsInstance(get_strategy("BB_STOCH", {}), BrsScalpingStrategy)
 
+    def test_brs_scalping_buy_sell_and_none(self):
+        from app.services.bots.indicators import (
+            atr_col,
+            bb_lower_col,
+            bb_mid_col,
+            bb_upper_col,
+            stoch_k_col,
+        )
+
+        cfg = merge_strategy_config("BRS_SCALPING", {})
+        bbl = bb_lower_col(cfg["bb_length"], cfg["bb_std"])
+        bbu = bb_upper_col(cfg["bb_length"], cfg["bb_std"])
+        bbm = bb_mid_col(cfg["bb_length"], cfg["bb_std"])
+        rsi = rsi_col(cfg["rsi_length"])
+        stoch = stoch_k_col(cfg["stoch_k"], cfg["stoch_d"], cfg["stoch_smooth"])
+        atr = atr_col(cfg["atr_length"])
+
+        buy = BrsScalpingStrategy(cfg).evaluate({
+            bbl: 99.0, bbu: 101.0, bbm: 100.0,
+            rsi: 25.0, stoch: 10.0, "close": 98.0, atr: 1.0,
+        })
+        self.assertEqual(buy["signal"], "BUY")
+        self.assertEqual(buy.get("take_profit_price"), 100.0)
+
+        sell = BrsScalpingStrategy(cfg).evaluate({
+            bbl: 99.0, bbu: 101.0, bbm: 100.0,
+            rsi: 75.0, stoch: 85.0, "close": 102.0, atr: 1.0,
+        })
+        self.assertEqual(sell["signal"], "SELL")
+        self.assertEqual(sell.get("take_profit_price"), 100.0)
+
+        flat = BrsScalpingStrategy(cfg).evaluate({
+            bbl: 99.0, bbu: 101.0, bbm: 100.0,
+            rsi: 50.0, stoch: 50.0, "close": 100.0, atr: 1.0,
+        })
+        self.assertEqual(flat["signal"], "NONE")
+
 
 class TestScreenerAndBacktest(unittest.TestCase):
     def setUp(self):
         self.candles = make_candles()
         self.screener = MarketScreenerService()
+
+    def test_brs_screener_columns_and_crypto_backtest(self):
+        from app.services.bots.indicators import (
+            atr_col,
+            bb_lower_col,
+            bb_mid_col,
+            bb_upper_col,
+            stoch_k_col,
+        )
+        import math
+
+        candles = make_candles(count=180, drift=0.0)
+        for i, c in enumerate(candles):
+            phase = math.sin(i / 8.0)
+            px = 100 + 5 * phase
+            c["open"] = px - 0.1
+            c["close"] = px
+            c["high"] = px + 0.4
+            c["low"] = px - 0.4
+
+        cfg = merge_strategy_config("BRS_SCALPING", {})
+        df = self.screener.process_candles(
+            "ETHUSDT", candles, cfg, "BRS_SCALPING", full_history=True
+        )
+        self.assertFalse(df.empty)
+        for col in (
+            bb_lower_col(cfg["bb_length"], cfg["bb_std"]),
+            bb_upper_col(cfg["bb_length"], cfg["bb_std"]),
+            bb_mid_col(cfg["bb_length"], cfg["bb_std"]),
+            rsi_col(cfg["rsi_length"]),
+            stoch_k_col(cfg["stoch_k"], cfg["stoch_d"], cfg["stoch_smooth"]),
+            atr_col(cfg["atr_length"]),
+        ):
+            self.assertIn(col, df.columns, col)
+
+        result = BacktesterService(self.screener).run_backtest(
+            "ETHUSDT",
+            "BRS_SCALPING",
+            {**cfg, "allocation": 1000, "direction_mode": "BOTH", "sim_mode": "research"},
+            candles,
+        )
+        self.assertNotIn("error", result)
+        self.assertGreater(int(result.get("trade_count") or 0), 0)
 
     def test_screener_custom_rsi_length(self):
         config = {"rsi_length": 10, "macd_fast": 8, "macd_slow": 21, "macd_signal": 5}

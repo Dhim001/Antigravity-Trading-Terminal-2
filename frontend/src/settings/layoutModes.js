@@ -31,7 +31,7 @@ export const DOCK_GROUP_CONFIG = {
   },
   intelligence: {
     label: 'Intelligence',
-    tabs: ['scanner', 'analyst'],
+    tabs: ['scanner', 'analyst', 'copilot'],
   },
   automation: {
     label: 'Automation',

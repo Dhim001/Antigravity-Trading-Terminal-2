@@ -13,6 +13,11 @@ EMERGENCY_STOP = "emergency_stop"
 DAILY_DIGEST = "daily_digest"
 ALERT_RULE = "alert_rule"
 TEST = "test"
+RISK_SENTINEL = "risk_sentinel"
+ALPHA_DECAY = "alpha_decay"
+PRETRADE_INTEL = "pretrade_intel"
+POSTTRADE_LEARNER = "posttrade_learner"
+SCANNER_DEPLOY = "scanner_deploy"
 
 REALTIME_EVENT_TYPES = (
     TRADE_FILL,
@@ -24,6 +29,11 @@ REALTIME_EVENT_TYPES = (
     SAFE_MODE,
     EMERGENCY_STOP,
     ALERT_RULE,
+    RISK_SENTINEL,
+    ALPHA_DECAY,
+    PRETRADE_INTEL,
+    POSTTRADE_LEARNER,
+    SCANNER_DEPLOY,
 )
 
 ALL_EVENT_TYPES = REALTIME_EVENT_TYPES + (DAILY_DIGEST,)

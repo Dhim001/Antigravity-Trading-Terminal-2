@@ -6,10 +6,31 @@
 export function getPriceDecimals(sym) {
   if (!sym) return 2;
   const upper = sym.toUpperCase();
-  if (upper.includes('XRP') || upper.includes('ADA') || upper.includes('DOGE')) return 4;
-  if (upper.includes('USDT')) {
-    if (upper === 'BTCUSDT' || upper === 'ETHUSDT') return 2;
+  if (upper.includes('SHIB') || upper.includes('PEPE')) return 8;
+  if (
+    upper.includes('XRP') ||
+    upper.includes('ADA') ||
+    upper.includes('DOGE') ||
+    upper.includes('TRX') ||
+    upper.includes('XLM')
+  ) {
     return 4;
+  }
+  if (upper.includes('USDT')) {
+    if (
+      upper === 'BTCUSDT' ||
+      upper === 'ETHUSDT' ||
+      upper === 'BNBUSDT' ||
+      upper === 'SOLUSDT' ||
+      upper === 'BCHUSDT' ||
+      upper === 'LTCUSDT' ||
+      upper === 'AVAXUSDT' ||
+      upper === 'LINKUSDT'
+    ) {
+      return 2;
+    }
+    // Mid-priced alts (TON, SUI, DOT, UNI, APT, NEAR, …)
+    return 3;
   }
   return 2;
 }

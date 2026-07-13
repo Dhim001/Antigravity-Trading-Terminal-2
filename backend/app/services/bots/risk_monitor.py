@@ -95,8 +95,17 @@ def drawdown_to_dict(snapshot: DrawdownSnapshot) -> dict:
 
 
 class RiskMonitor:
+    def __init__(self, agent_event_bus=None) -> None:
+        from app.services.bots.risk_sentinel import RiskSentinel
+        self._sentinel = RiskSentinel(agent_event_bus=agent_event_bus)
+
     async def evaluate(self, oms, bot_manager) -> DrawdownSnapshot:
         snapshot = compute_drawdown(oms)
+
+        try:
+            await self._sentinel.evaluate(snapshot, oms, bot_manager)
+        except Exception as exc:
+            logger.error("Error in RiskSentinel evaluation: %s", exc)
 
         if RISK_WEEKEND_FLATTEN_ENABLED:
             try:

@@ -429,6 +429,9 @@ class LLMResult:
     model: str | None
     provider: str | None = None
     latency_ms: float | None = None
+    # OpenAI-style message (may include tool_calls) when providers return it.
+    message: dict | None = None
+    tool_calls: list[dict] | None = None
 
 
 class LLMProvider(Protocol):
@@ -445,6 +448,9 @@ class LLMProvider(Protocol):
         max_tokens: int = 180,
         temperature: float = 0.3,
         json_mode: bool = False,
+        messages: list[dict] | None = None,
+        tools: list[dict] | None = None,
+        timeout: float | None = None,
     ) -> LLMResult: ...
 
     async def list_models(self) -> list[str]: ...

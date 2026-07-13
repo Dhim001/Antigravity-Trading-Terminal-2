@@ -894,6 +894,9 @@ class SimulatedOMSService(BaseOMSService):
                     "trigger_type": trigger_type,
                     "qty": abs(osize),
                     "bot_id": owner["bot_id"],
+                    "high_watermark": updated_high if updated_high is not None else owner.get("high_watermark"),
+                    "low_watermark": updated_low if updated_low is not None else owner.get("low_watermark"),
+                    "entry_atr": owner.get("entry_atr"),
                 })
 
             remainder = max(0.0, abs(acc_size) - bot_total)
@@ -1060,6 +1063,9 @@ class SimulatedOMSService(BaseOMSService):
                         "entry_price": avg_price,
                         "trigger_type": trigger_type,
                         "signal_id": f"{bot_id}:sltp:{order_id}",
+                        "high_watermark": plan.get("high_watermark"),
+                        "low_watermark": plan.get("low_watermark"),
+                        "entry_atr": plan.get("entry_atr"),
                     })
 
             if filled_exits:

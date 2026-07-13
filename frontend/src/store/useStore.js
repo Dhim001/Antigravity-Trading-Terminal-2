@@ -87,7 +87,11 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   agentEnabled: true,
   scannerEnabled: true,
   selectedLlmModel: getLocal('terminal_llm_model', null),
-  symbolsList: ["BTCUSDT", "ETHUSDT", "AAPL", "TSLA", "MSFT"],
+  symbolsList: [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT",
+    "TRXUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT",
+    "AAPL", "TSLA", "MSFT", "NVDA", "SPY",
+  ],
 
   // Market data states
   tickerData: hmrStore?.tickerData ?? initialSnapshot.tickerData ?? {},
@@ -142,6 +146,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   orderPrefill: null,
   /** Draft SL/TP dragged on chart or mirrored from order ticket — { symbol, side, stop_loss_price?, take_profit_price?, source } */
   chartSlTpDraft: null,
+  
+  copilotMessages: [],
 
   setChartDrawings: (symbol, drawings) => set((state) => {
     const list = Array.isArray(drawings) ? drawings.slice(0, MAX_DRAWINGS_PER_SYMBOL) : drawings;
@@ -159,6 +165,13 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   clearChartSlTpDraft: () => set({ chartSlTpDraft: null }),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
+  setAnalyticsReport: (report) => set({ analyticsReport: report }),
+  
+  appendCopilotMessage: (msg) => set((state) => ({
+    copilotMessages: [...state.copilotMessages, msg]
+  })),
+  clearCopilotMessages: () => set({ copilotMessages: [] }),
+
   setApiStatus: (status) => set({ apiStatus: status }),
 
   setActiveSymbol: (symbol) => {
