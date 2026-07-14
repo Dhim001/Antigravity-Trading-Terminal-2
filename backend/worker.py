@@ -72,11 +72,14 @@ async def main():
         feed, oms = create_feed_and_oms()
 
     event_bus = create_event_bus(REDIS_URL)
+    from app.services.agent.agent_event_bus import AgentEventBus
+
+    agent_event_bus = AgentEventBus()
 
     async def broadcast_cb(payload: dict):
         await event_bus.publish(channels.WS_BROADCAST, payload)
 
-    _, screener, bot_manager = create_bot_stack(broadcast_cb, oms)
+    _, screener, bot_manager = create_bot_stack(broadcast_cb, oms, agent_event_bus=agent_event_bus)
     bot_manager.load_bots_from_db()
 
     chart_analyst = None
@@ -92,6 +95,7 @@ async def main():
 
     register_worker_handlers(bot_manager, event_bus, feed, oms, chart_analyst=chart_analyst)
     await event_bus.start()
+    await agent_event_bus.start()
     logger.info("Bot worker listening on %s", channels.BAR_CLOSE)
 
     shutdown_event = asyncio.Event()
@@ -115,6 +119,7 @@ async def main():
             oms=oms,
             feed=feed,
             event_bus=event_bus,
+            agent_event_bus=agent_event_bus,
         )
 
 

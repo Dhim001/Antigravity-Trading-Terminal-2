@@ -463,6 +463,11 @@ async def main():
         state.event_bus.subscribe(channels.WS_BROADCAST, on_ws_broadcast)
         await state.event_bus.start()
 
+    # Redis agent listener must start after the event loop is running
+    # (AgentEventBus.__init__ is sync and must not call create_task).
+    if state.agent_event_bus is not None and hasattr(state.agent_event_bus, "start"):
+        await state.agent_event_bus.start()
+
     await state.feed.start()
     await state.oms.initialize()
 
@@ -601,6 +606,7 @@ async def main():
             oms=state.oms,
             feed=state.feed,
             event_bus=state.event_bus,
+            agent_event_bus=state.agent_event_bus,
         )
 
 
@@ -611,6 +617,7 @@ async def _shutdown() -> None:
         oms=state.oms,
         feed=state.feed,
         event_bus=state.event_bus,
+        agent_event_bus=state.agent_event_bus,
     )
 
 

@@ -29,7 +29,8 @@ DB_PATH = (
     if _sqlite_db
     else os.path.join(BASE_DIR, "trading.db")
 )
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://trading:trading@localhost:5432/trading").strip()
+# Empty → SQLite (DB_PATH). Set postgresql://… only for Postgres deployments.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 
 # Features & Integration Flags
@@ -74,7 +75,6 @@ SIM_SBBS_WARM_PARALLEL = max(1, min(int(os.environ.get("SIM_SBBS_WARM_PARALLEL",
 # Distributed runtime: all (monolith) | server (WS+feed) | worker (bot engine only)
 TERMINAL_ROLE = os.environ.get("TERMINAL_ROLE", "all").lower()
 REDIS_URL = os.environ.get("REDIS_URL", "").strip()
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 # Optional user strategy plugins in backend/strategies/
 ALLOW_CUSTOM_STRATEGIES = os.environ.get("ALLOW_CUSTOM_STRATEGIES", "false").lower() in (

@@ -108,14 +108,9 @@ async def health_massive(request: Request) -> JSONResponse:
 _HEALTH_CACHE_TTL_SEC = 10.0
 _health_cache_body: dict | None = None
 _health_cache_ts: float = 0.0
-_health_cache_lock: asyncio.Lock | None = None
-
-
-def _health_lock() -> asyncio.Lock:
-    global _health_cache_lock
-    if _health_cache_lock is None:
-        _health_cache_lock = asyncio.Lock()
-    return _health_cache_lock
+# Create the lock at import time so concurrent first hits cannot race two Lock()s.
+# (Lazy init of asyncio.Lock without a sync gate is racy under concurrent awaits.)
+_health_cache_lock = asyncio.Lock()
 
 
 async def admin_shutdown_handler(request: Request) -> JSONResponse:
@@ -281,7 +276,7 @@ async def health(request: Request) -> JSONResponse:
         cached["cached"] = True
         return JSONResponse(cached)
 
-    async with _health_lock():
+    async with _health_cache_lock:
         now = time.monotonic()
         if (
             not force

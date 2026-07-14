@@ -632,6 +632,15 @@ def get_db_stats(*, include_archive: bool = True):
                 }
             except Exception:
                 pass
+            # Tick COUNT(*) is also an archive table scan — keep it behind the same
+            # gate as get_archive_stats() so light callers (e.g. /health) stay cheap.
+            try:
+                cursor.execute("SELECT COUNT(*) FROM market_ticks")
+                row = cursor.fetchone()
+                stats["archive"] = stats.get("archive") or {}
+                stats["archive"]["ticks"] = _row_val(row)
+            except Exception:
+                pass
         try:
             from app.services.reconciliation import list_ambiguous_orders
 
@@ -646,14 +655,6 @@ def get_db_stats(*, include_archive: bool = True):
             stats["runtime"] = runtime_status_dict()
         except Exception:
             pass
-        if include_archive:
-            try:
-                cursor.execute("SELECT COUNT(*) FROM market_ticks")
-                row = cursor.fetchone()
-                stats["archive"] = stats.get("archive") or {}
-                stats["archive"]["ticks"] = _row_val(row)
-            except Exception:
-                pass
         try:
             from app.services.data_quality.loop import get_last_report
             from app.services.data_quality.monitor import data_quality_stats_from_report

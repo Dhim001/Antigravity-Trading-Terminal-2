@@ -50,6 +50,7 @@ async def graceful_shutdown(
     oms=None,
     feed=None,
     event_bus=None,
+    agent_event_bus=None,
 ) -> None:
     """Persist bot state, pause bots, stop services, mark clean shutdown."""
     try:
@@ -87,6 +88,12 @@ async def graceful_shutdown(
             await feed.stop()
     except Exception as exc:
         logger.debug("Feed shutdown: %s", exc)
+
+    try:
+        if agent_event_bus is not None and hasattr(agent_event_bus, "stop"):
+            await agent_event_bus.stop()
+    except Exception as exc:
+        logger.debug("Agent event bus shutdown: %s", exc)
 
     try:
         if event_bus is not None:

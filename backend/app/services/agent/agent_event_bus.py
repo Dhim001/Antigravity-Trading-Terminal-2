@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-import os
-import json
 import redis.asyncio as redis
 from app.services.agent.reasoning import AgentReasoning
 
 logger = logging.getLogger(__name__)
 
-Handler = Callable[['AgentEvent'], Awaitable[None]]
+Handler = Callable[["AgentEvent"], Awaitable[None]]
+
 
 @dataclass
 class AgentEvent:
@@ -25,53 +26,97 @@ class AgentEvent:
     payload: dict[str, Any]
     timestamp: float
     reasoning: AgentReasoning | None = None
-    
+
     def to_json(self) -> str:
-        return json.dumps({
-            "source_agent": self.source_agent,
-            "event_type": self.event_type,
-            "payload": self.payload,
-            "timestamp": self.timestamp,
-            "reasoning": self.reasoning.to_dict() if self.reasoning else None
-        })
-        
+        return json.dumps(
+            {
+                "source_agent": self.source_agent,
+                "event_type": self.event_type,
+                "payload": self.payload,
+                "timestamp": self.timestamp,
+                "reasoning": self.reasoning.to_dict() if self.reasoning else None,
+            }
+        )
+
     @classmethod
-    def from_json(cls, data: str) -> 'AgentEvent':
+    def from_json(cls, data: str | bytes) -> "AgentEvent":
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
         parsed = json.loads(data)
-        reasoning = AgentReasoning.from_dict(parsed["reasoning"]) if parsed.get("reasoning") else None
+        reasoning = (
+            AgentReasoning.from_dict(parsed["reasoning"]) if parsed.get("reasoning") else None
+        )
         return cls(
             source_agent=parsed["source_agent"],
             event_type=parsed["event_type"],
             payload=parsed["payload"],
             timestamp=parsed["timestamp"],
-            reasoning=reasoning
+            reasoning=reasoning,
         )
 
+
 class AgentEventBus:
-    """Redis-backed pub/sub event bus for inter-agent communication."""
+    """Pub/sub event bus for inter-agent communication (local, optional Redis).
+
+    Construction is sync-safe. When Redis is configured, call ``await start()``
+    from a running event loop (server startup) so the listener can be scheduled.
+    """
 
     def __init__(self, max_history: int = 1000):
         self._handlers: dict[str, list[Handler]] = {}
         self._history: deque[AgentEvent] = deque(maxlen=max_history)
-        redis_url = os.environ.get("REDIS_URL")
+        redis_url = (os.environ.get("REDIS_URL") or "").strip()
         self._redis = redis.from_url(redis_url) if redis_url else None
         self._pubsub = self._redis.pubsub() if self._redis else None
+        self._listener_task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        """Schedule Redis pub/sub listener once a running loop is available."""
+        if not self._pubsub:
+            return
+        if self._listener_task is not None and not self._listener_task.done():
+            return
+        self._listener_task = asyncio.create_task(
+            self._start_listening(),
+            name="agent_event_bus_listener",
+        )
+        logger.info("AgentEventBus Redis listener started")
+
+    async def stop(self) -> None:
+        """Cancel the Redis listener (best-effort)."""
+        task = self._listener_task
         self._listener_task = None
-        
-        if self._pubsub:
-            asyncio.create_task(self._start_listening())
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._pubsub is not None:
+            try:
+                await self._pubsub.unsubscribe("agent_events")
+                await self._pubsub.aclose()
+            except Exception as exc:
+                logger.debug("AgentEventBus pubsub close skipped: %s", exc)
+        if self._redis is not None:
+            try:
+                await self._redis.aclose()
+            except Exception as exc:
+                logger.debug("AgentEventBus redis close skipped: %s", exc)
 
     async def _start_listening(self) -> None:
+        assert self._pubsub is not None
         await self._pubsub.subscribe("agent_events")
         async for message in self._pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    event = AgentEvent.from_json(message["data"])
-                    self._history.append(event)
-                    for handler in self._handlers.get(event.event_type, []):
-                        asyncio.create_task(self._safe_run(handler, event))
-                except Exception as exc:
-                    logger.error("Failed to parse or handle Redis AgentEvent: %s", exc)
+            if message.get("type") != "message":
+                continue
+            try:
+                event = AgentEvent.from_json(message["data"])
+                self._history.append(event)
+                for handler in self._handlers.get(event.event_type, []):
+                    asyncio.create_task(self._safe_run(handler, event))
+            except Exception as exc:
+                logger.error("Failed to parse or handle Redis AgentEvent: %s", exc)
 
     async def _safe_run(self, handler: Handler, ev: AgentEvent) -> None:
         try:
@@ -87,16 +132,18 @@ class AgentEventBus:
         """Publish an event to Redis (or locally if Redis is disabled)."""
         if self._redis:
             await self._redis.publish("agent_events", event.to_json())
-        else:
-            # Fallback to local memory bus
-            self._history.append(event)
-            for handler in self._handlers.get(event.event_type, []):
-                asyncio.create_task(self._safe_run(handler, event))
+            return
+
+        # Fallback to local memory bus (must run under an event loop).
+        self._history.append(event)
+        for handler in self._handlers.get(event.event_type, []):
+            asyncio.create_task(self._safe_run(handler, event))
 
     def recent_events(self, event_type: str, lookback_sec: float) -> list[AgentEvent]:
         """Fetch recently published events of a certain type within the lookback window."""
         cutoff_time = time.time() - lookback_sec
         return [
-            e for e in self._history
+            e
+            for e in self._history
             if e.event_type == event_type and e.timestamp >= cutoff_time
         ]
