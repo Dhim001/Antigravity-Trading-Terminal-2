@@ -60,7 +60,7 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
         # Verify
         self.assertEqual(len(res["rotations"]), 1)
         rotation = res["rotations"][0]
-        self.assertEqual(rotation["new_strategy"], "SUPERTREND_ADX")
+        self.assertEqual(rotation["to_strategy"], "SUPERTREND_ADX")
         self.assertEqual(rotation["regime"], "trending")
 
         # In-memory bot updated
@@ -98,7 +98,7 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
         # Verify
         self.assertEqual(len(res["rotations"]), 1)
         rotation = res["rotations"][0]
-        self.assertEqual(rotation["new_strategy"], "BRS_SCALPING")
+        self.assertEqual(rotation["to_strategy"], "BRS_SCALPING")
         self.assertEqual(rotation["regime"], "ranging")
 
         # In-memory bot updated
@@ -133,7 +133,7 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
         # Verify
         self.assertEqual(len(res["rotations"]), 1)
         rotation = res["rotations"][0]
-        self.assertEqual(rotation["new_strategy"], "VWAP_PULLBACK")
+        self.assertEqual(rotation["to_strategy"], "VWAP_PULLBACK")
         self.assertEqual(rotation["regime"], "elevated_vol")
 
     @patch("app.services.bots.regime_rotation.get_bot_candles")

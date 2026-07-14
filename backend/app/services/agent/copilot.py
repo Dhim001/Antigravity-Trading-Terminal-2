@@ -1838,52 +1838,322 @@ def _clarify_text(active_symbol: str | None = None) -> dict[str, Any]:
     }
 
 
-async def agent_narrate_event(event_type: str, payload: dict) -> None:
-    """Generate a conversational narrative from a background agent's action and send it to Copilot."""
+_AGENT_NARRATE_COOLDOWN_SEC = 900.0  # same fingerprint at most once per 15m
+_agent_narrate_seen: dict[str, float] = {}
+
+
+def _agent_event_fingerprint(event_type: str, payload: dict[str, Any]) -> str:
+    """Stable key so the same action is not re-broadcast as a new chat spam."""
+    p = payload or {}
+    parts = [
+        str(event_type or "").strip().lower(),
+        str(p.get("action") or "").strip().lower(),
+        str(p.get("bot_id") or "").strip(),
+        str(p.get("symbol") or "").strip().upper(),
+        str(p.get("from_strategy") or p.get("old_strategy") or "").strip().upper(),
+        str(p.get("to_strategy") or p.get("new_strategy") or "").strip().upper(),
+        str(p.get("reason") or "").strip().lower()[:120],
+    ]
+    return "|".join(parts)
+
+
+def _agent_narrate_allowed(fingerprint: str) -> bool:
+    now = time.time()
+    # Drop expired fingerprints so the map cannot grow unbounded.
+    stale = [k for k, ts in _agent_narrate_seen.items() if now - ts > _AGENT_NARRATE_COOLDOWN_SEC * 4]
+    for k in stale:
+        _agent_narrate_seen.pop(k, None)
+    last = _agent_narrate_seen.get(fingerprint)
+    if last is not None and (now - last) < _AGENT_NARRATE_COOLDOWN_SEC:
+        return False
+    _agent_narrate_seen[fingerprint] = now
+    return True
+
+
+def _template_agent_narration(event_type: str, payload: dict[str, Any]) -> str | None:
+    """Deterministic chat text for real agent actions — no LLM inventing heartbeats."""
+    p = payload or {}
+    action = str(p.get("action") or "").strip().lower()
+    symbol = str(p.get("symbol") or "").strip().upper() or None
+    bot_id = str(p.get("bot_id") or "").strip() or None
+    agent = str(event_type or "Agent").strip()
+
+    if action in ("rotated_strategy", "regime_changed"):
+        frm = p.get("from_strategy") or p.get("old_strategy") or "?"
+        to = p.get("to_strategy") or p.get("new_strategy") or "?"
+        regime = p.get("regime") or p.get("new_regime") or "current"
+        sym = symbol or "a bot"
+        return (
+            f"Market shifted to **{regime}** regime. I rotated the **{sym}** bot "
+            f"from `{frm}` to `{to}`."
+        )
+
+    if action in ("paused_all_bots", "paused_portfolio"):
+        n = p.get("bots_paused")
+        reason = p.get("reason") or "risk threshold breached"
+        if n is not None:
+            return f"Risk Sentinel paused **{n}** bot(s): {reason}."
+        return f"Risk Sentinel paused active bots: {reason}."
+
+    if action in ("paused_single_bot", "bot_paused"):
+        label = symbol or bot_id or "a bot"
+        reason = p.get("reason") or "risk rule triggered"
+        return f"Risk Sentinel paused **{label}**: {reason}."
+
+    if action in ("decay_detected", "alpha_decay"):
+        label = symbol or bot_id or "a bot"
+        reasons = p.get("reasons") or []
+        first = reasons[0] if isinstance(reasons, list) and reasons else (p.get("reason") or "edge degradation")
+        paused = " Auto-paused." if p.get("auto_paused") else ""
+        return f"Alpha Decay flagged **{label}**: {first}.{paused}"
+
+    if action in ("bot_deployed", "deployed"):
+        label = symbol or bot_id or "a symbol"
+        return f"Scanner deployed a bot on **{label}**."
+
+    # Unknown / empty actions must not invent "I'm online" chatter.
+    logger.debug("Skipping agent narrate for %s action=%s (no template)", agent, action or "(none)")
+    return None
+
+
+_AGENT_NARRATE_LLM_BANNED = (
+    "online",
+    "is active",
+    "heartbeat",
+    "standing by",
+    "ready to help",
+    "i'm here",
+    "i am here",
+    "how can i help",
+)
+
+
+def _agent_narrate_required_tokens(payload: dict[str, Any]) -> list[str]:
+    """Facts the optional LLM polish must preserve."""
+    p = payload or {}
+    tokens: list[str] = []
+    for key in (
+        "symbol",
+        "from_strategy",
+        "to_strategy",
+        "old_strategy",
+        "new_strategy",
+        "regime",
+        "new_regime",
+    ):
+        raw = p.get(key)
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if s and s != "?":
+            tokens.append(s)
+    if p.get("bots_paused") is not None:
+        tokens.append(str(p["bots_paused"]))
+    return tokens
+
+
+def _agent_narrate_facts_blob(event_type: str, payload: dict[str, Any], template: str) -> str:
+    """Compact JSON facts for the polish prompt (kept short for narrator models)."""
+    import json
+
+    p = payload or {}
+    facts: dict[str, Any] = {
+        "agent": event_type,
+        "action": p.get("action"),
+        "symbol": p.get("symbol"),
+        "bot_id": p.get("bot_id"),
+        "template": template,
+    }
+    for key in (
+        "from_strategy",
+        "to_strategy",
+        "old_strategy",
+        "new_strategy",
+        "regime",
+        "new_regime",
+        "reason",
+        "reasons",
+        "bots_paused",
+        "auto_paused",
+        "auto_retrained",
+        "current_drawdown",
+        "why",
+        "confidence",
+        "streak",
+        "max_streak",
+    ):
+        if key in p and p[key] is not None:
+            facts[key] = p[key]
+    try:
+        return json.dumps(facts, default=str)[:1800]
+    except Exception:
+        return template
+
+
+def _llm_polish_keeps_facts(polished: str, required: list[str]) -> bool:
+    text = (polished or "").strip()
+    if not text or len(text) > 320:
+        return False
+    low = text.lower()
+    if any(b in low for b in _AGENT_NARRATE_LLM_BANNED):
+        return False
+    upper = text.upper()
+    for tok in required:
+        t = str(tok).strip()
+        if not t:
+            continue
+        if t.upper() not in upper:
+            return False
+    return True
+
+
+async def _maybe_llm_polish_agent_notice(
+    event_type: str,
+    payload: dict[str, Any],
+    template: str,
+) -> tuple[str, str, dict[str, Any]]:
+    """Optional LLM polish for real rotate/pause/decay notices.
+
+    Gated by TRADE_COPILOT_USE_LLM and an online LLM provider. On any failure or
+    fact-drop, returns the deterministic template unchanged.
+    """
+    meta: dict[str, Any] = {}
+    if not TRADE_COPILOT_USE_LLM:
+        return template, "template", meta
+
+    try:
+        from app.services.agent.llm.router import get_llm_status
+
+        status = await get_llm_status()
+        if not status.get("available"):
+            return template, "template", meta
+
+        required = _agent_narrate_required_tokens(payload)
+        facts = _agent_narrate_facts_blob(event_type, payload, template)
+        user = (
+            "Rewrite this trading-agent action notice in ONE short sentence (max 40 words).\n"
+            "Preserve every concrete fact: symbols, strategy names, regime, counts, reasons.\n"
+            "Do not invent status, online, heartbeat, or help-desk claims.\n"
+            "Do not add advice unrelated to the action.\n\n"
+            f"FACTS_JSON:\n{facts}\n\n"
+            f"TEMPLATE:\n{template}"
+        )
+        result = await _chat(
+            user=user,
+            system=(
+                "You are TRADE_COPILOT. Narrate a real agent action that already happened. "
+                "Return only the rewritten notice — no quotes, no preamble."
+            ),
+            task="narrator",
+            max_tokens=120,
+            temperature=0.2,
+        )
+        if not result or result.provider == "off":
+            return template, "template", meta
+        polished = (result.text or "").strip().strip('"').strip("'")
+        if not _llm_polish_keeps_facts(polished, required):
+            logger.debug(
+                "agent narrate LLM polish rejected (facts/banlist) for %s",
+                event_type,
+            )
+            return template, "template", meta
+
+        meta = {
+            "provider": result.provider,
+            "model": result.model,
+        }
+        return polished, "llm", meta
+    except Exception as exc:
+        logger.debug("agent narrate LLM polish skipped: %s", exc)
+        return template, "template", meta
+
+
+async def _broadcast_copilot_agent_message(message: dict[str, Any], session_id: str) -> None:
+    """Push agent chat line to connected WS clients (works without Redis)."""
+    payload = {
+        "type": "copilot_agent_message",
+        "data": {
+            "session_id": session_id,
+            "message": message,
+        },
+    }
+    try:
+        from app.server import state
+
+        manager = getattr(state, "manager", None)
+        if manager is not None and hasattr(manager, "broadcast"):
+            await manager.broadcast(payload)
+            return
+
+        event_bus = getattr(state, "event_bus", None)
+        if event_bus is not None:
+            from app.services.events import channels
+
+            await event_bus.publish(channels.WS_BROADCAST, payload)
+    except Exception as exc:
+        logger.debug("copilot agent broadcast skipped: %s", exc)
+
+
+async def agent_narrate_event(event_type: str, payload: dict | None = None) -> None:
+    """Push a concise agent action notice into Copilot (deduped; template-first).
+
+    Only known rotate / pause / decay / deploy actions get a template. When
+    TRADE_COPILOT_USE_LLM is on and an LLM provider is online, the template may
+    be lightly polished — never invent heartbeats; fall back to template on fail.
+    """
     if not TRADE_COPILOT_ENABLED:
         return
 
-    try:
-        import json
-        from app.services.events import channels
-        from app.server import state
-        from app.services.agent.llm.router import _chat
+    data = payload if isinstance(payload, dict) else {}
+    template = _template_agent_narration(event_type, data)
+    if not template:
+        return
 
-        prompt = (
-            f"You are TRADE_COPILOT. The {event_type} agent just took a proactive action in the background.\n"
-            f"Event Payload: {json.dumps(payload)}\n"
-            "Write a 1-2 sentence conversational message to the user explaining what you just did on their behalf. "
-            "Keep it brief and confident. Do not ask for confirmation."
+    fingerprint = _agent_event_fingerprint(event_type, data)
+    if not _agent_narrate_allowed(fingerprint):
+        logger.debug("Suppressing duplicate agent narrate: %s", fingerprint)
+        return
+
+    try:
+        text, narration_source, llm_meta = await _maybe_llm_polish_agent_notice(
+            event_type, data, template
         )
 
-        result = await _chat(user=prompt, system="You are TRADE_COPILOT, a conversational trading assistant.")
-        if result and result.text:
-            text = result.text.strip()
-            # We use 'default' session to broadcast so the active frontend can see it
-            session_id = copilot_store.ensure_session_id("default")
-            msg = copilot_store.append_message(
-                session_id=session_id,
-                role="assistant",
-                content=text,
-            )
-            
-            # Broadcast to frontend
-            await state.event_bus.publish(
-                channels.WS_BROADCAST,
-                {
-                    "type": "copilot_agent_message",
-                    "data": {
-                        "session_id": session_id,
-                        "message": {
-                            "id": msg.get("id", str(uuid.uuid4())),
-                            "role": "assistant",
-                            "content": text,
-                            "source_agent": event_type,
-                            "timestamp": time.time(),
-                        }
-                    }
-                }
-            )
+        session_id = copilot_store.ensure_session_id("default")
+        msg_payload = {
+            "source_agent": event_type,
+            "symbol": data.get("symbol"),
+            "bot_id": data.get("bot_id"),
+            "action": data.get("action"),
+            "fingerprint": fingerprint,
+            "narration_source": narration_source,
+            "template": template if narration_source == "llm" else None,
+            **({k: v for k, v in llm_meta.items() if v}),
+        }
+        stored = copilot_store.append_message(
+            session_id=session_id,
+            role="assistant",
+            content=text,
+            intent="agent_event",
+            payload=msg_payload,
+        )
+
+        await _broadcast_copilot_agent_message(
+            {
+                "id": stored.get("id") or str(uuid.uuid4()),
+                "role": "assistant",
+                "content": text,
+                "source_agent": event_type,
+                "symbol": data.get("symbol"),
+                "bot_id": data.get("bot_id"),
+                "action": data.get("action"),
+                "fingerprint": fingerprint,
+                "narration_source": narration_source,
+                "timestamp": time.time(),
+                "payload": stored.get("payload") or msg_payload,
+            },
+            session_id,
+        )
     except Exception as exc:
         logger.error("Failed to narrate agent event: %s", exc)
 

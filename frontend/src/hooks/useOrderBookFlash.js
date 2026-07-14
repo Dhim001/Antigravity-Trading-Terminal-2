@@ -33,7 +33,7 @@ export function useOrderBookFlash(symbol) {
 }
 
 export function flashClass(dir) {
-  if (dir === 'up') return 'flash-up';
-  if (dir === 'down') return 'flash-down';
+  if (dir === 'up') return 'animate-flash-buy';
+  if (dir === 'down') return 'animate-flash-sell';
   return '';
 }

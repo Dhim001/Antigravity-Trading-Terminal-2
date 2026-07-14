@@ -613,7 +613,17 @@ export default function ChartWidget() {
   ]);
 
   // Sync display buffer on structural changes only — live OHLC patches use applyLiveCandleUpdate.
+  const lastSetBarsMsRef = useRef(0);
   useEffect(() => {
+    const now = Date.now();
+    
+    // Throttle setBars to max 2Hz (500ms) when we are actively scrolling history 
+    // and live ticks are coming in rapidly.
+    if (!pinnedToLiveRef.current && (now - lastSetBarsMsRef.current < 500)) {
+      return;
+    }
+    lastSetBarsMsRef.current = now;
+
     const prev = displayBarsRef.current;
     displayBarsRef.current = effectiveCandles.map(c => ({ ...c }));
     candlesRef.current = displayBarsRef.current;

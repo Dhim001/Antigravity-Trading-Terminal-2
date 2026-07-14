@@ -58,7 +58,8 @@ class AlpacaOMSService(BaseOMSService):
             balances = self.get_balances()
             positions = {p["symbol"]: p for p in self.get_positions()}
 
-            account_resp = requests.get(
+            from app.utils.circuit_breaker import alpaca_breaker
+            account_resp = alpaca_breaker(requests.get)(
                 f"{ALPACA_BASE_URL}/v2/account", headers=self.headers, timeout=5
             )
             margin = {}
@@ -77,7 +78,7 @@ class AlpacaOMSService(BaseOMSService):
                 }
             
             # Fetch last 50 orders
-            resp = requests.get(f"{ALPACA_BASE_URL}/v2/orders?status=all&limit=50", headers=self.headers, timeout=5)
+            resp = alpaca_breaker(requests.get)(f"{ALPACA_BASE_URL}/v2/orders?status=all&limit=50", headers=self.headers, timeout=5)
             raw_orders = resp.json() if resp.status_code == 200 else []
             
             orders = []
@@ -111,7 +112,7 @@ class AlpacaOMSService(BaseOMSService):
             
         try:
             # Get filled orders from Alpaca
-            resp = requests.get(f"{ALPACA_BASE_URL}/v2/orders?status=filled&limit=100", headers=self.headers, timeout=5)
+            resp = alpaca_breaker(requests.get)(f"{ALPACA_BASE_URL}/v2/orders?status=filled&limit=100", headers=self.headers, timeout=5)
             raw_orders = resp.json() if resp.status_code == 200 else []
             
             trades = []
@@ -146,7 +147,7 @@ class AlpacaOMSService(BaseOMSService):
             return self.fallback_oms.get_positions()
             
         try:
-            resp = requests.get(f"{ALPACA_BASE_URL}/v2/positions", headers=self.headers, timeout=5)
+            resp = alpaca_breaker(requests.get)(f"{ALPACA_BASE_URL}/v2/positions", headers=self.headers, timeout=5)
             if resp.status_code != 200:
                 return []
             
@@ -176,7 +177,7 @@ class AlpacaOMSService(BaseOMSService):
             return self.fallback_oms.get_balances()
             
         try:
-            resp = requests.get(f"{ALPACA_BASE_URL}/v2/account", headers=self.headers, timeout=5)
+            resp = alpaca_breaker(requests.get)(f"{ALPACA_BASE_URL}/v2/account", headers=self.headers, timeout=5)
             if resp.status_code != 200:
                 return {"USD": {"balance": 0.0, "locked": 0.0}}
                 
@@ -236,7 +237,7 @@ class AlpacaOMSService(BaseOMSService):
         try:
             # Wrap post request in to_thread to avoid thread blocking
             resp = await asyncio.to_thread(
-                requests.post,
+                alpaca_breaker(requests.post),
                 f"{ALPACA_BASE_URL}/v2/orders",
                 headers=self.headers,
                 json=payload,
@@ -246,7 +247,7 @@ class AlpacaOMSService(BaseOMSService):
             if resp.status_code == 429:
                 await asyncio.sleep(15)
                 resp = await asyncio.to_thread(
-                    requests.post,
+                    alpaca_breaker(requests.post),
                     f"{ALPACA_BASE_URL}/v2/orders",
                     headers=self.headers,
                     json=payload,
@@ -282,7 +283,7 @@ class AlpacaOMSService(BaseOMSService):
             
         try:
             resp = await asyncio.to_thread(
-                requests.delete,
+                alpaca_breaker(requests.delete),
                 f"{ALPACA_BASE_URL}/v2/orders/{order_id}",
                 headers=self.headers,
                 timeout=5
@@ -366,7 +367,7 @@ class AlpacaOMSService(BaseOMSService):
         try:
             # 1. Cancel all open orders
             cancel_resp = await asyncio.to_thread(
-                requests.delete,
+                alpaca_breaker(requests.delete),
                 f"{ALPACA_BASE_URL}/v2/orders",
                 headers=self.headers,
                 timeout=5
@@ -374,7 +375,7 @@ class AlpacaOMSService(BaseOMSService):
             
             # 2. Close all positions
             close_resp = await asyncio.to_thread(
-                requests.delete,
+                alpaca_breaker(requests.delete),
                 f"{ALPACA_BASE_URL}/v2/positions",
                 headers=self.headers,
                 timeout=5

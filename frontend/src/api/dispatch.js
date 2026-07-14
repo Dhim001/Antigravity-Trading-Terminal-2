@@ -85,6 +85,8 @@ export function getStoreActions() {
     setJournalEntries: r.setJournalEntries,
     upsertJournalEntry: r.upsertJournalEntry,
     removeJournalEntry: r.removeJournalEntry,
+    appendCopilotMessage: s.appendCopilotMessage,
+    clearCopilotMessages: s.clearCopilotMessages,
   };
 }
 
@@ -250,7 +252,10 @@ export function applyServerMessage(type, data, storeActions, meta) {
       break;
     case MessageType.COPILOT_AGENT_MESSAGE:
       if (data?.message) {
-        storeActions.appendCopilotMessage(data.message);
+        const append =
+          storeActions.appendCopilotMessage ||
+          useStore.getState().appendCopilotMessage;
+        append?.(data.message);
       }
       break;
     case MessageType.JOURNAL_ENTRIES:

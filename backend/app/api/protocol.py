@@ -67,6 +67,11 @@ class Action(StrEnum):
     RISK_GET_CONFIG = "risk_get_config"
     RISK_PREVIEW_ENTRY = "risk_preview_entry"
     RISK_BASKET_CORRELATION = "risk_basket_correlation"
+    COPILOT_CHAT = "copilot_chat"
+    COPILOT_CONFIRM = "copilot_confirm"
+    COPILOT_CANCEL = "copilot_cancel"
+    COPILOT_HISTORY = "copilot_history"
+    COPILOT_CLEAR = "copilot_clear"
 
 
 class MessageType(StrEnum):
@@ -98,4 +103,5 @@ class MessageType(StrEnum):
     JOURNAL_ENTRIES = "journal_entries"
     JOURNAL_ENTRY = "journal_entry"
     JOURNAL_DELETED = "journal_deleted"
+    COPILOT_AGENT_MESSAGE = "copilot_agent_message"
     ERROR = "error"

@@ -91,6 +91,12 @@ async def subscribe_symbol(ctx: RequestContext) -> None:
     limit = _parse_candle_snapshot_limit(ctx.message, interval)
     candles = await _resolve_candles(feed, symbol, interval, limit)
     snapshot = _tail_candles(candles, limit)
+    
+    # Apply downsampling if the resulting snapshot is extremely large (e.g. limit was None or very high)
+    if len(snapshot) > 1500:
+        from app.utils.downsample import aggregate_candles
+        snapshot = aggregate_candles(snapshot, 1000)
+        
     meta = {"interval": interval, "symbol": symbol, "count": len(snapshot)}
     await send_history_update(ctx, {symbol: snapshot}, meta=meta)
     await _send_orderbook_snapshot(ctx, symbol)
@@ -128,8 +134,8 @@ async def get_market_history(ctx: RequestContext) -> None:
     raw_count = len(bars)
     
     if raw_count > 1500:
-        from app.utils.downsample import largest_triangle_three_buckets
-        bars = largest_triangle_three_buckets(bars, 1000, x_key="time", y_key="close")
+        from app.utils.downsample import aggregate_candles
+        bars = aggregate_candles(bars, 1000)
         
     payload = history_update({symbol: bars})
     meta = {

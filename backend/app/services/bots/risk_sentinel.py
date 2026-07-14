@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -24,6 +25,7 @@ from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
 from app.services.agent.working_memory import WorkingMemory
 from app.services.agent.reasoning import AgentReasoning, Observation
+from app.services.agent.copilot import agent_narrate_event
 
 logger = logging.getLogger(__name__)
 
@@ -129,20 +131,20 @@ class RiskSentinel:
                         except Exception as exc:
                             logger.error("Sentinel failed to pause bot %s: %s", bot_id, exc)
                 
-                # Narrate to copilot
-                asyncio.create_task(
-                    agent_narrate_event(
-                        "RiskSentinel",
-                        {
-                            "action": "paused_all_bots",
-                            "reason": f"Drawdown velocity breached {RISK_SENTINEL_MAX_VELOCITY}% limit.",
-                            "bots_paused": paused_count,
-                            "current_drawdown": current_dd,
-                        }
-                    )
-                )
-
+                # Narrate only when at least one bot was actually paused.
                 if paused_count > 0:
+                    asyncio.create_task(
+                        agent_narrate_event(
+                            "RiskSentinel",
+                            {
+                                "action": "paused_all_bots",
+                                "reason": f"Drawdown velocity breached {RISK_SENTINEL_MAX_VELOCITY}% limit.",
+                                "bots_paused": paused_count,
+                                "current_drawdown": current_dd,
+                                "why": "Portfolio drawdown velocity spike triggered auto-pause.",
+                            },
+                        )
+                    )
                     logger.warning("Risk Sentinel paused %d active bot(s) due to velocity spike.", paused_count)
 
         # 2. Consecutive Loss Streak Auto-Pause
@@ -210,7 +212,7 @@ class RiskSentinel:
                             )
                         )
 
-                        # Narrate to copilot
+                        # Narrate to copilot (per bot; deduped in agent_narrate_event)
                         asyncio.create_task(
                             agent_narrate_event(
                                 "RiskSentinel",
@@ -218,7 +220,12 @@ class RiskSentinel:
                                     "action": "paused_single_bot",
                                     "reason": f"Hit max consecutive losses ({streak}).",
                                     "bot_id": bot_id,
-                                }
+                                    "symbol": bot.get("symbol"),
+                                    "streak": streak,
+                                    "max_streak": max_streak,
+                                    "why": getattr(reasoning, "synthesis", None),
+                                    "confidence": getattr(reasoning, "confidence", None),
+                                },
                             )
                         )
                     except Exception as exc:

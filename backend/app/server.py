@@ -497,49 +497,7 @@ async def main():
                 asyncio.create_task(ws_keepalive_loop()),
             ]
             
-            async def _trigger_test():
-                await asyncio.sleep(5)
-                from app.services.events import channels
-                from app.services.agent import copilot_store
-                import uuid
-                import time
-                
-                async def fake_narrate(source, msg_text):
-                    session_id = copilot_store.ensure_session_id("default")
-                    msg = copilot_store.append_message(
-                        session_id=session_id,
-                        role="assistant",
-                        content=msg_text,
-                    )
-                    await state.manager.broadcast({
-                        "type": "copilot_agent_message",
-                        "data": {
-                            "session_id": session_id,
-                            "message": {
-                                "id": msg.get("id", str(uuid.uuid4())),
-                                "role": "assistant",
-                                "content": msg_text,
-                                "source_agent": source,
-                                "timestamp": time.time()
-                            }
-                        }
-                    })
 
-                try:
-                    while True:
-                        await asyncio.sleep(30)
-                        if not state.manager.connected_clients:
-                            continue
-                        
-                        await fake_narrate("RiskSentinel", "Risk Sentinel is active. Monitoring global portfolio exposure.")
-                        await asyncio.sleep(2)
-                        await fake_narrate("AlphaDecay", "Alpha Decay scanner online. Current regime is volatile.")
-                        await asyncio.sleep(4)
-                        await fake_narrate("RegimeRotation", "Market shifted to trending regime. I rotated the BTCUSDT bot from MACD_RSI to SUPERTREND_ADX.")
-                except Exception as e:
-                    logging.error("Test trigger crashed: %s", e)
-
-            tasks.append(asyncio.create_task(_trigger_test()))
 
 
             if HTTP_ENABLED:

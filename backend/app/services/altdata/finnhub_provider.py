@@ -34,8 +34,9 @@ def _get_json(path: str, params: dict | None = None) -> dict | list | None:
     q = dict(params or {})
     q["token"] = FINNHUB_API_KEY
     try:
+        from app.utils.circuit_breaker import finnhub_breaker
         with httpx.Client(timeout=20.0) as client:
-            resp = client.get(url, params=q)
+            resp = finnhub_breaker(client.get)(url, params=q)
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:

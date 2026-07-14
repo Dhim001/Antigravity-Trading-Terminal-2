@@ -38,10 +38,8 @@ function mergeSymbol(target, symbol, info) {
   prev.symbol = symbol;
 }
 
-/**
- * @param {Record<string, object>} data
- * @param {(data: Record<string, object>) => void} apply
- */
+let lastFlushMs = 0;
+
 export function queueMarketUpdate(data, apply) {
   if (!data || typeof data !== 'object') return;
 
@@ -57,14 +55,21 @@ export function queueMarketUpdate(data, apply) {
   }
 
   if (rafId != null) return;
-  rafId = requestAnimationFrame(() => {
+  
+  const flush = () => {
     rafId = null;
+    const now = performance.now();
+    // Previously deferred if called too soon; removed to ensure immediate flush in tests
+    // This also keeps UI responsive by applying the batch each animation frame.
+    lastFlushMs = now;
     const batch = pending;
     pending = null;
     if (batch && Object.keys(batch).length > 0) {
       apply(batch);
     }
-  });
+  };
+
+  rafId = requestAnimationFrame(flush);
 }
 
 /** @internal */

@@ -1,6 +1,6 @@
 # Antigravity Trading Terminal
 
-A full-stack, real-time trading terminal with a Python WebSocket backend and a React + Vite frontend. The app supports simulated and live market data, order execution, portfolio tracking, algorithmic strategies, and a professional charting workspace — styled with **shadcn/ui** and **Tailwind CSS v4**.
+A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend and a React + Vite frontend (plus optional Electron desktop shell). The app supports simulated and live market data, order execution, portfolio tracking, algorithmic strategies, agent loops (risk / regime / decay / pre-/post-trade), a Trade Copilot chatbot, and a professional charting workspace — styled with **shadcn/ui** and **Tailwind CSS v4**.
 
 ---
 
@@ -9,24 +9,34 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 | Area | Status |
 |------|--------|
 | Simulated market feed (SBBS + yfinance cache) | Done |
-| Live feeds: Alpaca, Binance, eToro | Done |
+| Live feeds: Alpaca, Binance, eToro, IB, Massive | Done |
 | OMS: market/limit orders, SL/TP, FIFO P&L | Done |
-| 35 symbols (15 equities/ETFs + 20 crypto) | Done |
-| Charting (ECharts) + 9 overlays + signal badge | Done |
-| Multi-chart grid view | Done |
-| Bottom dock: positions, orders, balances, algo, history, equity | Done |
-| Algo bot engine (8 strategies + CHART_AGENT + backtester/optimizer) | Done |
+| 35 symbols (15 equities/ETFs + 20 liquid crypto) | Done |
+| Charting (ECharts) + overlays + signal badge + footprint | Done |
+| Multi-chart grid + FlexLayout workspace panels | Done |
+| Grouped bottom dock (Portfolio · Intelligence · Automation · Data) | Done |
+| Algo bot engine (13+ bar strategies, tick strategies, CHART_AGENT, CUSTOM plugins) | Done |
 | Backtest Lab (Results / Optimizer / Jobs), sweep, walk-forward, portfolio | Done |
-| Bot risk gates, pause/resume, analytics | Done |
-| Distributed runtime (Redis worker split) | Done |
+| Optional RQ backtest queue when Redis is configured | Done |
+| Bot risk gates, pause/resume, calibration, analytics, trade explain | Done |
+| Agent loops: Risk Sentinel, Regime Rotation, Alpha Decay | Done |
+| Pre-trade intel + post-trade learner (+ optional LLM) | Done |
+| Scanner auto-deploy agent (opt-in) | Done |
+| Trade Copilot (dock tab, tools, confirmations, agent event narrate) | Done |
+| Daily journal briefing (LLM when provider online) | Done |
+| Chart Analyst + Insights Hub scanner | Done |
+| Alt-data gates (sentiment, macro, crypto derivatives — P0) | Done |
+| Distributed runtime (Redis server/worker split) | Done |
 | PostgreSQL + custom strategy plugins | Done |
 | Docker Compose (Redis/Postgres) + header bot controls | Done |
 | Admin / simulation controls | Done |
-| shadcn/ui design system migration | Done |
-| Symbol command palette (⌘K) | Done |
-| Long-term market bar archive (1m DB + 1h rollup) | Done |
+| shadcn/ui design system + workspace modes (Trade / Analyze / Automate / Portfolio) | Done |
+| Symbol command palette (⌘K) + onboarding / Help | Done |
+| Long-term market bar archive (1m DB + 1h rollup) + query caps | Done |
 | Live algo bot integration (archive warm-up + bar-close hooks) | Done |
 | Docker server/worker split + reconciliation + Parquet export | Done |
+| Electron desktop (`start-desktop.ps1`, Sim / IB / Massive profiles) | Done |
+| Health probe cache + memory-minded archive/footprint limits | Done |
 
 ---
 
@@ -34,24 +44,28 @@ A full-stack, real-time trading terminal with a Python WebSocket backend and a R
 
 ```mermaid
 graph TD
-    subgraph Frontend [React + Vite + shadcn/ui]
+    subgraph Frontend [React + Vite + Electron optional]
         UI[Dashboard] <--> Store[Zustand Store]
-        Store <--> WS_Client[WebSocket Client]
-        UI --> Chart[ECharts]
-        UI --> Dock[Resizable Dock]
+        Store <--> WS_Client[WebSocket / HTTP transport]
+        UI --> Chart[ECharts + Footprint]
+        UI --> Dock[Grouped Dock + Copilot]
         UI --> Palette[Command Palette]
     end
 
-    subgraph Backend [Python WebSocket Server]
-        WS_Server[server.py] <--> WS_Client
+    subgraph Backend [Python WS + Starlette HTTP]
+        WS_Server[server.py / bootstrap] <--> WS_Client
         WS_Server --> Mode{TERMINAL_MODE}
         Mode -->|SIMULATED| SimFeed[sim_feed + synthetic_data]
         Mode -->|LIVE_ALPACA| Alpaca[alpaca_feed / alpaca_oms]
         Mode -->|LIVE_BINANCE| Binance[binance_feed / binance_oms]
         Mode -->|LIVE_ETORO| Etoro[etoro_feed / etoro_oms]
+        Mode -->|LIVE_IB| IB[ib_feed · sim OMS]
+        Mode -->|LIVE_MASSIVE| Massive[massive_feed · sim OMS]
         WS_Server --> Bots[Bot Manager + Screener + Backtester]
+        WS_Server --> Agents[Sentinel · Regime · Decay · Copilot]
+        WS_Server --> Archive[Bar / tick archive]
         WS_Server --> OMS[Order Management]
-        OMS --> DB[(SQLite trading.db)]
+        OMS --> DB[(SQLite or Postgres)]
     end
 ```
 
@@ -74,11 +88,13 @@ graph TD
 - **Technical overlays**: EMA 9/21/50, Bollinger Bands, VWAP, Volume, RSI, MACD, ATR
 - **Drawing tools**: trendlines, horizontal levels, Fibonacci retracements, rectangles — persisted per-symbol to the backend
 - **Volume Profile (VPVR)** with POC / value-area highlighting
+- **Footprint / order-flow heatmap** — trading-panel **Footprint** tab + `GET /api/v1/market/footprint` (chunked aggregates, range/cell caps)
 - **Comparison mode**: overlay a second symbol rebased to percent change
 - **Replay mode**: step through historical price action bar-by-bar (play / pause / step / speed)
 - **Signal badge** with rule-based analysis popover (BUY / SELL / NEUTRAL)
 - **Market overview strip** with scrolling tickers
 - **Watchlist** with category filters (Crypto / Equity / ETF), search, and sparklines
+- Large history payloads are **downsampled** for chart UI; archive reads use purpose-aware query limits (see `docs/MEMORY_16GB.md`)
 
 ### Simulation engine
 - **Stationary Bootstrap (SBBS)** synthetic candles seeded from 7-day 1m yfinance history
@@ -86,19 +102,29 @@ graph TD
 - Admin controls: tick speed, volatility, directional bias, balance seeding, emergency stop, full reset
 
 ### Algorithmic trading
-- **Bot manager** persists bots and logs to SQLite
+- **Bot manager** persists bots and logs to SQLite/Postgres
 - **Market screener** computes indicators via `pandas-ta`
-- **Four built-in strategies**:
-  - `MACD_RSI` — MACD crossover + RSI filter
-  - `BRS_SCALPING` — Bollinger + RSI + Stochastic
-  - `SUPERTREND_ADX` — SuperTrend flip + ADX confirmation
-  - `VWAP_PULLBACK` — VWAP mean-reversion entries
-- **Backtester** service for offline strategy evaluation
-- Dock **Algo Bot** tab: strategy templates, max notional cap, live bot logs, backtest equity curve, deploy confirmation
-- **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all
-- **Bot analytics**: per-bot trades, snapshots, detail panel, chart trade markers
+- **Built-in bar strategies** (catalog in `strategy_catalog.py`), including:
+  - Core: `MACD_RSI`, `BRS_SCALPING`, `SUPERTREND_ADX`, `VWAP_PULLBACK`, `CHART_AGENT`
+  - Structure / flow: `ICT_SMC`, `DONCHIAN_BREAKOUT`, `MARKET_MAKING`, `CVD_DIVERGENCE`, `WYCKOFF_SPRING`, `VPOC_REVERSION`, `ORDERFLOW_IMBALANCE`, `ABSORPTION_AGENT`
+  - Tick strategies: `TICK_MOMENTUM`, `TICK_MEAN_REVERT`, `TICK_BREAKOUT`
+- **Backtester / optimizer** — offline evaluation, sweeps, walk-forward, portfolio; heavy jobs can defer in-process or enqueue to **RQ** when `REDIS_URL` is set
+- Dock **Algo Bot** tab: strategy templates, Backtest Lab, max notional cap, live bot logs, deploy confirmation
+- **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all, calibration gate
+- **Bot analytics**: per-bot trades, snapshots, detail drawer, trade explain, chart trade markers
 - **Config-driven strategies**: indicator periods wired from bot `config`
 - **Optional `CUSTOM` strategy plugins** in `backend/strategies/` (`ALLOW_CUSTOM_STRATEGIES=true`)
+
+### Agents & Copilot
+- **Risk Sentinel** — drawdown velocity / loss-streak / correlation caps; can auto-pause bots (`RISK_SENTINEL_*`)
+- **Regime Rotation** — swaps strategy when market regime shifts (`REGIME_ROTATION_*`)
+- **Alpha Decay** — flags live edge vs expectations; optional auto-pause / retrain (`ALPHA_DECAY_*`)
+- **Pre-trade intel** — last-mile CONFIRM / VETO / REDUCE_SIZE checklist (`PRETRADE_*`)
+- **Post-trade learner** — close → classify → lesson; optional LLM + config apply (`POSTTRADE_LEARNER_*`)
+- **Scanner auto-deploy** — continuous scan → gate → create bots (off by default; `SCANNER_DEPLOY_*`)
+- **Trade Copilot** — natural-language portfolio / bot / analysis tools with confirmations (`TRADE_COPILOT_*`); agent rotate/pause/decay events appear in the dock with **Rules** or **LLM** narration when a provider is online
+- **Daily briefing** — journal summary via `POST /api/v1/journal/briefing/generate`
+- **LLM router** — prefers local Ollama, optional OpenRouter fallback (`LLM_PROVIDER`, `AGENT_LLM_*`, `TRADE_COPILOT_USE_LLM`)
 
 ### Distributed runtime (Phase 6)
 
@@ -121,7 +147,8 @@ Set `TERMINAL_MODE` in `.env` to switch backends:
 | `LIVE_ALPACA` | Alpaca WebSocket | US equities & ETFs | Paper or live via `ALPACA_BASE_URL` |
 | `LIVE_BINANCE` | Binance streams | Crypto USDT pairs | Requires API keys |
 | `LIVE_ETORO` | REST poll (`/market-data/instruments/rates`) | Equities + crypto | Bearer **or** API-key pair (never both); demo/real env auto-probe |
-| `LIVE_IB` | IB Gateway / TWS (`ib_async`, 1m `keepUpToDate`) | US equities & ETFs | **Feed-only** — orders use simulated OMS; requires Gateway + market data subs |
+| `LIVE_IB` | IB Gateway / TWS (`ib_async`, 1m `keepUpToDate`) | US equities & ETFs | **Feed-only** by default — orders use simulated OMS; requires Gateway + market data subs |
+| `LIVE_MASSIVE` | Massive/Polygon WS (`/stocks` + `/crypto`) | Equities + crypto | **Feed-only** OMS; set `MASSIVE_API_KEY`; REST poll fallback via `MASSIVE_POLL_FALLBACK` |
 
 ---
 
@@ -143,22 +170,24 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 - **Layout modes (UX overhaul)** — header workspace switcher: **Trade**, **Analyze**, **Automate**, **Portfolio**; each remaps dock, right panel, and default tabs
 - **Grouped dock** — Portfolio · Intelligence · Automation · Data category rails with sub-tabs
 - **Command bar** — merged symbol context, watchlist strip, and portfolio metrics (replaces separate aux + strip rows)
-- **Trading panel tabs** — Trade | Book | Depth with collapse chevron
-- **Insights Hub** (`⌘I`) — Scanner + Analyst in one sheet
+- **Trading panel tabs** — Trade | Book | Depth | Footprint with collapse chevron
+- **Insights Hub** (`⌘I`) — Scanner + Analyst (+ news) in one sheet
+- **Trade Copilot** — dock Intelligence tab: chat, tool actions with confirm/cancel, agent event stream (Rules/LLM badges)
 - **Automation Studio** — bot ops sheet from dock Automation group
+- **Trade Journal** — Portfolio workspace entries + optional daily LLM briefing
 - **Activity Center** — header bell icon for alerts, bot logs, connection status
 - **Chart context strip** — clickable breadcrumb under chart (symbol, TF, analyst signal, bots)
 - **Built-in workspace presets** — Day Trade, Research, Bot Ops (Settings + header switcher)
-- **Onboarding & help (Phase 1)** — first-visit welcome tour (`OnboardingTour`), header **Help** button (`HelpSheet` with workflows, glossary, shortcuts), and **Replay welcome tour** in Settings → Layout
-- **Market scanner (Phase 6)** — dock **Scanner** tab: multi-symbol scan, filters, optional 60s auto-refresh
-- **Chart Analyst (Phase 6)** — dock **Analyst** tab: insight history, compare mode, vision structure notes
-- **Alerts (Phase 4)** — price/signal toast rules in Settings → Layout; evaluated by `useAlertMonitor`
-- **Chart overlay toggles (Phase 4)** — Settings → Chart: trade markers, position SL/TP, analyst levels, bot markers (persisted in `chartLayout.overlays`)
-- **Performance (Phase 2)** — lazy-loaded dock tabs, windowed analyst history table, throttled live candle updates
-- **Vision LLM (optional)** — set `OPENAI_API_KEY` (and optionally `OPENAI_VISION_MODEL=gpt-4o-mini`) in backend `.env` to enable chart structure analysis from the Analyst tab **Vision** button; without a key, vision requests return a clear configuration error
+- **Onboarding & help** — first-visit welcome tour (`OnboardingTour`), header **Help** button (`HelpSheet`), and **Replay welcome tour** in Settings → Layout
+- **Market scanner** — dock **Scanner** tab: multi-symbol scan, filters, optional auto-refresh
+- **Chart Analyst** — dock **Analyst** tab: insight history, compare mode, optional vision notes
+- **Alerts** — price/signal toast rules in Settings → Layout; evaluated by `useAlertMonitor`
+- **Chart overlay toggles** — Settings → Chart: trade markers, position SL/TP, analyst levels, bot markers
+- **Performance** — lazy-loaded dock tabs, windowed analyst history, throttled live candle updates, batched market updates
+- **Vision LLM (optional)** — `AGENT_VISION_ENABLED` / OpenAI or router vision model from Analyst; without a provider, requests return a clear configuration error
 - Trading-specific button variants: `buy`, `sell`, `live` badges
-- **HTTP bootstrap (Phase 4a)** — on mount, `GET /api/v1/session` hydrates terminal config, account, history, bots, strategies, and active backtest job in one round-trip (StrictMode-safe dedupe in `bootstrap.js`); chart candles still fetched per symbol. Live ticks stream over WS. Dev uses Vite proxy (`vite.config.js`); set `VITE_HTTP_BASE_URL` for production builds (`frontend/.env.example`).
-- **Unified transport (Phase 4c)** — `sendAction()` in `frontend/src/api/transport.js` tries WebSocket first, then falls back to the matching REST endpoint when WS is offline (orders, bots, admin, SL/TP, etc.).
+- **HTTP bootstrap** — on mount, `GET /api/v1/session` hydrates terminal config, account, history, bots, strategies, and active backtest job in one round-trip (StrictMode-safe dedupe in `bootstrap.js`); chart candles still fetched per symbol. Live ticks stream over WS. Dev uses Vite proxy (`vite.config.js`); set `VITE_HTTP_BASE_URL` for production builds (`frontend/.env.example`).
+- **Unified transport** — `sendAction()` in `frontend/src/api/transport.js` tries WebSocket first, then falls back to the matching REST endpoint when WS is offline (orders, bots, admin, SL/TP, etc.).
 
 ---
 
@@ -167,35 +196,39 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 ```
 trading-terminal/
 ├── backend/
-│   ├── main.py                 # Entry point (WebSocket server)
+│   ├── main.py                 # Entry point (WebSocket + HTTP)
 │   ├── worker.py               # Bot engine worker (TERMINAL_ROLE=worker)
+│   ├── rq_worker.py            # Optional RQ consumer for heavy backtests
 │   ├── app/
-│   │   ├── config.py           # Modes, symbols, API credentials
+│   │   ├── config.py           # Modes, symbols, agents, API credentials
+│   │   ├── bootstrap.py        # AppState wiring (feed, OMS, bots, agents)
 │   │   ├── database.py         # Schema & helpers (SQLite or Postgres)
 │   │   ├── db/connection.py    # DATABASE_URL adapter
-│   │   ├── server.py           # WebSocket server & DI wiring
+│   │   ├── server.py           # WebSocket server
 │   │   ├── api/                # Centralized WS action router & protocol
 │   │   │   ├── router.py       # Route registry + dispatch
 │   │   │   ├── protocol.py     # Action / MessageType enums
 │   │   │   ├── outbound.py     # Typed server->client frame builders
-│   │   │   ├── http/           # Starlette REST API (Phase 3)
-│   │   │   ├── http_server.py  # uvicorn runner
+│   │   │   ├── http/           # Starlette REST API (health, bots, copilot, footprint)
 │   │   │   └── handlers/       # Domain handlers (trading, bots, admin, …)
 │   │   ├── services/
-│   │   │   ├── sim_feed.py     # Simulated feed (SBBS)
-│   │   │   ├── synthetic_data.py
-│   │   │   ├── alpaca_*.py / binance_*.py / etoro_*.py
+│   │   │   ├── sim_feed.py / massive_*.py / alpaca_*.py / …
+│   │   │   ├── agent/          # Copilot, LLM router, briefing, event bus
+│   │   │   ├── archive/        # Bar/tick archive + footprint queries
 │   │   │   ├── events/         # Redis pub/sub (bar_close, bot_reload)
-│   │   │   └── bots/           # Screener, strategies, manager, backtester, runtime
-│   │   └── websocket/          # Connection manager & message handlers
+│   │   │   └── bots/           # Screener, strategies, manager, agents, backtester
+│   │   └── websocket/          # Connection manager
 │   ├── strategies/             # Optional CUSTOM strategy plugins
 │   └── data/                   # Cached *.parquet (generated locally)
+├── desktop/                    # Electron app package
+├── scripts/                    # start-sim / start-ib / start-massive / start-desktop
+├── docs/                       # Architecture, memory, agents, roadmap notes
 └── frontend/
     └── src/
         ├── App.jsx             # Layout grid & header
-        ├── api/protocol.js     # Action / MessageType constants (mirrors backend)
+        ├── api/                # protocol, transport, dispatch, bootstrap
         ├── store/useStore.js   # Global state
-        ├── components/         # Widgets, dock, charts
+        ├── components/         # Widgets, dock (incl. Copilot), charts, journal
         └── components/ui/      # shadcn primitives
 ```
 
@@ -329,7 +362,7 @@ npm run preview
 Create a `.env` file in the **repo root** (loaded by `backend/app/config.py`):
 
 ```env
-# Terminal mode: SIMULATED | LIVE_ALPACA | LIVE_BINANCE | LIVE_ETORO | LIVE_IB
+# Terminal mode: SIMULATED | LIVE_ALPACA | LIVE_BINANCE | LIVE_ETORO | LIVE_IB | LIVE_MASSIVE
 TERMINAL_MODE=SIMULATED
 
 # Alpaca (LIVE_ALPACA)
@@ -340,6 +373,10 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 # Binance (LIVE_BINANCE)
 BINANCE_API_KEY=
 BINANCE_SECRET_KEY=
+
+# Massive / Polygon (LIVE_MASSIVE — feed-only OMS)
+MASSIVE_API_KEY=
+# MASSIVE_POLL_FALLBACK=true
 
 # eToro (LIVE_ETORO) — use Bearer OR key pair, never both
 ETORO_ACCESS_TOKEN=
@@ -366,9 +403,20 @@ ETORO_EXEC_MIN_INTERVAL=3.0
 ALLOW_LIVE_BOTS=false
 BOT_MIN_CANDLES=200
 TERMINAL_ROLE=all              # all | server | worker
-REDIS_URL=                     # redis://127.0.0.1:6379/0 for server/worker split
+REDIS_URL=                     # redis://127.0.0.1:6379/0 for server/worker + RQ backtests
 DATABASE_URL=                  # postgresql://... or omit for SQLite
 ALLOW_CUSTOM_STRATEGIES=false
+
+# Agents / Copilot (see backend/.env.example for full list)
+# RISK_SENTINEL_ENABLED=true
+# REGIME_ROTATION_ENABLED=true
+# ALPHA_DECAY_ENABLED=true
+# TRADE_COPILOT_ENABLED=true
+# TRADE_COPILOT_USE_LLM=true
+# SCANNER_DEPLOY_ENABLED=false
+# AGENT_LLM_ENABLED=false
+# LLM_PROVIDER=auto            # ollama | openrouter | auto
+# OPENROUTER_API_KEY=
 
 # HTTP REST API (optional, default on)
 HTTP_ENABLED=true
@@ -376,7 +424,7 @@ HTTP_HOST=127.0.0.1
 HTTP_PORT=8766
 ```
 
-SQLite database `backend/trading.db` and cached parquet files are created automatically and are **gitignored**.
+SQLite database `backend/trading.db` (or profile DBs such as `trading-massive.db`) and cached parquet files are created automatically and are **gitignored**. On **16 GB** machines prefer a single live profile (e.g. Massive only) — see `docs/MEMORY_16GB.md`.
 
 ---
 
@@ -433,6 +481,7 @@ Single endpoint: **`ws://127.0.0.1:8765`**. Client requests use JSON with an `ac
 | `bot_log` | Streaming bot log line |
 | `bot_logs_history` | Recent bot logs on connect |
 | `backtest_result` | Backtest metrics and equity curve |
+| `copilot_agent_message` | Agent → Copilot narrate line (rotate / pause / decay / deploy) |
 | `error` | Unknown action or handler exception |
 
 **Registry:** `backend/app/api/router.py` · **Frontend constants:** `frontend/src/api/protocol.js`
@@ -458,7 +507,8 @@ Runs alongside WebSocket on **`http://127.0.0.1:8766`** by default (`HTTP_ENABLE
 
 | Method | Path | WS action | Description |
 |--------|------|-----------|-------------|
-| `GET` | `/health` | — | Liveness + mode, role, WS client count |
+| `GET` | `/health` | — | Full diagnostics (cached ~10s; `?fresh=1` to bypass) |
+| `GET` | `/health/live` | — | Cheap liveness + in-memory feed lag / Massive status |
 | `GET` | `/api/v1/routes` | — | List all registered WebSocket actions |
 | `GET` | `/api/v1/openapi.json` | — | OpenAPI 3.1 spec (Phase 9) |
 | `GET` | `/api/v1/account` | `get_account` | Account balances and positions |
@@ -476,6 +526,12 @@ Runs alongside WebSocket on **`http://127.0.0.1:8766`** by default (`HTTP_ENABLE
 | `POST` | `/api/v1/bots/{bot_id}/resume` | `bot_resume` | Resume a bot |
 | `POST` | `/api/v1/bots/stop-all` | `bot_stop_all` | Stop all bots |
 | `POST` | `/api/v1/backtest` | `run_backtest` | Run strategy backtest |
+| `GET` | `/api/v1/market/footprint` | — | Order-flow footprint cells (`symbol`, `from_ts`, `to_ts`, `price_step`, `time_bucket_ms`) |
+| `POST` | `/api/v1/copilot/chat` | `copilot_chat` | Trade Copilot message |
+| `POST` | `/api/v1/copilot/confirm` | `copilot_confirm` | Confirm or cancel pending Copilot action |
+| `GET` | `/api/v1/copilot/history` | `copilot_history` | Copilot session messages |
+| `DELETE` | `/api/v1/copilot/history/{session_id}` | `copilot_clear` | Clear Copilot session |
+| `POST` | `/api/v1/journal/briefing/generate` | — | Generate daily journal briefing |
 | `GET` | `/api/v1/admin/stats` | `admin_get_stats` | System stats (sim only) |
 | `POST` | `/api/v1/admin/simulation` | `admin_set_simulation` | Toggle simulation mode |
 | `POST` | `/api/v1/admin/seed-balance` | `admin_seed_balance` | Seed paper balance |
@@ -534,6 +590,10 @@ Separate from the live WebSocket path and the short `sim_market_state` snapshot 
 | `ARCHIVE_RETENTION_1H_DAYS` | `1825` | Keep 1h bars this long |
 | `ARCHIVE_FLUSH_INTERVAL` | `60` | Batch DB flush (seconds) |
 | `ARCHIVE_ROLLUP_INTERVAL` | `3600` | Rollup job period (seconds) |
+| `ARCHIVE_QUERY_LIMIT` | `50000` | Cap for backtest / resolve reads |
+| `ARCHIVE_QUERY_LIMIT_UI` | `10000` | Cap for chart / WS history pans |
+| `FOOTPRINT_MAX_RANGE_MS` | `86400000` | Max footprint query window (24h) |
+| `FOOTPRINT_MAX_CELLS` | `50000` | Hard cap on footprint cells returned |
 
 **Query archived history:**
 
@@ -582,13 +642,17 @@ Strategy aliases (`SUPERTREND` → `SUPERTREND_ADX`, `BB_STOCH` → `BRS_SCALPIN
 
 Default `docker compose up` runs **monolith** (`TERMINAL_ROLE=all`) — one `backend` process, no Redis.
 
+**RQ backtest queue** — with `REDIS_URL` set, heavy sweeps can enqueue to Redis (`backend/rq_worker.py`). Without Redis, backtests run in-process (optionally deferred).
+
 **Live reconciliation** — ambiguous live orders (timeouts/network) are stored in `ambiguous_orders`. Algo tab shows pending items; **Auto-reconcile** checks open positions. Admin API: `GET /api/v1/admin/reconciliation`, `POST .../reconcile`, `POST .../resolve`.
 
 **Parquet export** — `ARCHIVE_PARQUET_ENABLED=true` or `ARCHIVE_BACKEND=both`. Admin: `POST /api/v1/admin/archive/export` or **Admin → Export Parquet**.
 
 **Sub-minute ticks** — `ARCHIVE_TICKS_ENABLED=true` captures trade/poll snapshots to `market_ticks` (default 24h retention). Query: `GET /api/v1/market/{symbol}/ticks?from=&to=`.
 
-**5-year chart scroll** — pan/zoom left loads archived bars with `interval=auto` (1m recent + 1h older), up to 50k bars in the client buffer.
+**5-year chart scroll** — pan/zoom left loads archived bars with `interval=auto` (1m recent + 1h older); UI path applies query limits + downsampling for responsiveness.
+
+**Health probes** — `GET /health/live` is cheap (in-memory feed lag / Massive status); full `GET /health` is cached (~10s) to avoid SQLite poll storms (`?fresh=1` bypasses).
 
 ### CI & testing
 
@@ -690,6 +754,10 @@ Server pushes use typed builders in `backend/app/api/outbound.py` instead of raw
 
 ## Tech Stack
 
-**Backend:** Python, `websockets`, `starlette`, `uvicorn`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `requests`, `redis`, `psycopg`
+**Backend:** Python, `websockets`, `starlette`, `uvicorn`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `requests`, `redis`, `rq`, `psycopg`, optional Ollama / OpenRouter LLM clients
 
-**Frontend:** React 19, Vite 8, Zustand, ECharts, lightweight-charts, shadcn/ui, Tailwind CSS v4, Lucide icons, cmdk, Sonner toasts
+**Frontend:** React 19, Vite 8, Zustand, ECharts, lightweight-charts, flexlayout-react, shadcn/ui, Tailwind CSS v4, Lucide icons, cmdk, Sonner toasts
+
+**Desktop:** Electron (`desktop/` + `scripts/start-desktop.ps1`)
+
+**Docs (selected):** `docs/MEMORY_16GB.md`, `docs/MARKET_ARCHIVE.md`, `docs/NEW_AGENTS_AND_CHATBOT_PROPOSAL.md` (historical design; agents are now wired), `docs/ML_DL_RL_SIGNAL_GENERATION_PROPOSAL.md` (proposal only — not shipped)

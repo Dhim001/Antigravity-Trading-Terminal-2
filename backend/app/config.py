@@ -29,6 +29,8 @@ DB_PATH = (
     if _sqlite_db
     else os.path.join(BASE_DIR, "trading.db")
 )
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://trading:trading@localhost:5432/trading").strip()
+
 
 # Features & Integration Flags
 # Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB", "LIVE_MASSIVE"
@@ -432,7 +434,7 @@ OLLAMA_REASONING_EFFORT = (
     else "none"
 )
 AGENT_LLM_PREFER_LOCAL = os.environ.get("AGENT_LLM_PREFER_LOCAL", "true").lower() in ("1", "true", "yes")
-AGENT_LLM_FALLBACK_CLOUD = os.environ.get("AGENT_LLM_FALLBACK_CLOUD", "false").lower() in ("1", "true", "yes")
+AGENT_LLM_FALLBACK_CLOUD = os.environ.get("AGENT_LLM_FALLBACK_CLOUD", "true").lower() in ("1", "true", "yes")
 BACKTEST_REASONING_MAX_TRADES = int(os.environ.get("BACKTEST_REASONING_MAX_TRADES", "20"))
 
 # Market scanner + on-demand vision

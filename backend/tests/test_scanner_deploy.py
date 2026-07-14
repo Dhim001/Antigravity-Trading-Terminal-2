@@ -52,12 +52,13 @@ class TestScannerDeployAgent(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_CONFIDENCE", 0.65)
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_SCORE", 3)
     @patch("app.services.bots.scanner_deploy.summarize_basket_correlation")
-    async def test_scanner_deploy_success(self, mock_corr):
+    @patch("app.services.scanner.market_scanner.MarketScannerService.scan")
+    async def test_scanner_deploy_success(self, mock_scan, mock_corr):
         # Mock summarize_basket_correlation to return safe values
         mock_corr.return_value = {"high_pairs": []}
         
         # Setup screener scan mock
-        self.bot_manager.screener.scan.return_value = {
+        mock_scan.return_value = {
             "rows": [
                 {"symbol": "BTC/USD", "signal": "BUY", "confidence": 0.8, "score": 5},
                 {"symbol": "ETH/USD", "signal": "BUY", "confidence": 0.5, "score": 1}, # Skipped

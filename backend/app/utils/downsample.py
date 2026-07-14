@@ -73,3 +73,31 @@ def largest_triangle_three_buckets(data: list[dict[str, Any]], threshold: int, x
     sampled.append(data[len(data) - 1])  # Always include the last point
 
     return sampled
+
+def aggregate_candles(data: list[dict[str, Any]], target: int) -> list[dict[str, Any]]:
+    """
+    Downsamples candlestick data by aggregating buckets of candles into larger synthetic candles.
+    This preserves the true 'high' and 'low' of the period, which LTTB might miss.
+    """
+    if target >= len(data) or target <= 0:
+        return data
+
+    chunk_size = max(1, len(data) // target)
+    downsampled = []
+
+    for i in range(0, len(data), chunk_size):
+        chunk = data[i:i + chunk_size]
+        if not chunk:
+            continue
+            
+        downsampled.append({
+            "time": chunk[0].get("time"),
+            "open": chunk[0].get("open"),
+            "high": max((c.get("high", 0) for c in chunk), default=0),
+            "low": min((c.get("low", 0) for c in chunk), default=0),
+            "close": chunk[-1].get("close"),
+            "volume": sum((c.get("volume", 0) for c in chunk)),
+            "turnover": sum((c.get("turnover", 0) for c in chunk))
+        })
+
+    return downsampled

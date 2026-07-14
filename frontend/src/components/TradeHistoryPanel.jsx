@@ -473,8 +473,13 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
                   (fp && fp < 2.0)
                 ) ? 4 : 2;
 
+                const parsedDate = parseTradeTimestamp(trade.timestamp);
+                const ageMs = Date.now() - (parsedDate ? parsedDate.getTime() : 0);
+                const isNewFill = trade.status === 'FILLED' && ageMs < 2000;
+                const flashCls = isNewFill ? (trade.side === 'BUY' ? 'animate-flash-buy' : 'animate-flash-sell') : '';
+
                 return (
-                  <DataTableRow key={trade.id} rowVariant="dock" deferred>
+                  <DataTableRow key={trade.id} rowVariant="dock" className={flashCls} deferred>
                     <DataTableCell>
                       <span className="text-[0.62rem] text-muted-foreground">
                         {(() => {

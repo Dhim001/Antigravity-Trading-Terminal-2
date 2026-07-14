@@ -1137,6 +1137,65 @@ async def generate_daily_briefing_handler(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+async def copilot_chat_handler(request: Request) -> JSONResponse:
+    from app.services.agent.copilot import handle_message
+    
+    state: AppState = request.app.state.terminal
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    result = await handle_message(
+        state,
+        message=body.get("message", ""),
+        session_id=body.get("session_id"),
+        active_symbol=body.get("active_symbol")
+    )
+    return JSONResponse(result.to_dict())
+
+async def copilot_confirm_handler(request: Request) -> JSONResponse:
+    from app.services.agent.copilot import confirm_action, cancel_action
+    
+    state: AppState = request.app.state.terminal
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    pending_id = body.get("pending_id")
+    if not pending_id:
+        return JSONResponse({"ok": False, "error": "Missing pending_id"}, status_code=400)
+        
+    if body.get("cancel"):
+        res = cancel_action(pending_id)
+    else:
+        res = await confirm_action(state, pending_id)
+        
+    return JSONResponse(res)
+
+async def copilot_history_handler(request: Request) -> JSONResponse:
+    from app.services.agent.copilot_store import list_messages
+    
+    session_id = request.query_params.get("session_id")
+    limit = request.query_params.get("limit", "40")
+    if not session_id:
+        return JSONResponse({"ok": False, "error": "Missing session_id"}, status_code=400)
+        
+    msgs = list_messages(session_id, limit=int(limit))
+    return JSONResponse({"ok": True, "messages": msgs})
+
+async def copilot_clear_handler(request: Request) -> JSONResponse:
+    from app.services.agent.copilot_store import clear_session
+    
+    session_id = request.path_params.get("session_id")
+    if not session_id:
+        return JSONResponse({"ok": False, "error": "Missing session_id"}, status_code=400)
+        
+    cleared = clear_session(session_id)
+    return JSONResponse({"ok": True, "cleared": cleared})
+
+
 def _make_endpoint(binding):
     async def endpoint(request: Request):
         request.scope["http_binding"] = binding
@@ -1184,6 +1243,10 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/workspaces/{workspace_id}", delete_workspace_handler, methods=["DELETE"]),
         Route("/api/v1/market/footprint", market_footprint_handler, methods=["GET"]),
         Route("/api/v1/journal/briefing/generate", generate_daily_briefing_handler, methods=["POST"]),
+        Route("/api/v1/copilot/chat", copilot_chat_handler, methods=["POST"]),
+        Route("/api/v1/copilot/confirm", copilot_confirm_handler, methods=["POST"]),
+        Route("/api/v1/copilot/history", copilot_history_handler, methods=["GET"]),
+        Route("/api/v1/copilot/history/{session_id}", copilot_clear_handler, methods=["DELETE"]),
     ]
 
     seen: set[tuple[str, str]] = set()

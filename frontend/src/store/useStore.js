@@ -167,9 +167,33 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   setAnalyticsReport: (report) => set({ analyticsReport: report }),
   
-  appendCopilotMessage: (msg) => set((state) => ({
-    copilotMessages: [...state.copilotMessages, msg]
-  })),
+  appendCopilotMessage: (msg) => set((state) => {
+    if (!msg || typeof msg !== 'object') return state;
+    const id = msg.id != null ? String(msg.id) : null;
+    const fingerprint = msg.fingerprint
+      || msg.payload?.fingerprint
+      || (msg.source_agent && msg.content
+        ? `${msg.source_agent}|${String(msg.content).trim().toLowerCase()}`
+        : null);
+    if (id && state.copilotMessages.some((m) => m?.id != null && String(m.id) === id)) {
+      return state;
+    }
+    if (
+      fingerprint
+      && state.copilotMessages.some((m) => {
+        const fp = m?.fingerprint || m?.payload?.fingerprint
+          || (m?.source_agent && m?.content
+            ? `${m.source_agent}|${String(m.content).trim().toLowerCase()}`
+            : null);
+        return fp && fp === fingerprint;
+      })
+    ) {
+      return state;
+    }
+    // Cap pending WS inbox until CopilotTab drains it.
+    const next = [...state.copilotMessages, msg].slice(-40);
+    return { copilotMessages: next };
+  }),
   clearCopilotMessages: () => set({ copilotMessages: [] }),
 
   setApiStatus: (status) => set({ apiStatus: status }),

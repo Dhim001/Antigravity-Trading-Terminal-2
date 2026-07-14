@@ -1554,7 +1554,30 @@ async def run_backtest_sweep(ctx: RequestContext) -> None:
     req["sweep"] = sweep
     if await _maybe_defer_backtest(ctx, req):
         return
-    await _execute_backtest(ctx, **req)
+
+    # Use RQ for sweeps if possible to decouple from main loop
+    import os
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if redis_url:
+        from redis import Redis
+        from rq import Queue
+        from app.services.bots.backtest_rq import run_backtest_job_rq
+        
+        # We must assign a job_id before enqueueing so we can subscribe to its progress
+        job_id = create_backtest_job(
+            req,
+            status="running",
+            client_key=str(id(ctx.websocket)) if ctx.websocket else None,
+        )
+        # Notify UI immediately that it's running via RQ
+        from app.api.outbound import send_order_result
+        await send_order_result(ctx, {"status": "success", "message": "Backtest sweep queued to RQ", "job_id": job_id})
+        
+        req["job_id"] = job_id
+        q = Queue("backtest", connection=Redis.from_url(redis_url))
+        q.enqueue(run_backtest_job_rq, req, job_timeout=3600)
+    else:
+        await _execute_backtest(ctx, **req)
 
 
 @route(Action.CANCEL_BACKTEST, tags=["bots"])

@@ -303,7 +303,8 @@ class AlphaDecayMonitor:
                                 "reasons": decay_reasons,
                                 "auto_paused": ALPHA_DECAY_AUTO_PAUSE,
                                 "auto_retrained": ALPHA_DECAY_AUTO_RETRAIN,
-                            }
+                                "why": decay_reasons[0] if decay_reasons else "edge degradation",
+                            },
                         )
                     )
                 except Exception as exc:

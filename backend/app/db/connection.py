@@ -11,12 +11,12 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from app.config import DB_PATH
+from app.config import DB_PATH, DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
 DB_DRIVER = "sqlite"
-_DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+_DATABASE_URL = DATABASE_URL
 _POOL_MAX = int(os.environ.get("DB_POOL_SIZE", "10"))
 _POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
 _POOL_TIMEOUT = float(os.environ.get("DB_POOL_TIMEOUT", "30"))

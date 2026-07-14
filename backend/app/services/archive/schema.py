@@ -167,3 +167,10 @@ def init_archive_schema(cursor) -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_crypto_deriv_sym_time ON crypto_derivatives_history (symbol, recorded_at DESC)"
     )
+
+    if is_postgres():
+        from app.database import _safe_alter as _sa
+        _sa(cursor, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
+        _sa(cursor, "SELECT create_hypertable('market_ticks', 'time_ms', chunk_time_interval => 86400000, if_not_exists => TRUE)")
+        _sa(cursor, "SELECT create_hypertable('market_bars_1m', 'time', chunk_time_interval => 86400, if_not_exists => TRUE)")
+        _sa(cursor, "SELECT create_hypertable('market_bars_1h', 'time', chunk_time_interval => 604800, if_not_exists => TRUE)")

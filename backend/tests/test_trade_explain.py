@@ -231,7 +231,10 @@ class TestTradeExplain(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx["atr_regime"], "elevated")
         self.assertEqual(ctx["suggested_size_factor"], 0.75)
 
-    def test_fetch_correlated_context_static_group(self):
+    @patch("app.services.bots.correlation.get_correlation_store")
+    def test_fetch_correlated_context_static_group(self, mock_store):
+        from app.services.bots.correlation import CorrelationSnapshot
+        mock_store.return_value.get_snapshot.return_value = CorrelationSnapshot(groups={})
         ctx = _fetch_correlated_context("BTCUSDT", 1_700_000_000)
         self.assertIsNotNone(ctx)
         self.assertEqual(ctx["group"], "CRYPTO_MAJOR")

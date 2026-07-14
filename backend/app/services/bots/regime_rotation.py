@@ -293,7 +293,9 @@ class RegimeRotationAgent:
                                 "from_strategy": current_strategy,
                                 "to_strategy": target_strategy,
                                 "regime": regime,
-                            }
+                                "why": getattr(reasoning, "synthesis", None),
+                                "confidence": getattr(reasoning, "confidence", None),
+                            },
                         )
                     )
                 except Exception as exc:

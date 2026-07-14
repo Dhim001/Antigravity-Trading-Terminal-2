@@ -139,7 +139,22 @@ function MessageBubble({ msg, onConfirm, onCancel, confirming }) {
             {msg.source_agent && (
               <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80">
                 {msg.source_agent}
+                {(msg.symbol || msg.payload?.symbol) ? (
+                  <span className="ml-1.5 font-semibold normal-case tracking-normal text-foreground/70">
+                    · {msg.symbol || msg.payload?.symbol}
+                  </span>
+                ) : null}
               </span>
+            )}
+            {(msg.narration_source || msg.payload?.narration_source) === 'llm' && (
+              <Badge variant="outline" className="m-0 h-4 px-1 text-[9px] font-semibold tracking-wide text-muted-foreground">
+                LLM
+              </Badge>
+            )}
+            {(msg.narration_source || msg.payload?.narration_source) === 'template' && msg.source_agent && (
+              <Badge variant="outline" className="m-0 h-4 px-1 text-[9px] font-semibold tracking-wide text-muted-foreground/70">
+                Rules
+              </Badge>
             )}
           </div>
         )}
@@ -192,10 +207,37 @@ export default function CopilotTab() {
   const copilotMessages = useStore((s) => s.copilotMessages);
 
   useEffect(() => {
-    if (copilotMessages && copilotMessages.length > 0) {
-      setMessages((prev) => [...prev, ...copilotMessages]);
-      useStore.getState().clearCopilotMessages();
-    }
+    if (!copilotMessages || copilotMessages.length === 0) return;
+    setMessages((prev) => {
+      const seenIds = new Set(
+        prev.map((m) => (m?.id != null ? String(m.id) : null)).filter(Boolean),
+      );
+      const seenFp = new Set(
+        prev
+          .map((m) => m?.fingerprint || m?.payload?.fingerprint
+            || (m?.source_agent && m?.content
+              ? `${m.source_agent}|${String(m.content).trim().toLowerCase()}`
+              : null))
+          .filter(Boolean),
+      );
+      const incoming = [];
+      for (const msg of copilotMessages) {
+        const id = msg?.id != null ? String(msg.id) : null;
+        const fp = msg?.fingerprint || msg?.payload?.fingerprint
+          || (msg?.source_agent && msg?.content
+            ? `${msg.source_agent}|${String(msg.content).trim().toLowerCase()}`
+            : null);
+        if (id && seenIds.has(id)) continue;
+        if (fp && seenFp.has(fp)) continue;
+        if (id) seenIds.add(id);
+        if (fp) seenFp.add(fp);
+        incoming.push(msg);
+      }
+      if (!incoming.length) return prev;
+      // Keep chat readable — agent spam should not bury user Q&A.
+      return [...prev, ...incoming].slice(-80);
+    });
+    useStore.getState().clearCopilotMessages();
   }, [copilotMessages]);
 
   const scrollToBottom = useCallback(() => {
@@ -469,9 +511,9 @@ export default function CopilotTab() {
             </div>
           )}
           <div className="copilot-panel__messages">
-            {messages.map((msg) => (
+            {messages.map((msg, idx) => (
               <MessageBubble
-                key={msg.id}
+                key={msg.id != null ? String(msg.id) : `copilot-${idx}-${msg.role || 'msg'}`}
                 msg={msg}
                 onConfirm={onConfirm}
                 onCancel={onCancel}
