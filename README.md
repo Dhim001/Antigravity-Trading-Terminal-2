@@ -1,6 +1,6 @@
 # Antigravity Trading Terminal
 
-A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend and a React + Vite frontend (plus optional Electron desktop shell). The app supports simulated and live market data, order execution, portfolio tracking, algorithmic strategies, agent loops (risk / regime / decay / pre-/post-trade), a Trade Copilot chatbot, and a professional charting workspace — styled with **shadcn/ui** and **Tailwind CSS v4**.
+A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend and a React + Vite frontend (plus optional Electron desktop shell). The app supports simulated and live market data, order execution, portfolio tracking, algorithmic strategies (TA, ML/DL/RL, and agentic), Backtest Lab + Model Training, agent loops (risk / regime / decay / pre-/post-trade), a Trade Copilot chatbot, and a professional charting workspace — styled with **shadcn/ui** and **Tailwind CSS v4**.
 
 ---
 
@@ -15,11 +15,14 @@ A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend an
 | Charting (ECharts) + overlays + signal badge + footprint | Done |
 | Multi-chart grid + FlexLayout workspace panels | Done |
 | Grouped bottom dock (Portfolio · Intelligence · Automation · Data) | Done |
-| Algo bot engine (13+ bar strategies, tick strategies, CHART_AGENT, CUSTOM plugins) | Done |
+| Algo bot engine (TA + tick + CHART_AGENT / ABSORPTION_AGENT + CUSTOM plugins) | Done |
+| ML / DL / RL strategies (XGBoost, LSTM, TCN, VAE, Transformer, GNN, PPO) | Done |
+| Model Training dock (train / validate / version activate-delete) + `/api/v1/ml/*` | Done |
 | Backtest Lab (Results / Optimizer / Jobs), sweep, walk-forward, portfolio | Done |
+| Portfolio backtest UX (contribution %, correlation matrix, capped trade samples) | Done |
 | Optional RQ backtest queue when Redis is configured | Done |
 | Bot risk gates, pause/resume, calibration, analytics, trade explain | Done |
-| Agent loops: Risk Sentinel, Regime Rotation, Alpha Decay | Done |
+| Agent loops: Risk Sentinel, Regime Rotation, Alpha Decay (incl. ML staleness) | Done |
 | Pre-trade intel + post-trade learner (+ optional LLM) | Done |
 | Scanner auto-deploy agent (opt-in) | Done |
 | Trade Copilot (dock tab, tools, confirmations, agent event narrate) | Done |
@@ -61,7 +64,7 @@ graph TD
         Mode -->|LIVE_ETORO| Etoro[etoro_feed / etoro_oms]
         Mode -->|LIVE_IB| IB[ib_feed · sim OMS]
         Mode -->|LIVE_MASSIVE| Massive[massive_feed · sim OMS]
-        WS_Server --> Bots[Bot Manager + Screener + Backtester]
+        WS_Server --> Bots[Bot Manager + Screener + Backtester + ML Trainers]
         WS_Server --> Agents[Sentinel · Regime · Decay · Copilot]
         WS_Server --> Archive[Bar / tick archive]
         WS_Server --> OMS[Order Management]
@@ -104,21 +107,25 @@ graph TD
 ### Algorithmic trading
 - **Bot manager** persists bots and logs to SQLite/Postgres
 - **Market screener** computes indicators via `pandas-ta`
-- **Built-in bar strategies** (catalog in `strategy_catalog.py`), including:
-  - Core: `MACD_RSI`, `BRS_SCALPING`, `SUPERTREND_ADX`, `VWAP_PULLBACK`, `CHART_AGENT`
-  - Structure / flow: `ICT_SMC`, `DONCHIAN_BREAKOUT`, `MARKET_MAKING`, `CVD_DIVERGENCE`, `WYCKOFF_SPRING`, `VPOC_REVERSION`, `ORDERFLOW_IMBALANCE`, `ABSORPTION_AGENT`
+- **Built-in bar strategies** (catalog in `strategy_catalog.py` + `GET /api/v1/strategies`), including:
+  - Core TA: `MACD_RSI`, `BRS_SCALPING`, `SUPERTREND_ADX`, `VWAP_PULLBACK`
+  - Structure / flow: `ICT_SMC`, `DONCHIAN_BREAKOUT`, `MARKET_MAKING`, `CVD_DIVERGENCE`, `WYCKOFF_SPRING`, `VPOC_REVERSION`, `ORDERFLOW_IMBALANCE`
+  - Agentic: `CHART_AGENT`, `ABSORPTION_AGENT`
   - Tick strategies: `TICK_MOMENTUM`, `TICK_MEAN_REVERT`, `TICK_BREAKOUT`
-- **Backtester / optimizer** — offline evaluation, sweeps, walk-forward, portfolio; heavy jobs can defer in-process or enqueue to **RQ** when `REDIS_URL` is set
-- Dock **Algo Bot** tab: strategy templates, Backtest Lab, max notional cap, live bot logs, deploy confirmation
-- **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all, calibration gate
+  - **ML / DL / RL** (optional `torch` + `onnxruntime`): `ML_SIGNAL_BOOST`, `LSTM_DIRECTION`, `TCN_MULTI_HORIZON`, `VAE_REGIME_DETECTOR`, `TRANSFORMER_SIGNAL`, `GNN_CROSS_ASSET`, `RL_PPO_AGENT`
+- **Backtester / optimizer** — offline evaluation, sweeps, walk-forward, Monte Carlo; category-aware Lab (TA / ML / Agent); portfolio baskets with contribution % and correlation; heavy jobs can defer in-process or enqueue to **RQ** when `REDIS_URL` is set
+- Dock **Algo Bot** tab: strategy templates (TA / ML / Agentic), Backtest Lab, ML model status badge + version pin, max notional cap, live bot logs, deploy confirmation
+- Dock **ML Training** tab (Intelligence): train, walk-forward validate (+ optional PBO), version list, activate / delete snapshots, retrain queue — see `docs/BACKTEST_LAB_REDESIGN_PLAN.md`
+- **Meta-labeling** — optional secondary classifier to filter primary signals (`docs/META_LABEL_MODEL.md`)
+- **Risk gates**: allocation cap, daily loss halt, signal cooldown, pause/resume/stop-all, calibration / deploy gates
 - **Bot analytics**: per-bot trades, snapshots, detail drawer, trade explain, chart trade markers
-- **Config-driven strategies**: indicator periods wired from bot `config`
+- **Config-driven strategies**: indicator periods and ML thresholds wired from bot `config`
 - **Optional `CUSTOM` strategy plugins** in `backend/strategies/` (`ALLOW_CUSTOM_STRATEGIES=true`)
 
 ### Agents & Copilot
 - **Risk Sentinel** — drawdown velocity / loss-streak / correlation caps; can auto-pause bots (`RISK_SENTINEL_*`)
 - **Regime Rotation** — swaps strategy when market regime shifts (`REGIME_ROTATION_*`)
-- **Alpha Decay** — flags live edge vs expectations; optional auto-pause / retrain (`ALPHA_DECAY_*`)
+- **Alpha Decay** — flags live edge vs expectations; ML model staleness / accuracy drift; optional auto-pause / retrain (`ALPHA_DECAY_*`)
 - **Pre-trade intel** — last-mile CONFIRM / VETO / REDUCE_SIZE checklist (`PRETRADE_*`)
 - **Post-trade learner** — close → classify → lesson; optional LLM + config apply (`POSTTRADE_LEARNER_*`)
 - **Scanner auto-deploy** — continuous scan → gate → create bots (off by default; `SCANNER_DEPLOY_*`)
@@ -173,7 +180,9 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 - **Trading panel tabs** — Trade | Book | Depth | Footprint with collapse chevron
 - **Insights Hub** (`⌘I`) — Scanner + Analyst (+ news) in one sheet
 - **Trade Copilot** — dock Intelligence tab: chat, tool actions with confirm/cancel, agent event stream (Rules/LLM badges)
+- **ML Training** — dock Intelligence tab: per-symbol train / validate / version management for ML strategies
 - **Automation Studio** — bot ops sheet from dock Automation group
+- **Backtest Lab** — Results (incl. portfolio contribution + correlation), category-aware Optimizer, Jobs
 - **Trade Journal** — Portfolio workspace entries + optional daily LLM briefing
 - **Activity Center** — header bell icon for alerts, bot logs, connection status
 - **Chart context strip** — clickable breadcrumb under chart (symbol, TF, analyst signal, bots)
@@ -209,17 +218,17 @@ trading-terminal/
 │   │   │   ├── router.py       # Route registry + dispatch
 │   │   │   ├── protocol.py     # Action / MessageType enums
 │   │   │   ├── outbound.py     # Typed server->client frame builders
-│   │   │   ├── http/           # Starlette REST API (health, bots, copilot, footprint)
+│   │   │   ├── http/           # Starlette REST API (health, bots, ML, copilot, footprint)
 │   │   │   └── handlers/       # Domain handlers (trading, bots, admin, …)
 │   │   ├── services/
 │   │   │   ├── sim_feed.py / massive_*.py / alpaca_*.py / …
 │   │   │   ├── agent/          # Copilot, LLM router, briefing, event bus
 │   │   │   ├── archive/        # Bar/tick archive + footprint queries
 │   │   │   ├── events/         # Redis pub/sub (bar_close, bot_reload)
-│   │   │   └── bots/           # Screener, strategies, manager, agents, backtester
+│   │   │   └── bots/           # Screener, TA/ML/RL strategies, trainers, backtester
 │   │   └── websocket/          # Connection manager
 │   ├── strategies/             # Optional CUSTOM strategy plugins
-│   └── data/                   # Cached *.parquet (generated locally)
+│   └── data/                   # Parquet cache + trained model dirs (gitignored)
 ├── desktop/                    # Electron app package
 ├── scripts/                    # start-sim / start-ib / start-massive / start-desktop
 ├── docs/                       # Architecture, memory, agents, roadmap notes
@@ -228,9 +237,22 @@ trading-terminal/
         ├── App.jsx             # Layout grid & header
         ├── api/                # protocol, transport, dispatch, bootstrap
         ├── store/useStore.js   # Global state
-        ├── components/         # Widgets, dock (incl. Copilot), charts, journal
+        ├── components/         # Widgets, dock (Algo, Model Training, Copilot), Lab, charts
+        ├── config/             # Strategy catalog / field metadata
         └── components/ui/      # shadcn primitives
 ```
+
+### ML / DL / RL (optional deps)
+
+Trainers and ONNX inference are **optional**. Core TA bots run without PyTorch. For Model Training and ML strategies:
+
+```bash
+# From backend/ with venv active — CPU wheels example (Windows / Python 3.14):
+pip install "torch>=2.3.0" --index-url https://download.pytorch.org/whl/cpu
+pip install "onnxruntime>=1.18.0" onnxscript onnx
+```
+
+Artifacts land under `backend/data/<family>_models/<SYMBOL>/` (versioned snapshots). Those directories are gitignored.
 
 ---
 
@@ -424,7 +446,7 @@ HTTP_HOST=127.0.0.1
 HTTP_PORT=8766
 ```
 
-SQLite database `backend/trading.db` (or profile DBs such as `trading-massive.db`) and cached parquet files are created automatically and are **gitignored**. On **16 GB** machines prefer a single live profile (e.g. Massive only) — see `docs/MEMORY_16GB.md`.
+SQLite database `backend/trading.db` (or profile DBs such as `trading-massive.db`), cached parquet/JSON under `backend/data/`, and trained ML model directories (`*_models/`) are created automatically and are **gitignored**. On **16 GB** machines prefer a single live profile (e.g. Massive only) — see `docs/MEMORY_16GB.md`.
 
 ---
 
@@ -525,7 +547,14 @@ Runs alongside WebSocket on **`http://127.0.0.1:8766`** by default (`HTTP_ENABLE
 | `POST` | `/api/v1/bots/{bot_id}/pause` | `bot_pause` | Pause a bot |
 | `POST` | `/api/v1/bots/{bot_id}/resume` | `bot_resume` | Resume a bot |
 | `POST` | `/api/v1/bots/stop-all` | `bot_stop_all` | Stop all bots |
-| `POST` | `/api/v1/backtest` | `run_backtest` | Run strategy backtest |
+| `POST` | `/api/v1/backtest` | `run_backtest` | Run strategy backtest (single or portfolio basket) |
+| `GET` | `/api/v1/strategies` | — | Strategy catalog (TA / ML / agent metadata) |
+| `GET` | `/api/v1/ml/model-status` | — | Trained? versions, metrics, dataset summary (`?symbol=&strategy=`) |
+| `POST` | `/api/v1/ml/train` | — | Train model for strategy + symbol |
+| `POST` | `/api/v1/ml/validate` | — | Walk-forward validation (+ optional PBO) |
+| `GET` | `/api/v1/ml/retrain-status` | — | Models flagged for retrain |
+| `POST` | `/api/v1/ml/activate-version` | — | Promote a snapshot to active |
+| `POST` | `/api/v1/ml/delete-version` | — | Delete a non-active snapshot |
 | `GET` | `/api/v1/market/footprint` | — | Order-flow footprint cells (`symbol`, `from_ts`, `to_ts`, `price_step`, `time_bucket_ms`) |
 | `POST` | `/api/v1/copilot/chat` | `copilot_chat` | Trade Copilot message |
 | `POST` | `/api/v1/copilot/confirm` | `copilot_confirm` | Confirm or cancel pending Copilot action |
@@ -549,6 +578,10 @@ curl -X POST http://127.0.0.1:8766/api/v1/bots/bot-1/stop
 curl -X POST http://127.0.0.1:8766/api/v1/bots \
   -H "Content-Type: application/json" \
   -d '{"strategy":"MACD_RSI","symbol":"AAPL","allocation":1000}'
+curl "http://127.0.0.1:8766/api/v1/ml/model-status?symbol=BTCUSDT&strategy=ML_SIGNAL_BOOST"
+curl -X POST http://127.0.0.1:8766/api/v1/ml/train \
+  -H "Content-Type: application/json" \
+  -d '{"strategy":"LSTM_DIRECTION","symbol":"ETHUSDT","config":{}}'
 ```
 
 Export OpenAPI to disk:
@@ -745,19 +778,22 @@ Server pushes use typed builders in `backend/app/api/outbound.py` instead of raw
 
 `backend/tests/test_wire_guard.py` fails if raw wire `type` strings appear outside `outbound.py` and `protocol.py`.
 
-### UI follow-ups (Phases 11–12)
+### UI follow-ups (Phases 11–12+)
 
 - **Bot detail drawer** — `frontend/src/components/BotDetailDrawer.jsx`: click a bot row in the Algo dock to open stats, config, trade table, pause/resume/stop.
-- **Backtest trade list** — backtester returns `trades[]`; Algo panel shows a trade table after running a backtest.
+- **Backtest trade list** — backtester returns `trades[]`; Lab + Algo dock show trade tables (portfolio runs include a Symbol column).
+- **Model Training** — dock tab for train / validate / version activate-delete; ML status badge on strategy cards.
+- **Portfolio Lab results** — contribution chart + correlation heatmap when the run is a multi-symbol basket.
 
 ---
 
 ## Tech Stack
 
-**Backend:** Python, `websockets`, `starlette`, `uvicorn`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `requests`, `redis`, `rq`, `psycopg`, optional Ollama / OpenRouter LLM clients
+**Backend:** Python, `websockets`, `starlette`, `uvicorn`, `pandas`, `pandas-ta-openbb`, `yfinance`, `arch`, `pyarrow`, `scikit-learn`, `optuna`, `requests`, `redis`, `rq`, `psycopg`, optional Ollama / OpenRouter LLM clients; optional `torch` + `onnxruntime` for ML/DL/RL trainers
 
 **Frontend:** React 19, Vite 8, Zustand, ECharts, lightweight-charts, flexlayout-react, shadcn/ui, Tailwind CSS v4, Lucide icons, cmdk, Sonner toasts
 
 **Desktop:** Electron (`desktop/` + `scripts/start-desktop.ps1`)
 
-**Docs (selected):** `docs/MEMORY_16GB.md`, `docs/MARKET_ARCHIVE.md`, `docs/NEW_AGENTS_AND_CHATBOT_PROPOSAL.md` (historical design; agents are now wired), `docs/ML_DL_RL_SIGNAL_GENERATION_PROPOSAL.md` (proposal only — not shipped)
+**Docs (selected):** `docs/MEMORY_16GB.md`, `docs/MARKET_ARCHIVE.md`, `docs/META_LABEL_MODEL.md`, `docs/BACKTEST_LAB_REDESIGN_PLAN.md`, `docs/NEW_AGENTS_AND_CHATBOT_PROPOSAL.md` (historical; agents are wired), `docs/ML_DL_RL_SIGNAL_GENERATION_PROPOSAL.md` (design notes; strategies + Model Training are shipped)
+# Antigravity-Trading-Terminal
