@@ -65,6 +65,7 @@ import { getStoreActions } from '../api/dispatch';
 import { isLiveMassiveMode } from '../lib/massiveMarket';
 import { onLivePrice } from '../services/livePriceChannel';
 import { selectAgentInsight } from '../lib/agentInsights';
+import { pickDeployConfig } from '../lib/botConfigDisplay';
 import { fetchOlderCandles } from '../api/endpoints';
 import { Action } from '../api/protocol';
 import {
@@ -163,7 +164,7 @@ export default function ChartWidget() {
   const setBotStrategy = useStore(state => state.setBotStrategy);
   const setBotExecutionMode = useStore(state => state.setBotExecutionMode);
   const setBotTimeframe = useStore(state => state.setBotTimeframe);
-  const updateBotConfig = useStore(state => state.updateBotConfig);
+  const replaceBotConfig = useStore(state => state.replaceBotConfig);
   const agentOverlayKey = useMemo(() => {
     if (!agentInsight) return '';
     const lv = agentInsight.levels || {};
@@ -173,15 +174,16 @@ export default function ChartWidget() {
     setBotStrategy('CHART_AGENT');
     setBotExecutionMode('BAR_CLOSE');
     setBotTimeframe(timeframe);
-    updateBotConfig({
+    replaceBotConfig(pickDeployConfig('CHART_AGENT', {
       min_confidence: agentInsight?.confidence ?? 0.55,
       use_llm: false,
       allocation: 2000,
       trailing_stop_percent: 2,
       take_profit_percent: 3,
       tp_mode: 'percent',
-    });
-  }, [agentInsight, setBotStrategy, setBotExecutionMode, setBotTimeframe, timeframe, updateBotConfig]);
+      direction_mode: 'BOTH',
+    }));
+  }, [agentInsight, setBotStrategy, setBotExecutionMode, setBotTimeframe, timeframe, replaceBotConfig]);
   const botOverlayKey = useStore(state => {
     if (!state.selectedBotId || !state.botDetail?.trades) return '';
     return state.botDetail.trades.map(

@@ -188,12 +188,26 @@ export function applyServerMessage(type, data, storeActions, meta) {
           ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
           : '—';
         const explainSuffix = explained > 0 ? ` · ${explained} LLM explained` : '';
-        toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
-          action: {
-            label: 'Open Lab',
-            onClick: () => useResearchStore.getState().openBacktestLab('results'),
-          },
-        });
+        const readiness = results?.strategy_readiness;
+        const readinessBad = readiness && readiness.ok === false;
+        const readinessMsg = readiness?.message
+          || (Array.isArray(readiness?.warnings) ? readiness.warnings[0] : null);
+        if (readinessBad && readinessMsg) {
+          toast.warning(`Backtest · 0 actionable trades — ${readinessMsg}`, {
+            duration: 10_000,
+            action: {
+              label: 'Open Lab',
+              onClick: () => useResearchStore.getState().openBacktestLab('results'),
+            },
+          });
+        } else {
+          toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
+            action: {
+              label: 'Open Lab',
+              onClick: () => useResearchStore.getState().openBacktestLab('results'),
+            },
+          });
+        }
         const overlay = buildBacktestOverlay(results);
         if (overlay) {
           storeActions.setBacktestOverlay(overlay);

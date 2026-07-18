@@ -19,6 +19,9 @@ import BacktestComparePanel from './BacktestComparePanel';
 import StrategySuggestPanel from './StrategySuggestPanel';
 import BacktestParityPanel from './BacktestParityPanel';
 import BacktestReasoningPanel from './BacktestReasoningPanel';
+import BacktestMlInsightsSection from './BacktestMlInsightsSection';
+import BacktestAgentInsightsSection from './BacktestAgentInsightsSection';
+import { getStrategyCategory } from '@/config/strategies';
 import BacktestMetaLabelWalkForwardPanel from './BacktestMetaLabelWalkForwardPanel';
 import BacktestAssumptionsStrip from './BacktestAssumptionsStrip';
 import BacktestAssumptionsPanel from './BacktestAssumptionsPanel';
@@ -29,6 +32,8 @@ import BacktestPerformanceSection from './BacktestPerformanceSection';
 import BacktestMonteCarloChart from './BacktestMonteCarloChart';
 import BacktestExcursionBar from './BacktestExcursionBar';
 import BacktestSparkline from './BacktestSparkline';
+import PortfolioContributionChart from './PortfolioContributionChart';
+import CorrelationMatrix from './analytics/CorrelationMatrix';
 import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import { cn } from '@/lib/utils';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
@@ -121,12 +126,20 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
   const meta = results?.meta ?? {};
   const range = fmtBacktestRange(meta);
   const rangeInfo = resolveBacktestRange(meta);
-  const allocation = results?.allocation ?? results?.starting_equity;
+  const allocation = results?.allocation ?? results?.starting_equity ?? results?.starting_capital;
+  const isPortfolio = Boolean(results?.portfolio || meta?.portfolio);
+  const portfolioSymbols = meta?.portfolio_symbols;
+  const symbolChip = isPortfolio
+    ? (meta?.portfolio_label
+      || (Array.isArray(portfolioSymbols)
+        ? `Portfolio · ${portfolioSymbols.length}`
+        : 'Portfolio'))
+    : symbol;
 
   return (
     <div className="algo-backtest-lab__meta">
       <div className="algo-backtest-lab__meta-chips">
-        <span className="algo-backtest-lab__chip algo-backtest-lab__chip--symbol">{symbol}</span>
+        <span className="algo-backtest-lab__chip algo-backtest-lab__chip--symbol">{symbolChip}</span>
         <span className="algo-backtest-lab__chip">{strategy}</span>
         <span
           className={cn(
@@ -139,7 +152,7 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
         </span>
         <span className="algo-backtest-lab__chip">{meta.timeframe ?? backtestTimeframe}</span>
         {allocation != null && (
-          <span className="algo-backtest-lab__chip num-mono" title="Max notional cap">
+          <span className="algo-backtest-lab__chip num-mono" title={isPortfolio ? 'Basket capital' : 'Max notional cap'}>
             cap ${Number(allocation).toLocaleString()}
           </span>
         )}
@@ -319,6 +332,10 @@ function PortfolioResultsSection({ results, strategy, timeframe, backtestDays, t
   const pnl = results.total_pnl ?? summary.total_pnl ?? 0;
   const pnlTone = pnl >= 0 ? 'up' : 'down';
   const corr = results.correlation_summary;
+  const hasCorrMatrix = Array.isArray(corr?.symbols)
+    && corr.symbols.length >= 2
+    && Array.isArray(corr?.matrix)
+    && corr.matrix.length >= 2;
   const skipped = results.skipped_symbols ?? rows.filter((r) => r.error).map((r) => ({
     symbol: r.symbol,
     reason: r.error,
@@ -356,6 +373,27 @@ function PortfolioResultsSection({ results, strategy, timeframe, backtestDays, t
         </Alert>
       )}
 
+      <div className="portfolio-bt-viz mb-2">
+        <PortfolioContributionChart rows={rows} />
+        {hasCorrMatrix && (
+          <div className="portfolio-bt-corr">
+            <p className="algo-backtest-table-scroll__caption mb-1">
+              Basket correlation
+              {corr.period || corr.lookback_days
+                ? ` · ${corr.period || corr.lookback_days}`
+                : ''}
+              {corr.source ? ` · ${corr.source}` : ''}
+            </p>
+            <CorrelationMatrix
+              correlation={corr}
+              className="portfolio-bt-corr__matrix"
+              profitColor="#22c55e"
+              lossColor="#ef4444"
+            />
+          </div>
+        )}
+      </div>
+
       <div className="algo-backtest-table-scroll">
         <table className="terminal-table algo-backtest-table m-0 text-[0.58rem]">
           <thead>
@@ -363,6 +401,7 @@ function PortfolioResultsSection({ results, strategy, timeframe, backtestDays, t
               <th>Symbol</th>
               <th>Curve</th>
               <th className="text-right">PnL</th>
+              <th className="text-right">Share</th>
               <th className="text-right">Trades</th>
               <th className="text-right">Win%</th>
               <th className="text-right">Sharpe</th>
@@ -383,6 +422,11 @@ function PortfolioResultsSection({ results, strategy, timeframe, backtestDays, t
                   row.error ? 'text-muted-foreground' : (row.total_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
                 )}>
                   {row.error ? row.error : `$${Number(row.total_pnl).toFixed(2)}`}
+                </td>
+                <td className="num-mono text-right text-muted-foreground">
+                  {row.error || row.pnl_contribution_pct == null
+                    ? '—'
+                    : `${Number(row.pnl_contribution_pct).toFixed(0)}%`}
                 </td>
                 <td className="num-mono text-right">{row.trade_count ?? '—'}</td>
                 <td className="num-mono text-right">
@@ -505,6 +549,7 @@ export default function BacktestResultsPanel({
   showReasoningSection = false,
   advisorBotId = null,
   agentLlmAvailable = false,
+  strategyCategory = null,
 }) {
   const setBacktestResults = useResearchStore((s) => s.setBacktestResults);
   const setBacktestOverlay = useResearchStore((s) => s.setBacktestOverlay);
@@ -526,8 +571,14 @@ export default function BacktestResultsPanel({
 
   const isFull = variant === 'full';
   const summary = results?.summary;
-  const tradesTotal = results?.trades_total ?? results?.trades?.length ?? 0;
+  const isPortfolio = Boolean(results?.portfolio || results?.meta?.portfolio);
+  const tradesTotal = results?.trades_total ?? results?.trade_count ?? results?.trades?.length ?? 0;
   const previewTrades = results?.trades ?? EMPTY_TRADES;
+  const resolvedCategory = strategyCategory
+    ?? getStrategyCategory(strategy ?? results?.meta?.strategy);
+  const isMlCategory = resolvedCategory === 'ml';
+  const isAgentCategory = resolvedCategory === 'agent';
+  const showAdvisor = !isMlCategory;
 
   useEffect(() => {
     const runId = results?.run_id;
@@ -817,6 +868,63 @@ export default function BacktestResultsPanel({
         </Alert>
       )}
 
+      {results?.strategy_readiness && (
+        (results.strategy_readiness.ok === false
+          || (Array.isArray(results.strategy_readiness.warnings)
+            && results.strategy_readiness.warnings.length > 0)
+          || (Array.isArray(results.strategy_readiness.notes)
+            && results.strategy_readiness.notes.length > 0
+            && !(results.trade_count ?? results.summary?.total_trades)))
+      ) && (
+        <Alert
+          variant={results.strategy_readiness.ok === false ? 'destructive' : 'default'}
+          className="algo-backtest-stale-banner py-2 mb-2"
+        >
+          <AlertTriangle data-icon="inline-start" className="size-3.5" />
+          <AlertDescription className="text-xs space-y-1">
+            <p className="font-medium m-0">
+              {results.strategy_readiness.status === 'no_signals'
+                && 'Strategy produced no BUY/SELL signals'}
+              {results.strategy_readiness.status === 'signals_blocked'
+                && 'Signals fired but no trades filled'}
+              {results.strategy_readiness.status === 'broken'
+                && 'Strategy evaluate errors detected'}
+              {results.strategy_readiness.status === 'ok'
+                && 'Strategy tradeability note'}
+            </p>
+            {(results.strategy_readiness.warnings || []).map((w) => (
+              <p key={w} className="m-0 text-muted-foreground">{w}</p>
+            ))}
+            {(results.strategy_readiness.notes || []).map((n) => (
+              <p key={n} className="m-0 text-muted-foreground">{n}</p>
+            ))}
+            {results.strategy_readiness.signals && (
+              <p className="m-0 num-mono text-[0.65rem] text-muted-foreground">
+                Signals: BUY {results.strategy_readiness.signals.BUY ?? 0}
+                {' · '}
+                SELL {results.strategy_readiness.signals.SELL ?? 0}
+                {' · '}
+                NONE {results.strategy_readiness.signals.NONE ?? 0}
+                {results.strategy_readiness.direction_mode
+                  ? ` · dir ${results.strategy_readiness.direction_mode}`
+                  : ''}
+                {results.strategy_readiness.blocked_entries
+                  ? ` · blocked ${results.strategy_readiness.blocked_entries}`
+                  : ''}
+                {results.strategy_readiness.top_block_reasons?.length
+                  ? ` · Top block: ${results.strategy_readiness.top_block_reasons[0].reason}`
+                  : results.strategy_readiness.top_block_kinds?.length
+                    ? ` · Top block: ${results.strategy_readiness.top_block_kinds[0].kind} (${results.strategy_readiness.top_block_kinds[0].count})`
+                    : ''}
+                {results.strategy_readiness.top_reject_reasons?.length
+                  ? ` · Top reject: ${results.strategy_readiness.top_reject_reasons[0].reason}`
+                  : ''}
+              </p>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <header className="algo-backtest-lab__head">
         <div className="algo-backtest-lab__title-block">
           <h3 className="algo-backtest-lab__title">
@@ -928,17 +1036,40 @@ export default function BacktestResultsPanel({
           overview={(
             <>
               <BacktestSummaryCards summary={summary} results={results} isFull={false} />
-              <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
-                <BacktestPriceChart
-                  symbol={symbol ?? results?.meta?.symbol}
-                  meta={results?.meta}
-                  timeframe={backtestTimeframe ?? results?.meta?.timeframe ?? '1m'}
-                  trades={chartTrades}
-                  tradesLoading={loadingTrades}
-                  tradesTotal={tradesTotal}
-                  highlightBarTime={focusBarTime}
-                  className="backtest-price-chart-wrap--lab"
+              {isMlCategory && (
+                <BacktestMlInsightsSection
+                  results={results}
+                  strategy={strategy ?? results?.meta?.strategy}
                 />
+              )}
+              {isAgentCategory && (
+                <>
+                  <BacktestAgentInsightsSection results={results} />
+                  {(showReasoningSection || reasoningRequested || results?.reasoning) && (
+                    <BacktestReasoningPanel
+                      reasoning={results.reasoning}
+                      reasoningRequested={reasoningRequested}
+                      entryCount={entryCount}
+                      tradeLog={fullTrades ?? previewTrades}
+                      results={results}
+                      className="mt-2"
+                    />
+                  )}
+                </>
+              )}
+              <section className="algo-backtest-lab__section algo-backtest-lab__section--chart">
+                {!isPortfolio && (
+                  <BacktestPriceChart
+                    symbol={symbol ?? results?.meta?.symbol}
+                    meta={results?.meta}
+                    timeframe={backtestTimeframe ?? results?.meta?.timeframe ?? '1m'}
+                    trades={chartTrades}
+                    tradesLoading={loadingTrades}
+                    tradesTotal={tradesTotal}
+                    highlightBarTime={focusBarTime}
+                    className="backtest-price-chart-wrap--lab"
+                  />
+                )}
                 <BacktestEquityChart
                   equityCurve={results.equity_curve}
                   drawdownCurve={results.drawdown_curve}
@@ -948,10 +1079,12 @@ export default function BacktestResultsPanel({
                   className="backtest-mini-chart--lab"
                   variant="lab"
                 />
-                <BacktestTradeExplain
-                  trade={selectedTrade}
-                  strategy={strategy ?? results?.meta?.strategy}
-                />
+                {!isPortfolio && (
+                  <BacktestTradeExplain
+                    trade={selectedTrade}
+                    strategy={strategy ?? results?.meta?.strategy}
+                  />
+                )}
               </section>
               <PortfolioResultsSection
                 results={results}
@@ -960,10 +1093,13 @@ export default function BacktestResultsPanel({
                 backtestDays={backtestDays}
                 totalAllocation={botConfig?.allocation}
               />
+              {!isPortfolio && (
               <BacktestRegimeSection
                 regime={results?.regime ?? summary?.regime}
                 benchmarkOverlays={results?.benchmark_overlays ?? summary?.benchmark_overlays}
               />
+              )}
+              {!isPortfolio && (
               <BacktestWalkForwardPanel
                 walkForward={results?.walk_forward}
                 symbol={symbol ?? results?.meta?.symbol}
@@ -974,6 +1110,7 @@ export default function BacktestResultsPanel({
                 results={results}
                 days={backtestDays}
               />
+              )}
               <div className="algo-backtest-lab__tools-grid">
                 <BacktestComparePanel
                   currentRun={{ run_id: results.run_id, results }}
@@ -984,7 +1121,18 @@ export default function BacktestResultsPanel({
           )}
           performance={(
             <>
+              {isPortfolio && summary?.trades_sampled && (
+                <p className="algo-field-hint mb-2 text-muted-foreground">
+                  Performance stats use a capped trade sample
+                  {summary.trades_sample_size != null
+                    ? ` (${summary.trades_sample_size} of ${tradesTotal} fills)`
+                    : ''}
+                  {' '}plus combined equity for Sharpe / drawdown.
+                </p>
+              )}
               <BacktestPerformanceSection summary={summary} results={results} />
+              {!isPortfolio && (
+                <>
               <MonteCarloSection
                 monteCarlo={results?.monte_carlo}
                 startingEquity={results?.starting_equity ?? results?.allocation}
@@ -997,6 +1145,8 @@ export default function BacktestResultsPanel({
               />
               <BacktestParityPanel results={results} symbol={symbol} strategy={strategy} />
               <BacktestMetaLabelWalkForwardPanel walkForward={results?.meta_label_walk_forward} />
+                </>
+              )}
             </>
           )}
           trades={(
@@ -1005,7 +1155,9 @@ export default function BacktestResultsPanel({
                 <header className="algo-backtest-trade-log__header">
                   <div className="algo-backtest-trade-log__title-row">
                     <p className="algo-backtest-table-scroll__caption m-0">
-                      {`Trade log (${tradesTotal} fills)`}
+                      {isPortfolio
+                        ? `Trade sample (${allTrades.length}${tradesTotal > allTrades.length ? ` of ${tradesTotal}` : ''} fills)`
+                        : `Trade log (${tradesTotal} fills)`}
                     </p>
                     {loadingTrades && (
                       <Loader2 className="size-3 animate-spin text-muted-foreground" aria-hidden />
@@ -1021,6 +1173,7 @@ export default function BacktestResultsPanel({
                     <thead>
                       <tr>
                         <th>Time</th>
+                        {isPortfolio && <th>Symbol</th>}
                         <th>Type</th>
                         <th>Side</th>
                         <th className="text-right">Qty</th>
@@ -1031,10 +1184,10 @@ export default function BacktestResultsPanel({
                       </tr>
                     </thead>
                     <tbody>
-                      <VirtualTablePadding height={tradeWindow.topPad} colSpan={8} />
+                      <VirtualTablePadding height={tradeWindow.topPad} colSpan={isPortfolio ? 9 : 8} />
                       {tradeWindow.slice.map((t, i) => (
                         <tr
-                          key={`${t.time}-${t.side}-${tradeWindow.start + i}`}
+                          key={`${t.symbol || ''}-${t.time}-${t.side}-${tradeWindow.start + i}`}
                           className={cn(
                             'cursor-pointer hover:bg-muted/30',
                             focusBarTime === t.time && 'bg-primary/10',
@@ -1043,6 +1196,9 @@ export default function BacktestResultsPanel({
                           title="Focus chart on this bar"
                         >
                           <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
+                          {isPortfolio && (
+                            <td className="whitespace-nowrap">{t.symbol || '—'}</td>
+                          )}
                           <td className="whitespace-nowrap">
                             <span className={cn(
                               'algo-backtest-trade-type',
@@ -1071,17 +1227,23 @@ export default function BacktestResultsPanel({
                           </td>
                         </tr>
                       ))}
-                      <VirtualTablePadding height={tradeWindow.bottomPad} colSpan={8} />
+                      <VirtualTablePadding height={tradeWindow.bottomPad} colSpan={isPortfolio ? 9 : 8} />
                     </tbody>
                   </table>
                 </BacktestTable>
-                <BacktestTradeExplain
-                  trade={selectedTrade}
-                  strategy={strategy ?? results?.meta?.strategy}
-                />
+                {!isPortfolio && (
+                  <BacktestTradeExplain
+                    trade={selectedTrade}
+                    strategy={strategy ?? results?.meta?.strategy}
+                  />
+                )}
               </section>
             ) : (
-              <p className="text-xs text-muted-foreground px-1">No trades in this run.</p>
+              <p className="text-xs text-muted-foreground px-1">
+                {isPortfolio
+                  ? 'No trade sample in this portfolio run (symbols may have been skipped or had zero fills).'
+                  : 'No trades in this run.'}
+              </p>
             )
           )}
           properties={(
@@ -1113,7 +1275,15 @@ export default function BacktestResultsPanel({
                     <tbody>
                       {[
                         ['Run ID', <span className="num-mono" key="run">{results.run_id ?? '—'}</span>],
-                        ['Symbol', symbol ?? results?.meta?.symbol ?? '—'],
+                        [
+                          isPortfolio ? 'Basket' : 'Symbol',
+                          isPortfolio
+                            ? (results?.meta?.portfolio_label
+                              || (Array.isArray(results?.meta?.portfolio_symbols)
+                                ? results.meta.portfolio_symbols.join(', ')
+                                : 'Portfolio'))
+                            : (symbol ?? results?.meta?.symbol ?? '—'),
+                        ],
                         ['Strategy', strategy ?? results?.meta?.strategy ?? '—'],
                         ['Days', (
                           <span className="num-mono" key="days" title={
@@ -1138,6 +1308,7 @@ export default function BacktestResultsPanel({
                   </table>
                 </BacktestTable>
               </section>
+              {showAdvisor && (
               <section className="algo-backtest-lab__section algo-backtest-lab__section--advisor">
                 <StrategySuggestPanel
                   botId={advisorBotId}
@@ -1149,6 +1320,7 @@ export default function BacktestResultsPanel({
                   compact={false}
                 />
               </section>
+              )}
               {recentRuns.length > 0 && (
                 <section className="algo-backtest-lab__section algo-backtest-lab__section--history">
                   <BacktestTable
@@ -1203,7 +1375,7 @@ export default function BacktestResultsPanel({
                   </BacktestTable>
                 </section>
               )}
-              {(showReasoningSection || reasoningRequested || results?.reasoning) && (
+              {(showReasoningSection || reasoningRequested || results?.reasoning) && !isAgentCategory && (
                 <BacktestReasoningPanel
                   reasoning={results.reasoning}
                   reasoningRequested={reasoningRequested}
@@ -1220,7 +1392,25 @@ export default function BacktestResultsPanel({
         <>
       <BacktestAssumptionsStrip results={results} className="mb-2" />
       <BacktestSummaryCards summary={summary} results={results} isFull={false} />
+      <PortfolioResultsSection
+        results={results}
+        strategy={strategy ?? results?.meta?.strategy}
+        timeframe={backtestTimeframe ?? results?.meta?.timeframe}
+        backtestDays={backtestDays}
+        totalAllocation={botConfig?.allocation}
+      />
+      {isMlCategory && (
+        <BacktestMlInsightsSection
+          results={results}
+          strategy={strategy ?? results?.meta?.strategy}
+          compact
+        />
+      )}
+      {isAgentCategory && (
+        <BacktestAgentInsightsSection results={results} compact />
+      )}
 
+      {showAdvisor && (
       <section className="algo-backtest-lab__section algo-backtest-lab__section--advisor">
         <StrategySuggestPanel
           botId={advisorBotId}
@@ -1232,6 +1422,7 @@ export default function BacktestResultsPanel({
           compact
         />
       </section>
+      )}
 
       {results?.sweep?.results?.length > 0 && (
         <button
@@ -1275,6 +1466,7 @@ export default function BacktestResultsPanel({
             <thead>
               <tr>
                 <th>Time</th>
+                {isPortfolio && <th>Symbol</th>}
                 <th>Type</th>
                 <th>Side</th>
                 <th className="text-right">Qty</th>
@@ -1286,12 +1478,15 @@ export default function BacktestResultsPanel({
             <tbody>
               {tableTrades.map((t, i) => (
                 <tr
-                  key={`${t.time}-${t.side}-${i}`}
+                  key={`${t.symbol || ''}-${t.time}-${t.side}-${i}`}
                   className="cursor-pointer hover:bg-muted/30"
                   onClick={() => onTradeRowClick(t)}
                   title="Focus chart on this bar"
                 >
                   <td className="text-muted-foreground whitespace-nowrap">{fmtTime(t.time)}</td>
+                  {isPortfolio && (
+                    <td className="whitespace-nowrap">{t.symbol || '—'}</td>
+                  )}
                   <td className="whitespace-nowrap">
                     <span className={cn(
                       'algo-backtest-trade-type',

@@ -174,6 +174,10 @@ class MarketScreenerService:
             rsi_len = cfg.get("rsi_length", 14)
             df[rsi_col(rsi_len)] = ta.rsi(df["close"], length=rsi_len)
 
+        if strat == "ORDERFLOW_IMBALANCE":
+            rsi_len = int(cfg.get("rsi_length", 14))
+            df[rsi_col(rsi_len)] = ta.rsi(df["close"], length=rsi_len)
+
         if strat == "CHART_AGENT":
             macd = ta.macd(
                 df["close"],

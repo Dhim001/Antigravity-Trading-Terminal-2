@@ -228,14 +228,117 @@ class PreTradeIntel:
             uncertainty_sources.append(f"anomaly_check_failed: {str(exc)}")
             observations.append(Observation("market_anomaly", "neutral", 0.0, "Check failed due to error."))
 
+        # 6. VAE regime meta-layer (proposal §2.6)
+        try:
+            from app.services.bots.strategies_vae_regime import (
+                assess_vae_regime_for_meta,
+                vae_regime_gate_enabled,
+            )
+
+            if vae_regime_gate_enabled(bot_config):
+                feed = getattr(self.bot_manager.oms, "feed", None)
+                ohlcv = get_bot_candles(
+                    symbol, feed, timeframe=bot.get("timeframe", "1m"), min_bars=50
+                )
+                row_for_vae = None
+                lookback_rows: list[dict] = []
+                if ohlcv and len(ohlcv) >= 20:
+                    df = self.bot_manager.screener.process_candles(
+                        symbol, ohlcv, bot_config, "VAE_REGIME_DETECTOR"
+                    )
+                    if df is not None and not getattr(df, "empty", True):
+                        lookback_rows = [dict(r) for r in df.iloc[-25:-1].to_dict("records")]
+                        row_for_vae = dict(df.iloc[-1])
+                        row_for_vae.setdefault("_symbol", symbol)
+                if row_for_vae is None and isinstance(signal_data, dict):
+                    # Fallback: score from the signal bar when candles unavailable.
+                    row_for_vae = dict(signal_data)
+                    row_for_vae.setdefault("_symbol", symbol)
+
+                if row_for_vae is not None:
+                    assessment = assess_vae_regime_for_meta(
+                        symbol,
+                        row_for_vae,
+                        lookback_rows=lookback_rows,
+                        config=bot_config,
+                    )
+                    if assessment.regime_action == "suppress":
+                        verdict = "VETO"
+                        vetoes.append(f"vae_regime_unstable: {assessment.reason}")
+                        observations.append(
+                            Observation(
+                                "vae_regime",
+                                "danger",
+                                0.90,
+                                assessment.reason,
+                            )
+                        )
+                    elif assessment.regime_action == "caution":
+                        if verdict != "VETO":
+                            verdict = "REDUCE_SIZE"
+                        vetoes.append(f"vae_regime_caution: {assessment.reason}")
+                        size_multiplier = min(size_multiplier, PRETRADE_REDUCE_SIZE_FACTOR)
+                        observations.append(
+                            Observation(
+                                "vae_regime",
+                                "danger",
+                                0.80,
+                                assessment.reason,
+                            )
+                        )
+                    elif assessment.regime_action == "amplify":
+                        observations.append(
+                            Observation(
+                                "vae_regime",
+                                "positive",
+                                0.85,
+                                assessment.reason,
+                            )
+                        )
+                    elif assessment.regime_action == "skip":
+                        uncertainty_sources.append("VAE regime model unavailable.")
+                        observations.append(
+                            Observation(
+                                "vae_regime",
+                                "neutral",
+                                0.40,
+                                assessment.reason,
+                            )
+                        )
+                    else:
+                        observations.append(
+                            Observation(
+                                "vae_regime",
+                                "positive",
+                                0.85,
+                                assessment.reason,
+                            )
+                        )
+        except Exception as exc:
+            logger.error("PreTradeIntel VAE regime check failed: %s", exc)
+            uncertainty_sources.append(f"vae_regime_check_failed: {str(exc)}")
+            observations.append(Observation("vae_regime", "neutral", 0.0, "Check failed due to error."))
+
         # Resolve final verdict state logic: VETO overrides REDUCE_SIZE
         if "VETO" in [verdict] or any(
-            v.startswith(("event_policy", "failures_streak", "price_gap", "market_anomaly"))
+            v.startswith(
+                (
+                    "event_policy",
+                    "failures_streak",
+                    "price_gap",
+                    "market_anomaly",
+                    "vae_regime_unstable",
+                )
+            )
             for v in vetoes
         ):
             verdict = "VETO"
             size_multiplier = 0.0
-        elif "correlation_exposure" in str(vetoes) or "sentiment_divergence" in str(vetoes):
+        elif (
+            "correlation_exposure" in str(vetoes)
+            or "sentiment_divergence" in str(vetoes)
+            or "vae_regime_caution" in str(vetoes)
+        ):
             verdict = "REDUCE_SIZE"
 
         reasoning_str = "; ".join(vetoes) if vetoes else "Confirmation passed."

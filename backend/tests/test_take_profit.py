@@ -74,6 +74,17 @@ def test_merge_tp_config_applies_strategy_defaults():
     assert merged_macd["take_profit_percent"] == 3.0
 
 
+def test_merge_tp_config_ml_and_agent_defaults():
+    ml = merge_tp_config("LSTM_DIRECTION", {})
+    assert ml["take_profit_percent"] == 3.0
+    assert ml["tp_mode"] == "percent"
+    agent = merge_tp_config("CHART_AGENT", {"min_confidence": 0.6})
+    assert agent["take_profit_percent"] == 3.0
+    assert agent["min_confidence"] == 0.6
+    mm = merge_tp_config("MARKET_MAKING", {})
+    assert mm["tp_mode"] == "none"
+
+
 def test_backtest_closes_on_take_profit_percent():
     """Synthetic uptrend: fixed TP should close before trailing stop on a sharp move."""
     candles = []

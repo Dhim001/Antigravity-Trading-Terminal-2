@@ -224,6 +224,41 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
 
         return MarketMakingStrategy(config or {})
 
+    if key == "ML_SIGNAL_BOOST":
+        from app.services.bots.strategies_ml import MlSignalBoostStrategy
+
+        return MlSignalBoostStrategy(config or {})
+
+    if key == "LSTM_DIRECTION":
+        from app.services.bots.strategies_lstm import LstmDirectionStrategy
+
+        return LstmDirectionStrategy(config or {})
+
+    if key == "RL_PPO_AGENT":
+        from app.services.bots.strategies_rl import RlPpoStrategy
+
+        return RlPpoStrategy(config or {})
+
+    if key == "TCN_MULTI_HORIZON":
+        from app.services.bots.strategies_tcn import TcnMultiHorizonStrategy
+
+        return TcnMultiHorizonStrategy(config or {})
+
+    if key == "VAE_REGIME_DETECTOR":
+        from app.services.bots.strategies_vae_regime import VaeRegimeStrategy
+
+        return VaeRegimeStrategy(config or {})
+
+    if key == "TRANSFORMER_SIGNAL":
+        from app.services.bots.strategies_transformer import TransformerSignalStrategy
+
+        return TransformerSignalStrategy(config or {})
+
+    if key == "GNN_CROSS_ASSET":
+        from app.services.bots.strategies_gnn import GnnCrossAssetStrategy
+
+        return GnnCrossAssetStrategy(config or {})
+
     if key in ("CVD_DIVERGENCE", "WYCKOFF_SPRING", "VPOC_REVERSION", "ORDERFLOW_IMBALANCE", "ABSORPTION_AGENT"):
         from app.services.bots.strategies_microstructure import (
             CvdDivergenceStrategy,

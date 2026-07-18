@@ -1,7 +1,7 @@
 /**
  * Backtest Lab — resizable right sheet with Results | Optimizer | Jobs tabs.
  */
-import { useCallback, useEffect, useRef, useState, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Activity, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import BacktestProgressBar from './BacktestProgressBar';
 import ErrorBoundary from './ErrorBoundary';
 import { lazyImport } from '../lib/lazyImport';
+import { getStrategyCategory } from '../config/strategies';
 
 const BacktestResultsPanel = lazyImport(() => import('./BacktestResultsPanel'), 'backtest-results');
 const BacktestSweepPanel = lazyImport(() => import('./BacktestSweepPanel'), 'backtest-sweep');
@@ -41,6 +42,12 @@ const LAB_TABS = [
   { id: 'optimizer', label: 'Optimizer' },
   { id: 'jobs', label: 'Jobs' },
 ];
+
+const LAB_DESCRIPTIONS = {
+  normal: 'Strategy replay report — equity, trades, optimizer, and run history',
+  ml: 'ML model backtest — predictions, feature importance, walk-forward validation',
+  agent: 'Agent backtest — reasoning analysis, gate tuning, confidence calibration',
+};
 
 function readLabWidth() {
   try {
@@ -85,6 +92,12 @@ function BacktestLabSheetInner() {
   const strategy = backtestResults?.meta?.strategy ?? botStrategy;
   const timeframe = backtestResults?.meta?.timeframe ?? botTimeframe;
   const advisorBotId = selectedBotId ?? backtestResults?.meta?.bot_id ?? null;
+
+  const strategyCategory = useMemo(
+    () => getStrategyCategory(strategy),
+    [strategy],
+  );
+  const labDescription = LAB_DESCRIPTIONS[strategyCategory] ?? LAB_DESCRIPTIONS.normal;
 
   useEffect(() => {
     try { localStorage.setItem(LAB_WIDTH_KEY, String(panelWidth)); } catch (_) {}
@@ -169,7 +182,7 @@ function BacktestLabSheetInner() {
               Backtest Lab
             </SheetTitle>
             <SheetDescription className="backtest-lab__description">
-              Strategy replay report — equity, trades, optimizer, and run history
+              {labDescription}
             </SheetDescription>
           </div>
           <div className="backtest-lab__header-tools">
@@ -219,6 +232,7 @@ function BacktestLabSheetInner() {
                     <BacktestSweepPanel
                       symbol={symbol}
                       strategy={strategy}
+                      strategyCategory={strategyCategory}
                       days={days != null ? String(days) : backtestDays}
                       timeframe={timeframe}
                       oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
@@ -242,6 +256,7 @@ function BacktestLabSheetInner() {
                       <BacktestResultsPanel
                         variant="full"
                         results={backtestResults}
+                        strategyCategory={strategyCategory}
                         backtestDays={days != null ? String(days) : '7'}
                         backtestTimeframe={timeframe}
                         symbol={symbol}

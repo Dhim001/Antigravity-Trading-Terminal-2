@@ -274,11 +274,15 @@ class RiskGate:
         daily_pnl: float,
         position_size: float,
         at_ts: float | int | None = None,
+        backtest: bool = False,
     ) -> RiskDecision:
         if not is_exit:
-            blocked = self._kill_switch_block()
-            if blocked:
-                return blocked
+            # Live-only latches must not zero out historical sims when the
+            # desk already has bots running (or a kill switch tripped).
+            if not backtest:
+                blocked = self._kill_switch_block()
+                if blocked:
+                    return blocked
 
             symbol = str(bot.get("symbol") or "")
             if at_ts is not None:
@@ -303,20 +307,21 @@ class RiskGate:
             if not allowed and gate_reason:
                 return RiskDecision(False, gate_reason)
 
-            # 4.1: Consecutive-loss auto-pause — block entries after N consecutive losses.
-            streak_decision = self._check_streak_and_cooloff(bot)
-            if streak_decision is not None:
-                return streak_decision
+            if not backtest:
+                # 4.1: Consecutive-loss auto-pause — block entries after N consecutive losses.
+                streak_decision = self._check_streak_and_cooloff(bot)
+                if streak_decision is not None:
+                    return streak_decision
 
-            # 4.2: Max drawdown circuit breaker — per-bot cumulative DD limit.
-            dd_decision = self._check_max_drawdown(bot)
-            if dd_decision is not None:
-                return dd_decision
+                # 4.2: Max drawdown circuit breaker — per-bot cumulative DD limit.
+                dd_decision = self._check_max_drawdown(bot)
+                if dd_decision is not None:
+                    return dd_decision
 
-            # 4.3: Per-symbol bot concentration — max N bots on same symbol.
-            sym_decision = self._check_symbol_concentration(bot)
-            if sym_decision is not None:
-                return sym_decision
+                # 4.3: Per-symbol bot concentration — max N bots on same symbol.
+                sym_decision = self._check_symbol_concentration(bot)
+                if sym_decision is not None:
+                    return sym_decision
 
         status = bot.get("status", "STOPPED")
         if status != "RUNNING" and not is_exit:

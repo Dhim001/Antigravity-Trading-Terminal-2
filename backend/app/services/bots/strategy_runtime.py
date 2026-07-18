@@ -81,6 +81,60 @@ def apply_indicator_parity_gates(
     return ParityGateOutcome(signal=signal)
 
 
+def apply_vae_regime_meta_gate(
+    signal: str | None,
+    *,
+    row: dict,
+    symbol: str,
+    bot_config: dict | None,
+    lookback_rows: list[dict] | None = None,
+) -> ParityGateOutcome:
+    """Block BUY/SELL when VAE meta-layer reports unstable regime.
+
+    Opt-in via `vae_regime_gate_enabled` or `filter_strategy=VAE_REGIME_DETECTOR`.
+    Soft-fails open when no model is available. Skips when a VAE REGIME_GATE
+    filter is already configured (avoids double-eval).
+    """
+    if signal not in ("BUY", "SELL"):
+        return ParityGateOutcome(signal=signal)
+
+    cfg = bot_config or {}
+    from app.services.bots.strategies_vae_regime import (
+        assess_vae_regime_for_meta,
+        vae_regime_gate_enabled,
+    )
+
+    if not vae_regime_gate_enabled(cfg):
+        return ParityGateOutcome(signal=signal)
+
+    # Filter already applies REGIME_GATE when filter_strategy is VAE.
+    filt = str(cfg.get("filter_strategy") or "").strip().upper()
+    mode = str(cfg.get("filter_mode") or "").strip().upper()
+    if filt == "VAE_REGIME_DETECTOR" and (not mode or mode == "REGIME_GATE"):
+        return ParityGateOutcome(signal=signal)
+
+    try:
+        assessment = assess_vae_regime_for_meta(
+            symbol,
+            row,
+            lookback_rows=lookback_rows,
+            config=cfg,
+        )
+    except Exception:
+        return ParityGateOutcome(signal=signal)
+
+    if assessment.regime_action == "suppress":
+        return ParityGateOutcome(
+            signal=None,
+            block=ParityBlock(
+                kind="vae_regime_gate",
+                reason=assessment.reason or "VAE regime gate suppressed entry",
+                signal=signal,
+            ),
+        )
+    return ParityGateOutcome(signal=signal)
+
+
 def chart_filter_reject_block(signal_data: dict | None, bar_time=None) -> ParityBlock | None:
     if not signal_data:
         return None

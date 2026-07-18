@@ -271,7 +271,61 @@ VALID_SWEEP_OBJECTIVES = (
     "max_consecutive_losses",
     "robust_score",
     "stress_pnl",
+    # ML / category metrics (from row["ml_metrics"])
+    "auc_roc",
+    "log_loss",
+    "alpha_decay_half_life",
+    "oos_is_ratio",
 )
+
+
+def slim_ml_metrics_for_sweep(ml: dict | None) -> dict | None:
+    """Keep only fields needed for ML sweep scoring / leaderboard (compact rows)."""
+    if not isinstance(ml, dict):
+        return None
+    out: dict = {}
+    for key in ("accuracy", "auc_roc", "log_loss"):
+        if ml.get(key) is not None:
+            out[key] = ml[key]
+    ad = ml.get("alpha_decay")
+    if isinstance(ad, dict) and ad.get("half_life_days") is not None:
+        out["alpha_decay"] = {"half_life_days": ad.get("half_life_days")}
+    is_oos = ml.get("is_vs_oos")
+    if isinstance(is_oos, dict):
+        slim_oos = {
+            k: is_oos.get(k)
+            for k in ("is_sharpe", "oos_sharpe", "is_pnl", "oos_pnl")
+            if is_oos.get(k) is not None
+        }
+        if slim_oos:
+            out["is_vs_oos"] = slim_oos
+    return out or None
+
+
+def _ml_oos_is_ratio(ml: dict | None, summary: dict | None) -> float | None:
+    ml = ml or {}
+    summary = summary or {}
+    is_oos = ml.get("is_vs_oos") if isinstance(ml.get("is_vs_oos"), dict) else {}
+    is_s = is_oos.get("is_sharpe")
+    oos_s = is_oos.get("oos_sharpe")
+    try:
+        if is_s is not None and oos_s is not None and abs(float(is_s)) > 1e-9:
+            return float(oos_s) / float(is_s)
+    except (TypeError, ValueError):
+        pass
+    # Prefer PnL ratio when Sharpe missing
+    is_pnl = is_oos.get("is_pnl")
+    oos_pnl = is_oos.get("oos_pnl")
+    try:
+        if is_pnl is not None and oos_pnl is not None and abs(float(is_pnl)) > 1e-9:
+            return float(oos_pnl) / float(is_pnl)
+    except (TypeError, ValueError):
+        pass
+    wfe = summary.get("walk_forward_efficiency")
+    try:
+        return float(wfe) if wfe is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def row_trade_count(row: dict) -> int:
@@ -285,6 +339,7 @@ def _row_trade_count(row: dict) -> int:
 def row_objective_value(row: dict, objective: str = "total_pnl") -> float:
     """Extract ranking metric from a sweep row."""
     summary = row.get("summary") or {}
+    ml = row.get("ml_metrics") if isinstance(row.get("ml_metrics"), dict) else {}
     obj = objective if objective in VALID_SWEEP_OBJECTIVES else "total_pnl"
     if obj == "total_pnl":
         return float(row.get("total_pnl") or summary.get("total_pnl") or -1e18)
@@ -327,6 +382,20 @@ def row_objective_value(row: dict, objective: str = "total_pnl") -> float:
     if obj == "stress_pnl":
         from app.services.bots.backtest_multi_objective import stress_pnl_value
         return stress_pnl_value(row)
+    if obj == "auc_roc":
+        val = ml.get("auc_roc")
+        return float(val) if val is not None else -1e18
+    if obj == "log_loss":
+        # Optuna / sort always maximize — return negative log-loss
+        val = ml.get("log_loss")
+        return -float(val) if val is not None else -1e18
+    if obj == "alpha_decay_half_life":
+        ad = ml.get("alpha_decay") if isinstance(ml.get("alpha_decay"), dict) else {}
+        val = ad.get("half_life_days")
+        return float(val) if val is not None else -1e18
+    if obj == "oos_is_ratio":
+        ratio = _ml_oos_is_ratio(ml, summary)
+        return float(ratio) if ratio is not None else -1e18
     return float(row.get("total_pnl") or -1e18)
 
 
@@ -366,7 +435,7 @@ def pick_best_config(
 def _result_to_row(cfg: dict, res: dict, *, window: str = "in_sample") -> dict:
     if res.get("error"):
         return {"label": sweep_label(cfg), "config": cfg, "error": res["error"]}
-    return {
+    row = {
         "label": sweep_label(cfg),
         "config": cfg,
         "summary": res.get("summary") or {},
@@ -374,6 +443,10 @@ def _result_to_row(cfg: dict, res: dict, *, window: str = "in_sample") -> dict:
         "trade_count": res.get("trade_count"),
         "window": window,
     }
+    slim = slim_ml_metrics_for_sweep(res.get("ml_metrics"))
+    if slim:
+        row["ml_metrics"] = slim
+    return row
 
 
 def _metric_from_backtest(res: dict, objective: str) -> float:
@@ -801,6 +874,11 @@ def _run_single_walk_forward(
             starting_equity=float(oos.get("starting_equity") or oos.get("allocation") or 10_000),
         ),
     }
+    from app.services.bots.backtest_category_metrics import attach_is_vs_oos, is_vs_oos_from_windows
+    attach_is_vs_oos(
+        merged,
+        is_vs_oos_from_windows(fold_entry.get("in_sample"), fold_entry.get("out_of_sample")),
+    )
     return merged
 
 
@@ -1160,4 +1238,22 @@ def run_walk_forward(
             starting_equity=float(last_oos.get("starting_equity") or last_oos.get("allocation") or 10_000),
         ),
     }
+    from app.services.bots.backtest_category_metrics import attach_is_vs_oos, is_vs_oos_from_windows
+    # Prefer aggregate IS/OOS means across folds when available; else last fold.
+    agg = aggregate or {}
+    is_vs = {
+        "is_sharpe": None,
+        "oos_sharpe": agg.get("mean_sharpe"),
+        "is_pnl": agg.get("mean_in_sample_objective") if agg.get("objective") == "total_pnl" else None,
+        "oos_pnl": agg.get("mean_pnl"),
+    }
+    # Overlay last-fold explicit Sharpes when aggregate lacks them
+    last_pair = is_vs_oos_from_windows(
+        merged["walk_forward"]["in_sample"],
+        merged["walk_forward"]["out_of_sample"],
+    ) or {}
+    for k, v in last_pair.items():
+        if is_vs.get(k) is None and v is not None:
+            is_vs[k] = v
+    attach_is_vs_oos(merged, is_vs)
     return merged

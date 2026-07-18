@@ -353,6 +353,117 @@ def evaluate_deploy_gate(
             detail="Set BACKTEST_PRICE_ADJUST=split_only or total_return for accurate PnL.",
         ))
 
+    # ── ML Strategy-Specific Checks ────────────────────────────────────────
+    if run_config:
+        deploy_strategy = run_config.get("strategy") or (results or {}).get("meta", {}).get("strategy") or ""
+    else:
+        deploy_strategy = (results or {}).get("meta", {}).get("strategy") or ""
+    try:
+        from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+        from app.services.bots.ml_retrain_scheduler import get_model_age_hours, get_model_metadata
+
+        if is_ml_strategy(deploy_strategy) and symbol:
+            # Check 1: Model must exist
+            model_age = get_model_age_hours(deploy_strategy, symbol)
+            if model_age is None:
+                checks.append(_check(
+                    check_id="ml_model_exists",
+                    level="block",
+                    ok=False,
+                    message=f"No trained {deploy_strategy} model for {symbol}",
+                    detail="Train a model before deploying an ML strategy.",
+                ))
+            else:
+                checks.append(_check(
+                    check_id="ml_model_exists",
+                    level="pass",
+                    ok=True,
+                    message=f"{deploy_strategy} model exists for {symbol}",
+                ))
+
+                # Check 2: Model age
+                max_age = float((run_config or {}).get("ml_max_model_age_hours", 168))
+                if model_age > max_age:
+                    checks.append(_check(
+                        check_id="ml_model_age",
+                        level="warn",
+                        ok=False,
+                        message=f"ML model is {model_age:.0f}h old (max {max_age:.0f}h)",
+                        detail="Consider retraining before deployment.",
+                    ))
+
+                # Check 3: PBO from model metadata
+                meta = get_model_metadata(deploy_strategy, symbol)
+                if meta and meta.get("pbo") is not None:
+                    pbo_val = float(meta["pbo"])
+                    if pbo_val > 0.5:
+                        checks.append(_check(
+                            check_id="ml_pbo",
+                            level="block",
+                            ok=False,
+                            message=f"ML model PBO {pbo_val:.0%} — high overfitting risk",
+                            detail="PBO > 50% indicates model likely won't generalize.",
+                        ))
+                    elif pbo_val > 0.35:
+                        checks.append(_check(
+                            check_id="ml_pbo",
+                            level="warn",
+                            ok=False,
+                            message=f"ML model PBO {pbo_val:.0%} — moderate overfitting risk",
+                        ))
+
+                # Check 4: pinned model_version resolves to a known snapshot (or current)
+                pinned = (run_config or {}).get("model_version")
+                if pinned:
+                    from app.services.bots.ml_model_artifacts import (
+                        find_version_entry,
+                        model_root_for,
+                    )
+
+                    root = model_root_for(deploy_strategy, symbol)
+                    entry = find_version_entry(root, str(pinned)) if root else None
+                    current_at = (meta or {}).get("trained_at") if meta else None
+                    if entry:
+                        is_current = bool(
+                            current_at
+                            and entry.get("trained_at")
+                            and str(entry.get("trained_at")) == str(current_at)
+                        )
+                        checks.append(_check(
+                            check_id="ml_model_version",
+                            level="pass",
+                            ok=True,
+                            message=(
+                                f"Pinned model version resolved"
+                                f"{' (current)' if is_current else ' (historical snapshot)'}"
+                            ),
+                            detail=f"Pin {pinned} → {entry.get('version_id')}",
+                        ))
+                    elif current_at and str(pinned) == str(current_at):
+                        checks.append(_check(
+                            check_id="ml_model_version",
+                            level="pass",
+                            ok=True,
+                            message=f"Pinned model version matches current ({pinned})",
+                        ))
+                    else:
+                        checks.append(_check(
+                            check_id="ml_model_version",
+                            level="warn",
+                            ok=False,
+                            message="Pinned model_version not found on disk",
+                            detail=f"Pin {pinned} — activate or retrain, or clear the pin.",
+                        ))
+                elif (run_config or {}).get("model_artifact"):
+                    checks.append(_check(
+                        check_id="ml_model_version",
+                        level="pass",
+                        ok=True,
+                        message=f"Model artifact pinned: {(run_config or {}).get('model_artifact')}",
+                    ))
+    except ImportError:
+        pass  # ML modules not installed
+
     stage = "ready"
     if any(c["level"] == "block" and not c["ok"] for c in checks):
         stage = "blocked"

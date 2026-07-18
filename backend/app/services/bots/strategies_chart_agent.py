@@ -11,9 +11,11 @@ from app.services.bots.indicators import merge_strategy_config
 from app.services.market.timeframes import normalize_timeframe
 
 
-def compact_insight_snapshot(insight: dict) -> dict:
+def compact_insight_snapshot(insight: dict, regime: str | None = None) -> dict:
     """Compact insight payload for trade rows and bot logs."""
-    return {
+    from app.services.agent.regime_routing import current_atr_regime
+
+    snap = {
         "signal": insight.get("signal"),
         "score": insight.get("score"),
         "confidence": insight.get("confidence"),
@@ -23,6 +25,10 @@ def compact_insight_snapshot(insight: dict) -> dict:
         "bar_time": insight.get("bar_time"),
         "timeframe": insight.get("timeframe"),
     }
+    resolved = regime or current_atr_regime(insight)
+    if resolved:
+        snap["regime"] = resolved
+    return snap
 
 
 def sub_reports_summary(sub_reports: dict | None) -> dict:
@@ -152,25 +158,39 @@ def build_signal_from_insight(
     timeframe: str | None = None,
 ) -> dict:
     """Map a cached insight dict to bot signal_data (may return NONE + reject_reason)."""
+    from app.services.agent.regime_routing import current_atr_regime
+
     effective_cfg, regime = resolve_regime_config(cfg, insight)
+    atr_regime = regime or current_atr_regime(insight)
 
     min_confidence = float(effective_cfg.get("min_confidence", 0.55))
     if float(insight.get("confidence", 0)) < min_confidence:
         return {
             "signal": "NONE",
+            "confidence": float(insight.get("confidence", 0)),
+            "regime": atr_regime,
             "reject_reason": f"confidence {insight.get('confidence')} below min {min_confidence}",
         }
 
     signal = insight.get("signal", "NONE")
     if signal not in ("BUY", "SELL"):
-        return {"signal": "NONE", "reject_reason": f"non-actionable signal {signal}"}
+        return {
+            "signal": "NONE",
+            "regime": atr_regime,
+            "reject_reason": f"non-actionable signal {signal}",
+        }
 
     reject = check_entry_filters(insight, effective_cfg, signal, confirm_insight=confirm_insight)
     if reject:
         reason = reject
-        if regime and regime != "normal":
-            reason = f"{reject} (regime={regime})"
-        return {"signal": "NONE", "reject_reason": reason}
+        if atr_regime and atr_regime != "normal":
+            reason = f"{reject} (regime={atr_regime})"
+        return {
+            "signal": "NONE",
+            "confidence": float(insight.get("confidence", 0)),
+            "regime": atr_regime,
+            "reject_reason": reason,
+        }
 
     gate_symbol = symbol or effective_cfg.get("symbol") or insight.get("symbol") or ""
     gate_tf = timeframe or effective_cfg.get("timeframe") or insight.get("timeframe") or "1m"
@@ -187,13 +207,20 @@ def build_signal_from_insight(
     )
     if meta_reject:
         reason = meta_reject
-        if regime and regime != "normal":
-            reason = f"{meta_reject} (regime={regime})"
-        return {"signal": "NONE", "reject_reason": reason}
+        if atr_regime and atr_regime != "normal":
+            reason = f"{meta_reject} (regime={atr_regime})"
+        return {
+            "signal": "NONE",
+            "confidence": float(insight.get("confidence", 0)),
+            "regime": atr_regime,
+            "reject_reason": reason,
+        }
 
     sub = insight.get("sub_reports") or {}
     size_factor = float((sub.get("risk") or {}).get("suggested_size_factor") or 1.0)
 
+    # Always surface ATR regime for agent_metrics / entry tagging, even when
+    # regime routing overrides are disabled (resolve returns None in that case).
     out: dict[str, Any] = {
         "signal": signal,
         "confidence": float(insight.get("confidence", 0)),
@@ -203,7 +230,8 @@ def build_signal_from_insight(
         "sub_reports_summary": sub_reports_summary(sub),
         "insight_id": insight.get("insight_id"),
         "size_factor": size_factor,
-        "insight_snapshot": compact_insight_snapshot(insight),
+        "regime": atr_regime,
+        "insight_snapshot": compact_insight_snapshot(insight, regime=atr_regime),
     }
     levels = insight.get("levels") or {}
     if levels.get("stop_loss_distance") is not None:

@@ -1,6 +1,7 @@
 /** Labels, grouping, and editable field schema for bot strategy config. */
 
 import { normalizeConfirmTimeframe } from '@/lib/barTimeframes';
+import { getStrategyCategory, getMLSubtype } from '@/config/strategies';
 
 export const DIRECTION_MODE_OPTIONS = [
   { value: 'LONG_ONLY', label: 'Long only' },
@@ -23,13 +24,18 @@ export function formatDirectionModeLabel(value) {
   return DIRECTION_MODE_LABELS[normalizeDirectionMode(value)] ?? normalizeDirectionMode(value);
 }
 
-export const GROUP_ORDER = ['risk', 'agent', 'indicators', 'tick', 'other'];
+export const GROUP_ORDER = ['risk', 'signal', 'agent', 'agent_gate', 'agent_llm', 'indicators', 'tick', 'ml_model', 'rl_policy', 'other'];
 
 export const GROUP_LABELS = {
   risk: 'Risk & exits',
+  signal: 'Signal gate',
   agent: 'Chart agent',
+  agent_gate: 'Agent gates',
+  agent_llm: 'LLM settings',
   indicators: 'Indicators',
   tick: 'Tick execution',
+  ml_model: 'ML model',
+  rl_policy: 'RL policy',
   other: 'Other',
 };
 
@@ -39,7 +45,12 @@ export const FIELD_META = {
   take_profit_percent: { label: 'Take profit', group: 'risk', kind: 'percent', hint: 'Closes the position when price reaches this % target.' },
   take_profit_price: { label: 'Take profit price', group: 'risk', kind: 'price', readOnly: true },
   tp_mode: { label: 'Take profit mode', group: 'risk', kind: 'tp_mode' },
-  min_confidence: { label: 'Min confidence', group: 'agent', kind: 'confidence', hint: 'Agent only trades when signal confidence meets this threshold.' },
+  min_confidence: {
+    label: 'Min confidence',
+    group: 'signal',
+    kind: 'range',
+    hint: 'Only enter when the strategy confidence / score meets this threshold (scale depends on strategy).',
+  },
   use_vol_sizing: { label: 'Vol sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by risk sub-report suggested_size_factor.' },
   require_trend_alignment: { label: 'Trend alignment', group: 'agent', kind: 'boolean', hint: 'BUY only when trend score ≥ +1; SELL when ≤ −1.' },
   use_rsi_confirmation: { label: 'RSI confirmation', group: 'indicators', kind: 'boolean', hint: 'Require RSI not overbought/oversold on VWAP cross entries.' },
@@ -85,8 +96,10 @@ export const FIELD_META = {
   tick_cooldown_sec: { label: 'Cooldown', group: 'tick', kind: 'seconds' },
   module: { label: 'Custom module', group: 'other', kind: 'text' },
   direction_mode: { label: 'Trade direction', group: 'risk', kind: 'direction_mode', hint: 'LONG_ONLY, SHORT_ONLY, or BOTH. Controls which trade directions are allowed.' },
-  filter_strategy: { label: 'Filter strategy', group: 'other', kind: 'text', hint: 'Gate signals through a secondary strategy (e.g. SUPERTREND_ADX).' },
-  filter_mode: { label: 'Filter mode', group: 'other', kind: 'text', hint: 'How the filter gates signals (TREND_GATE).' },
+  filter_strategy: { label: 'Filter strategy', group: 'other', kind: 'text', hint: 'Gate signals through a secondary strategy (e.g. SUPERTREND_ADX or VAE_REGIME_DETECTOR).' },
+  filter_mode: { label: 'Filter mode', group: 'other', kind: 'text', hint: 'TREND_GATE (bias) or REGIME_GATE (VAE suppress). Auto REGIME_GATE when filter is VAE.' },
+  vae_regime_gate_enabled: { label: 'VAE regime gate', group: 'ml_model', kind: 'boolean', hint: 'Meta-layer: suppress entries when VAE anomaly score is unstable. Also auto-on if filter_strategy is VAE_REGIME_DETECTOR.' },
+  vae_regime_rotation_hint: { label: 'VAE rotation hint', group: 'ml_model', kind: 'boolean', hint: 'Let RegimeRotation skip swaps in unstable VAE regimes and confirm faster when anomalous.' },
   ob_lookback: { label: 'OB lookback', group: 'indicators', kind: 'integer', hint: 'Bars to scan for order blocks.' },
   fvg_min_gap_pct: { label: 'FVG min gap %', group: 'indicators', kind: 'decimal', hint: 'Minimum gap as % of price for a fair value gap.' },
   sweep_lookback: { label: 'Sweep lookback', group: 'indicators', kind: 'integer', hint: 'Rolling window for liquidity sweep detection.' },
@@ -97,26 +110,93 @@ export const FIELD_META = {
   max_skew: { label: 'Max inventory skew', group: 'risk', kind: 'decimal', hint: 'Maximum inventory imbalance before one-sided quoting.' },
   vol_shutdown_mult: { label: 'Vol shutdown mult', group: 'risk', kind: 'decimal', hint: 'Shut down MM when ATR > this × median (too volatile).' },
   inventory_target: { label: 'Inventory target', group: 'risk', kind: 'decimal', hint: 'Target inventory level (0 = neutral).' },
+  pivot_lookback: { label: 'Pivot lookback', group: 'indicators', kind: 'integer', hint: 'Bars for CVD pivot detection.' },
+  range_lookback: { label: 'Range lookback', group: 'indicators', kind: 'integer', hint: 'Wyckoff range window.' },
+  volume_surge_mult: { label: 'Volume surge mult', group: 'indicators', kind: 'decimal', hint: 'Volume vs MA multiplier for surge.' },
+  profile_lookback: { label: 'Profile lookback', group: 'indicators', kind: 'integer', hint: 'Volume profile window.' },
+  value_area_pct: { label: 'Value area %', group: 'indicators', kind: 'decimal', hint: 'Value-area fraction of volume profile.' },
+  adx_trend_filter: { label: 'ADX trend filter', group: 'indicators', kind: 'integer', hint: 'Skip when ADX above this (ranging filter).' },
+  bair_threshold: { label: 'BAIR threshold', group: 'indicators', kind: 'decimal', hint: 'Bid/ask imbalance ratio threshold.' },
+  mlofi_threshold: { label: 'MLOFI threshold', group: 'indicators', kind: 'decimal', hint: 'Multi-level OFI threshold.' },
+  allow_candle_proxy: { label: 'Candle proxy', group: 'indicators', kind: 'boolean', hint: 'Allow OHLCV proxy when L2 book missing.' },
+  book_levels: { label: 'Book levels', group: 'indicators', kind: 'integer', hint: 'Orderbook depth levels for imbalance.' },
+  lookback: { label: 'Lookback window', group: 'ml_model', kind: 'integer', hint: 'Sliding input window size in bars (e.g. 60).' },
+  min_return: { label: 'Min return (decimal)', group: 'ml_model', kind: 'decimal', hint: 'TCN: minimum forecast magnitude to fire (0.002 = 0.2%, not percent units).' },
+  hidden_dim: { label: 'Hidden dim', group: 'ml_model', kind: 'integer', hint: 'Neural network hidden layer size.' },
+  num_layers: { label: 'Num layers', group: 'ml_model', kind: 'integer', hint: 'Stacked layer count for sequence models.' },
+  learning_rate: { label: 'Learning rate', group: 'ml_model', kind: 'decimal', hint: 'Optimizer step size.' },
+  batch_size: { label: 'Batch size', group: 'ml_model', kind: 'integer', hint: 'Training mini-batch size.' },
+  d_model: { label: 'Model dim', group: 'ml_model', kind: 'integer', hint: 'Transformer embedding dimension.' },
+  nhead: { label: 'Attention heads', group: 'ml_model', kind: 'integer', hint: 'Multi-head attention count.' },
+  latent_dim: { label: 'Latent dim', group: 'ml_model', kind: 'integer', hint: 'VAE bottleneck dimension.' },
+  anomaly_threshold: { label: 'Anomaly threshold', group: 'ml_model', kind: 'decimal', hint: 'VAE reconstruction error to flag regime shift.' },
+  suppress_threshold: { label: 'Suppress threshold', group: 'ml_model', kind: 'decimal', hint: 'VAE error level to suppress entries.' },
+  n_heads: { label: 'GNN heads', group: 'ml_model', kind: 'integer', hint: 'Graph attention head count.' },
+  min_corr: { label: 'Min correlation', group: 'ml_model', kind: 'decimal', hint: 'Minimum cross-asset correlation for graph edges.' },
+  basket_id: { label: 'Basket ID', group: 'ml_model', kind: 'text', hint: 'Correlated asset basket identifier.' },
+  triple_barrier_atr_mult: { label: 'Barrier ATR mult', group: 'ml_model', kind: 'decimal', hint: 'Triple-barrier label width in ATR multiples.' },
+  triple_barrier_max_bars: { label: 'Barrier max bars', group: 'ml_model', kind: 'integer', hint: 'Max bars before triple-barrier timeout.' },
+  min_train_samples: { label: 'Min train samples', group: 'ml_model', kind: 'integer', hint: 'Minimum labeled samples before training.' },
+  val_fraction: { label: 'Validation fraction', group: 'ml_model', kind: 'decimal', hint: 'Holdout fraction for validation metrics.' },
+  retrain_interval_hours: { label: 'Retrain interval (h)', group: 'ml_model', kind: 'integer', hint: 'Hours between scheduled retrains.' },
+  model_symbol: { label: 'Model symbol', group: 'ml_model', kind: 'text', hint: 'Symbol key for persisted model artifacts (defaults to bot symbol).' },
+  model_version: {
+    label: 'Model version',
+    group: 'ml_model',
+    kind: 'model_version',
+    hint: 'Pin a trained snapshot, or leave Latest to always use the activated model.',
+  },
+  model_artifact: { label: 'Model artifact', group: 'ml_model', kind: 'text', readOnly: true, hint: 'Pinned filename (.onnx / .joblib) for this deploy.' },
+  gamma: { label: 'Discount factor', group: 'rl_policy', kind: 'decimal', hint: 'Gamma for reward discounting (0–1).' },
+  gae_lambda: { label: 'GAE lambda', group: 'rl_policy', kind: 'decimal', hint: 'Generalized advantage estimation λ.' },
+  clip_epsilon: { label: 'PPO clip ε', group: 'rl_policy', kind: 'decimal', hint: 'PPO policy ratio clip bound.' },
+  ppo_epochs: { label: 'PPO epochs', group: 'rl_policy', kind: 'integer', hint: 'Optimization epochs per rollout.' },
+  n_steps: { label: 'Rollout steps', group: 'rl_policy', kind: 'integer', hint: 'Environment steps per PPO rollout.' },
+  total_timesteps: { label: 'Total timesteps', group: 'rl_policy', kind: 'integer', hint: 'Total RL training timesteps.' },
+  vf_coef: { label: 'Value loss coef', group: 'rl_policy', kind: 'decimal', hint: 'Weight of value function loss.' },
+  ent_coef: { label: 'Entropy coef', group: 'rl_policy', kind: 'decimal', hint: 'Exploration entropy bonus weight.' },
+  llm_temperature: { label: 'LLM temperature', group: 'agent_llm', kind: 'decimal', hint: 'Reasoning temperature (0.0–1.0).' },
+  max_reasoning_tokens: { label: 'Max reasoning tokens', group: 'agent_llm', kind: 'integer', hint: 'Cap LLM response length.' },
+  require_multi_domain: { label: 'Multi-domain confirm', group: 'agent_gate', kind: 'integer', hint: 'Require ≥ N sub-report domains to agree.' },
 };
 
 const COMMON_FIELD_KEYS = ['trailing_stop_percent', 'tp_mode', 'take_profit_percent'];
 
 export const STRATEGY_FIELD_KEYS = {
   MACD_RSI: ['rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
-  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold', 'atr_length', 'block_elevated_vol', 'direction_mode'],
+  SUPERTREND_ADX: ['st_length', 'st_multiplier', 'adx_length', 'adx_threshold', 'atr_length', 'block_elevated_vol', 'direction_mode', 'filter_strategy', 'vae_regime_gate_enabled'],
   BRS_SCALPING: [
     'bb_length', 'bb_std', 'rsi_length', 'stoch_k', 'stoch_d', 'stoch_smooth',
-    'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length', 'direction_mode',
+    'rsi_oversold', 'rsi_overbought', 'stoch_oversold', 'stoch_overbought', 'atr_length', 'direction_mode', 'vae_regime_gate_enabled',
   ],
   VWAP_PULLBACK: [
-    'atr_length', 'rsi_length', 'use_rsi_confirmation', 'rsi_overbought_gate', 'rsi_oversold_gate', 'direction_mode',
+    'atr_length', 'rsi_length', 'use_rsi_confirmation', 'rsi_overbought_gate', 'rsi_oversold_gate', 'direction_mode', 'vae_regime_gate_enabled',
   ],
-  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'use_confidence_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'meta_label_model_mode', 'meta_label_min_prob', 'meta_label_min_train_samples', 'meta_label_shadow_mode', 'use_meta_label_sizing', 'use_llm', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
+  CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'use_confidence_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'meta_label_model_mode', 'meta_label_min_prob', 'meta_label_min_train_samples', 'meta_label_shadow_mode', 'use_meta_label_sizing', 'use_llm', 'llm_temperature', 'max_reasoning_tokens', 'require_multi_domain', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
+  ABSORPTION_AGENT: ['min_confidence', 'min_score', 'confirm_timeframe', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'trailing_stop_percent', 'direction_mode'],
+  // Deploy / live inference only — training hyperparams live in Model Training.
+  ML_SIGNAL_BOOST: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  LSTM_DIRECTION: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  RL_PPO_AGENT: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  TCN_MULTI_HORIZON: ['min_return', 'min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  VAE_REGIME_DETECTOR: [
+    'anomaly_threshold', 'suppress_threshold', 'model_version', 'model_symbol',
+    'direction_mode',
+  ],
+  TRANSFORMER_SIGNAL: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  GNN_CROSS_ASSET: ['min_confidence', 'min_corr', 'basket_id', 'model_version', 'model_symbol', 'direction_mode'],
+  CVD_DIVERGENCE: ['pivot_lookback', 'adx_length', 'adx_threshold', 'atr_length', 'direction_mode'],
+  WYCKOFF_SPRING: ['range_lookback', 'atr_length', 'volume_surge_mult', 'direction_mode'],
+  VPOC_REVERSION: ['profile_lookback', 'value_area_pct', 'rsi_length', 'adx_length', 'adx_trend_filter', 'atr_length', 'direction_mode'],
+  ORDERFLOW_IMBALANCE: [
+    'bair_threshold', 'mlofi_threshold', 'volume_surge_mult', 'volume_ma_length',
+    'rsi_length', 'rsi_overbought', 'rsi_oversold', 'atr_length', 'allow_candle_proxy', 'book_levels', 'direction_mode',
+  ],
   TICK_MOMENTUM: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_MEAN_REVERT: ['lookback_ticks', 'tick_cooldown_sec'],
   TICK_BREAKOUT: ['lookback_ticks', 'tick_cooldown_sec'],
-  ICT_SMC: ['ob_lookback', 'fvg_min_gap_pct', 'sweep_lookback', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy'],
-  DONCHIAN_BREAKOUT: ['breakout_length', 'exit_length', 'atr_confirm_mult', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy'],
+  ICT_SMC: ['ob_lookback', 'fvg_min_gap_pct', 'sweep_lookback', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy', 'vae_regime_gate_enabled'],
+  DONCHIAN_BREAKOUT: ['breakout_length', 'exit_length', 'atr_confirm_mult', 'atr_length', 'direction_mode', 'confirm_timeframe', 'filter_strategy', 'vae_regime_gate_enabled'],
   MARKET_MAKING: ['spread_pct', 'max_skew', 'vol_shutdown_mult', 'inventory_target', 'atr_length', 'direction_mode'],
 };
 
@@ -139,7 +219,12 @@ function humanizeKey(key) {
 
 function inferGroup(key) {
   if (/^(trailing_stop|stop_loss|take_profit|tp_)/.test(key)) return 'risk';
-  if (/^(min_confidence|use_llm|use_vol_sizing|use_confidence|use_meta_label|require_trend|block_elevated|confirm_timeframe|min_score|calibration_|meta_label_|regime_|elevated_|compressed_)/.test(key)) return 'agent';
+  if (/^(lookback|hidden_dim|num_layers|learning_rate|batch_size|d_model|nhead|latent_dim|anomaly_|suppress_|n_heads|min_corr|basket_id|triple_barrier|min_train|val_fraction|retrain_interval|model_symbol|model_version|model_artifact|min_return)/.test(key)) return 'ml_model';
+  if (/^(gamma|gae_lambda|clip_epsilon|ppo_epochs|n_steps|total_timesteps|vf_coef|ent_coef)/.test(key)) return 'rl_policy';
+  if (/^(llm_temperature|max_reasoning_tokens)/.test(key)) return 'agent_llm';
+  if (/^(require_multi_domain)/.test(key)) return 'agent_gate';
+  if (/^(min_confidence|min_return)/.test(key)) return 'signal';
+  if (/^(use_llm|use_vol_sizing|use_confidence|use_meta_label|require_trend|block_elevated|confirm_timeframe|min_score|calibration_|meta_label_|regime_|elevated_|compressed_)/.test(key)) return 'agent';
   if (/^(lookback_ticks|tick_)/.test(key)) return 'tick';
   if (/^(rsi|macd|atr|bb_|stoch|st_|adx)/.test(key)) return 'indicators';
   return 'other';
@@ -150,9 +235,10 @@ function getInputType(key, meta) {
   if (key === 'tp_mode') return 'select';
   if (key === 'direction_mode') return 'select';
   if (key === 'meta_label_model_mode') return 'select';
+  if (key === 'model_version' || meta?.kind === 'model_version') return 'model_version';
   if (key === 'confirm_timeframe' || meta?.kind === 'confirm_timeframe') return 'confirm_timeframe';
   if (meta?.kind === 'boolean') return 'checkbox';
-  if (meta?.kind === 'confidence') return 'range';
+  if (meta?.kind === 'confidence' || meta?.kind === 'range' || meta?.kind === 'probability') return 'range';
   if (['percent', 'integer', 'decimal', 'seconds', 'price'].includes(meta?.kind)) return 'number';
   return 'text';
 }
@@ -161,7 +247,14 @@ function fieldMeta(key) {
   return FIELD_META[key] ?? { label: humanizeKey(key), group: inferGroup(key), kind: 'text' };
 }
 
-const SWEEP_EXCLUDED_KEYS = new Set(['use_llm', 'take_profit_price', 'tp_mode']);
+const SWEEP_EXCLUDED_KEYS = new Set([
+  'use_llm',
+  'take_profit_price',
+  'tp_mode',
+  'model_version',
+  'model_symbol',
+  'model_artifact',
+]);
 
 const SWEEP_EXTRA_KEYS = ['allocation', 'slippage_bps', 'fee_bps', 'stop_loss_percent'];
 
@@ -187,10 +280,121 @@ const SWEEP_DEFAULT_PLACEHOLDERS = {
   confirm_timeframe: '15m, 1h',
   lookback_ticks: '15, 20, 30',
   tick_cooldown_sec: '5, 10, 15',
+  lookback: '30, 60, 90',
+  min_return: '0.0005, 0.001, 0.002',
+  hidden_dim: '32, 64, 128',
+  num_layers: '1, 2, 3',
+  learning_rate: '0.0005, 0.001',
+  batch_size: '32, 64',
+  gamma: '0.95, 0.99',
+  clip_epsilon: '0.1, 0.2',
+  triple_barrier_atr_mult: '1.5, 2, 2.5',
+  triple_barrier_max_bars: '20, 30, 40',
+  val_fraction: '0.15, 0.2',
+  min_train_samples: '200, 300',
+  anomaly_threshold: '1.5, 2, 2.5',
+  llm_temperature: '0, 0.3, 0.7',
+  max_reasoning_tokens: '256, 512',
+  require_multi_domain: '1, 2, 3',
 };
+
+const SHARED_RISK_SWEEP_KEYS = [
+  'trailing_stop_percent', 'take_profit_percent', 'stop_loss_percent',
+  'direction_mode', 'allocation', 'slippage_bps', 'fee_bps',
+];
+
+const INDICATOR_KEY_PATTERN = /^(rsi|macd|atr|bb_|stoch|st_|adx|ob_|fvg_|sweep_lookback|breakout_|exit_|atr_confirm|spread_pct|vol_shutdown|use_rsi)/;
+
+const AGENT_SWEEP_ORDERED = [
+  'min_confidence', 'min_score', 'confirm_timeframe',
+  'require_trend_alignment', 'block_elevated_vol',
+  'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson',
+  'meta_label_model_mode', 'meta_label_min_prob', 'meta_label_min_train_samples', 'meta_label_shadow_mode',
+  'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence',
+  'use_vol_sizing', 'use_confidence_sizing', 'use_meta_label_sizing',
+  'llm_temperature', 'max_reasoning_tokens', 'require_multi_domain',
+  ...SHARED_RISK_SWEEP_KEYS,
+];
+
+const ML_SWEEP_ORDERED = [
+  'lookback', 'min_confidence', 'min_return', 'hidden_dim', 'num_layers',
+  'learning_rate', 'batch_size', 'd_model', 'nhead', 'latent_dim',
+  'anomaly_threshold', 'suppress_threshold', 'n_heads', 'min_corr',
+  'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'val_fraction', 'min_train_samples',
+  'gamma', 'gae_lambda', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'ent_coef', 'vf_coef',
+  ...SHARED_RISK_SWEEP_KEYS,
+];
+
+function sweepPlaceholderFor(strategy, key, meta) {
+  if (key === 'min_confidence') {
+    const bounds = confidenceRangeForStrategy(strategy);
+    const mid = bounds.defaultValue;
+    const fmt = (n) => (bounds.max <= 0.1 ? Number(n).toPrecision(2) : String(n));
+    return `${fmt(bounds.min)}, ${fmt(mid)}, ${fmt(bounds.max)}`;
+  }
+  return SWEEP_DEFAULT_PLACEHOLDERS[key]
+    ?? (meta?.kind === 'boolean' ? 'true, false' : '1, 2, 3');
+}
+
+function buildSweepFieldList(strategy, config, orderedKeys, extraKeys = []) {
+  const strat = (strategy || '').toUpperCase();
+  const keys = new Set([
+    ...(STRATEGY_FIELD_KEYS[strat] || []).filter((k) => !SWEEP_EXCLUDED_KEYS.has(k) && !INDICATOR_KEY_PATTERN.test(k)),
+    ...extraKeys.filter((k) => !SWEEP_EXCLUDED_KEYS.has(k)),
+    ...SHARED_RISK_SWEEP_KEYS,
+  ]);
+
+  for (const key of Object.keys(config || {})) {
+    if (key === 'allocation' || SWEEP_EXCLUDED_KEYS.has(key) || INDICATOR_KEY_PATTERN.test(key)) continue;
+    const meta = FIELD_META[key];
+    if (meta && !meta.readOnly) keys.add(key);
+  }
+
+  const seen = new Set();
+  const out = [];
+  for (const key of orderedKeys) {
+    if (!keys.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    const meta = fieldMeta(key);
+    out.push({
+      key,
+      label: meta.label,
+      kind: meta.kind,
+      placeholder: sweepPlaceholderFor(strat, key, meta),
+      hint: meta.hint,
+    });
+  }
+  for (const key of keys) {
+    if (seen.has(key)) continue;
+    const meta = fieldMeta(key);
+    out.push({
+      key,
+      label: meta.label,
+      kind: meta.kind,
+      placeholder: sweepPlaceholderFor(strat, key, meta),
+      hint: meta.hint,
+    });
+  }
+  return out;
+}
 
 /** Strategy-aware sweep param definitions for BacktestSweepPanel. */
 export function getSweepEligibleFields(strategy, config = {}) {
+  const category = getStrategyCategory(strategy);
+
+  if (category === 'ml') {
+    const subtype = getMLSubtype(strategy);
+    const ordered = subtype === 'rl'
+      ? ['gamma', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'min_confidence', ...ML_SWEEP_ORDERED]
+      : ML_SWEEP_ORDERED;
+    // Train hyperparams stay sweepable even though deploy STRATEGY_FIELD_KEYS is inference-only.
+    return buildSweepFieldList(strategy, config, ordered, ML_SWEEP_ORDERED);
+  }
+
+  if (category === 'agent') {
+    return buildSweepFieldList(strategy, config, AGENT_SWEEP_ORDERED);
+  }
+
   const strat = (strategy || '').toUpperCase();
   const keys = new Set([
     ...COMMON_FIELD_KEYS.filter((k) => !SWEEP_EXCLUDED_KEYS.has(k)),
@@ -227,8 +431,7 @@ export function getSweepEligibleFields(strategy, config = {}) {
       key,
       label: meta.label,
       kind: meta.kind,
-      placeholder: SWEEP_DEFAULT_PLACEHOLDERS[key]
-        ?? (meta.kind === 'boolean' ? 'true, false' : '1, 2, 3'),
+      placeholder: sweepPlaceholderFor(strat, key, meta),
       hint: meta.hint,
     });
   }
@@ -239,7 +442,7 @@ export function getSweepEligibleFields(strategy, config = {}) {
       key,
       label: meta.label,
       kind: meta.kind,
-      placeholder: SWEEP_DEFAULT_PLACEHOLDERS[key] ?? '1, 2, 3',
+      placeholder: sweepPlaceholderFor(strat, key, meta),
       hint: meta.hint,
     });
   }
@@ -248,14 +451,19 @@ export function getSweepEligibleFields(strategy, config = {}) {
 
 export function getEditableConfigFields(strategy, config = {}) {
   const strat = (strategy || '').toUpperCase();
+  const strategyKeys = STRATEGY_FIELD_KEYS[strat];
   const keys = new Set([
     ...COMMON_FIELD_KEYS,
-    ...(STRATEGY_FIELD_KEYS[strat] || []),
+    ...(strategyKeys || []),
   ]);
 
-  for (const key of Object.keys(config || {})) {
-    if (key === 'allocation') continue;
-    if (FIELD_META[key] && !FIELD_META[key].readOnly) keys.add(key);
+  // Only pull extra config keys when there is no schema (custom / unknown strategies).
+  // Catalog defaults include train-time hyperparams that must not flood the deploy UI.
+  if (!strategyKeys) {
+    for (const key of Object.keys(config || {})) {
+      if (key === 'allocation') continue;
+      if (FIELD_META[key] && !FIELD_META[key].readOnly) keys.add(key);
+    }
   }
 
   return Array.from(keys).map((key) => {
@@ -269,6 +477,82 @@ export function getEditableConfigFields(strategy, config = {}) {
       input: getInputType(key, meta),
     };
   });
+}
+
+/** Keys allowed on deploy bot.config for a strategy (risk + strategy schema). */
+export function deployConfigKeysForStrategy(strategy) {
+  const strat = String(strategy || '').toUpperCase();
+  const keys = new Set([
+    'allocation',
+    ...COMMON_FIELD_KEYS,
+    ...(STRATEGY_FIELD_KEYS[strat] || []),
+  ]);
+  // Optimizer pin extras — keep when the strategy supports model versioning.
+  if (keys.has('model_version') || keys.has('model_symbol')) {
+    keys.add('model_artifact');
+  }
+  return keys;
+}
+
+/**
+ * Build a clean deploy config from catalog defaults — drops train-only / stale keys.
+ * @param {string} strategy
+ * @param {Record<string, unknown>} raw
+ */
+export function pickDeployConfig(strategy, raw = {}) {
+  const allowed = deployConfigKeysForStrategy(strategy);
+  const out = {};
+  for (const [key, value] of Object.entries(raw || {})) {
+    if (!allowed.has(key)) continue;
+    if (value === '' || value === undefined || value === null) continue;
+    out[key] = value;
+  }
+  if (!out.direction_mode) {
+    const strat = String(strategy || '').toUpperCase();
+    out.direction_mode = (
+      strat === 'CHART_AGENT' || strat.startsWith('ML_') || strat === 'LSTM_DIRECTION'
+      || strat === 'RL_PPO_AGENT' || strat === 'TCN_MULTI_HORIZON'
+      || strat === 'VAE_REGIME_DETECTOR' || strat === 'TRANSFORMER_SIGNAL'
+      || strat === 'GNN_CROSS_ASSET'
+    ) ? 'BOTH' : 'LONG_ONLY';
+  }
+  if (out.trailing_stop_percent == null) out.trailing_stop_percent = 2;
+  if (out.tp_mode == null) out.tp_mode = 'percent';
+  return out;
+}
+
+/**
+ * Full replace payload for optimizer / chart / scanner apply paths.
+ * Seeds risk/pin fields from `current`, overlays winner `cfg` + optional `extras`,
+ * then strips keys that are not valid for the target strategy.
+ *
+ * @param {string} strategy
+ * @param {Record<string, unknown>} cfg
+ * @param {{ current?: Record<string, unknown>, extras?: Record<string, unknown> | null }} [opts]
+ */
+export function buildAppliedDeployConfig(strategy, cfg = {}, opts = {}) {
+  const current = opts.current && typeof opts.current === 'object' ? opts.current : {};
+  const extras = opts.extras && typeof opts.extras === 'object' ? opts.extras : {};
+  return pickDeployConfig(strategy, {
+    allocation: current.allocation,
+    trailing_stop_percent: current.trailing_stop_percent,
+    take_profit_percent: current.take_profit_percent,
+    tp_mode: current.tp_mode,
+    direction_mode: current.direction_mode,
+    model_version: current.model_version,
+    model_symbol: current.model_symbol,
+    model_artifact: current.model_artifact,
+    ...(cfg || {}),
+    ...extras,
+  });
+}
+
+/** Confidence slider bounds — RL/TCN use non-probability scales. */
+export function confidenceRangeForStrategy(strategy) {
+  const strat = String(strategy || '').toUpperCase();
+  if (strat === 'RL_PPO_AGENT') return { min: 0.15, max: 0.8, step: 0.01, defaultValue: 0.28 };
+  if (strat === 'TCN_MULTI_HORIZON') return { min: 0.0005, max: 0.05, step: 0.0005, defaultValue: 0.002 };
+  return { min: 0.4, max: 1, step: 0.05, defaultValue: 0.55 };
 }
 
 export function isFieldVisible(field, draft) {
@@ -411,8 +695,12 @@ export function formatBotConfigValue(key, value, meta = fieldMeta(key)) {
     const MODE_LABELS = { wilson: 'Wilson buckets', gbm: 'GBM classifier', hybrid: 'Hybrid (GBM + Wilson)' };
     return { text: MODE_LABELS[String(value).toLowerCase()] ?? String(value), tone: 'default' };
   }
-  if (kind === 'confidence' && typeof value === 'number') {
-    return { text: `${Math.round(value * 100)}%`, tone: 'default' };
+  if ((kind === 'confidence' || kind === 'range' || kind === 'probability') && typeof value === 'number') {
+    // Probability-style gates (≥0.1) as %; TCN-scale magnitudes stay decimal.
+    if (value >= 0.1 && value <= 1) {
+      return { text: `${Math.round(value * 100)}%`, tone: 'default' };
+    }
+    return { text: String(value), tone: 'default' };
   }
   if (kind === 'percent' && typeof value === 'number') {
     return { text: `${value}%`, tone: 'default' };

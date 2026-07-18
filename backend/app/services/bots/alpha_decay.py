@@ -231,6 +231,44 @@ class AlphaDecayMonitor:
                             f"(expected {train_win_rate:.2f})"
                         )
 
+            # --- Metric 6: ML Model Staleness ---
+            try:
+                from app.services.bots.ml_retrain_scheduler import (
+                    get_model_age_hours,
+                    get_model_metadata,
+                )
+                from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+
+                if is_ml_strategy(strategy):
+                    model_age = get_model_age_hours(strategy, symbol)
+                    max_age = float(cfg.get("ml_max_model_age_hours", 168))
+                    if model_age is not None and model_age > max_age:
+                        decay_reasons.append(
+                            f"ML Model Stale: Model is {model_age:.0f}h old "
+                            f"(max {max_age:.0f}h)"
+                        )
+                    elif model_age is None:
+                        decay_reasons.append(
+                            "ML Model Missing: No trained model found for this symbol"
+                        )
+
+                    # --- Metric 7: OOS Accuracy Drift ---
+                    model_meta = get_model_metadata(strategy, symbol)
+                    if model_meta:
+                        wf_accuracy = model_meta.get("metrics", {}).get("val_accuracy")
+                        if wf_accuracy is not None and len(rows) >= ALPHA_DECAY_MIN_TRADES:
+                            pnls_ml = [float(r[0]) for r in rows]
+                            live_win_rate_ml = sum(1 for p in pnls_ml if p > 0) / len(pnls_ml)
+                            # Significant degradation: live win rate > 15% below
+                            # the training validation accuracy
+                            if live_win_rate_ml < wf_accuracy - 0.15:
+                                decay_reasons.append(
+                                    f"ML Accuracy Drift: Live win rate {live_win_rate_ml:.1%} "
+                                    f"is >15% below training accuracy {wf_accuracy:.1%}"
+                                )
+            except ImportError:
+                pass  # ML modules not installed
+
             # --- Decay Remediation Actions ---
             if decay_reasons:
                 logger.warning("Alpha Decay detected for bot %s (%s): %s", bot_id, symbol, "; ".join(decay_reasons))
@@ -240,8 +278,31 @@ class AlphaDecayMonitor:
                     "reasons": decay_reasons,
                 })
 
-                # Retrain model if configured and the bot has a meta-label model
+                # ML-specific retrain: use the retrain scheduler for ML strategies
+                ml_retrained = False
                 if ALPHA_DECAY_AUTO_RETRAIN:
+                    try:
+                        from app.services.bots.ml_walk_forward_validator import is_ml_strategy as _is_ml
+                        from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+
+                        if _is_ml(strategy):
+                            scheduler = get_retrain_scheduler()
+                            should, reason = scheduler.should_retrain(strategy, symbol, alpha_score=0.8)
+                            if should:
+                                scheduler.record_retrain(strategy, symbol)
+                                results["retrained_models"].append(bot_id)
+                                ml_retrained = True
+                                await self.bot_manager.log_bot_event(
+                                    bot_id,
+                                    "INFO",
+                                    f"Alpha Decay: ML retrain scheduled ({reason}). "
+                                    f"Model will be retrained with walk-forward validation.",
+                                )
+                    except ImportError:
+                        pass
+
+                # Retrain meta-label model (existing behavior, for non-ML strategies)
+                if ALPHA_DECAY_AUTO_RETRAIN and not ml_retrained:
                     try:
                         import asyncio
                         retrain_res = await asyncio.to_thread(train_meta_label_model, bot_id)

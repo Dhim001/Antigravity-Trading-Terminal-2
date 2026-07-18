@@ -96,6 +96,27 @@ def trim_results_for_wire(results: dict[str, Any] | None) -> dict[str, Any]:
                 trimmed_bench[key] = val
         out["benchmark_overlays"] = trimmed_bench
 
+    rl = out.get("rl_data")
+    if isinstance(rl, dict):
+        steps = rl.get("episode_steps")
+        if isinstance(steps, list) and len(steps) > 400:
+            stride = max(1, len(steps) // 400)
+            slim_steps = []
+            for step in steps[::stride]:
+                if not isinstance(step, dict):
+                    continue
+                s = dict(step)
+                obs = s.get("observation")
+                if isinstance(obs, list) and len(obs) > 16:
+                    s["observation"] = obs[:16]
+                slim_steps.append(s)
+            rl = {**rl, "episode_steps": slim_steps}
+        for key in ("position_trajectory", "reward_accumulation"):
+            series = rl.get(key) if isinstance(rl, dict) else None
+            if isinstance(series, list) and len(series) > 800:
+                rl = {**rl, key: _downsample_series(series, 800)}
+        out["rl_data"] = rl
+
     return out
 
 

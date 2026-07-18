@@ -482,6 +482,8 @@ async def _execute_backtest(
             meta["strategy"] = strategy
             meta["portfolio"] = True
             meta["portfolio_symbols"] = portfolio_symbols
+            meta["symbol"] = f"PORTFOLIO:{len(portfolio_symbols)}"
+            meta["portfolio_label"] = f"Portfolio · {len(portfolio_symbols)} symbols"
             meta["live_parity"] = config.get("live_parity", config.get("sim_mode", "live_aligned") == "live_aligned")
             meta["config"] = {
                 "direction_mode": str(config.get("direction_mode") or "LONG_ONLY").upper(),
@@ -945,6 +947,7 @@ async def _execute_backtest(
                     if not isinstance(results, dict):
                         return False
                     summary = results.get("summary") or {}
+                    from app.services.bots.backtest_walk_forward import slim_ml_metrics_for_sweep
                     row = {
                         "label": sweep_label(run_config),
                         "config": run_config,
@@ -952,6 +955,9 @@ async def _execute_backtest(
                         "total_pnl": results.get("total_pnl"),
                         "trade_count": results.get("trade_count"),
                     }
+                    slim_ml = slim_ml_metrics_for_sweep(results.get("ml_metrics"))
+                    if slim_ml:
+                        row["ml_metrics"] = slim_ml
                     if summary.get("filter_rejects"):
                         row["filter_rejects"] = summary["filter_rejects"]
                         row["filter_rejects_total"] = summary.get("filter_rejects_total")
@@ -964,6 +970,7 @@ async def _execute_backtest(
                                 "total_pnl": best_result.get("total_pnl"),
                                 "summary": best_result.get("summary") or {},
                                 "trade_count": best_result.get("trade_count"),
+                                "ml_metrics": best_result.get("ml_metrics"),
                             },
                             sweep_objective,
                         )

@@ -560,6 +560,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                     <BotConfigPanel
                       botId={bot.id}
                       strategy={bot.strategy}
+                      symbol={bot.symbol}
                       config={bot.config}
                       botStatus={bot.status}
                       botTimeframe={bot.timeframe}

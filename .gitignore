@@ -82,6 +82,23 @@ backend/data/*.json
 backend/data/archive_wal/
 backend/data/meta_label_models/
 
+# Trained ML / DL / RL artifacts (ONNX, joblib, scalers, version snapshots)
+backend/data/ml_signal_models/
+backend/data/lstm_signal_models/
+backend/data/rl_ppo_models/
+backend/data/tcn_signal_models/
+backend/data/vae_regime_models/
+backend/data/transformer_signal_models/
+backend/data/gnn_signal_models/
+*.onnx
+*.joblib
+*.pkl
+*.pt
+*.pth
+
+# Frontend production build (also matched by dist/)
+frontend/dist/
+
 # Optional Parquet archive export (ARCHIVE_PARQUET_DIR)
 backend/archive_parquet/
 

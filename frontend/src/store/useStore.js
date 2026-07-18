@@ -23,6 +23,12 @@ import {
   snapshotRevisions,
 } from '../services/candleRevisions';
 import { isOrderBookRetentionEnabled } from '../services/orderBookInterest';
+import { pickDeployConfig } from '../lib/botConfigDisplay';
+import {
+  defaultAllocationFor,
+  getStrategyMeta,
+  ML_STRATEGY_IDS,
+} from '../config/strategies';
 
 const initialSnapshot = hydrateFromSnapshot();
 const hmrRev = getHmrData()?.zustandSnapshot;
@@ -135,6 +141,27 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     { id: 't8', name: 'ICT Smart Money', strategy: 'ICT_SMC', category: 'smc', execution_mode: 'BAR_CLOSE', allocation: 2000, config: { ob_lookback: 10, fvg_min_gap_pct: 0.0005, sweep_lookback: 20, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't9', name: 'Donchian Breakout', strategy: 'DONCHIAN_BREAKOUT', category: 'breakout', execution_mode: 'BAR_CLOSE', allocation: 3000, config: { breakout_length: 20, exit_length: 10, atr_confirm_mult: 1.0, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't10', name: 'Market Maker', strategy: 'MARKET_MAKING', category: 'market_making', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { spread_pct: 0.002, max_skew: 0.5, vol_shutdown_mult: 2.5, inventory_target: 0, trailing_stop_percent: 1, tp_mode: 'none', direction_mode: 'BOTH' } },
+    { id: 't11', name: 'Absorption Agent', strategy: 'ABSORPTION_AGENT', category: 'agent', execution_mode: 'BAR_CLOSE', allocation: 2000, config: pickDeployConfig('ABSORPTION_AGENT', { min_confidence: 0.55, trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent', direction_mode: 'BOTH' }) },
+    ...ML_STRATEGY_IDS.map((id, i) => {
+      const meta = getStrategyMeta(id);
+      const allocation = defaultAllocationFor(id);
+      return {
+        id: `t-ml-${i + 1}`,
+        name: meta.label,
+        strategy: id,
+        category: 'ml',
+        execution_mode: 'BAR_CLOSE',
+        allocation,
+        config: pickDeployConfig(id, {
+          min_confidence: id === 'RL_PPO_AGENT' ? 0.28 : id === 'TCN_MULTI_HORIZON' ? 0.002 : 0.55,
+          trailing_stop_percent: 2,
+          take_profit_percent: 3,
+          tp_mode: 'percent',
+          direction_mode: 'BOTH',
+          allocation,
+        }),
+      };
+    }),
   ],
   selectedBotId: null,
   botDetail: null,
@@ -395,6 +422,12 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     setLocal('terminal_bot_config', next);
     return { botConfig: next };
   }),
+  /** Replace deploy config entirely (template switch) — avoids stale agent/ML keys. */
+  replaceBotConfig: (config) => {
+    const next = (config && typeof config === 'object') ? { ...config } : {};
+    setLocal('terminal_bot_config', next);
+    set({ botConfig: next });
+  },
   addBotLog: (log) => set((state) => {
     const entry = normalizeBotLogEntry(log, Date.now());
     const newLogs = [entry, ...state.botLogs];
@@ -416,16 +449,24 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setStrategyCatalog: (strategies) => {
     if (!Array.isArray(strategies) || strategies.length === 0) return;
     const templates = strategies
-      .filter(s => !s.custom)
-      .map((s) => ({
-        id: `catalog-${s.id}`,
-        name: s.name,
-        strategy: s.id,
-        category: s.category,
-        execution_mode: s.execution_mode || 'BAR_CLOSE',
-        allocation: 1000,
-        config: { ...(s.defaults || {}), allocation: 1000 },
-      }));
+      .filter((s) => !s.custom)
+      .map((s) => {
+        const allocation = Number(s.defaults?.allocation) > 0
+          ? Number(s.defaults.allocation)
+          : defaultAllocationFor(s.id);
+        return {
+          id: `catalog-${s.id}`,
+          name: s.name,
+          strategy: s.id,
+          category: s.category,
+          execution_mode: s.execution_mode || 'BAR_CLOSE',
+          allocation,
+          config: {
+            ...pickDeployConfig(s.id, { ...(s.defaults || {}), allocation }),
+            allocation,
+          },
+        };
+      });
     if (templates.length > 0) {
       set({ strategyTemplates: templates });
     }

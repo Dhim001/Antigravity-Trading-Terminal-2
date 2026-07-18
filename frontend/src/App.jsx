@@ -661,7 +661,7 @@ export default function App() {
         onClick={() => setPaletteOpen(false)}
         style={{ gridColumn: '1 / -1', gridRow: '3 / -1' }}
       >
-        <WorkspaceGrid key="v5-layout" viewMode={viewMode} />
+        <WorkspaceGrid key="v5-layout-ml" viewMode={viewMode} />
       </main>
       <MemoryDevBadge />
       <PwaInstallBanner />

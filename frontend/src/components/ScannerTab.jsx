@@ -29,6 +29,8 @@ import {
 import InsightOrderPreviewDialog from './InsightOrderPreviewDialog';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import { cn } from '@/lib/utils';
+import { pickDeployConfig } from '../lib/botConfigDisplay';
+import { defaultAllocationFor } from '../config/strategies';
 import { focusAnalyst, openScannerHub } from '../lib/intelligenceEvents';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
@@ -69,6 +71,7 @@ export default function ScannerTab() {
   const agentInsights = useResearchStore((s) => s.agentInsights);
   const tickerData = useStore((s) => s.tickerData);
   const setBotStrategy = useStore((s) => s.setBotStrategy);
+  const replaceBotConfig = useStore((s) => s.replaceBotConfig);
   const openBacktestLab = useResearchStore((s) => s.openBacktestLab);
   const botConfig = useStore((s) => s.botConfig);
   const botTimeframe = useStore((s) => s.botTimeframe);
@@ -218,6 +221,15 @@ export default function ScannerTab() {
   const openAlgoForSymbol = (row, tab = 'results') => {
     setActiveSymbol(row.symbol);
     setBotStrategy('CHART_AGENT');
+    replaceBotConfig(pickDeployConfig('CHART_AGENT', {
+      min_confidence: row.confidence ?? 0.55,
+      use_llm: false,
+      allocation: defaultAllocationFor('CHART_AGENT'),
+      trailing_stop_percent: 2,
+      take_profit_percent: 3,
+      tp_mode: 'percent',
+      direction_mode: 'BOTH',
+    }));
     window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
     openBacktestLab(tab);
     toast.message(`Algo opened for ${row.symbol}`);

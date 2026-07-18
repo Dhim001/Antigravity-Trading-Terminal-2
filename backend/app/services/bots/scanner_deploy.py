@@ -14,6 +14,9 @@ from app.config import (
     SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION,
     SCANNER_DEPLOY_MAX_CONCURRENT_BOTS,
     SCANNER_DEPLOY_BASE_ALLOCATION,
+    SCANNER_DEPLOY_BACKTEST_DAYS,
+    SCANNER_DEPLOY_MIN_WIN_RATE,
+    SCANNER_DEPLOY_MIN_TRADES,
     SCANNER_DEPLOY_STRATEGY,
     SCANNER_DEPLOY_TIMEFRAME,
     SCANNER_DEPLOY_AUTO_STOP_ON_DD,
@@ -127,26 +130,70 @@ class ScannerDeployAgent:
             except Exception as exc:
                 logger.warning("ScannerDeployAgent correlation check failed for %s: %s", symbol, exc)
 
-            # 5. Backtest Validation Gate
-            # We run a quick 7-day backtest.
+            # 5. Backtest Validation Gate — quick N-day run via BacktesterService API
             if not self.backtester:
                 results["skipped"].append({"symbol": symbol, "reason": "Backtester disabled/missing"})
                 continue
 
-            backtest_cfg = {
-                "symbol": symbol,
-                "strategy": SCANNER_DEPLOY_STRATEGY,
-                "timeframe": SCANNER_DEPLOY_TIMEFRAME,
-                "days": 7,
-            }
             try:
-                bt_result = await self.backtester.run_backtest(backtest_cfg)
-                bt_metrics = bt_result.get("metrics", {})
-                pnl = bt_metrics.get("net_profit", 0.0)
-                win_rate = bt_metrics.get("win_rate", 0.0)
-                
-                if pnl <= 0 or win_rate <= 50.0:
-                    results["skipped"].append({"symbol": symbol, "reason": f"Backtest failed: PnL={pnl:.2f}, WinRate={win_rate:.1f}%"})
+                import asyncio
+                from app.services.archive.resolve import resolve_backtest_candles
+
+                bt_days = max(1, int(SCANNER_DEPLOY_BACKTEST_DAYS or 7))
+                bt_config = {
+                    "allocation": float(SCANNER_DEPLOY_BASE_ALLOCATION),
+                    "timeframe": SCANNER_DEPLOY_TIMEFRAME,
+                    "pipeline_source": "scanner",
+                }
+                candles, _meta = await asyncio.to_thread(
+                    resolve_backtest_candles,
+                    symbol,
+                    feed,
+                    days=bt_days,
+                    timeframe=SCANNER_DEPLOY_TIMEFRAME,
+                )
+                if not candles or len(candles) < 50:
+                    results["skipped"].append({
+                        "symbol": symbol,
+                        "reason": f"Not enough history for {bt_days}d backtest ({len(candles or [])} bars)",
+                    })
+                    continue
+
+                bt_result = await asyncio.to_thread(
+                    self.backtester.run_backtest,
+                    symbol,
+                    SCANNER_DEPLOY_STRATEGY,
+                    bt_config,
+                    candles,
+                )
+                if not isinstance(bt_result, dict) or bt_result.get("error"):
+                    err = (bt_result or {}).get("error") if isinstance(bt_result, dict) else "invalid result"
+                    results["skipped"].append({"symbol": symbol, "reason": f"Backtest error: {err}"})
+                    continue
+
+                summary = bt_result.get("summary") if isinstance(bt_result.get("summary"), dict) else {}
+                pnl = float(bt_result.get("total_pnl") if bt_result.get("total_pnl") is not None else summary.get("total_pnl") or 0.0)
+                win_rate = float(
+                    bt_result.get("win_rate") if bt_result.get("win_rate") is not None else summary.get("win_rate") or 0.0
+                )
+                trade_count = int(
+                    bt_result.get("trade_count")
+                    if bt_result.get("trade_count") is not None
+                    else summary.get("total_trades") or 0
+                )
+
+                if (
+                    pnl <= 0
+                    or win_rate < float(SCANNER_DEPLOY_MIN_WIN_RATE)
+                    or trade_count < int(SCANNER_DEPLOY_MIN_TRADES)
+                ):
+                    results["skipped"].append({
+                        "symbol": symbol,
+                        "reason": (
+                            f"Backtest failed: PnL={pnl:.2f}, WinRate={win_rate:.1f}%, "
+                            f"Trades={trade_count}"
+                        ),
+                    })
                     continue
             except Exception as exc:
                 logger.warning("ScannerDeployAgent backtest failed for %s: %s", symbol, exc)

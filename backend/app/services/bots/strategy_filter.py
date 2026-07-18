@@ -4,12 +4,15 @@ Allows chaining a secondary strategy as a trend gate on the primary signal.
 Configuration (in bot config):
     "filter_strategy": "SUPERTREND_ADX"   # gate strategy name
     "filter_config":   {}                  # optional overrides for the gate strategy
-    "filter_mode":     "TREND_GATE"        # gate mode (only TREND_GATE supported now)
+    "filter_mode":     "TREND_GATE" | "REGIME_GATE"
 
 Behaviour:
     - Evaluates the filter strategy on the same bar data
-    - TREND_GATE mode: BUY signals require the filter to agree with bullish bias,
-      SELL signals require bearish bias. CLOSE signals always pass through.
+    - TREND_GATE: BUY requires non-bearish filter bias; SELL requires non-bullish.
+      CLOSE always passes.
+    - REGIME_GATE: blocks BUY/SELL when the filter reports regime_action=suppress
+      (VAE unstable). Auto-selected when filter_strategy is VAE_REGIME_DETECTOR
+      and filter_mode is omitted.
 """
 
 from __future__ import annotations
@@ -40,6 +43,9 @@ class StrategyFilter:
         if primary_signal == "CLOSE":
             return True, "exit_passthrough"
 
+        if self.mode == "REGIME_GATE":
+            return self._evaluate_regime_gate(df_row, primary_signal)
+
         if self.mode != "TREND_GATE":
             return True, "unknown_mode_passthrough"
 
@@ -68,6 +74,23 @@ class StrategyFilter:
             # On error, allow the signal through — fail open
             return True, "filter_error_passthrough"
 
+    def _evaluate_regime_gate(self, df_row: dict, primary_signal: str) -> tuple[bool, str]:
+        if primary_signal not in ("BUY", "SELL"):
+            return True, "regime_gate_passthrough"
+
+        try:
+            filter_result = self.filter.evaluate(df_row) or {}
+            action = str(filter_result.get("regime_action") or "").lower()
+            regime = str(filter_result.get("regime") or "").lower()
+            score = filter_result.get("anomaly_score")
+            if action == "suppress" or regime == "unstable":
+                score_bit = f" score={score}" if score is not None else ""
+                return False, f"Filter REGIME_GATE: unstable{score_bit}"
+            return True, f"Filter REGIME_GATE: {action or regime or 'ok'}"
+        except Exception as exc:
+            logger.warning("REGIME_GATE evaluation failed: %s", exc)
+            return True, "filter_error_passthrough"
+
 
 def build_filter_from_config(bot_config: dict) -> StrategyFilter | None:
     """Create a StrategyFilter from bot config, or None if not configured."""
@@ -77,8 +100,20 @@ def build_filter_from_config(bot_config: dict) -> StrategyFilter | None:
 
     from app.services.bots.strategies import get_strategy
 
-    filter_config = (bot_config or {}).get("filter_config", {})
-    mode = (bot_config or {}).get("filter_mode", "TREND_GATE")
+    filter_config = dict((bot_config or {}).get("filter_config") or {})
+    # Inherit model pinning from primary bot when filter is VAE.
+    if filter_name.upper() == "VAE_REGIME_DETECTOR":
+        for key in ("model_symbol", "model_version", "anomaly_threshold", "suppress_threshold"):
+            if key not in filter_config and (bot_config or {}).get(key) not in (None, ""):
+                filter_config[key] = bot_config[key]
+
+    raw_mode = (bot_config or {}).get("filter_mode")
+    if raw_mode:
+        mode = str(raw_mode).strip().upper()
+    elif filter_name.upper() == "VAE_REGIME_DETECTOR":
+        mode = "REGIME_GATE"
+    else:
+        mode = "TREND_GATE"
 
     try:
         instance = get_strategy(filter_name, filter_config)

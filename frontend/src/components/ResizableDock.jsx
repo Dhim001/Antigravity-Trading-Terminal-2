@@ -21,7 +21,7 @@ import { selectCashTotal } from '../store/selectors';
 import {
   Briefcase, List, Landmark, Cpu, Activity, TrendingUp,
   Play, Settings, Trash2, XSquare, Maximize2, Minimize2, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Zap, History, Brain, Radar, MessageSquare, ChevronUp, Loader2,
+  RefreshCw, AlertTriangle, Zap, History, Brain, Radar, MessageSquare, ChevronUp, Loader2, BrainCircuit,
 } from 'lucide-react';
 import TradeHistoryContent from './TradeHistoryPanel';
 import BacktestResultsPanel from './BacktestResultsPanel';
@@ -46,6 +46,7 @@ const BotHistoryTab = lazy(() => import('./BotHistoryTab'));
 const AnalystTab = lazy(() => import('./AnalystTab'));
 const ScannerTab = lazy(() => import('./ScannerTab'));
 const CopilotTab = lazy(() => import('./dock/CopilotTab'));
+const ModelTrainingDashboard = lazy(() => import('./dock/ModelTrainingDashboard'));
 const EquityCurveTab = lazy(() => import('./EquityCurveTab'));
 
 function DockTabFallback() {
@@ -95,7 +96,7 @@ const DOCK_MAX = 560;
 const DOCK_DEFAULT = 320;
 
 const DOCK_TAB_IDS = new Set([
-  'positions', 'orders', 'balances', 'algo', 'scanner', 'analyst', 'copilot',
+  'positions', 'orders', 'balances', 'algo', 'scanner', 'analyst', 'copilot', 'ml-training',
   'reconcile', 'bots', 'ticks', 'history', 'equity',
 ]);
 
@@ -302,6 +303,7 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
       { id: 'scanner',   label: 'Scanner',   icon: Radar,    badge: scanBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full scanner workspace' },
       { id: 'analyst',   label: 'Analyst',   icon: Brain,    badge: analystBadge, group: 'intelligence', hint: 'Quick peek — open Hub (⌘I) for full analyst history' },
       { id: 'copilot',   label: 'Copilot',   icon: MessageSquare, group: 'intelligence', hint: 'Natural-language control of portfolio, bots, and analysis' },
+      { id: 'ml-training', label: 'ML Training', icon: BrainCircuit, group: 'intelligence', hint: 'Train and version ML models per symbol' },
       { id: 'reconcile', label: 'Reconcile', icon: AlertTriangle, badge: ambiguousCount || null, group: 'automation' },
       { id: 'bots',      label: 'Bot History', icon: History, badge: botHistoryCount || null, group: 'automation' },
       { id: 'ticks',     label: 'Ticks',     icon: Zap,      group: 'data' },
@@ -360,6 +362,11 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         {isDetached('copilot') && (
           <DetachedPanelPortal title="Copilot" onClose={() => attach('copilot')}>
             <DetachedLazyPanel><CopilotTab /></DetachedLazyPanel>
+          </DetachedPanelPortal>
+        )}
+        {isDetached('ml-training') && (
+          <DetachedPanelPortal title="ML Training" onClose={() => attach('ml-training')}>
+            <DetachedLazyPanel><ModelTrainingDashboard /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('reconcile') && (
@@ -476,6 +483,11 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         {isDetached('copilot') && (
           <DetachedPanelPortal title="Copilot" onClose={() => attach('copilot')}>
             <DetachedLazyPanel><CopilotTab /></DetachedLazyPanel>
+          </DetachedPanelPortal>
+        )}
+        {isDetached('ml-training') && (
+          <DetachedPanelPortal title="ML Training" onClose={() => attach('ml-training')}>
+            <DetachedLazyPanel><ModelTrainingDashboard /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('reconcile') && (
@@ -622,62 +634,80 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
           </div>
 
           <div className="dock-tab-panels">
-          <TabsContent value="positions" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="positions" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Positions">
               {renderMountedTab('positions', PositionsTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="orders" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="orders" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Orders">
               {renderMountedTab('orders', OrdersTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="balances" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="balances" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Balances">
               {renderMountedTab('balances', BalancesTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="algo" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="algo" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Algo Bot">
               {renderMountedTab('algo', AlgoTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="scanner" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="scanner" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Scanner">
               {renderMountedTab('scanner', ScannerTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="analyst" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="analyst" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Chart Analyst">
               {renderMountedTab('analyst', AnalystTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="copilot" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="copilot" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Trade Copilot">
               {renderMountedTab('copilot', CopilotTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="reconcile" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="ml-training" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+            <ErrorBoundary name="Model Training">
+              {renderMountedTab('ml-training', ModelTrainingDashboard, { suspense: true })}
+            </ErrorBoundary>
+          </TabsContent>
+          <TabsContent value="reconcile" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Reconciliation">
               {renderMountedTab('reconcile', ReconciliationTab)}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="bots" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="bots" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Bot History">
               {renderMountedTab('bots', BotHistoryTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="ticks" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="ticks" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Ticks">
               {renderMountedTab('ticks', TickViewerTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="equity" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="equity" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Equity curve">
               {renderMountedTab('equity', EquityCurveTab, { suspense: true })}
             </ErrorBoundary>
           </TabsContent>
-          <TabsContent value="history" className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
+          <TabsContent value="history" forceMount
+            className="dock-tab-body dock-tab-body--cached mt-0 overflow-hidden">
             <ErrorBoundary name="Trade history">
               {mountTab('history') && !historyFullscreen && <TradeHistoryContent embedded />}
             </ErrorBoundary>

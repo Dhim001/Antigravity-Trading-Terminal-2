@@ -105,16 +105,23 @@ export function formatBacktestDaysChip(meta, fallbackDays) {
 export function formatBacktestTitle(meta, { fallbackDays, fallbackTimeframe } = {}) {
   const tf = meta?.timeframe ?? fallbackTimeframe ?? '1m';
   const { requested, replayedDays, hasMismatch } = resolveBacktestRange(meta);
-
+  const portfolioN = Array.isArray(meta?.portfolio_symbols) ? meta.portfolio_symbols.length : null;
+  let rangeTitle;
   if (hasMismatch && replayedDays != null) {
     if (replayedDays >= 1) {
       const rounded = Math.max(1, Math.round(replayedDays));
-      return `${rounded}-Day · ${tf} Backtest`;
+      rangeTitle = `${rounded}-Day · ${tf} Backtest`;
+    } else {
+      rangeTitle = `${(replayedDays * 24).toFixed(0)}h · ${tf} Backtest`;
     }
-    return `${(replayedDays * 24).toFixed(0)}h · ${tf} Backtest`;
+  } else {
+    const days = requested ?? fallbackDays ?? '?';
+    rangeTitle = `${days}-Day · ${tf} Backtest`;
   }
-  const days = requested ?? fallbackDays ?? '?';
-  return `${days}-Day · ${tf} Backtest`;
+  if (!meta?.portfolio) return rangeTitle;
+  const label = meta.portfolio_label
+    || (portfolioN != null ? `Portfolio · ${portfolioN} symbols` : 'Portfolio');
+  return `${label} · ${rangeTitle}`;
 }
 
 export function fmtBacktestRange(meta) {

@@ -711,6 +711,12 @@ def summarize_basket_correlation(
         "message": message,
         "lookback_days": matrix_data.get("period"),
         "source": matrix_data.get("source"),
+        # Full matrix for Lab heatmap (same order as symbols).
+        "matrix": matrix,
+        "period": matrix_data.get("period"),
+        "mode": matrix_data.get("mode") or "price",
+        "return_type": matrix_data.get("return_type") or "log",
+        "common_days": matrix_data.get("common_days"),
     }
 
 

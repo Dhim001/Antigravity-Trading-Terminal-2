@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 
 from starlette.applications import Starlette
@@ -38,6 +40,8 @@ from app.config import (
     WS_PORT,
 )
 from app.api.http.auth import ApiKeyMiddleware
+
+logger = logging.getLogger(__name__)
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.backtest_store import get_backtest_run, get_backtest_trades, list_backtest_runs
 from app.services.bots.optimization_store import get_optimization_run, list_optimization_runs
@@ -299,6 +303,694 @@ async def health(request: Request) -> JSONResponse:
 
 async def list_strategies(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "strategies": list_strategy_catalog()})
+
+
+async def ml_model_status(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/model-status?symbol=X&strategy=Y — check if model exists."""
+    symbol = (request.query_params.get("symbol") or "").upper()
+    strategy = (request.query_params.get("strategy") or "").upper()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+
+    model_loaders = {
+        "ML_SIGNAL_BOOST": lambda s: _ml_model_status_xgb(s),
+        "LSTM_DIRECTION": lambda s: _ml_model_status_onnx(s, "lstm_signal_models", onnx_name="lstm_direction.onnx"),
+        "RL_PPO_AGENT": lambda s: _ml_model_status_onnx(s, "rl_ppo_models", onnx_name="ppo_policy.onnx"),
+        "TCN_MULTI_HORIZON": lambda s: _ml_model_status_onnx(s, "tcn_signal_models", onnx_name="tcn_multi_horizon.onnx"),
+        "VAE_REGIME_DETECTOR": lambda s: _ml_model_status_onnx(s, "vae_regime_models", onnx_name="vae_regime.onnx"),
+        "TRANSFORMER_SIGNAL": lambda s: _ml_model_status_onnx(s, "transformer_signal_models", onnx_name="transformer_signal.onnx"),
+        "GNN_CROSS_ASSET": lambda s: _ml_model_status_onnx(s, "gnn_signal_models", onnx_name="gnn_cross_asset.onnx"),
+    }
+    loader = model_loaders.get(strategy)
+    if not loader:
+        return JSONResponse({"ok": True, "trained": False, "error": "unknown strategy"})
+
+    result = loader(symbol)
+    return JSONResponse({"ok": True, **result})
+
+
+def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
+    from app.services.bots.ml_model_artifacts import (
+        dataset_summary_from_metadata,
+        list_model_versions,
+    )
+
+    versions = list_model_versions(model_dir)
+    dataset = dataset_summary_from_metadata(meta)
+    return {
+        "trained": True,
+        "trained_at": meta.get("trained_at"),
+        "model_version": meta.get("trained_at"),
+        "version_id": meta.get("version_id"),
+        "metrics": meta.get("metrics", {}),
+        "loss_history": meta.get("loss_history") or meta.get("train_history"),
+        "train_history": meta.get("train_history"),
+        "artifact": artifact,
+        "model_type": meta.get("model_type"),
+        "versions": versions,
+        "dataset": dataset,
+    }
+
+
+def _ml_model_status_xgb(symbol: str) -> dict:
+    import os, json
+    from app.config import BASE_DIR
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in symbol)
+    model_dir = os.path.join(BASE_DIR, "data", "ml_signal_models", safe)
+    meta_path = os.path.join(model_dir, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return {"trained": False, "versions": [], "dataset": None}
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        artifact = "model.joblib"
+        art_path = os.path.join(model_dir, artifact)
+        out = _ml_status_enrich(model_dir, meta, artifact if os.path.isfile(art_path) else None)
+        out["model_type"] = meta.get("model_type") or "xgboost"
+        return out
+    except Exception:
+        return {"trained": False, "versions": [], "dataset": None}
+
+
+def _ml_model_status_onnx(symbol: str, subdir: str, onnx_name: str = "model.onnx") -> dict:
+    import os, json
+    from app.config import BASE_DIR
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in symbol)
+    model_dir = os.path.join(BASE_DIR, "data", subdir, safe)
+    meta_path = os.path.join(model_dir, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return {"trained": False, "versions": [], "dataset": None}
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        art_path = os.path.join(model_dir, onnx_name)
+        return _ml_status_enrich(
+            model_dir, meta, onnx_name if os.path.isfile(art_path) else None
+        )
+    except Exception:
+        return {"trained": False, "versions": [], "dataset": None}
+
+
+def _normalize_ml_symbol(symbol: str) -> str:
+    """Map bare crypto bases to terminal pairs; leave equities unchanged."""
+    from app.config import CRYPTO_SYMBOLS, _normalize_crypto_watch_symbol
+    from app.services.massive_symbols import is_crypto_terminal_symbol
+
+    raw = (symbol or "").strip().upper()
+    if not raw:
+        return raw
+    if (
+        raw in CRYPTO_SYMBOLS
+        or is_crypto_terminal_symbol(raw)
+        or f"{raw}USDT" in CRYPTO_SYMBOLS
+        or raw in {"BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE"}
+    ):
+        return _normalize_crypto_watch_symbol(raw) or raw
+    return raw
+
+
+def _parse_ml_request_body(raw) -> tuple[dict | None, str | None]:
+    """Accept a JSON object, or a double-encoded JSON string from older clients."""
+    import json as _json
+
+    body = raw
+    if isinstance(body, str):
+        try:
+            body = _json.loads(body)
+        except Exception:
+            return None, "invalid JSON body"
+    if not isinstance(body, dict):
+        return None, "JSON body must be an object"
+    return body, None
+
+
+async def ml_train_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/train — trigger model training for a strategy + symbol."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+
+    # Fetch candles from live feed / archive
+    state: AppState = request.app.state.terminal
+    try:
+        candles = await _fetch_training_candles(state, symbol)
+    except Exception as exc:
+        logger.exception("Failed to fetch training candles for %s", symbol)
+        return JSONResponse({"ok": False, "error": f"failed to fetch candles: {exc}"}, status_code=500)
+
+    if len(candles) < 200:
+        return JSONResponse({"ok": False, "error": f"insufficient candles ({len(candles)})"}, status_code=400)
+
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    try:
+        candles = _enrich_training_candles(symbol, candles, strategy, config)
+    except Exception as exc:
+        logger.exception("Failed to enrich training candles for %s", symbol)
+        return JSONResponse({"ok": False, "error": f"indicator enrichment failed: {exc}"}, status_code=500)
+
+    trainers = {
+        "ML_SIGNAL_BOOST": _train_xgb,
+        "LSTM_DIRECTION": _train_lstm,
+        "RL_PPO_AGENT": _train_ppo,
+        "TCN_MULTI_HORIZON": _train_tcn,
+        "VAE_REGIME_DETECTOR": _train_vae,
+        "TRANSFORMER_SIGNAL": _train_transformer,
+        "GNN_CROSS_ASSET": _train_gnn,
+    }
+    trainer = trainers.get(strategy)
+    if not trainer:
+        return JSONResponse({"ok": False, "error": f"training not supported for {strategy}"}, status_code=400)
+
+    try:
+        import asyncio
+        result = await asyncio.to_thread(trainer, symbol, candles, config)
+    except Exception as exc:
+        logger.exception("ML training failed for %s/%s", strategy, symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    try:
+        import json as _json
+        payload = _json.loads(_json.dumps(result, default=str))
+    except Exception:
+        payload = {"ok": bool(result.get("ok")), "error": "training result not serializable"}
+    return JSONResponse(payload)
+
+
+async def _fetch_training_candles(
+    state: AppState,
+    symbol: str,
+    tf: str = "1m",
+    limit: int = 5000,
+) -> list[dict]:
+    """Pull historical candles for training from feed, archive, or Massive/Binance REST."""
+    import asyncio
+    import time
+
+    from app.config import TERMINAL_MODE
+    from app.services.bots.candle_source import get_bot_candles
+    from app.services.market.timeframes import normalize_timeframe
+
+    symbol = _normalize_ml_symbol(symbol)
+    tf = normalize_timeframe(tf or "1m")
+    feed = getattr(state, "feed", None) or getattr(getattr(state, "oms", None), "feed", None)
+    min_bars = max(200, min(int(limit or 5000), 10_000))
+
+    candles: list[dict] = []
+    if feed is not None:
+        candles = await asyncio.to_thread(
+            get_bot_candles,
+            symbol,
+            feed,
+            timeframe=tf,
+            min_bars=min_bars,
+        )
+        candles = [dict(c) for c in (candles or [])]
+
+    if len(candles) >= min(200, min_bars):
+        return candles
+
+    # Deep REST seed when live buffer/archive is shallow (common for newly chosen symbols).
+    def _deep_rest() -> list[dict]:
+        to_ts = int(time.time())
+        # ~1.2× bars in seconds for 1m; scale a bit for HT
+        span = max(3 * 86400, int(min_bars * 60 * 1.5))
+        from_ts = to_ts - span
+        info = None
+        if feed is not None:
+            info = getattr(feed, "_symbols", {}).get(symbol)
+
+        if TERMINAL_MODE == "LIVE_MASSIVE":
+            from app.services.archive.broker_fetch import fetch_massive_tf_candles
+
+            return fetch_massive_tf_candles(
+                symbol, from_ts, to_ts, tf, symbol_info=info,
+            ) or []
+
+        from app.services.massive_symbols import is_crypto_terminal_symbol as _is_crypto
+        from app.services.archive.broker_fetch import fetch_binance_1m_bars
+
+        if _is_crypto(symbol) and tf == "1m":
+            rows = fetch_binance_1m_bars(symbol, from_ts, to_ts) or []
+            # DB-shaped rows → OHLCV dicts
+            out = []
+            for r in rows:
+                out.append({
+                    "time": int(r.get("time") or r.get("bar_time") or 0),
+                    "open": float(r.get("open") or 0),
+                    "high": float(r.get("high") or 0),
+                    "low": float(r.get("low") or 0),
+                    "close": float(r.get("close") or 0),
+                    "volume": float(r.get("volume") or 0),
+                })
+            return out
+        return []
+
+    deep = await asyncio.to_thread(_deep_rest)
+    if deep:
+        return [dict(c) for c in deep]
+    return candles
+
+
+def _enrich_training_candles(
+    symbol: str, candles: list[dict], strategy: str, config: dict | None
+) -> list[dict]:
+    """Attach ATR / TA columns required by ML label + feature pipelines."""
+    from app.services.bots.screener import MarketScreenerService
+
+    screener = MarketScreenerService()
+    df = screener.process_candles(
+        symbol, candles, config or {}, strategy, full_history=True,
+    )
+    if df is None or getattr(df, "empty", True):
+        out = [dict(c) for c in (candles or [])]
+    else:
+        out = [dict(r) for r in df.to_dict("records")]
+    for row in out:
+        row.setdefault("_symbol", symbol)
+    return out
+
+def _train_xgb(symbol, candles, config):
+    from app.services.bots.strategies_ml import train_ml_signal_model
+    return train_ml_signal_model(symbol, candles, config=config)
+
+
+def _train_lstm(symbol, candles, config):
+    from app.services.bots.ml_lstm_trainer import train_lstm_signal_model
+    return train_lstm_signal_model(symbol, candles, config=config)
+
+
+def _train_ppo(symbol, candles, config):
+    from app.services.bots.rl_ppo_trainer import train_ppo_agent
+    return train_ppo_agent(symbol, candles, config=config, total_timesteps=config.get("total_timesteps", 30000))
+
+
+def _train_tcn(symbol, candles, config):
+    from app.services.bots.ml_tcn_trainer import train_tcn_model
+    return train_tcn_model(symbol, candles, config=config)
+
+
+def _train_vae(symbol, candles, config):
+    from app.services.bots.ml_vae_regime import train_vae_regime_model
+    return train_vae_regime_model(symbol, candles, config=config)
+
+
+def _train_transformer(symbol, candles, config):
+    from app.services.bots.ml_transformer_trainer import train_transformer_model
+    return train_transformer_model(symbol, candles, config=config)
+
+
+def _train_gnn(symbol, candles, config):
+    from app.services.bots.ml_gnn_trainer import train_gnn_model
+    return train_gnn_model(symbol, candles, config=config)
+
+
+def _run_ml_validate_job(
+    strategy: str,
+    symbol: str,
+    candles: list[dict],
+    config: dict,
+    *,
+    n_folds: int,
+    mode: str,
+    run_pbo: bool,
+    pbo_segments: int,
+) -> dict:
+    """CPU-bound WF (+ optional PBO). Must run off the event loop."""
+    from app.services.bots.ml_walk_forward_validator import walk_forward_ml_train
+
+    # Strategies look up models by symbol; UI config often omits it.
+    cfg = dict(config or {})
+    cfg.setdefault("symbol", symbol)
+    cfg.setdefault("model_symbol", symbol)
+    cfg["_wf_mode"] = True
+    cfg.setdefault("skip_refit", True)
+    cfg.setdefault("skip_snapshot", True)
+    cfg.setdefault("max_iter", 40)
+
+    strat_u = str(strategy or "").upper()
+    # RL fold training is expensive — keep interactive validate under the UI budget.
+    if strat_u == "RL_PPO_AGENT":
+        cfg.setdefault("total_timesteps", 2048)
+        cfg.setdefault("n_steps", 512)
+        cfg.setdefault("ppo_epochs", 2)
+        cfg.setdefault("hidden_dim", 64)
+        cfg.setdefault("validate_max_bars", 1200)
+        # Full CSCV PBO re-trains PPO many times; skip unless explicitly forced.
+        if run_pbo and not bool(cfg.get("force_pbo")):
+            run_pbo = False
+            cfg["_pbo_skipped"] = "rl_too_expensive"
+
+    # Cap history so interactive validation finishes within the UI timeout.
+    max_bars = int(cfg.get("validate_max_bars", 2500))
+    if len(candles) > max_bars:
+        candles = candles[-max_bars:]
+
+    wf_result = walk_forward_ml_train(
+        strategy, symbol, candles,
+        config=cfg, n_folds=n_folds, mode=mode,
+    )
+    result = dict(wf_result)
+    # Flatten aggregate for the Model Training panel.
+    agg = result.get("aggregate") if isinstance(result.get("aggregate"), dict) else {}
+    if result.get("ok") and agg.get("mean_oos_accuracy") is not None:
+        result.setdefault("mean_accuracy", agg.get("mean_oos_accuracy"))
+
+    if cfg.get("_pbo_skipped"):
+        result["pbo"] = {
+            "ok": False,
+            "skipped": True,
+            "error": (
+                "PBO skipped for RL_PPO_AGENT (too slow for interactive validate). "
+                "Set config.force_pbo=true to run anyway."
+            ),
+        }
+
+    if run_pbo and wf_result.get("ok"):
+        try:
+            from app.services.bots.ml_pbo_validator import compute_ml_pbo
+            result["pbo"] = compute_ml_pbo(
+                strategy, symbol, candles,
+                config=cfg,
+                n_segments=min(pbo_segments, 4),
+                max_combos=min(4, int(cfg.get("pbo_max_combos", 4))),
+            )
+        except Exception as exc:
+            logger.exception("PBO failed for %s/%s", strategy, symbol)
+            result["pbo"] = {"ok": False, "error": str(exc)}
+
+    return result
+
+
+def _json_safe(value):
+    """Coerce nested values into JSON-compliant types (no NaN/Inf/numpy)."""
+    import math
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    # numpy scalars / paths / datetimes
+    try:
+        import numpy as np
+
+        if isinstance(value, np.generic):
+            return _json_safe(value.item())
+    except Exception:
+        pass
+    if hasattr(value, "item") and callable(value.item):
+        try:
+            return _json_safe(value.item())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _ml_validate_json_response(payload: dict, *, status_code: int = 200) -> JSONResponse:
+    """Always emit application/json — never let Starlette fall back to plain text 500."""
+    try:
+        safe = _json_safe(payload if isinstance(payload, dict) else {"ok": False, "error": "invalid result"})
+        import json as _json
+
+        # Round-trip guarantees the body is JSON-serializable.
+        safe = _json.loads(_json.dumps(safe, allow_nan=False, default=str))
+    except Exception:
+        safe = {"ok": False, "error": "validation result not serializable"}
+        status_code = 200
+    return JSONResponse(safe, status_code=status_code)
+
+
+async def ml_validate_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/validate — run walk-forward validation + optional PBO."""
+    try:
+        try:
+            raw = await request.json()
+        except Exception:
+            return _ml_validate_json_response({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+        body, err = _parse_ml_request_body(raw)
+        if err:
+            return _ml_validate_json_response({"ok": False, "error": err}, status_code=400)
+
+        symbol = _normalize_ml_symbol(body.get("symbol") or "")
+        strategy = (body.get("strategy") or "").upper()
+        if not symbol or not strategy:
+            return _ml_validate_json_response(
+                {"ok": False, "error": "symbol and strategy required"},
+                status_code=400,
+            )
+
+        try:
+            n_folds = max(1, min(10, int(body.get("n_folds", 5))))
+        except (TypeError, ValueError):
+            n_folds = 5
+        mode = str(body.get("mode", "rolling") or "rolling").lower()
+        run_pbo = bool(body.get("pbo", False))
+        config = body.get("config") if isinstance(body.get("config"), dict) else {}
+        try:
+            pbo_segments = max(2, min(12, int(body.get("pbo_segments", 6))))
+        except (TypeError, ValueError):
+            pbo_segments = 6
+
+        state: AppState = request.app.state.terminal
+        try:
+            candles = await _fetch_training_candles(state, symbol, limit=10000)
+            candles = _enrich_training_candles(symbol, candles, strategy, config)
+        except Exception as exc:
+            logger.exception("Failed to fetch/enrich candles for validate %s", symbol)
+            return _ml_validate_json_response(
+                {"ok": False, "error": f"failed to fetch candles: {exc}"},
+            )
+
+        if len(candles) < 500:
+            return _ml_validate_json_response(
+                {"ok": False, "error": f"Need >= 500 candles for validation, got {len(candles)}"},
+                status_code=400,
+            )
+
+        for row in candles:
+            if isinstance(row, dict) and not row.get("_symbol"):
+                row["_symbol"] = symbol
+
+        try:
+            result = await asyncio.to_thread(
+                _run_ml_validate_job,
+                strategy,
+                symbol,
+                candles,
+                config,
+                n_folds=n_folds,
+                mode=mode,
+                run_pbo=run_pbo,
+                pbo_segments=pbo_segments,
+            )
+        except Exception as exc:
+            logger.exception("ML validate failed for %s/%s", strategy, symbol)
+            return _ml_validate_json_response(
+                {
+                    "ok": False,
+                    "error": str(exc) or "Validation failed",
+                    "strategy": strategy,
+                    "symbol": symbol,
+                },
+            )
+
+        if not isinstance(result, dict):
+            return _ml_validate_json_response(
+                {"ok": False, "error": "validation returned invalid result", "strategy": strategy, "symbol": symbol},
+            )
+
+        if result.get("ok") is False and not result.get("error"):
+            folds = result.get("folds") if isinstance(result.get("folds"), list) else []
+            fold_errs = [f.get("error") for f in folds if isinstance(f, dict) and f.get("error")]
+            result["error"] = fold_errs[0] if fold_errs else "Validation failed"
+
+        # Soft-fail: always 200 with ok flag so the UI can render fold details.
+        return _ml_validate_json_response(result)
+    except Exception as exc:
+        logger.exception("ml_validate_handler crashed")
+        return _ml_validate_json_response(
+            {"ok": False, "error": f"Validation failed: {exc}"},
+        )
+
+
+async def ml_retrain_status_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/retrain-status — list models needing retrain."""
+    from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+
+    state: AppState = request.app.state.terminal
+    bots = []
+    if hasattr(state, "bot_manager") and state.bot_manager:
+        for bot_id, bot in state.bot_manager.active_bots.items():
+            bots.append({
+                "strategy": bot.get("strategy"),
+                "symbol": bot.get("symbol"),
+            })
+
+    scheduler = get_retrain_scheduler()
+    actions = scheduler.check(bots)
+    return JSONResponse({"ok": True, "retrain_actions": actions})
+
+
+async def ml_activate_version_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/activate-version — promote a snapshot to current root."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    model_version = str(
+        body.get("model_version") or body.get("version_id") or body.get("trained_at") or ""
+    ).strip()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+    if not model_version:
+        return JSONResponse({"ok": False, "error": "model_version required"}, status_code=400)
+
+    from app.services.bots.ml_model_artifacts import (
+        activate_model_version,
+        invalidate_strategy_model_caches,
+        model_root_for,
+    )
+
+    if model_root_for(strategy, symbol) is None:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown strategy {strategy}"},
+            status_code=400,
+        )
+
+    try:
+        result = await asyncio.to_thread(activate_model_version, strategy, symbol, model_version)
+    except Exception as exc:
+        logger.exception("activate-version failed for %s/%s", strategy, symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+
+    invalidate_strategy_model_caches(strategy, symbol)
+
+    # Enrich like model-status so the UI can refresh in one round-trip.
+    root = model_root_for(strategy, symbol)
+    artifact = None
+    if strategy == "ML_SIGNAL_BOOST":
+        art = "model.joblib"
+    else:
+        from app.services.bots.ml_model_artifacts import STRATEGY_ARTIFACTS
+        arts = STRATEGY_ARTIFACTS.get(strategy) or []
+        art = next((a for a in arts if a.endswith(".onnx")), arts[0] if arts else None)
+    if root and art and os.path.isfile(os.path.join(root, art)):
+        artifact = art
+
+    meta = {}
+    meta_path = os.path.join(root, "metadata.json") if root else ""
+    if meta_path and os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+
+    enriched = _ml_status_enrich(root or "", meta if isinstance(meta, dict) else {}, artifact)
+    return JSONResponse({
+        "ok": True,
+        **enriched,
+        "activated_version_id": result.get("version_id"),
+        "activated_trained_at": result.get("trained_at"),
+    })
+
+
+async def ml_delete_version_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/delete-version — remove a non-active snapshot from disk."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    model_version = str(
+        body.get("model_version") or body.get("version_id") or body.get("trained_at") or ""
+    ).strip()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+    if not model_version:
+        return JSONResponse({"ok": False, "error": "model_version required"}, status_code=400)
+
+    from app.services.bots.ml_model_artifacts import (
+        delete_model_version,
+        model_root_for,
+    )
+
+    if model_root_for(strategy, symbol) is None:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown strategy {strategy}"},
+            status_code=400,
+        )
+
+    try:
+        result = await asyncio.to_thread(delete_model_version, strategy, symbol, model_version)
+    except Exception as exc:
+        logger.exception("delete-version failed for %s/%s", strategy, symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    if not result.get("ok"):
+        # 409 when active; 404 when missing
+        err_msg = str(result.get("error") or "")
+        status = 409 if "active version" in err_msg.lower() else 404
+        return JSONResponse(result, status_code=status)
+
+    # Refresh status payload so the UI can drop the row in one round-trip.
+    root = model_root_for(strategy, symbol)
+    artifact = None
+    if strategy == "ML_SIGNAL_BOOST":
+        art = "model.joblib"
+    else:
+        from app.services.bots.ml_model_artifacts import STRATEGY_ARTIFACTS
+        arts = STRATEGY_ARTIFACTS.get(strategy) or []
+        art = next((a for a in arts if a.endswith(".onnx")), arts[0] if arts else None)
+    if root and art and os.path.isfile(os.path.join(root, art)):
+        artifact = art
+
+    meta = {}
+    meta_path = os.path.join(root, "metadata.json") if root else ""
+    if meta_path and os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+
+    enriched = _ml_status_enrich(root or "", meta if isinstance(meta, dict) else {}, artifact)
+    return JSONResponse({
+        "ok": True,
+        **enriched,
+        "deleted_version_id": result.get("deleted_version_id"),
+        "deleted_trained_at": result.get("deleted_trained_at"),
+    })
 
 
 async def list_agent_insights(request: Request) -> JSONResponse:
@@ -1207,6 +1899,12 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/session", session_handler, methods=["GET"]),
         Route("/metrics", metrics, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),
+        Route("/api/v1/ml/model-status", ml_model_status, methods=["GET"]),
+        Route("/api/v1/ml/train", ml_train_handler, methods=["POST"]),
+        Route("/api/v1/ml/validate", ml_validate_handler, methods=["POST"]),
+        Route("/api/v1/ml/retrain-status", ml_retrain_status_handler, methods=["GET"]),
+        Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
+        Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/news/{symbol}", get_symbol_news_handler, methods=["GET"]),
         Route("/api/v1/llm/models", list_llm_models, methods=["GET"]),

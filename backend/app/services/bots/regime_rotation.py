@@ -104,6 +104,43 @@ class RegimeRotationAgent:
                 regime = "ranging"
                 target_strategy = "BRS_SCALPING"
 
+            # 2b. VAE meta hint — suppress rotation in unstable regimes;
+            # accelerate confirmation when anomalous (proposal §2.6).
+            required_streak = 3
+            vae_obs = None
+            try:
+                from app.services.bots.strategies_vae_regime import (
+                    assess_vae_regime_for_meta,
+                    vae_regime_gate_enabled,
+                )
+
+                if vae_regime_gate_enabled(cfg) or cfg.get("vae_regime_rotation_hint"):
+                    lookback_rows = [dict(r) for r in df.iloc[-25:-1].to_dict("records")]
+                    row_dict = dict(row)
+                    row_dict.setdefault("_symbol", symbol)
+                    assessment = assess_vae_regime_for_meta(
+                        symbol, row_dict, lookback_rows=lookback_rows, config=cfg
+                    )
+                    if assessment.regime_action == "suppress":
+                        logger.debug(
+                            "RegimeRotationAgent skipping bot %s — VAE unstable (%s)",
+                            bot_id,
+                            assessment.reason,
+                        )
+                        continue
+                    if assessment.regime_action in ("amplify", "caution"):
+                        required_streak = 1
+                    if assessment.model_available:
+                        vae_obs = Observation(
+                            "vae_regime",
+                            "danger" if assessment.regime_action == "caution" else "neutral",
+                            0.80,
+                            assessment.reason,
+                            {"anomaly_score": assessment.anomaly_score},
+                        )
+            except Exception as exc:
+                logger.debug("VAE regime rotation hint failed for %s: %s", bot_id, exc)
+
             # 3. Memory and hysteresis logic
             if bot_id not in self.bot_memories:
                 self.bot_memories[bot_id] = WorkingMemory()
@@ -117,13 +154,16 @@ class RegimeRotationAgent:
             if current_strategy == target_strategy:
                 continue
 
-            if streak < 3:
-                # Wait for 3 consecutive cycles of the new regime before rotating
+            if streak < required_streak:
+                # Wait for consecutive cycles of the new regime before rotating
                 continue
 
             # Build reasoning chain for rotation
             obs_adx = Observation("ADX", "trending" if float(adx_val) > 25 else "ranging", 0.90, f"ADX is {float(adx_val):.2f}", {"adx": float(adx_val)})
             obs_vol = Observation("ATR_ratio", "danger" if ratio >= 1.5 else "neutral", 0.90, f"ATR ratio is {ratio:.2f}", {"ratio": ratio})
+            observations = [obs_adx, obs_vol]
+            if vae_obs is not None:
+                observations.append(vae_obs)
             uncertainty_sources = []
             if len(ohlcv) < 200:
                 uncertainty_sources.append(f"Small sample size for indicators ({len(ohlcv)} bars).")
@@ -131,7 +171,7 @@ class RegimeRotationAgent:
             recommendation_strength = "strong" if streak >= 5 else "moderate"
 
             reasoning = AgentReasoning(
-                observations=[obs_adx, obs_vol],
+                observations=observations,
                 synthesis=f"Market regime shifted to {regime} (Streak: {streak}).",
                 decision="ROTATE",
                 confidence=0.85 + (min(streak, 10) * 0.01),

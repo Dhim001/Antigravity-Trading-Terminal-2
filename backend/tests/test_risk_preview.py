@@ -77,6 +77,9 @@ class TestBasketCorrelation(unittest.TestCase):
             out = summarize_basket_correlation(["AAPL", "MSFT"], threshold=0.7)
         self.assertTrue(out["warning"])
         self.assertEqual(len(out["high_pairs"]), 1)
+        self.assertEqual(out["matrix"], [[1.0, 0.85], [0.85, 1.0]])
+        self.assertEqual(out["symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(out["period"], "60d")
 
 
 if __name__ == "__main__":

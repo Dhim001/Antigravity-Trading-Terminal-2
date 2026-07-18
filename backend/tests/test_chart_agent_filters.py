@@ -153,6 +153,7 @@ class TestChartAgentFilters(unittest.TestCase):
         snap = compact_insight_snapshot(_insight())
         self.assertEqual(snap["signal"], "BUY")
         self.assertIn("sub_reports", snap)
+        self.assertIn("regime", snap)
 
 
 class TestChartAgentStrategyIntegration(unittest.TestCase):

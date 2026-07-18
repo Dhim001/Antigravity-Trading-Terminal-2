@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 from datetime import datetime, timezone
 
 from app.config import BOT_DAILY_LOSS_LIMIT_PCT
@@ -25,14 +26,52 @@ from app.services.bots.strategy_filter import build_filter_from_config
 from app.services.bots.strategy_runtime import (
     ExecutionChain,
     apply_indicator_parity_gates,
+    apply_vae_regime_meta_gate,
     chart_filter_reject_block,
 )
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
+from app.services.bots.backtest_category_metrics import (
+    CategoryMetricsCollector,
+    load_ml_feature_importance,
+)
 
 _SIM_MODES = frozenset({"live_aligned", "research"})
 _MIN_QTY = 0.001
 _DEFAULT_ALLOCATION = 10_000.0
 MAX_BLOCKED_EVENTS = 200
+_DEFAULT_STOP_PCT = 0.02
+
+
+def _resolve_entry_stop(
+    side: str,
+    price: float,
+    signal_data: dict | None,
+) -> tuple[float | None, str | None]:
+    """Return (stop_price, error_reason). Tolerates None/missing stop_loss_distance."""
+    data = signal_data or {}
+    price = float(price or 0)
+    if price <= 0:
+        return None, "invalid price"
+
+    raw_price = data.get("stop_loss_price")
+    if raw_price is not None and raw_price != "":
+        try:
+            stop = float(raw_price)
+        except (TypeError, ValueError):
+            return None, "invalid stop_loss_price"
+    else:
+        raw_dist = data.get("stop_loss_distance")
+        try:
+            dist = float(raw_dist) if raw_dist is not None and raw_dist != "" else 0.0
+        except (TypeError, ValueError):
+            dist = 0.0
+        if dist <= 0:
+            dist = price * _DEFAULT_STOP_PCT
+        stop = price - dist if str(side).upper() == "BUY" else price + dist
+
+    if abs(stop - price) <= 0:
+        return None, "zero stop distance"
+    return stop, None
 
 
 def _append_blocked_event(
@@ -426,7 +465,14 @@ class BacktesterService:
         if not candles or len(candles) < 50:
             return {"error": "Not enough historical data"}
 
-        cfg = config or {}
+        # Copy so we can inject ML model lookup fields without mutating caller config.
+        cfg = dict(config or {})
+        sym_u = str(symbol or "").upper()
+        if sym_u:
+            cfg.setdefault("symbol", sym_u)
+            # ML strategies resolve models via model_symbol / _symbol — mirror WF path.
+            if not str(cfg.get("model_symbol") or "").strip():
+                cfg["model_symbol"] = sym_u
         sim_mode = str(cfg.get("sim_mode") or "live_aligned").lower()
         if sim_mode not in _SIM_MODES:
             sim_mode = "live_aligned"
@@ -584,6 +630,11 @@ class BacktesterService:
         }
         bars_in_market = 0
         bt_timeframe = normalize_timeframe(cfg.get("timeframe") or "1m")
+        cat_metrics = CategoryMetricsCollector(strat_key)
+        signal_counts: dict[str, int] = {"BUY": 0, "SELL": 0, "CLOSE": 0, "NONE": 0}
+        reject_reason_counts: Counter = Counter()
+        evaluate_errors = 0
+        bars_evaluated = 0
 
         def _record_blocked(
             kind: str,
@@ -663,6 +714,14 @@ class BacktesterService:
             exit_row["mfe_pct"] = round(mfe_pct, 3)
             exit_row["mae_pct"] = round(mae_pct, 3)
             trade_log.append(exit_row)
+            entry_conf = position.get("entry_confidence") if position else None
+            entry_regime = position.get("entry_regime") if position else None
+            # position cleared below — capture before None
+            cat_metrics.record_closed_trade(
+                confidence=float(entry_conf) if entry_conf is not None else None,
+                regime=entry_regime,
+                pnl=float(profit),
+            )
             position = None
             if not research and loss_limit > 0 and daily_pnl <= -loss_limit:
                 halted = True
@@ -696,15 +755,17 @@ class BacktesterService:
                 return
 
             current_price = float(row["close"])
-            stop_loss_price = signal_data.get("stop_loss_price")
-            if stop_loss_price is not None:
-                stop_loss = float(stop_loss_price)
-            else:
-                sl_dist = signal_data.get("stop_loss_distance", current_price * 0.02)
-                stop_loss = current_price - float(sl_dist)
-
-            price_diff = abs(current_price - stop_loss)
-            if price_diff <= 0:
+            stop_loss, stop_err = _resolve_entry_stop("BUY", current_price, signal_data)
+            if stop_loss is None:
+                blocked_entries += 1
+                chain.record("size", ok=False, reason=stop_err or "bad stop")
+                _record_blocked(
+                    "size",
+                    stop_err or "Could not resolve stop loss for sizing",
+                    bar_time,
+                    side="BUY",
+                    signal="BUY",
+                )
                 return
 
             size_factor = float((signal_data or {}).get("size_factor") or 1.0)
@@ -730,6 +791,7 @@ class BacktesterService:
                     daily_pnl=daily_pnl,
                     position_size=0.0,
                     at_ts=bar_time,
+                    backtest=True,
                 )
                 if not decision.allowed:
                     blocked_entries += 1
@@ -798,6 +860,9 @@ class BacktesterService:
                 "entry_fee": entry_fee,
                 # 3.3-C: store ATR at entry for Chandelier scaling.
                 "entry_atr": float(row.get("ATR_14") or row.get("ATRr_14") or 0),
+                "entry_confidence": float((signal_data or {}).get("confidence") or 0) or None,
+                "entry_regime": ((signal_data or {}).get("regime")
+                                 or ((signal_data or {}).get("insight_snapshot") or {}).get("regime")),
             }
             entry_row = {
                 "time": int(bar_time) if bar_time is not None else 0,
@@ -870,15 +935,17 @@ class BacktesterService:
                 return
 
             current_price = float(row["close"])
-            stop_loss_price = signal_data.get("stop_loss_price")
-            if stop_loss_price is not None:
-                stop_loss = float(stop_loss_price)
-            else:
-                sl_dist = signal_data.get("stop_loss_distance", current_price * 0.02)
-                stop_loss = current_price + float(sl_dist)
-
-            price_diff = abs(stop_loss - current_price)
-            if price_diff <= 0:
+            stop_loss, stop_err = _resolve_entry_stop("SELL", current_price, signal_data)
+            if stop_loss is None:
+                blocked_entries += 1
+                chain.record("size", ok=False, reason=stop_err or "bad stop")
+                _record_blocked(
+                    "size",
+                    stop_err or "Could not resolve stop loss for sizing",
+                    bar_time,
+                    side="SELL",
+                    signal="SELL",
+                )
                 return
 
             size_factor = float((signal_data or {}).get("size_factor") or 1.0)
@@ -904,6 +971,7 @@ class BacktesterService:
                     daily_pnl=daily_pnl,
                     position_size=0.0,
                     at_ts=bar_time,
+                    backtest=True,
                 )
                 if not decision.allowed:
                     blocked_entries += 1
@@ -962,6 +1030,9 @@ class BacktesterService:
                 "excursion_high": current_price,
                 "excursion_low": current_price,
                 "entry_fee": entry_fee,
+                "entry_confidence": float((signal_data or {}).get("confidence") or 0) or None,
+                "entry_regime": ((signal_data or {}).get("regime")
+                                 or ((signal_data or {}).get("insight_snapshot") or {}).get("regime")),
             }
             trade_log.append({
                 "time": int(bar_time) if bar_time is not None else 0,
@@ -1000,6 +1071,8 @@ class BacktesterService:
                 return {"error": "Backtest cancelled", "cancelled": True}
 
             row = df.iloc[i].to_dict()
+            if sym_u:
+                row["_symbol"] = sym_u
             bar_time = row.get("time")
             bar_low = float(row.get("low") or row.get("close") or 0)
             bar_high = float(row.get("high") or row.get("close") or 0)
@@ -1036,6 +1109,16 @@ class BacktesterService:
                 row["_current_side"] = position["side"] if position else "NONE"
                 signal_data = strategy.evaluate(row)
             signal = (signal_data or {}).get("signal")
+            bars_evaluated += 1
+            sig_key = str(signal or "NONE").upper()
+            if sig_key not in signal_counts:
+                signal_counts[sig_key] = 0
+            signal_counts[sig_key] += 1
+            rr = (signal_data or {}).get("reject_reason")
+            if rr:
+                reject_reason_counts[str(rr)[:160]] += 1
+                if str(rr).startswith("evaluate error"):
+                    evaluate_errors += 1
 
             confirm_tf = str(cfg.get("confirm_timeframe") or "").strip()
             parity_out = apply_indicator_parity_gates(
@@ -1062,6 +1145,35 @@ class BacktesterService:
                 )
             signal = parity_out.signal
 
+            # VAE meta-layer gate (opt-in; works without live_parity)
+            if signal in ("BUY", "SELL"):
+                lookback = []
+                try:
+                    # Recent prepared rows for feature context (best-effort).
+                    start = max(0, i - 24)
+                    for j in range(start, i):
+                        lookback.append(dict(df.iloc[j]))
+                except Exception:
+                    lookback = []
+                vae_out = apply_vae_regime_meta_gate(
+                    signal,
+                    row=row,
+                    symbol=str(cfg.get("symbol") or row.get("_symbol") or ""),
+                    bot_config=cfg,
+                    lookback_rows=lookback,
+                )
+                if vae_out.block:
+                    blocked_entries += 1
+                    _record_blocked(
+                        vae_out.block.kind,
+                        vae_out.block.reason,
+                        bar_time,
+                        signal=vae_out.block.signal,
+                    )
+                    signal = None
+                else:
+                    signal = vae_out.signal
+
             if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
                 _record_filter_reject(signal_data, bar_time)
 
@@ -1078,14 +1190,60 @@ class BacktesterService:
                         last_signal_bar_time = bar_time
                         signal = None
 
+            executed_this_bar = False
             if not position and signal == "BUY":
                 direction_mode = str(cfg.get("direction_mode", "LONG_ONLY")).upper()
                 if research or direction_mode in ("BOTH", "LONG_ONLY"):
+                    before = position
                     _try_entry(signal, signal_data, row, bar_time)
+                    executed_this_bar = position is not None and position is not before
+                else:
+                    blocked_entries += 1
+                    _record_blocked(
+                        "direction_mode",
+                        f"{direction_mode} blocks BUY entries",
+                        bar_time,
+                        side="BUY",
+                        signal="BUY",
+                    )
             elif not position and signal == "SELL":
                 direction_mode = str(cfg.get("direction_mode", "LONG_ONLY")).upper()
                 if research or direction_mode in ("BOTH", "SHORT_ONLY"):
+                    before = position
                     _try_short_entry(signal, signal_data, row, bar_time)
+                    executed_this_bar = position is not None and position is not before
+                else:
+                    blocked_entries += 1
+                    _record_blocked(
+                        "direction_mode",
+                        f"{direction_mode} blocks SELL/short entries",
+                        bar_time,
+                        side="SELL",
+                        signal="SELL",
+                    )
+
+            if cat_metrics.collect_ml or cat_metrics.collect_rl or cat_metrics.collect_agent:
+                future_close = None
+                if i + 1 < len(df):
+                    try:
+                        future_close = float(df.iloc[i + 1].get("close") or 0)
+                    except Exception:
+                        future_close = None
+                filter_bucket = None
+                if (signal_data or {}).get("reject_reason"):
+                    block = chart_filter_reject_block(signal_data, bar_time)
+                    filter_bucket = block.bucket if block else "other"
+                cat_metrics.record_bar(
+                    bar_index=i,
+                    signal_data=signal_data,
+                    signal=signal,
+                    close=bar_close,
+                    future_close=future_close,
+                    position_side=position["side"] if position else None,
+                    executed=executed_this_bar,
+                    filter_bucket=filter_bucket,
+                    regime=(signal_data or {}).get("regime"),
+                )
 
             peak_equity = max(peak_equity, equity)
             drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity else 0
@@ -1178,6 +1336,30 @@ class BacktesterService:
             "monte_carlo": monte_carlo,
             "execution_runtime": "strategy_runtime/v1",
         }
+
+        cat_payload = cat_metrics.finalize(
+            summary=summary,
+            filter_rejects=filter_rejects,
+            feature_importance=load_ml_feature_importance(strat_key, symbol),
+            oos_summary=cfg.get("_oos_summary") if isinstance(cfg.get("_oos_summary"), dict) else None,
+            equity_curve=equity_curve,
+        )
+        result.update(cat_payload)
+
+        from app.services.bots.strategy_readiness import build_strategy_readiness
+
+        result["strategy_readiness"] = build_strategy_readiness(
+            strat_key,
+            trade_count=total_trades,
+            bars_evaluated=bars_evaluated,
+            signal_counts=signal_counts,
+            reject_reasons=reject_reason_counts,
+            evaluate_errors=evaluate_errors,
+            blocked_entries=blocked_entries,
+            blocked_events=blocked_events,
+            direction_mode=str(cfg.get("direction_mode") or "LONG_ONLY"),
+            sim_mode=sim_mode,
+        )
 
         score_from = cfg.get("score_from_time")
         if score_from is not None:

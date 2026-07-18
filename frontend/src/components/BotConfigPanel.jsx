@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import MlModelVersionSelect from '@/components/MlModelVersionSelect';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { cn } from '@/lib/utils';
@@ -22,6 +23,7 @@ import {
   buildConfigFieldGroups,
   buildConfigPatch,
   getEditableConfigFields,
+  confidenceRangeForStrategy,
 } from '@/lib/botConfigDisplay';
 import { BAR_TIMEFRAMES, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 
@@ -31,8 +33,23 @@ const META_LABEL_MODE_OPTIONS = [
   { value: 'hybrid', label: 'Hybrid — GBM when trained, else Wilson' },
 ];
 
-function ConfigField({ field, value, strategy, botTimeframe, disabled, onChange }) {
+function ConfigField({ field, value, strategy, symbol, botTimeframe, disabled, onChange }) {
   const id = `bot-config-${field.key}`;
+
+  if (field.input === 'model_version') {
+    return (
+      <div className="bot-config-field bot-config-field--full">
+        <MlModelVersionSelect
+          strategy={strategy}
+          symbol={symbol}
+          value={value || ''}
+          onChange={(v) => onChange(field.key, v)}
+          disabled={disabled}
+          showLabel
+        />
+      </div>
+    );
+  }
 
   if (field.input === 'confirm_timeframe') {
     const selectValue = value ? String(value) : '__none__';
@@ -121,23 +138,46 @@ function ConfigField({ field, value, strategy, botTimeframe, disabled, onChange 
   }
 
   if (field.input === 'range') {
-    const pct = Math.round((parseFloat(value) || 0) * 100);
+    const bounds = confidenceRangeForStrategy(strategy);
+    const raw = parseFloat(value);
+    const current = Number.isFinite(raw) ? raw : bounds.defaultValue;
+    const pctLabel = bounds.max <= 0.1
+      ? current.toFixed(4)
+      : `${Math.round(current * 100)}%`;
     return (
       <div className="bot-config-field">
         <div className="bot-config-field__range-head">
           <Label htmlFor={id} className="bot-config-field__label">{field.label}</Label>
-          <span className="bot-config-field__range-value">{pct}%</span>
+          <span className="bot-config-field__range-value">{pctLabel}</span>
         </div>
         <input
           id={id}
           type="range"
-          min="0.4"
-          max="1"
-          step="0.05"
-          value={value || '0.55'}
+          min={bounds.min}
+          max={bounds.max}
+          step={bounds.step}
+          value={current}
           disabled={disabled}
           className="bot-config-field__range w-full accent-primary"
           onChange={(e) => onChange(field.key, e.target.value)}
+        />
+        {field.hint && <p className="bot-config-field__hint">{field.hint}</p>}
+      </div>
+    );
+  }
+
+  if (field.input === 'text' || field.input === 'readonly') {
+    return (
+      <div className="bot-config-field">
+        <Label htmlFor={id} className="bot-config-field__label">{field.label}</Label>
+        <Input
+          id={id}
+          type="text"
+          value={value ?? ''}
+          disabled={disabled || field.input === 'readonly'}
+          readOnly={field.input === 'readonly'}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className="bot-config-field__input h-8 text-xs num-mono"
         />
         {field.hint && <p className="bot-config-field__hint">{field.hint}</p>}
       </div>
@@ -171,6 +211,7 @@ function ConfigField({ field, value, strategy, botTimeframe, disabled, onChange 
 export default function BotConfigPanel({
   botId,
   strategy,
+  symbol,
   config,
   botStatus,
   botTimeframe,
@@ -263,6 +304,7 @@ export default function BotConfigPanel({
                   field={field}
                   value={draft[field.key]}
                   strategy={strategy}
+                  symbol={symbol || config?.model_symbol}
                   botTimeframe={botTimeframe}
                   disabled={disabled || saving}
                   onChange={updateField}

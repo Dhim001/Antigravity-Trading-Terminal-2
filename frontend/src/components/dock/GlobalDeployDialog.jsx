@@ -118,6 +118,17 @@ export default function GlobalDeployDialog({ switchToAlgoTab }) {
             </strong>
           </div>
           <div><span className="text-muted-foreground">Timeframe:</span> <strong>{deployTimeframeSummary(botExecutionMode, botTimeframe)}</strong></div>
+          {(botConfig?.model_artifact || botConfig?.model_version) && (
+            <div>
+              <span className="text-muted-foreground">ML model:</span>{' '}
+              <strong className="num-mono text-xs">
+                {botConfig.model_artifact || 'artifact'}
+                {botConfig.model_version
+                  ? ` · ${String(botConfig.model_version).slice(0, 19)}`
+                  : ''}
+              </strong>
+            </div>
+          )}
         </div>
         <DeployGatePanel
           results={backtestResults}

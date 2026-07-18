@@ -138,6 +138,36 @@ class TestMultiObjective(unittest.TestCase):
         self.assertEqual(row_objective_value(row, "win_rate"), 55)
         self.assertEqual(row_objective_value(row, "max_consecutive_losses"), -2)
 
+    def test_ml_objectives(self):
+        from app.services.bots.backtest_walk_forward import (
+            VALID_SWEEP_OBJECTIVES,
+            slim_ml_metrics_for_sweep,
+        )
+
+        for key in ("auc_roc", "log_loss", "alpha_decay_half_life", "oos_is_ratio"):
+            self.assertIn(key, VALID_SWEEP_OBJECTIVES)
+
+        row = {
+            "total_pnl": 10,
+            "trade_count": 5,
+            "summary": {"sharpe_ratio": 1.0},
+            "ml_metrics": {
+                "auc_roc": 0.72,
+                "log_loss": 0.4,
+                "alpha_decay": {"half_life_days": 12.5},
+                "is_vs_oos": {"is_sharpe": 2.0, "oos_sharpe": 1.0},
+            },
+        }
+        self.assertAlmostEqual(row_objective_value(row, "auc_roc"), 0.72)
+        self.assertAlmostEqual(row_objective_value(row, "log_loss"), -0.4)
+        self.assertAlmostEqual(row_objective_value(row, "alpha_decay_half_life"), 12.5)
+        self.assertAlmostEqual(row_objective_value(row, "oos_is_ratio"), 0.5)
+
+        slim = slim_ml_metrics_for_sweep(row["ml_metrics"])
+        self.assertIn("auc_roc", slim)
+        self.assertIn("alpha_decay", slim)
+        self.assertNotIn("confusion_matrix", slim or {})
+
 
 if __name__ == "__main__":
     unittest.main()

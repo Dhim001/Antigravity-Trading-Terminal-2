@@ -796,4 +796,3 @@ Server pushes use typed builders in `backend/app/api/outbound.py` instead of raw
 **Desktop:** Electron (`desktop/` + `scripts/start-desktop.ps1`)
 
 **Docs (selected):** `docs/MEMORY_16GB.md`, `docs/MARKET_ARCHIVE.md`, `docs/META_LABEL_MODEL.md`, `docs/BACKTEST_LAB_REDESIGN_PLAN.md`, `docs/NEW_AGENTS_AND_CHATBOT_PROPOSAL.md` (historical; agents are wired), `docs/ML_DL_RL_SIGNAL_GENERATION_PROPOSAL.md` (design notes; strategies + Model Training are shipped)
-# Antigravity-Trading-Terminal

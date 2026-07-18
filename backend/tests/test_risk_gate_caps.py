@@ -187,5 +187,97 @@ class BotEntryHoldTests(unittest.TestCase):
         self.assertIsNone(hold)
 
 
+class RiskGateBacktestModeTests(unittest.TestCase):
+    """Backtests must not inherit live desk concentration / kill-switch latches."""
+
+    def setUp(self):
+        self.gate = RiskGate()
+        self._window_patcher = patch(
+            "app.services.bots.risk_gate.is_no_trade_window",
+            return_value=(False, ""),
+        )
+        self._gates_patcher = patch(
+            "app.services.altdata.event_policy.check_entry_gates",
+            return_value=(True, None, None),
+        )
+        self._window_patcher.start()
+        self._gates_patcher.start()
+
+    def tearDown(self):
+        self._window_patcher.stop()
+        self._gates_patcher.stop()
+
+    def test_backtest_skips_live_symbol_concentration(self):
+        bot = {
+            "status": "RUNNING",
+            "allocation": 1000.0,
+            "config": {"direction_mode": "BOTH", "max_bots_per_symbol": 1},
+            "symbol": "BNBUSDT",
+        }
+        with patch(
+            "app.services.bots.analytics.get_active_bots_for_symbol",
+            return_value=3,
+        ) as active:
+            live = self.gate.validate_trade(
+                bot,
+                "BUY",
+                1.0,
+                600.0,
+                is_exit=False,
+                daily_pnl=0.0,
+                position_size=0.0,
+                backtest=False,
+            )
+            bt = self.gate.validate_trade(
+                bot,
+                "BUY",
+                1.0,
+                600.0,
+                is_exit=False,
+                daily_pnl=0.0,
+                position_size=0.0,
+                backtest=True,
+            )
+
+        self.assertFalse(live.allowed)
+        self.assertIn("Per-symbol limit", live.reason)
+        self.assertTrue(bt.allowed)
+        self.assertEqual(active.call_count, 1)
+
+    def test_backtest_skips_kill_switch(self):
+        bot = {
+            "status": "RUNNING",
+            "allocation": 1000.0,
+            "config": {"direction_mode": "BOTH"},
+            "symbol": "BNBUSDT",
+        }
+        with patch(
+            "app.services.bots.risk_gate.risk_state_store.is_kill_switch_tripped",
+            return_value=True,
+        ):
+            live = self.gate.validate_trade(
+                bot,
+                "BUY",
+                1.0,
+                600.0,
+                is_exit=False,
+                daily_pnl=0.0,
+                position_size=0.0,
+                backtest=False,
+            )
+            bt = self.gate.validate_trade(
+                bot,
+                "BUY",
+                1.0,
+                600.0,
+                is_exit=False,
+                daily_pnl=0.0,
+                position_size=0.0,
+                backtest=True,
+            )
+        self.assertFalse(live.allowed)
+        self.assertTrue(bt.allowed)
+
+
 if __name__ == "__main__":
     unittest.main()

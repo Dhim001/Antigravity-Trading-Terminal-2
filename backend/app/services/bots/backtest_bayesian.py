@@ -52,7 +52,9 @@ def _result_to_row(cfg: dict, res: dict, *, trial_number: int) -> dict:
             "error": res["error"],
             "trial": trial_number,
         }
-    return {
+    from app.services.bots.backtest_walk_forward import slim_ml_metrics_for_sweep
+
+    row = {
         "label": sweep_label(cfg),
         "config": cfg,
         "summary": res.get("summary") or {},
@@ -60,6 +62,10 @@ def _result_to_row(cfg: dict, res: dict, *, trial_number: int) -> dict:
         "trade_count": res.get("trade_count"),
         "trial": trial_number,
     }
+    slim = slim_ml_metrics_for_sweep(res.get("ml_metrics"))
+    if slim:
+        row["ml_metrics"] = slim
+    return row
 
 
 def run_bayesian_sweep(

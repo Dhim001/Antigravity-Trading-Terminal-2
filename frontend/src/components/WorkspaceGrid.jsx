@@ -1,9 +1,11 @@
-import React, { useState, Suspense } from 'react';
+import React, { useCallback, useEffect, useState, Suspense } from 'react';
 import { Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/dark.css';
 
 import { lazyImport } from '../lib/lazyImport';
+import { focusFlexLayoutComponent } from '../lib/flexlayoutFocus';
 import ChartContextStrip from './ChartContextStrip';
+import ErrorBoundary from './ErrorBoundary';
 
 // Lazy load actual inner panels instead of Resizable wrappers
 const WatchlistSidebar = lazyImport(() => import('./WatchlistWidget'), 'watchlist');
@@ -20,6 +22,7 @@ const PositionsTab = lazyImport(() => import('./dock/PositionsPanel'), 'position
 const OrdersTab = lazyImport(() => import('./dock/OrdersPanel'), 'orders');
 const BalancesTab = lazyImport(() => import('./dock/BalancesPanel'), 'balances');
 const AlgoTab = lazyImport(() => import('./dock/AlgoPanel').then(m => ({ default: m.AlgoTab })), 'algo');
+const ModelTrainingDashboard = lazyImport(() => import('./dock/ModelTrainingDashboard'), 'ml-training');
 
 // Intelligence inner panels
 const ScannerTab = lazyImport(() => import('./ScannerTab'), 'scanner');
@@ -50,77 +53,88 @@ const DEFAULT_LAYOUT = {
     splitterSize: 6,
   },
   layout: {
-    type: "row",
+    type: 'row',
     weight: 100,
     children: [
       {
-        type: "tabset",
+        type: 'tabset',
         weight: 15,
-        children: [{ type: "tab", name: "Watchlist", component: "watchlist", enableClose: false }]
+        children: [{ type: 'tab', name: 'Watchlist', component: 'watchlist', enableClose: false }],
       },
       {
-        type: "row",
+        type: 'row',
         weight: 65,
         children: [
           {
-            type: "tabset",
+            type: 'tabset',
             weight: 70,
-            children: [{ type: "tab", name: "Chart", component: "chart", enableClose: false }]
+            children: [{ type: 'tab', name: 'Chart', component: 'chart', enableClose: false }],
           },
           {
-            type: "row",
+            type: 'row',
             weight: 30,
             children: [
               {
-                type: "tabset",
+                type: 'tabset',
                 weight: 50,
                 children: [
-                  { type: "tab", name: "Positions", component: "positions" },
-                  { type: "tab", name: "Orders", component: "orders" },
-                  { type: "tab", name: "History", component: "history" },
-                  { type: "tab", name: "Balances", component: "balances" },
-                  { type: "tab", name: "Bot History", component: "bots" },
-                  { type: "tab", name: "Reconcile", component: "reconcile" }
-                ]
+                  { type: 'tab', name: 'Positions', component: 'positions' },
+                  { type: 'tab', name: 'Orders', component: 'orders' },
+                  { type: 'tab', name: 'History', component: 'history' },
+                  { type: 'tab', name: 'Balances', component: 'balances' },
+                  { type: 'tab', name: 'Bot History', component: 'bots' },
+                  { type: 'tab', name: 'Reconcile', component: 'reconcile' },
+                ],
               },
               {
-                type: "tabset",
+                type: 'tabset',
                 weight: 50,
                 children: [
-                  { type: "tab", name: "Scanner", component: "scanner" },
-                  { type: "tab", name: "Analyst", component: "analyst" },
-                  { type: "tab", name: "Copilot", component: "copilot" },
-                  { type: "tab", name: "Algo", component: "algo" },
-                  { type: "tab", name: "Ticks", component: "ticks" },
-                  { type: "tab", name: "Equity", component: "equity" }
-                ]
-              }
-            ]
-          }
-        ]
+                  { type: 'tab', name: 'Scanner', component: 'scanner' },
+                  { type: 'tab', name: 'Analyst', component: 'analyst' },
+                  { type: 'tab', name: 'Copilot', component: 'copilot' },
+                  { type: 'tab', name: 'ML Training', component: 'ml-training' },
+                  { type: 'tab', name: 'Algo', component: 'algo' },
+                  { type: 'tab', name: 'Ticks', component: 'ticks' },
+                  { type: 'tab', name: 'Equity', component: 'equity' },
+                ],
+              },
+            ],
+          },
+        ],
       },
       {
-        type: "tabset",
+        type: 'tabset',
         weight: 20,
         children: [
-          { type: "tab", name: "Trade", component: "order-entry", enableClose: false },
-          { type: "tab", name: "Book", component: "order-book", enableClose: false },
-          { type: "tab", name: "Depth", component: "depth-chart", enableClose: false }
-        ]
-      }
-    ]
-  }
+          { type: 'tab', name: 'Trade', component: 'order-entry', enableClose: false },
+          { type: 'tab', name: 'Book', component: 'order-book', enableClose: false },
+          { type: 'tab', name: 'Depth', component: 'depth-chart', enableClose: false },
+        ],
+      },
+    ],
+  },
 };
 
 export default function WorkspaceGrid({ viewMode }) {
   const [model] = useState(() => Model.fromJson(DEFAULT_LAYOUT));
 
-  const factory = (node) => {
+  useEffect(() => {
+    const onDockTab = (e) => {
+      const panelId = typeof e.detail === 'string' ? e.detail : e.detail?.tab;
+      if (!panelId) return;
+      focusFlexLayoutComponent(model, panelId);
+    };
+    window.addEventListener('dock-tab', onDockTab);
+    return () => window.removeEventListener('dock-tab', onDockTab);
+  }, [model]);
+
+  const factory = useCallback((node) => {
     const component = node.getComponent();
     switch (component) {
-      case "watchlist":
+      case 'watchlist':
         return <Suspense fallback={<PanelFallback />}><WatchlistSidebar /></Suspense>;
-      case "chart":
+      case 'chart':
         return (
           <section className="flex flex-col h-full w-full relative">
             <ChartContextStrip />
@@ -129,40 +143,48 @@ export default function WorkspaceGrid({ viewMode }) {
             </Suspense>
           </section>
         );
-      case "order-entry":
+      case 'order-entry':
         return <Suspense fallback={<PanelFallback />}><OrderEntryWidget /></Suspense>;
-      case "order-book":
+      case 'order-book':
         return <Suspense fallback={<PanelFallback />}><OrderBookWidget /></Suspense>;
-      case "depth-chart":
+      case 'depth-chart':
         return <Suspense fallback={<PanelFallback />}><DepthChartWidget /></Suspense>;
-      case "positions":
+      case 'positions':
         return <Suspense fallback={<PanelFallback />}><PositionsTab /></Suspense>;
-      case "orders":
+      case 'orders':
         return <Suspense fallback={<PanelFallback />}><OrdersTab /></Suspense>;
-      case "balances":
+      case 'balances':
         return <Suspense fallback={<PanelFallback />}><BalancesTab /></Suspense>;
-      case "algo":
+      case 'algo':
         return <Suspense fallback={<PanelFallback />}><AlgoTab /></Suspense>;
-      case "scanner":
+      case 'scanner':
         return <Suspense fallback={<PanelFallback />}><ScannerTab /></Suspense>;
-      case "analyst":
+      case 'analyst':
         return <Suspense fallback={<PanelFallback />}><AnalystTab /></Suspense>;
-      case "copilot":
+      case 'copilot':
         return <Suspense fallback={<PanelFallback />}><CopilotTab /></Suspense>;
-      case "reconcile":
+      case 'ml-training':
+        return (
+          <ErrorBoundary name="Model Training">
+            <Suspense fallback={<PanelFallback label="Loading ML Training…" />}>
+              <ModelTrainingDashboard />
+            </Suspense>
+          </ErrorBoundary>
+        );
+      case 'reconcile':
         return <Suspense fallback={<PanelFallback />}><ReconciliationTab /></Suspense>;
-      case "bots":
+      case 'bots':
         return <Suspense fallback={<PanelFallback />}><BotHistoryTab /></Suspense>;
-      case "ticks":
+      case 'ticks':
         return <Suspense fallback={<PanelFallback />}><TickViewerTab /></Suspense>;
-      case "history":
+      case 'history':
         return <Suspense fallback={<PanelFallback />}><TradeHistoryPanel embedded /></Suspense>;
-      case "equity":
+      case 'equity':
         return <Suspense fallback={<PanelFallback />}><EquityCurveTab /></Suspense>;
       default:
         return <div className="p-4 text-muted-foreground text-sm">Unknown Component</div>;
     }
-  };
+  }, [viewMode]);
 
   return (
     <div className="flex-1 relative w-full h-full bg-background overflow-hidden" style={{ minHeight: '500px' }}>

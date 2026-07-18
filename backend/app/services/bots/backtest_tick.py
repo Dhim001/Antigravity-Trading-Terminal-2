@@ -185,6 +185,7 @@ class TickBacktester:
                 decision = self._risk_gate.validate_trade(
                     bot_stub, "BUY", qty, price,
                     is_exit=False, daily_pnl=daily_pnl, position_size=0.0,
+                    backtest=True,
                 )
                 if not decision.allowed:
                     blocked_entries += 1

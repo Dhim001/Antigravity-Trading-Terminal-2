@@ -12,6 +12,22 @@ STRATEGY_TP_DEFAULTS: dict[str, dict[str, Any]] = {
     "TICK_MOMENTUM": {"take_profit_percent": 0.2, "tp_mode": "percent"},
     "TICK_MEAN_REVERT": {"take_profit_percent": 0.15, "tp_mode": "percent"},
     "TICK_BREAKOUT": {"take_profit_percent": 0.25, "tp_mode": "percent"},
+    "CHART_AGENT": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "ABSORPTION_AGENT": {"take_profit_percent": 2.5, "tp_mode": "percent"},
+    "CVD_DIVERGENCE": {"take_profit_percent": 2.5, "tp_mode": "percent"},
+    "WYCKOFF_SPRING": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "VPOC_REVERSION": {"take_profit_percent": 2.0, "tp_mode": "percent"},
+    "ORDERFLOW_IMBALANCE": {"take_profit_percent": 1.5, "tp_mode": "percent"},
+    "ICT_SMC": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "DONCHIAN_BREAKOUT": {"take_profit_percent": 4.0, "tp_mode": "percent"},
+    "MARKET_MAKING": {"tp_mode": "none"},
+    "ML_SIGNAL_BOOST": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "LSTM_DIRECTION": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "RL_PPO_AGENT": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "TCN_MULTI_HORIZON": {"take_profit_percent": 2.5, "tp_mode": "percent"},
+    "VAE_REGIME_DETECTOR": {"take_profit_percent": 2.5, "tp_mode": "percent"},
+    "TRANSFORMER_SIGNAL": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "GNN_CROSS_ASSET": {"take_profit_percent": 3.0, "tp_mode": "percent"},
 }
 
 

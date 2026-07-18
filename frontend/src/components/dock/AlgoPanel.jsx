@@ -13,7 +13,7 @@ import { selectCashTotal } from '../../store/selectors';
 import { useShallow } from 'zustand/react/shallow';
 import {
   Cpu, Play, Settings, Trash2, XSquare, ShieldAlert, Pause, PlayCircle, OctagonX,
-  RefreshCw, AlertTriangle, Activity, Loader2, Maximize2, Bot,
+  RefreshCw, AlertTriangle, Activity, Loader2, Maximize2, Bot, BrainCircuit,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -28,9 +28,13 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import StrategyTemplateCard from '../StrategyTemplateCard';
 import StrategyBadge from '../StrategyBadge';
+import MlModelStatusBadge, { isMlStrategy } from '../MlModelStatusBadge';
+import MlModelVersionSelect from '../MlModelVersionSelect';
 import BacktestResultsPanel from '../BacktestResultsPanel';
 import BacktestProgressBar from '../BacktestProgressBar';
 import ChartAgentDeployPreview from '../ChartAgentDeployPreview';
+import { pickDeployConfig, confidenceRangeForStrategy } from '@/lib/botConfigDisplay';
+import { openModelTrainingDock } from '@/lib/workspaceNav';
 import { useVirtualRows } from '../VirtualTableBody';
 import { ScrollTablePanel, WidgetEmpty } from '../WidgetShell';
 import {
@@ -105,10 +109,22 @@ function ActiveBotRow({
     >
       <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
       <DataTableCell className="text-xs">
-        <StrategyBadge strategy={bot.strategy} compact />
-        {bot.execution_mode === 'TICK' && (
-          <Badge variant="outline" className="ml-1 h-4 px-1 text-[0.65rem]">TICK</Badge>
-        )}
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="inline-flex items-center gap-1 flex-wrap">
+            <StrategyBadge strategy={bot.strategy} compact />
+            {bot.execution_mode === 'TICK' && (
+              <Badge variant="outline" className="h-4 px-1 text-[0.65rem]">TICK</Badge>
+            )}
+          </span>
+          {isMlStrategy(bot.strategy) && (
+            <MlModelStatusBadge
+              strategy={bot.strategy}
+              symbol={bot.symbol}
+              modelVersion={bot.config?.model_version}
+              compact
+            />
+          )}
+        </div>
       </DataTableCell>
       <DataTableCell align="center" className="text-xs num-mono text-muted-foreground">
         {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
@@ -201,7 +217,7 @@ function ActiveBotRow({
 export function AlgoTab({ hideToolbar = false }) {
   const {
     activeBots, botStrategy, botExecutionMode, botTimeframe, botConfig, activeSymbol, symbolsList,
-    setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, clearBotLogs, botLogs,
+    setBotStrategy, setBotExecutionMode, setBotTimeframe, updateBotConfig, replaceBotConfig, clearBotLogs, botLogs,
     strategyTemplates,
     setChartInteractionMode,
     isLive, allowLiveBots, allowCustomStrategies, terminalMode, terminalRole, distributed, botMinCandles,
@@ -221,6 +237,7 @@ export function AlgoTab({ hideToolbar = false }) {
     setBotExecutionMode: s.setBotExecutionMode,
     setBotTimeframe: s.setBotTimeframe,
     updateBotConfig: s.updateBotConfig,
+    replaceBotConfig: s.replaceBotConfig,
     clearBotLogs: s.clearBotLogs,
     botLogs: s.botLogs,
     strategyTemplates: s.strategyTemplates,
@@ -575,18 +592,33 @@ export function AlgoTab({ hideToolbar = false }) {
     sendAction(Action.BOT_CREATE, payload);
   };
 
-  const filteredTemplates = strategyTemplates.filter(
-    (t) => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode
-      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom))
-      && (botCategoryTab === 'agentic' ? t.category === 'agent' : t.category !== 'agent'),
-  );
+  const filteredTemplates = useMemo(() => {
+    const list = strategyTemplates.filter(
+      (t) => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode
+        && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom))
+        && (botCategoryTab === 'agentic' ? t.category === 'agent'
+            : botCategoryTab === 'ml' ? t.category === 'ml'
+            : t.category !== 'agent' && t.category !== 'ml'),
+    );
+    if (botCategoryTab !== 'normal') return list;
+    // Bar/TA first; tick strategies last so Normal isn't dominated by TICK_* cards.
+    return [...list].sort((a, b) => {
+      const aTick = a.category === 'tick' || a.execution_mode === 'TICK' ? 1 : 0;
+      const bTick = b.category === 'tick' || b.execution_mode === 'TICK' ? 1 : 0;
+      if (aTick !== bTick) return aTick - bTick;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+  }, [strategyTemplates, botExecutionMode, allowCustomStrategies, botCategoryTab]);
 
   const selectTemplate = (template) => {
     setBotStrategy(template.strategy);
     if (template.execution_mode) {
       setBotExecutionMode(template.execution_mode);
     }
-    updateBotConfig({ ...template.config, allocation: template.allocation });
+    replaceBotConfig({
+      ...pickDeployConfig(template.strategy, template.config || {}),
+      allocation: template.allocation ?? 1000,
+    });
   };
 
   const handleStopBot = (bot_id) => {
@@ -776,7 +808,17 @@ export function AlgoTab({ hideToolbar = false }) {
                 value={botExecutionMode}
                 onValueChange={(mode) => {
                   setBotExecutionMode(mode);
+                  const nextTab = mode === 'TICK' ? 'normal' : botCategoryTab;
+                  if (mode === 'TICK' && botCategoryTab !== 'normal') {
+                    setBotCategoryTab('normal');
+                  }
                   const first = strategyTemplates.find(
+                    (t) => (t.execution_mode || 'BAR_CLOSE') === mode
+                      && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom))
+                      && (nextTab === 'agentic' ? t.category === 'agent'
+                          : nextTab === 'ml' ? t.category === 'ml'
+                          : t.category !== 'agent' && t.category !== 'ml'),
+                  ) || strategyTemplates.find(
                     (t) => (t.execution_mode || 'BAR_CLOSE') === mode
                       && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
                   );
@@ -821,14 +863,50 @@ export function AlgoTab({ hideToolbar = false }) {
                 <div className="flex bg-slate-950/50 rounded-md p-0.5 border border-slate-800/60">
                   <button
                     className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors ${botCategoryTab === 'normal' ? 'bg-slate-800 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-                    onClick={() => setBotCategoryTab('normal')}
+                    onClick={() => {
+                      setBotCategoryTab('normal');
+                      const first = strategyTemplates.find(
+                        (t) => (t.execution_mode || 'BAR_CLOSE') === botExecutionMode
+                          && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom))
+                          && t.category !== 'agent' && t.category !== 'ml',
+                      );
+                      if (first) selectTemplate(first);
+                    }}
                     type="button"
                   >
                     Normal
                   </button>
                   <button
+                    className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors flex items-center gap-1.5 ${botCategoryTab === 'ml' ? 'bg-slate-800 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+                    onClick={() => {
+                      setBotCategoryTab('ml');
+                      if (botExecutionMode !== 'BAR_CLOSE') setBotExecutionMode('BAR_CLOSE');
+                      const mode = 'BAR_CLOSE';
+                      const first = strategyTemplates.find(
+                        (t) => (t.execution_mode || 'BAR_CLOSE') === mode
+                          && t.category === 'ml'
+                          && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
+                      );
+                      if (first) selectTemplate(first);
+                    }}
+                    type="button"
+                  >
+                    <BrainCircuit size={12} />
+                    ML / AI
+                  </button>
+                  <button
                     className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors flex items-center gap-1.5 ${botCategoryTab === 'agentic' ? 'bg-slate-800 text-slate-100 shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-                    onClick={() => setBotCategoryTab('agentic')}
+                    onClick={() => {
+                      setBotCategoryTab('agentic');
+                      if (botExecutionMode !== 'BAR_CLOSE') setBotExecutionMode('BAR_CLOSE');
+                      const mode = 'BAR_CLOSE';
+                      const first = strategyTemplates.find(
+                        (t) => (t.execution_mode || 'BAR_CLOSE') === mode
+                          && t.category === 'agent'
+                          && (allowCustomStrategies || (t.strategy !== 'CUSTOM' && !t.custom)),
+                      );
+                      if (first) selectTemplate(first);
+                    }}
                     type="button"
                   >
                     <Bot size={12} />
@@ -837,16 +915,35 @@ export function AlgoTab({ hideToolbar = false }) {
                 </div>
               </div>
               <div className="algo-template-grid">
-                {filteredTemplates.map(t => (
-                  <StrategyTemplateCard
-                    key={t.id}
-                    template={t}
-                    active={botStrategy === t.strategy}
-                    onSelect={selectTemplate}
-                  />
-                ))}
+                {filteredTemplates.length === 0 ? (
+                  <p className="algo-field-hint col-span-full text-muted-foreground py-3">
+                    {botExecutionMode === 'TICK' && (botCategoryTab === 'ml' || botCategoryTab === 'agentic')
+                      ? 'ML and Agentic strategies require Bar Close execution — switch mode or open the Normal tab.'
+                      : 'No templates in this category for the current execution mode.'}
+                  </p>
+                ) : (
+                  filteredTemplates.map(t => (
+                    <StrategyTemplateCard
+                      key={t.id}
+                      template={t}
+                      active={botStrategy === t.strategy}
+                      onSelect={selectTemplate}
+                    />
+                  ))
+                )}
               </div>
             </div>
+
+            {isMlStrategy(botStrategy) && (
+              <div className="algo-deploy-field">
+                <MlModelVersionSelect
+                  strategy={botStrategy}
+                  symbol={activeSymbol}
+                  value={botConfig?.model_version || ''}
+                  onChange={(v) => updateBotConfig({ model_version: v || undefined })}
+                />
+              </div>
+            )}
 
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Trade direction</Label>
@@ -866,9 +963,174 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                Live risk gate: LONG_ONLY blocks short entries; BOTH allows Chart Agent SELL signals to open shorts (paper OMS).
+                {isMlStrategy(botStrategy) || botStrategy === 'CHART_AGENT' || botStrategy === 'ABSORPTION_AGENT'
+                  ? 'Live risk gate: LONG_ONLY blocks short entries; BOTH allows BUY and SELL signal strategies to open both sides.'
+                  : 'Live risk gate: LONG_ONLY blocks short entries; BOTH allows long and short entries when the strategy emits them.'}
               </span>
             </div>
+
+            {isMlStrategy(botStrategy) && (
+              <p className="algo-field-hint text-muted-foreground -mt-1 mb-2">
+                Train and validate models in{' '}
+                <button
+                  type="button"
+                  className="text-primary underline-offset-2 hover:underline"
+                  onClick={() => openModelTrainingDock()}
+                >
+                  ML Training
+                </button>
+                {' '}— deploy pins a model version above; it does not retrain.
+              </p>
+            )}
+
+            {isMlStrategy(botStrategy) && (
+              <div className="algo-deploy-field space-y-2">
+                <Label className="algo-field-label">
+                  {botStrategy === 'VAE_REGIME_DETECTOR'
+                    ? 'VAE regime thresholds'
+                    : botStrategy === 'TCN_MULTI_HORIZON'
+                      ? 'TCN forecast gates'
+                      : botStrategy === 'GNN_CROSS_ASSET'
+                        ? 'GNN signal gate'
+                        : 'ML signal gate'}
+                </Label>
+                {botStrategy !== 'VAE_REGIME_DETECTOR' && (() => {
+                  const bounds = confidenceRangeForStrategy(botStrategy);
+                  const raw = parseFloat(botConfig?.min_confidence);
+                  const current = Number.isFinite(raw) ? raw : bounds.defaultValue;
+                  const valueLabel = bounds.max <= 0.1
+                    ? current.toFixed(4)
+                    : `${Math.round(current * 100)}%`;
+                  return (
+                    <div>
+                      <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
+                        <span>
+                          {botStrategy === 'TCN_MULTI_HORIZON'
+                            ? 'Min avg |return| (confidence)'
+                            : botStrategy === 'RL_PPO_AGENT'
+                              ? 'Min policy confidence'
+                              : 'Min confidence'}
+                        </span>
+                        <span className="num-mono">{valueLabel}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={bounds.min}
+                        max={bounds.max}
+                        step={bounds.step}
+                        value={current}
+                        onChange={(e) => updateBotConfig({
+                          min_confidence: parseFloat(e.target.value),
+                        })}
+                        className="w-full accent-primary"
+                        aria-label="Minimum signal confidence"
+                      />
+                    </div>
+                  );
+                })()}
+                {botStrategy === 'TCN_MULTI_HORIZON' && (
+                  <div>
+                    <Label className="text-[0.62rem] text-muted-foreground">
+                      Min return (decimal, e.g. 0.002 = 0.2%)
+                    </Label>
+                    <InputGroup className="mt-1 h-8">
+                      <InputGroupInput
+                        type="number"
+                        min={0}
+                        step="0.0005"
+                        className="text-xs num-mono"
+                        value={botConfig?.min_return ?? 0.002}
+                        onChange={(e) => updateBotConfig({
+                          min_return: parseFloat(e.target.value) || 0,
+                        })}
+                        aria-label="Minimum forecast return (decimal)"
+                      />
+                    </InputGroup>
+                    <span className="algo-field-hint">
+                      Horizon-agreement magnitude gate — separate from the avg-|return| confidence slider above.
+                    </span>
+                  </div>
+                )}
+                {botStrategy === 'VAE_REGIME_DETECTOR' && (
+                  <>
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Anomaly threshold</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="number"
+                          min={0}
+                          step="0.1"
+                          className="text-xs num-mono"
+                          value={botConfig?.anomaly_threshold ?? 2}
+                          onChange={(e) => updateBotConfig({
+                            anomaly_threshold: parseFloat(e.target.value) || 0,
+                          })}
+                          aria-label="VAE anomaly threshold"
+                        />
+                      </InputGroup>
+                    </div>
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Suppress threshold</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="number"
+                          min={0}
+                          step="0.1"
+                          className="text-xs num-mono"
+                          value={botConfig?.suppress_threshold ?? 3}
+                          onChange={(e) => updateBotConfig({
+                            suppress_threshold: parseFloat(e.target.value) || 0,
+                          })}
+                          aria-label="VAE suppress threshold"
+                        />
+                      </InputGroup>
+                    </div>
+                    <span className="algo-field-hint">
+                      Reconstruction-error levels: anomaly flags a regime shift; suppress blocks entries above this.
+                    </span>
+                  </>
+                )}
+                {botStrategy === 'GNN_CROSS_ASSET' && (
+                  <>
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Min correlation</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="number"
+                          min={0}
+                          max={1}
+                          step="0.05"
+                          className="text-xs num-mono"
+                          value={botConfig?.min_corr ?? 0.5}
+                          onChange={(e) => updateBotConfig({
+                            min_corr: parseFloat(e.target.value) || 0,
+                          })}
+                          aria-label="Minimum cross-asset correlation"
+                        />
+                      </InputGroup>
+                    </div>
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Basket ID</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="text"
+                          className="text-xs num-mono"
+                          placeholder="e.g. crypto_majors"
+                          value={botConfig?.basket_id ?? ''}
+                          onChange={(e) => updateBotConfig({
+                            basket_id: e.target.value.trim() || undefined,
+                          })}
+                          aria-label="Correlated asset basket ID"
+                        />
+                      </InputGroup>
+                      <span className="algo-field-hint">
+                        Optional basket key for the cross-asset graph (defaults from training metadata when empty).
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Trailing Stop Loss</Label>
@@ -961,7 +1223,10 @@ export function AlgoTab({ hideToolbar = false }) {
                 </InputGroupAddon>
               </InputGroup>
               <span className="algo-field-hint">
-                Hard limit on position size per trade. Risk is sized at 1% of account balance using ATR-based stops. Signals evaluate on closed {formatBarTimeframeLabel(botTimeframe)} bars.
+                Hard limit on position size per trade. Risk is sized at 1% of account balance using ATR-based stops.
+                {botExecutionMode === 'TICK'
+                  ? ' Tick strategies evaluate on each trade print (not closed bars).'
+                  : ` Signals evaluate on closed ${formatBarTimeframeLabel(botTimeframe)} bars.`}
               </span>
             </div>
 
@@ -1063,6 +1328,111 @@ export function AlgoTab({ hideToolbar = false }) {
                   />
                   Use LLM explanations on strong signals (Ollama local or OpenRouter when enabled)
                 </label>
+              </div>
+            )}
+
+            {botStrategy === 'ABSORPTION_AGENT' && (
+              <div className="algo-deploy-field space-y-2">
+                <Label className="algo-field-label">Absorption Agent Settings</Label>
+                <div>
+                  <div className="mb-1 flex justify-between text-[0.62rem] text-muted-foreground">
+                    <span>Min confidence</span>
+                    <span>{Math.round((botConfig?.min_confidence ?? 0.55) * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.4"
+                    max="1"
+                    step="0.05"
+                    value={botConfig?.min_confidence ?? 0.55}
+                    onChange={(e) => updateBotConfig({ min_confidence: parseFloat(e.target.value) })}
+                    className="w-full accent-primary"
+                    aria-label="Absorption minimum confidence"
+                  />
+                </div>
+                <div>
+                  <Label className="text-[0.62rem] text-muted-foreground">Min score (optional)</Label>
+                  <InputGroup className="mt-1 h-8">
+                    <InputGroupInput
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="text-xs"
+                      placeholder="Any"
+                      value={botConfig?.min_score ?? ''}
+                      onChange={(e) => updateBotConfig({
+                        min_score: e.target.value === '' ? undefined : parseInt(e.target.value, 10) || 0,
+                      })}
+                      aria-label="Absorption minimum score"
+                    />
+                  </InputGroup>
+                </div>
+                <div>
+                  <Label className="text-[0.62rem] text-muted-foreground">Confirm timeframe</Label>
+                  <Select
+                    value={botConfig?.confirm_timeframe || '__none__'}
+                    onValueChange={(v) => updateBotConfig({
+                      confirm_timeframe: v === '__none__' ? '' : v,
+                    })}
+                  >
+                    <SelectTrigger className="mt-1 h-8 w-full text-xs" aria-label="Absorption HTF confirmation">
+                      <SelectValue placeholder="Disabled" />
+                    </SelectTrigger>
+                    <SelectContent position="popper">
+                      <SelectItem value="__none__" className="text-xs">Disabled</SelectItem>
+                      {BAR_TIMEFRAMES.filter((tf) => tf !== botTimeframe).map((tf) => (
+                        <SelectItem key={tf} value={tf} className="text-xs">{tf} trend confirm</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="algo-field-hint">Higher-TF trend must agree before entry.</span>
+                </div>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(botConfig?.calibration_gate_enabled)}
+                    onChange={(e) => updateBotConfig({ calibration_gate_enabled: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Calibration gate (Wilson win-rate buckets)
+                </label>
+                {Boolean(botConfig?.calibration_gate_enabled) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Min samples</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="number"
+                          min={1}
+                          step={1}
+                          className="text-xs num-mono"
+                          value={botConfig?.calibration_min_samples ?? 5}
+                          onChange={(e) => updateBotConfig({
+                            calibration_min_samples: parseInt(e.target.value, 10) || 0,
+                          })}
+                          aria-label="Calibration min samples"
+                        />
+                      </InputGroup>
+                    </div>
+                    <div>
+                      <Label className="text-[0.62rem] text-muted-foreground">Min Wilson</Label>
+                      <InputGroup className="mt-1 h-8">
+                        <InputGroupInput
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          className="text-xs num-mono"
+                          value={botConfig?.calibration_min_wilson ?? 0.45}
+                          onChange={(e) => updateBotConfig({
+                            calibration_min_wilson: parseFloat(e.target.value) || 0,
+                          })}
+                          aria-label="Calibration min Wilson bound"
+                        />
+                      </InputGroup>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

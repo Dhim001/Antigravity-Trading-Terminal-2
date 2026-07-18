@@ -117,9 +117,16 @@ def _strategy_runtime_config(bot_id: str, bot: dict) -> dict:
     """Runtime-only keys (_bot_id, symbol/timeframe) for strategy evaluation."""
     config = dict(bot.get("config") or {})
     config["_bot_id"] = bot_id
-    if normalize_strategy_name(bot.get("strategy", "")) == "CHART_AGENT":
+    strat = normalize_strategy_name(bot.get("strategy", ""))
+    symbol = (bot.get("symbol") or "").upper()
+    if strat == "CHART_AGENT":
         config["symbol"] = bot.get("symbol")
         config["timeframe"] = _bot_bar_timeframe(bot)
+    elif symbol:
+        # ML/RL strategies resolve ONNX/joblib artifacts by symbol.
+        config.setdefault("symbol", symbol)
+        if not str(config.get("model_symbol") or "").strip():
+            config["model_symbol"] = symbol
     return config
 
 
@@ -861,6 +868,16 @@ class BotManagerService:
                 bot_pos = self._get_bot_position(bot_id, symbol)
                 pos_size = float(bot_pos.get("size") or 0.0)
                 eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
+                eval_row["_symbol"] = symbol
+
+                # Order-flow strategies need live L2; inject feed book when available.
+                if strat_key == "ORDERFLOW_IMBALANCE":
+                    feed = getattr(self.oms, "feed", None)
+                    books = getattr(feed, "order_books", None) if feed is not None else None
+                    if isinstance(books, dict):
+                        ob = books.get(symbol) or books.get(str(symbol).upper())
+                        if isinstance(ob, dict) and (ob.get("bids") or ob.get("asks")):
+                            eval_row["_orderbook"] = ob
 
                 # ── Time Stop Check ──
                 # opened_at and candle bar_time are both unix seconds; do not mix with ms.
@@ -947,6 +964,28 @@ class BotManagerService:
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"Filter gate blocked {signal}: {reason}",
+                        )
+                        continue
+
+                # ── VAE regime meta-layer (proposal §2.6) ──
+                if signal in ("BUY", "SELL"):
+                    from app.services.bots.strategy_runtime import apply_vae_regime_meta_gate
+
+                    vae_out = apply_vae_regime_meta_gate(
+                        signal,
+                        row=eval_row,
+                        symbol=symbol,
+                        bot_config=bot_config,
+                    )
+                    if vae_out.block:
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                        inc(
+                            "bot_orders_blocked_total",
+                            labels={"strategy": strat_key, "reason": "vae_regime_gate"},
+                        )
+                        await self.log_bot_event(
+                            bot_id, "WARN",
+                            f"VAE regime gate blocked {signal}: {vae_out.block.reason}",
                         )
                         continue
 

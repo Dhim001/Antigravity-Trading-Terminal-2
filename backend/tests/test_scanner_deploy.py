@@ -52,11 +52,16 @@ class TestScannerDeployAgent(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_CONFIDENCE", 0.65)
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_SCORE", 3)
     @patch("app.services.bots.scanner_deploy.summarize_basket_correlation")
+    @patch("app.services.archive.resolve.resolve_backtest_candles")
     @patch("app.services.scanner.market_scanner.MarketScannerService.scan")
-    async def test_scanner_deploy_success(self, mock_scan, mock_corr):
+    async def test_scanner_deploy_success(self, mock_scan, mock_resolve, mock_corr):
         # Mock summarize_basket_correlation to return safe values
         mock_corr.return_value = {"high_pairs": []}
-        
+        mock_resolve.return_value = (
+            [{"time": i, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1} for i in range(60)],
+            {},
+        )
+
         # Setup screener scan mock
         mock_scan.return_value = {
             "rows": [
@@ -64,12 +69,16 @@ class TestScannerDeployAgent(unittest.IsolatedAsyncioTestCase):
                 {"symbol": "ETH/USD", "signal": "BUY", "confidence": 0.5, "score": 1}, # Skipped
             ]
         }
-        
+
+        # Sync BacktesterService API — AsyncMock still works via to_thread
+        self.bot_manager.backtester.run_backtest = MagicMock(return_value={
+            "total_pnl": 150.0,
+            "win_rate": 60.0,
+            "trade_count": 8,
+            "summary": {"total_pnl": 150.0, "win_rate": 60.0, "total_trades": 8},
+        })
         agent = ScannerDeployAgent(self.bot_manager, backtester=self.bot_manager.backtester)
-        self.bot_manager.backtester.run_backtest.return_value = {
-            "metrics": {"net_profit": 150.0, "win_rate": 60.0}
-        }
-        
+
         results = await agent.evaluate()
         self.assertEqual(results["scanned"], 2)
         self.assertEqual(results["candidates"], 1)
@@ -78,3 +87,6 @@ class TestScannerDeployAgent(unittest.IsolatedAsyncioTestCase):
         self.bot_manager.create_bot.assert_called_once()
         create_args = self.bot_manager.create_bot.call_args[0]
         self.assertEqual(create_args[1], "BTCUSDT")
+        bt_args = self.bot_manager.backtester.run_backtest.call_args[0]
+        self.assertEqual(bt_args[0], "BTCUSDT")
+        self.assertEqual(len(bt_args), 4)  # symbol, strategy, config, candles

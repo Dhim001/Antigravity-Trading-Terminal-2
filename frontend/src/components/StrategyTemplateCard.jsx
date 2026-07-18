@@ -1,5 +1,7 @@
 import { cn } from '@/lib/utils';
 import { getStrategyMeta } from '@/config/strategies';
+import MlModelStatusBadge, { isMlStrategy } from './MlModelStatusBadge';
+import { useStore } from '@/store/useStore';
 
 /**
  * Deploy-panel strategy template card with icon, tagline, and allocation chips.
@@ -15,6 +17,8 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
     : tpPct != null
       ? `TP ${tpPct}%`
       : 'no TP';
+  const activeSymbol = useStore((s) => s.activeSymbol);
+  const isMl = isMlStrategy(template.strategy);
 
   return (
     <button
@@ -31,14 +35,25 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
         <Icon size={16} strokeWidth={2} />
       </span>
       <span className="algo-template-btn__body">
-        <span className="algo-template-btn__name">{template.name}</span>
+        <span className="algo-template-btn__name">
+          {template.name}
+          {isMl && <span className="algo-template-btn__ml-pill">ML</span>}
+        </span>
         <span className="algo-template-btn__tagline">{meta.tagline}</span>
         <span className="algo-template-btn__chips">
           <span className="algo-template-chip">${template.allocation.toLocaleString()}</span>
           <span className="algo-template-chip">SL {sl}%</span>
           <span className="algo-template-chip">{tpLabel}</span>
+          {isMl && (
+            <MlModelStatusBadge
+              strategy={template.strategy}
+              symbol={activeSymbol}
+              compact
+            />
+          )}
         </span>
       </span>
     </button>
   );
 }
+

@@ -61,6 +61,17 @@ describe('buildBacktestAssumptions', () => {
     expect(formatBacktestRangeLabel(meta)).toBe('7 days');
     expect(resolveBacktestRange(meta).hasMismatch).toBe(false);
   });
+
+  it('titles portfolio runs with basket label', () => {
+    expect(formatBacktestTitle({
+      portfolio: true,
+      portfolio_symbols: ['BTCUSDT', 'ETHUSDT'],
+      portfolio_label: 'Portfolio · 2 symbols',
+      days: 7,
+      timeframe: '5m',
+    }, { fallbackDays: 7, fallbackTimeframe: '5m' }))
+      .toBe('Portfolio · 2 symbols · 7-Day · 5m Backtest');
+  });
 });
 
 describe('formatPortfolioRunEstimate', () => {
