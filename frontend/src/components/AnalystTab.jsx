@@ -1,7 +1,7 @@
 /**
  * Chart Analyst insight history — Phase 5b dock tab.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Brain, RefreshCw, GitCompare } from 'lucide-react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
@@ -213,10 +213,32 @@ export default function AnalystTab() {
     window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'algo' }));
   };
 
+  const visionTimeoutRef = useRef(null);
+  const visionHandlerRef = useRef(null);
+
+  useEffect(() => () => {
+    if (visionTimeoutRef.current) clearTimeout(visionTimeoutRef.current);
+    if (visionHandlerRef.current) {
+      window.removeEventListener('chart-capture-ready', visionHandlerRef.current);
+      visionHandlerRef.current = null;
+    }
+  }, []);
+
   const requestVision = () => {
+    if (visionTimeoutRef.current) clearTimeout(visionTimeoutRef.current);
+    if (visionHandlerRef.current) {
+      window.removeEventListener('chart-capture-ready', visionHandlerRef.current);
+      visionHandlerRef.current = null;
+    }
+
     setVisionLoading(true);
     const handler = (e) => {
       window.removeEventListener('chart-capture-ready', handler);
+      if (visionHandlerRef.current === handler) visionHandlerRef.current = null;
+      if (visionTimeoutRef.current) {
+        clearTimeout(visionTimeoutRef.current);
+        visionTimeoutRef.current = null;
+      }
       const { image, bar_time } = e.detail || {};
       if (!image) {
         setVisionLoading(false);
@@ -230,13 +252,16 @@ export default function AnalystTab() {
         bar_time: bar_time || latest?.bar_time || Math.floor(Date.now() / 1000),
       }).finally(() => setVisionLoading(false));
     };
+    visionHandlerRef.current = handler;
     window.addEventListener('chart-capture-ready', handler);
     setActiveSymbol(symbol);
     window.dispatchEvent(new CustomEvent('chart-capture-request', {
       detail: { symbol, bar_time: latest?.bar_time, timeframe: visionTf },
     }));
-    setTimeout(() => {
+    visionTimeoutRef.current = setTimeout(() => {
+      visionTimeoutRef.current = null;
       window.removeEventListener('chart-capture-ready', handler);
+      if (visionHandlerRef.current === handler) visionHandlerRef.current = null;
       setVisionLoading(false);
     }, 5000);
   };

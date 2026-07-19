@@ -6,6 +6,7 @@ import { lazyImport } from '../lib/lazyImport';
 import { focusFlexLayoutComponent } from '../lib/flexlayoutFocus';
 import ChartContextStrip from './ChartContextStrip';
 import ErrorBoundary from './ErrorBoundary';
+import MountWhenVisible from './MountWhenVisible';
 
 // Lazy load actual inner panels instead of Resizable wrappers
 const WatchlistSidebar = lazyImport(() => import('./WatchlistWidget'), 'watchlist');
@@ -36,11 +37,31 @@ const TickViewerTab = lazyImport(() => import('./TickViewerTab'), 'ticks');
 const TradeHistoryPanel = lazyImport(() => import('./TradeHistoryPanel').then(m => ({ default: m.TradeHistoryContent })), 'history');
 const EquityCurveTab = lazyImport(() => import('./EquityCurveTab'), 'equity');
 
+/** Heavy tabs — unmount when deselected to reclaim ECharts / pollers / large trees. */
+const UNMOUNT_WHEN_HIDDEN = new Set([
+  'algo',
+  'ml-training',
+  'scanner',
+  'analyst',
+  'equity',
+  'ticks',
+  'copilot',
+]);
+
 function PanelFallback({ label = 'Loading…' }) {
   return (
     <div className="flex min-h-[120px] flex-1 items-center justify-center text-xs text-muted-foreground">
       {label}
     </div>
+  );
+}
+
+function wrapPanel(node, component, element) {
+  if (!UNMOUNT_WHEN_HIDDEN.has(component)) return element;
+  return (
+    <MountWhenVisible node={node}>
+      {element}
+    </MountWhenVisible>
   );
 }
 
@@ -131,11 +152,13 @@ export default function WorkspaceGrid({ viewMode }) {
 
   const factory = useCallback((node) => {
     const component = node.getComponent();
+    let panel;
     switch (component) {
       case 'watchlist':
-        return <Suspense fallback={<PanelFallback />}><WatchlistSidebar /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><WatchlistSidebar /></Suspense>;
+        break;
       case 'chart':
-        return (
+        panel = (
           <section className="flex flex-col h-full w-full relative">
             <ChartContextStrip />
             <Suspense fallback={<PanelFallback label="Loading chart..." />}>
@@ -143,47 +166,65 @@ export default function WorkspaceGrid({ viewMode }) {
             </Suspense>
           </section>
         );
+        break;
       case 'order-entry':
-        return <Suspense fallback={<PanelFallback />}><OrderEntryWidget /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><OrderEntryWidget /></Suspense>;
+        break;
       case 'order-book':
-        return <Suspense fallback={<PanelFallback />}><OrderBookWidget /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><OrderBookWidget /></Suspense>;
+        break;
       case 'depth-chart':
-        return <Suspense fallback={<PanelFallback />}><DepthChartWidget /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><DepthChartWidget /></Suspense>;
+        break;
       case 'positions':
-        return <Suspense fallback={<PanelFallback />}><PositionsTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><PositionsTab /></Suspense>;
+        break;
       case 'orders':
-        return <Suspense fallback={<PanelFallback />}><OrdersTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><OrdersTab /></Suspense>;
+        break;
       case 'balances':
-        return <Suspense fallback={<PanelFallback />}><BalancesTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><BalancesTab /></Suspense>;
+        break;
       case 'algo':
-        return <Suspense fallback={<PanelFallback />}><AlgoTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><AlgoTab /></Suspense>;
+        break;
       case 'scanner':
-        return <Suspense fallback={<PanelFallback />}><ScannerTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><ScannerTab /></Suspense>;
+        break;
       case 'analyst':
-        return <Suspense fallback={<PanelFallback />}><AnalystTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><AnalystTab /></Suspense>;
+        break;
       case 'copilot':
-        return <Suspense fallback={<PanelFallback />}><CopilotTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><CopilotTab /></Suspense>;
+        break;
       case 'ml-training':
-        return (
+        panel = (
           <ErrorBoundary name="Model Training">
             <Suspense fallback={<PanelFallback label="Loading ML Training…" />}>
               <ModelTrainingDashboard />
             </Suspense>
           </ErrorBoundary>
         );
+        break;
       case 'reconcile':
-        return <Suspense fallback={<PanelFallback />}><ReconciliationTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><ReconciliationTab /></Suspense>;
+        break;
       case 'bots':
-        return <Suspense fallback={<PanelFallback />}><BotHistoryTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><BotHistoryTab /></Suspense>;
+        break;
       case 'ticks':
-        return <Suspense fallback={<PanelFallback />}><TickViewerTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><TickViewerTab /></Suspense>;
+        break;
       case 'history':
-        return <Suspense fallback={<PanelFallback />}><TradeHistoryPanel embedded /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><TradeHistoryPanel embedded /></Suspense>;
+        break;
       case 'equity':
-        return <Suspense fallback={<PanelFallback />}><EquityCurveTab /></Suspense>;
+        panel = <Suspense fallback={<PanelFallback />}><EquityCurveTab /></Suspense>;
+        break;
       default:
         return <div className="p-4 text-muted-foreground text-sm">Unknown Component</div>;
     }
+    return wrapPanel(node, component, panel);
   }, [viewMode]);
 
   return (

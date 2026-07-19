@@ -4,7 +4,8 @@ const MAX_EQUITY_POINTS = 2000;
 const MAX_DOCK_EQUITY_POINTS = 400;
 const MAX_REASONING_TRADES = 50;
 const MAX_DOCK_TRADES = 10;
-const MAX_OVERLAY_TRADES = 200;
+/** Max trades pushed onto the live chart overlay (markers). Exported for Lab sync. */
+export const MAX_OVERLAY_TRADES = 200;
 
 function downsampleSeries(series, maxPoints) {
   if (!Array.isArray(series) || series.length <= maxPoints) return series ?? [];

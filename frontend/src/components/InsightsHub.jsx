@@ -173,8 +173,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
           <div className="insights-hub__tab-panels">
             <TabsContent
               value="scanner"
-              forceMount
-              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+              className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden"
             >
               <Suspense fallback={<TabFallback />}>
                 <ScannerTab />
@@ -182,8 +181,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             </TabsContent>
             <TabsContent
               value="analyst"
-              forceMount
-              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+              className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden"
             >
               <Suspense fallback={<TabFallback />}>
                 <AnalystTab />
@@ -191,8 +189,7 @@ export default function InsightsHub({ open = false, onOpenChange }) {
             </TabsContent>
             <TabsContent
               value="news"
-              forceMount
-              className="terminal-tabs__body insights-hub__body insights-hub__body--cached mt-0 flex-1 overflow-hidden"
+              className="terminal-tabs__body insights-hub__body mt-0 flex-1 overflow-hidden"
             >
               <Suspense fallback={<TabFallback />}>
                 <NewsTab />

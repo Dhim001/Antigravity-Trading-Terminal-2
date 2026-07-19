@@ -83,6 +83,10 @@ These surfaces intentionally stay **lists + hard caps**. Streaming was applied o
 | Surface | Cap / knob | Notes |
 |---------|------------|-------|
 | Live candle buffers / HT cache | Client LRU + `MASSIVE_HT_*` | See tables above |
+| FlexLayout heavy tabs | Unmount when deselected (`MountWhenVisible`) | Algo, ML Training, Scanner, Analyst, Equity, Ticks, Copilot |
+| Multi-chart maximize | Non-focused panes unmount | Shared candle buffers refill on restore |
+| Insights hub tabs | Active tab only (no `forceMount`) | Avoids duplicate Scanner/Analyst with dock |
+| Chart backtest overlay | `MAX_OVERLAY_TRADES` (200) | Full trade list stays in Lab fetch, not overlay |
 | Archive history (backtest / resolve) | `ARCHIVE_QUERY_LIMIT` (50 000) | Newest-N in window; `truncated` in meta |
 | Archive history (chart WS pan) | `ARCHIVE_QUERY_LIMIT_UI` (10 000) | `purpose="ui"`; newest-N + truncation meta |
 | Archive fetchmany batch | `ARCHIVE_QUERY_BATCH_SIZE` (2000) | Iterator page size |

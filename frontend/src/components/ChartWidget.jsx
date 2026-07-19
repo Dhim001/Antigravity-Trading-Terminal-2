@@ -432,6 +432,7 @@ export default function ChartWidget() {
   }, []);
 
   useEffect(() => {
+    let captureTimer = null;
     const onCaptureRequest = (e) => {
       const sym = e.detail?.symbol;
       if (sym && sym !== activeSymbol) return;
@@ -452,7 +453,9 @@ export default function ChartWidget() {
       if (captureChartTf && captureChartTf !== timeframeRef.current) {
         const prevTf = timeframeRef.current;
         setTimeframe(captureChartTf);
-        window.setTimeout(() => {
+        if (captureTimer) clearTimeout(captureTimer);
+        captureTimer = window.setTimeout(() => {
+          captureTimer = null;
           emitCapture();
           setTimeframe(prevTf);
         }, 500);
@@ -461,7 +464,10 @@ export default function ChartWidget() {
       emitCapture();
     };
     window.addEventListener('chart-capture-request', onCaptureRequest);
-    return () => window.removeEventListener('chart-capture-request', onCaptureRequest);
+    return () => {
+      window.removeEventListener('chart-capture-request', onCaptureRequest);
+      if (captureTimer) clearTimeout(captureTimer);
+    };
   }, [activeSymbol]);
 
   const activeIndicatorKeys = useMemo(

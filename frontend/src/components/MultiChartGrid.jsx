@@ -289,20 +289,27 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [maximizedIdx]);
 
-  const renderCell = (i, extraClassName) => (
-    <div key={`wrap-${i}`} className={cn('multi-chart-cell', getCellClassName(i), extraClassName)}>
-      <MiniChartWidget
-        key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
-        defaultSymbol={symbols[i] || layout.defaults[i]}
-        isFocused={focusedIdx === i}
-        linkGroup={linkGroups[i] ?? null}
-        onLinkGroupChange={(g) => handleLinkGroupChange(i, g)}
-        onFocus={(sym) => handlePaneFocus(i, sym)}
-        isMaximized={maximizedIdx === i}
-        onToggleMaximize={() => setMaximizedIdx((prev) => (prev === i ? null : i))}
-      />
-    </div>
-  );
+  const renderCell = (i, extraClassName) => {
+    // When one pane is maximized, unmount the others so their ECharts + live
+    // subscriptions are released. Restoring the grid remounts from shared candle buffers.
+    const mounted = maximizedIdx === null || maximizedIdx === i;
+    return (
+      <div key={`wrap-${i}`} className={cn('multi-chart-cell', getCellClassName(i), extraClassName)}>
+        {mounted ? (
+          <MiniChartWidget
+            key={`cell-${i}-${symbols[i] || layout.defaults[i]}`}
+            defaultSymbol={symbols[i] || layout.defaults[i]}
+            isFocused={focusedIdx === i}
+            linkGroup={linkGroups[i] ?? null}
+            onLinkGroupChange={(g) => handleLinkGroupChange(i, g)}
+            onFocus={(sym) => handlePaneFocus(i, sym)}
+            isMaximized={maximizedIdx === i}
+            onToggleMaximize={() => setMaximizedIdx((prev) => (prev === i ? null : i))}
+          />
+        ) : null}
+      </div>
+    );
+  };
 
   const renderCells = () => {
     const count = layout.defaults.length;

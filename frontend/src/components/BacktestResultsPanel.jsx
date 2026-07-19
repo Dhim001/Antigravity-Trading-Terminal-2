@@ -39,6 +39,7 @@ import { cn } from '@/lib/utils';
 import { fetchBacktestTrades, fetchBacktestRun } from '../api/endpoints';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
+import { MAX_OVERLAY_TRADES } from '../lib/backtestSlim';
 import { buildDeployPayload, evaluateDeployGate } from '@/lib/deployGate';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
@@ -615,10 +616,12 @@ export default function BacktestResultsPanel({
 
   useEffect(() => {
     if (!chartOn || !fullTrades?.length || !results?.run_id || !backtestOverlay) return;
-    if (backtestOverlay.trades?.length === fullTrades.length) return;
+    const capped = fullTrades.slice(0, MAX_OVERLAY_TRADES);
+    if (backtestOverlay.trades?.length === capped.length
+      && backtestOverlay.tradesTotal === tradesTotal) return;
     setBacktestOverlay({
       ...backtestOverlay,
-      trades: fullTrades,
+      trades: capped,
       tradesTotal,
     });
   }, [chartOn, fullTrades, results?.run_id, backtestOverlay, setBacktestOverlay, tradesTotal]);

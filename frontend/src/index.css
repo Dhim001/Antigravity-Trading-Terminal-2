@@ -3096,18 +3096,6 @@ body {
   }
 }
 
-.insights-hub__body--cached[data-state="inactive"] {
-  position: absolute;
-  inset: 0;
-  content-visibility: hidden;
-  pointer-events: none;
-}
-
-.insights-hub__body--cached[data-state="active"] {
-  position: relative;
-  content-visibility: visible;
-}
-
 .insights-hub__tab-panels {
   position: relative;
   display: flex;

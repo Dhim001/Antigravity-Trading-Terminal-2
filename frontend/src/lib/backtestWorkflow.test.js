@@ -17,6 +17,13 @@ describe('backtestSlim', () => {
     expect(slim.trades).toHaveLength(10);
     expect(slim.trades_total).toBe(100);
   });
+
+  it('trimBacktestPayload caps sweep leaderboard', () => {
+    const results = Array.from({ length: 80 }, (_, i) => ({ i }));
+    const out = trimBacktestPayload({ sweep: { results } });
+    expect(out.sweep.results).toHaveLength(48);
+    expect(out.sweep.results_truncated).toBe(80);
+  });
 });
 
 describe('backtestConfigDiff', () => {

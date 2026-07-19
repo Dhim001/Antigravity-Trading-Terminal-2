@@ -650,9 +650,20 @@ export default function ModelTrainingDashboard() {
     return next.jobToken;
   }, []);
 
+  const finishTimersRef = useRef(new Set());
+
+  useEffect(() => () => {
+    for (const t of finishTimersRef.current) clearTimeout(t);
+    finishTimersRef.current.clear();
+  }, []);
+
   const finishJobProgress = useCallback((token, extras = {}) => {
     finishMlJob(token, extras);
-    window.setTimeout(() => clearMlJobProgress(token), 600);
+    const t = window.setTimeout(() => {
+      finishTimersRef.current.delete(t);
+      clearMlJobProgress(token);
+    }, 600);
+    finishTimersRef.current.add(t);
   }, []);
 
   const fetchInventory = useCallback(async () => {

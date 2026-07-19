@@ -9,6 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import { fetchOptimizationRuns, fetchOptimizationRun } from '../api/endpoints';
+import { trimBacktestPayload } from '../lib/backtestSlim';
 import OptimizationRunCompare from './OptimizationRunCompare';
 import { toast } from 'sonner';
 
@@ -84,7 +85,7 @@ export default function OptimizationHistory() {
           out_of_sample: {},
         };
       }
-      setBacktestResults(merged);
+      setBacktestResults(trimBacktestPayload(merged));
       toast.success('Loaded optimization session');
     } catch (_) {
       toast.error('Could not load optimization session');

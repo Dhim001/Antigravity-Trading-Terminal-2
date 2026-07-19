@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../store/useStore';
 import { useIsOperator } from '../lib/operator';
@@ -206,6 +206,11 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     if (isOpen) sendAction(Action.ADMIN_GET_STATS);
   }, [isOpen, activeTab]);
 
+  const resetTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+  }, []);
+
   const handleUpdateSimulation = (updates = {}) => {
     if (isLive) return;
     sendAction(Action.ADMIN_SET_SIMULATION, {
@@ -230,7 +235,9 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     setIsResetting(true);
     sendAction(Action.ADMIN_RESET_SYSTEM);
     toast.info('System reset initiated…');
-    setTimeout(() => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = setTimeout(() => {
+      resetTimerRef.current = null;
       setIsResetting(false);
       onClose();
     }, 1500);
