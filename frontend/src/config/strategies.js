@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   Braces,
   ChartCandlestick,
+  Combine,
   Cpu,
   Gamepad2,
   Layers,
@@ -181,6 +182,14 @@ export const STRATEGY_CATALOG = Object.freeze({
     tagline: 'Graph neural network cross-asset',
     style: 'ml',
   },
+  HYBRID_ENSEMBLE: {
+    label: 'Hybrid Ensemble',
+    shortLabel: 'Ensemble',
+    icon: Combine,
+    color: '#e879f9',
+    tagline: 'Weighted TA + ML + RL vote (proposal §7)',
+    style: 'ml',
+  },
 });
 
 /** Canonical ML strategy ids — single source for badge, training, deploy gates. */
@@ -228,10 +237,19 @@ export const STRATEGY_ALLOCATION_DEFAULTS = Object.freeze({
   VAE_REGIME_DETECTOR: 2000,
   TRANSFORMER_SIGNAL: 2000,
   GNN_CROSS_ASSET: 2500,
+  HYBRID_ENSEMBLE: 3000,
 });
+
+/** Ensemble wrappers — not trained in Model Training (use component models). */
+export const ENSEMBLE_STRATEGY_IDS = Object.freeze(['HYBRID_ENSEMBLE']);
+const ENSEMBLE_STRATEGY_SET = new Set(ENSEMBLE_STRATEGY_IDS);
 
 export function isMlStrategy(strategy) {
   return ML_STRATEGY_SET.has(String(strategy || '').toUpperCase());
+}
+
+export function isEnsembleStrategy(strategy) {
+  return ENSEMBLE_STRATEGY_SET.has(String(strategy || '').toUpperCase());
 }
 
 export function isDeepMlStrategy(strategy) {
@@ -289,5 +307,6 @@ export function getMLSubtype(strategy) {
   const key = String(strategy || '').toUpperCase();
   if (key === 'RL_PPO_AGENT') return 'rl';
   if (key === 'VAE_REGIME_DETECTOR') return 'unsupervised';
+  if (key === 'HYBRID_ENSEMBLE') return 'ensemble';
   return 'supervised';
 }

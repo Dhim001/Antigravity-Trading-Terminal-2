@@ -457,15 +457,35 @@ async def learn_from_closed_trade(
         every = max(1, int(POSTTRADE_LEARNER_RETRAIN_EVERY_N))
         if exits > 0 and exits % every == 0:
             try:
-                from app.services.bots.meta_label_model import train_meta_label_model
+                from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
 
-                res = train_meta_label_model(bot_id)
-                retrained = bool(res.get("ok"))
-                if retrained and bot_manager is not None:
-                    await bot_manager.log_bot_event(
-                        bot_id,
-                        "INFO",
-                        f"Post-trade learner retrained meta-label model after {exits} exits.",
+                # Route through centralized coordinator for cooldown/dedup
+                req = get_retrain_scheduler().request_retrain(
+                    strategy=str(bot.get("strategy", "META_LABEL")),
+                    symbol=str(bot.get("symbol", bot_id)),
+                    reason=f"periodic retrain after {exits} exits",
+                    source="posttrade_learner",
+                )
+                if req.get("queued"):
+                    from app.services.bots.meta_label_model import train_meta_label_model
+
+                    res = train_meta_label_model(bot_id)
+                    retrained = bool(res.get("ok"))
+                    if retrained:
+                        get_retrain_scheduler().record_retrain(
+                            str(bot.get("strategy", "META_LABEL")),
+                            str(bot.get("symbol", bot_id)),
+                        )
+                        if bot_manager is not None:
+                            await bot_manager.log_bot_event(
+                                bot_id,
+                                "INFO",
+                                f"Post-trade learner retrained meta-label model after {exits} exits.",
+                            )
+                else:
+                    logger.debug(
+                        "posttrade retrain skipped (%s): %s",
+                        req.get("reason"), bot_id,
                     )
             except Exception as exc:
                 logger.debug("posttrade retrain skipped: %s", exc)

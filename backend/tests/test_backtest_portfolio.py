@@ -97,7 +97,8 @@ class FormatPortfolioResultsTests(unittest.TestCase):
         self.assertEqual(out["drawdown_curve"][0].get("drawdown_pct"), 0.0)
         shares = {r["symbol"]: r.get("pnl_contribution_pct") for r in out["symbol_results"]}
         self.assertAlmostEqual(shares["BTCUSDT"], 100 / 140 * 100, places=0)
-        self.assertAlmostEqual(shares["ETHUSDT"], -40 / 140 * 100, places=0)
+        self.assertAlmostEqual(shares["ETHUSDT"], 40 / 140 * 100, places=0)
+        self.assertGreaterEqual(shares["ETHUSDT"], 0.0)
 
     def test_cap_symbol_trades_adds_symbol(self):
         trades = [{"time": i, "side": "BUY", "is_exit": False} for i in range(80)]

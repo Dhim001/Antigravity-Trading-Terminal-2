@@ -88,12 +88,16 @@ def get_model_metadata(strategy: str, symbol: str) -> dict | None:
 class MlRetrainScheduler:
     """Monitors ML models and schedules retraining when needed.
 
+    Also acts as the **centralized retrain coordinator** — all retrain
+    triggers (alpha decay, posttrade learner, periodic scheduler) must call
+    ``request_retrain()`` instead of retraining directly.  This enforces
+    a shared cooldown and deduplicates concurrent requests.
+
     Usage:
         scheduler = MlRetrainScheduler()
         actions = scheduler.check(active_bots)
         for action in actions:
-            await action["retrain_fn"](...)
-    """
+            await action["retrain_fn"](...)    """
 
     def __init__(
         self,
@@ -108,6 +112,8 @@ class MlRetrainScheduler:
         self.alpha_threshold = alpha_threshold
         self.min_trades = min_trades
         self._last_retrain: dict[str, float] = {}  # symbol_strategy → timestamp
+        self._pending: dict[str, dict[str, Any]] = {}  # key → request info
+        self._retrain_history: list[dict[str, Any]] = []  # audit trail
 
     def _cooldown_key(self, strategy: str, symbol: str) -> str:
         return f"{symbol.upper()}:{strategy.upper()}"
@@ -121,6 +127,77 @@ class MlRetrainScheduler:
         """Record that a retrain was performed (resets cooldown)."""
         key = self._cooldown_key(strategy, symbol)
         self._last_retrain[key] = time.time()
+        self._pending.pop(key, None)
+
+    # ── Centralized retrain coordinator ───────────────────────────────────────
+
+    def request_retrain(
+        self,
+        strategy: str,
+        symbol: str,
+        reason: str,
+        source: str,
+    ) -> dict[str, Any]:
+        """Centralized retrain request — deduplicates and enforces cooldown.
+
+        Parameters
+        ----------
+        strategy : str
+            Strategy ID (e.g. 'ML_SIGNAL_BOOST') or bot_id for meta-label.
+        symbol : str
+            Trading symbol.
+        reason : str
+            Human-readable reason for the retrain request.
+        source : str
+            Trigger origin: 'alpha_decay' | 'retrain_scheduler' | 'posttrade_learner'.
+
+        Returns
+        -------
+        dict with: queued (bool), reason (str), source (str), key (str).
+        """
+        key = self._cooldown_key(strategy, symbol)
+
+        if self._is_on_cooldown(strategy, symbol):
+            logger.debug(
+                "Retrain request from %s for %s skipped (cooldown)", source, key,
+            )
+            return {"queued": False, "reason": "cooldown", "source": source, "key": key}
+
+        if key in self._pending:
+            self._pending[key]["reasons"].append(f"{source}: {reason}")
+            logger.debug(
+                "Retrain request from %s for %s merged into pending", source, key,
+            )
+            return {"queued": False, "reason": "already_pending", "source": source, "key": key}
+
+        ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        self._pending[key] = {
+            "strategy": strategy,
+            "symbol": symbol,
+            "reasons": [f"{source}: {reason}"],
+            "requested_at": ts,
+        }
+        logger.info("Retrain queued for %s by %s: %s", key, source, reason)
+
+        # Record in audit history (keep last 100 entries)
+        self._retrain_history.append({
+            "key": key,
+            "source": source,
+            "reason": reason,
+            "requested_at": ts,
+        })
+        if len(self._retrain_history) > 100:
+            self._retrain_history = self._retrain_history[-100:]
+
+        return {"queued": True, "reason": reason, "source": source, "key": key}
+
+    def get_pending(self) -> dict[str, dict[str, Any]]:
+        """Return all pending retrain requests (for dashboard display)."""
+        return dict(self._pending)
+
+    def get_retrain_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent retrain history for audit trail."""
+        return list(reversed(self._retrain_history[-limit:]))
 
     def check(
         self,

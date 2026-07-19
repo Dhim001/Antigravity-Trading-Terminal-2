@@ -22,6 +22,7 @@ from typing import Any, Callable
 import numpy as np
 
 from app.services.bots.backtest_purged_cv import (
+    apply_embargo_after_test,
     embargo_bars_for_segment,
     estimate_purge_bars,
     partition_candles,
@@ -89,10 +90,16 @@ ML_STRATEGIES = frozenset({
     "TRANSFORMER_SIGNAL", "GNN_CROSS_ASSET",
 })
 
+ENSEMBLE_STRATEGIES = frozenset({"HYBRID_ENSEMBLE"})
+
 
 def is_ml_strategy(strategy: str) -> bool:
+    """True for train/validate artifact strategies (not the hybrid ensemble wrapper)."""
     return str(strategy).upper() in ML_STRATEGIES
 
+
+def is_ensemble_strategy(strategy: str) -> bool:
+    return str(strategy).upper() in ENSEMBLE_STRATEGIES
 
 # ── Walk-forward fold generation ──────────────────────────────────────────
 
@@ -364,9 +371,35 @@ def walk_forward_ml_train(
         }
 
     fold_results = []
+    prev_test_start: int | None = None
+    prev_test_end: int | None = None
     for fold in folds:
-        train_candles = candles[fold["train_start"]:fold["train_end"]]
-        test_candles = candles[fold["test_start"]:fold["test_end"]]
+        train_start = int(fold["train_start"])
+        train_end = int(fold["train_end"])
+        test_start = int(fold["test_start"])
+        test_end = int(fold["test_end"])
+        embargo_bars = int(fold.get("embargo_bars") or 0)
+
+        # Post-test embargo: strip prior OOS (+ embargo buffer) from the next IS window
+        # so labels / features from fold i's test do not leak into fold i+1 train.
+        embargo_info: dict[str, Any] = {"embargo_bars": embargo_bars, "applied": False}
+        if prev_test_end is not None and prev_test_start is not None:
+            embargo_until = apply_embargo_after_test(candles, prev_test_end, embargo_bars)
+            embargo_info["prev_test_start"] = prev_test_start
+            embargo_info["prev_test_end"] = prev_test_end
+            embargo_info["embargo_until"] = embargo_until
+            parts: list[dict] = []
+            if train_start < prev_test_start:
+                parts.extend(candles[train_start:min(train_end, prev_test_start)])
+            if embargo_until < train_end:
+                parts.extend(candles[max(train_start, embargo_until):train_end])
+            train_candles = parts
+            embargo_info["applied"] = True
+            embargo_info["train_bars_after_embargo"] = len(train_candles)
+        else:
+            train_candles = candles[train_start:train_end]
+
+        test_candles = candles[test_start:test_end]
         for row in train_candles:
             if isinstance(row, dict):
                 row.setdefault("_symbol", symbol)
@@ -374,10 +407,26 @@ def walk_forward_ml_train(
             if isinstance(row, dict):
                 row.setdefault("_symbol", symbol)
 
-        # Purge overlap
+        # Purge overlap between this fold's train end and its own test start
         train_candles, purge_info = purge_train_before_test(
             train_candles, test_candles, fold["purge_bars"],
         )
+        purge_info = {**(purge_info or {}), "embargo": embargo_info}
+
+        if len(train_candles) < 50:
+            fold_results.append({
+                "fold": fold["fold"],
+                "ok": False,
+                "error": (
+                    f"Train window too small after purge/embargo ({len(train_candles)} bars)"
+                ),
+                "train_bars": len(train_candles),
+                "test_bars": len(test_candles),
+                "purge": purge_info,
+            })
+            prev_test_start = test_start
+            prev_test_end = test_end
+            continue
 
         # Train on IS fold
         try:
@@ -390,7 +439,10 @@ def walk_forward_ml_train(
                 "error": str(exc),
                 "train_bars": len(train_candles),
                 "test_bars": len(test_candles),
+                "purge": purge_info,
             })
+            prev_test_start = test_start
+            prev_test_end = test_end
             continue
 
         if not train_result.get("ok", False):
@@ -400,7 +452,10 @@ def walk_forward_ml_train(
                 "error": train_result.get("error", "Training failed"),
                 "train_bars": len(train_candles),
                 "test_bars": len(test_candles),
+                "purge": purge_info,
             })
+            prev_test_start = test_start
+            prev_test_end = test_end
             continue
 
         # Evaluate on OOS fold (must not abort the whole WF run)
@@ -417,6 +472,8 @@ def walk_forward_ml_train(
                 "train_metrics": train_result.get("metrics", {}),
                 "purge": purge_info,
             })
+            prev_test_start = test_start
+            prev_test_end = test_end
             continue
 
         train_metrics = train_result.get("metrics", {})
@@ -446,6 +503,8 @@ def walk_forward_ml_train(
             "oos_metrics": oos_metrics,
             "purge": purge_info,
         })
+        prev_test_start = test_start
+        prev_test_end = test_end
 
     # Aggregate results
     successful = [f for f in fold_results if f.get("ok")]
@@ -464,6 +523,16 @@ def walk_forward_ml_train(
     stability = _compute_stability(successful)
     recommendation = _make_recommendation(aggregate, stability, len(successful), n_folds)
 
+    # Check for capacity gap warning
+    wf_parity = bool(cfg.get("wf_capacity_parity", True))
+    capacity_gap_warning = None
+    if not wf_parity:
+        capacity_gap_warning = (
+            "Walk-forward validation used reduced hyperparams (fast mode). "
+            "OOS accuracy may not reflect production model performance. "
+            "Enable wf_capacity_parity for accurate validation."
+        )
+
     return {
         "ok": True,
         "strategy": strategy,
@@ -476,6 +545,8 @@ def walk_forward_ml_train(
         "stability": stability,
         "recommendation": recommendation,
         "validated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "wf_capacity_parity": wf_parity,
+        "capacity_gap_warning": capacity_gap_warning,
     }
 
 

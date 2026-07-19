@@ -53,7 +53,14 @@ describe('isMlStrategy / allocations', () => {
   it('uses per-strategy allocation presets', () => {
     expect(defaultAllocationFor('RL_PPO_AGENT')).toBe(3000);
     expect(defaultAllocationFor('SUPERTREND_ADX')).toBe(5000);
+    expect(defaultAllocationFor('HYBRID_ENSEMBLE')).toBe(3000);
     expect(defaultAllocationFor('UNKNOWN')).toBe(1000);
+  });
+
+  it('keeps hybrid ensemble out of Model Training ML ids', () => {
+    expect(isMlStrategy('HYBRID_ENSEMBLE')).toBe(false);
+    expect(ML_STRATEGY_IDS).not.toContain('HYBRID_ENSEMBLE');
+    expect(getStrategyCategory('HYBRID_ENSEMBLE')).toBe('ml');
   });
 });
 
@@ -64,6 +71,10 @@ describe('getMLSubtype', () => {
 
   it('detects unsupervised subtype', () => {
     expect(getMLSubtype('VAE_REGIME_DETECTOR')).toBe('unsupervised');
+  });
+
+  it('detects ensemble subtype', () => {
+    expect(getMLSubtype('HYBRID_ENSEMBLE')).toBe('ensemble');
   });
 
   it('defaults supervised for other ML strategies', () => {

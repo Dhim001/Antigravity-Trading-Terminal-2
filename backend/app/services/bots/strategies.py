@@ -259,6 +259,11 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
 
         return GnnCrossAssetStrategy(config or {})
 
+    if key == "HYBRID_ENSEMBLE":
+        from app.services.bots.strategies_ensemble import HybridEnsembleStrategy
+
+        return HybridEnsembleStrategy(config or {})
+
     if key in ("CVD_DIVERGENCE", "WYCKOFF_SPRING", "VPOC_REVERSION", "ORDERFLOW_IMBALANCE", "ABSORPTION_AGENT"):
         from app.services.bots.strategies_microstructure import (
             CvdDivergenceStrategy,

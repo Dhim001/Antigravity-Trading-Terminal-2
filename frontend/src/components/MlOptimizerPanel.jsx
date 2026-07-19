@@ -10,7 +10,7 @@ import ConfusionMatrixGrid from './ConfusionMatrixGrid';
 import RlEpisodeReplay from './RlEpisodeReplay';
 import AlphaDecayMonitor from './AlphaDecayMonitor';
 import { getStrategyMeta, getMLSubtype } from '@/config/strategies';
-import { getMlObjectiveOptions, getMlSubtypeSweepHint } from '@/lib/optimizerDefaults';
+import { getMlObjectiveOptions, getMlSubtypeSweepHint, getSensitivityAnalysis } from '@/lib/optimizerDefaults';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { BrainCircuit, ExternalLink } from 'lucide-react';
@@ -110,9 +110,55 @@ function MlValidationFooter({ results, strategy }) {
       {subtype === 'rl' && (
         <RlEpisodeReplay rlData={rl} />
       )}
+      <SensitivitySection results={results} />
     </section>
   );
 }
+
+function SensitivitySection({ results }) {
+  const sweep = results?.sweep;
+  const sweepResults = sweep?.results;
+  const objective = sweep?.objective || 'robust_score';
+  const sweptParams = sweep?.swept_params;
+
+  if (!sweepResults?.length || !sweptParams?.length) return null;
+
+  const analysis = getSensitivityAnalysis(sweepResults, objective, sweptParams);
+  if (!analysis.perParam.length) return null;
+
+  return (
+    <div className="mt-2">
+      <p className="text-[0.6rem] uppercase text-muted-foreground mb-1">Sensitivity analysis</p>
+      {analysis.bestIsOutlier && (
+        <p className="text-xs text-amber-400 mb-1">
+          ⚠ Best config is a statistical outlier — consider nearby plateau configs for robustness.
+        </p>
+      )}
+      <div className="space-y-1">
+        {analysis.perParam.map((p) => (
+          <div key={p.key} className="flex items-center gap-2 text-xs">
+            <span className="w-32 truncate num-mono text-muted-foreground" title={p.key}>
+              {p.key}
+            </span>
+            <div className="flex-1 h-2 rounded bg-muted/30 overflow-hidden">
+              <div
+                className={`h-full rounded transition-all ${p.warning ? 'bg-amber-500' : 'bg-emerald-500/70'}`}
+                style={{ width: `${Math.min(100, p.sensitivity * 100)}%` }}
+              />
+            </div>
+            <span className={`w-10 text-right num-mono text-[0.6rem] ${p.warning ? 'text-amber-400' : 'text-muted-foreground'}`}>
+              {p.sensitivity.toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[0.55rem] text-muted-foreground mt-1">
+        CV &gt; 0.30 (amber) = high sensitivity — small param changes cause large score swings.
+      </p>
+    </div>
+  );
+}
+
 
 function ModelPinSlot({
   pinEnabled,

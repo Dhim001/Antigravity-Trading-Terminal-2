@@ -489,6 +489,75 @@ def snapshot_current_version(
     return entry
 
 
+def persist_ml_validation_metadata(
+    strategy: str,
+    symbol: str,
+    wf_result: dict[str, Any] | None,
+    pbo_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge walk-forward (+ optional PBO) results into the live metadata.json.
+
+    Deploy gate reads ``validated_at`` / ``walk_forward`` / ``pbo`` from this file.
+    """
+    root = model_root_for(strategy, symbol)
+    if not root:
+        return {"ok": False, "error": f"unknown strategy {strategy}"}
+    meta_path = os.path.join(root, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return {"ok": False, "error": "No trained model metadata to update"}
+
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed to read metadata: {exc}"}
+
+    wf = wf_result if isinstance(wf_result, dict) else {}
+    validated_at = wf.get("validated_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    agg = wf.get("aggregate") if isinstance(wf.get("aggregate"), dict) else {}
+    meta["validated_at"] = validated_at
+    meta["walk_forward"] = {
+        "ok": bool(wf.get("ok")),
+        "mode": wf.get("mode"),
+        "n_folds": wf.get("n_folds"),
+        "successful_folds": wf.get("successful_folds"),
+        "mean_oos_accuracy": agg.get("mean_oos_accuracy"),
+        "recommendation": wf.get("recommendation"),
+        "validated_at": validated_at,
+        "stability": wf.get("stability") if isinstance(wf.get("stability"), dict) else None,
+    }
+
+    pbo = pbo_result if isinstance(pbo_result, dict) else None
+    if pbo and pbo.get("ok") and pbo.get("pbo") is not None:
+        try:
+            meta["pbo"] = float(pbo["pbo"])
+        except (TypeError, ValueError):
+            meta["pbo"] = pbo.get("pbo")
+        meta["pbo_audit"] = {
+            "pbo": meta.get("pbo"),
+            "recommendation": pbo.get("recommendation"),
+            "degradation": pbo.get("degradation"),
+            "n_combos": pbo.get("n_combos"),
+            "skipped": bool(pbo.get("skipped")),
+        }
+    elif pbo and pbo.get("skipped"):
+        meta["pbo_audit"] = {
+            "skipped": True,
+            "error": pbo.get("error"),
+            "recommendation": pbo.get("recommendation"),
+        }
+
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, default=str)
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed to write metadata: {exc}"}
+
+    return {"ok": True, "validated_at": validated_at, "path": meta_path}
+
+
 def dataset_summary_from_metadata(meta: dict | None) -> dict[str, Any] | None:
     """Compact dataset browser payload from metadata.json."""
     if not isinstance(meta, dict):
@@ -617,4 +686,70 @@ def export_onnx_single_file(
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+# ── Version status management (champion / challenger / retired) ──────────
+
+
+def update_version_status(
+    strategy: str,
+    symbol: str,
+    version_id: str,
+    status: str,
+) -> bool:
+    """Update the status field of a model version in the index.
+
+    Parameters
+    ----------
+    strategy : str
+        Strategy ID.
+    symbol : str
+        Trading symbol.
+    version_id : str
+        Version ID to update.
+    status : str
+        New status: 'champion', 'challenger', or 'retired'.
+
+    Returns
+    -------
+    bool — True if the version was found and updated.
+    """
+    root = model_root_for(strategy, symbol)
+    if not root:
+        return False
+
+    vroot = versions_dir(root)
+    index_path = os.path.join(vroot, "index.json")
+    if not os.path.isfile(index_path):
+        return False
+
+    try:
+        with open(index_path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except Exception:
+        return False
+
+    updated = False
+    for entry in entries:
+        if entry.get("version_id") == version_id:
+            entry["status"] = status
+            updated = True
+        elif status == "champion" and entry.get("status") == "champion":
+            # Demote the old champion
+            entry["status"] = "retired"
+
+    if updated:
+        try:
+            with open(index_path, "w", encoding="utf-8") as fh:
+                json.dump(entries, fh, indent=2)
+            logger.info(
+                "Updated version %s status to '%s' for %s/%s",
+                version_id, status, strategy, symbol,
+            )
+        except Exception as exc:
+            logger.error("Failed to write version index: %s", exc)
+            return False
+
+    return updated
+
 

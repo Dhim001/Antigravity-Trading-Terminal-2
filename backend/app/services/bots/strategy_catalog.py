@@ -151,6 +151,13 @@ _BAR_BUILTIN = [
         "category": "ml",
         "execution_mode": "BAR_CLOSE",
     },
+    {
+        "id": "HYBRID_ENSEMBLE",
+        "name": "Hybrid Ensemble",
+        "description": "Weighted vote across TA + ML + RL (proposal §7). Fires when components agree with enough confidence; suppresses single-source noise.",
+        "category": "ml",
+        "execution_mode": "BAR_CLOSE",
+    },
 ]
 
 _TICK_BUILTIN = [

@@ -17,6 +17,7 @@ import numpy as np
 from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import bar_to_signal_features, signal_features_to_vector
 from app.services.bots.ml_gnn_trainer import get_gnn_store
+from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
 from app.services.bots.strategies import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -91,11 +92,11 @@ class GnnCrossAssetStrategy(BaseStrategy):
             atr = 0.0
 
         if signal in ("BUY", "SELL") and conf >= threshold:
-            return {
+            return apply_ml_meta_label_gate({
                 "signal": signal,
                 "confidence": round(conf, 4),
                 "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                 "model_type": "gnn",
-            }
+            }, df_row, self._cfg)
 
         return {"signal": "NONE"}

@@ -24,6 +24,7 @@ from app.services.bots.ml_feature_engineering import (
     bar_to_signal_features,
     signal_features_to_vector,
 )
+from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
 from app.services.bots.rl_ppo_trainer import get_ppo_store
 from app.services.bots.rl_trading_env import (
     ACTION_BUY,
@@ -161,13 +162,13 @@ class RlPpoStrategy(BaseStrategy):
             else:
                 return {"signal": "NONE", "rl_step": _step_payload("NONE")}  # already long
 
-            return {
+            return apply_ml_meta_label_gate({
                 "signal": signal,
                 "confidence": round(confidence, 4),
                 "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                 "model_type": "rl_ppo",
                 "rl_step": _step_payload(signal),
-            }
+            }, df_row, self._cfg)
 
         if action == ACTION_SELL and confidence >= threshold:
             if self._position_side == SIDE_LONG:
@@ -179,13 +180,13 @@ class RlPpoStrategy(BaseStrategy):
             else:
                 return {"signal": "NONE", "rl_step": _step_payload("NONE")}  # already short
 
-            return {
+            return apply_ml_meta_label_gate({
                 "signal": signal,
                 "confidence": round(confidence, 4),
                 "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                 "model_type": "rl_ppo",
                 "rl_step": _step_payload(signal),
-            }
+            }, df_row, self._cfg)
 
         if action == ACTION_CLOSE and self._position_side != SIDE_FLAT:
             close_signal = "SELL" if self._position_side == SIDE_LONG else "BUY"

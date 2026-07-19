@@ -237,23 +237,30 @@ class AlphaDecayMonitor:
                     get_model_age_hours,
                     get_model_metadata,
                 )
-                from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+                from app.services.bots.ml_walk_forward_validator import (
+                    is_ensemble_strategy,
+                    is_ml_strategy,
+                )
 
-                if is_ml_strategy(strategy):
-                    model_age = get_model_age_hours(strategy, symbol)
+                ml_check_id = strategy
+                if is_ensemble_strategy(strategy):
+                    ml_check_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
+
+                if is_ml_strategy(strategy) or is_ensemble_strategy(strategy):
+                    model_age = get_model_age_hours(ml_check_id, symbol)
                     max_age = float(cfg.get("ml_max_model_age_hours", 168))
                     if model_age is not None and model_age > max_age:
                         decay_reasons.append(
-                            f"ML Model Stale: Model is {model_age:.0f}h old "
+                            f"ML Model Stale: {ml_check_id} is {model_age:.0f}h old "
                             f"(max {max_age:.0f}h)"
                         )
                     elif model_age is None:
                         decay_reasons.append(
-                            "ML Model Missing: No trained model found for this symbol"
+                            f"ML Model Missing: No trained {ml_check_id} model for this symbol"
                         )
 
                     # --- Metric 7: OOS Accuracy Drift ---
-                    model_meta = get_model_metadata(strategy, symbol)
+                    model_meta = get_model_metadata(ml_check_id, symbol)
                     if model_meta:
                         wf_accuracy = model_meta.get("metrics", {}).get("val_accuracy")
                         if wf_accuracy is not None and len(rows) >= ALPHA_DECAY_MIN_TRADES:
@@ -269,6 +276,25 @@ class AlphaDecayMonitor:
             except ImportError:
                 pass  # ML modules not installed
 
+            # --- Metric 8: Feature Distribution Drift (PSI) ---
+            try:
+                from app.services.bots.ml_feature_drift import get_feature_drift_monitor
+                drift = get_feature_drift_monitor().check_drift(symbol, strategy)
+                if drift and drift.get("overall_psi", 0) > 0.25:
+                    drifted = [f for f in drift.get("per_feature", []) if f["psi"] > 0.25]
+                    top_drifted = [f["name"] for f in sorted(drifted, key=lambda x: -x["psi"])[:3]]
+                    decay_reasons.append(
+                        f"Feature Drift: PSI={drift['overall_psi']:.3f} "
+                        f"({drift['assessment']}), top drifted: {top_drifted}"
+                    )
+                elif drift and drift.get("overall_psi", 0) > 0.1:
+                    logger.info(
+                        "Moderate feature drift for %s/%s: PSI=%.3f",
+                        symbol, strategy, drift["overall_psi"],
+                    )
+            except ImportError:
+                pass
+
             # --- Decay Remediation Actions ---
             if decay_reasons:
                 logger.warning("Alpha Decay detected for bot %s (%s): %s", bot_id, symbol, "; ".join(decay_reasons))
@@ -282,14 +308,20 @@ class AlphaDecayMonitor:
                 ml_retrained = False
                 if ALPHA_DECAY_AUTO_RETRAIN:
                     try:
-                        from app.services.bots.ml_walk_forward_validator import is_ml_strategy as _is_ml
+                        from app.services.bots.ml_walk_forward_validator import (
+                            is_ensemble_strategy as _is_ens,
+                            is_ml_strategy as _is_ml,
+                        )
                         from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
 
-                        if _is_ml(strategy):
+                        retrain_id = strategy
+                        if _is_ens(strategy):
+                            retrain_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
+                        if _is_ml(strategy) or _is_ens(strategy):
                             scheduler = get_retrain_scheduler()
-                            should, reason = scheduler.should_retrain(strategy, symbol, alpha_score=0.8)
+                            should, reason = scheduler.should_retrain(retrain_id, symbol, alpha_score=0.8)
                             if should:
-                                scheduler.record_retrain(strategy, symbol)
+                                scheduler.record_retrain(retrain_id, symbol)
                                 results["retrained_models"].append(bot_id)
                                 ml_retrained = True
                                 await self.bot_manager.log_bot_event(
@@ -305,14 +337,24 @@ class AlphaDecayMonitor:
                 if ALPHA_DECAY_AUTO_RETRAIN and not ml_retrained:
                     try:
                         import asyncio
-                        retrain_res = await asyncio.to_thread(train_meta_label_model, bot_id)
-                        if retrain_res.get("ok"):
-                            results["retrained_models"].append(bot_id)
-                            await self.bot_manager.log_bot_event(
-                                bot_id,
-                                "INFO",
-                                "Alpha Decay Monitor: Successfully retrained meta-label model with fresh trade history.",
-                            )
+                        from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+                        scheduler = get_retrain_scheduler()
+                        req = scheduler.request_retrain(
+                            strategy=strategy or "META_LABEL",
+                            symbol=symbol,
+                            reason=f"alpha decay ({'; '.join(decay_reasons[:2])})",
+                            source="alpha_decay",
+                        )
+                        if req.get("queued"):
+                            retrain_res = await asyncio.to_thread(train_meta_label_model, bot_id)
+                            if retrain_res.get("ok"):
+                                scheduler.record_retrain(strategy or "META_LABEL", symbol)
+                                results["retrained_models"].append(bot_id)
+                                await self.bot_manager.log_bot_event(
+                                    bot_id,
+                                    "INFO",
+                                    "Alpha Decay Monitor: Successfully retrained meta-label model with fresh trade history.",
+                                )
                     except Exception as exc:
                         logger.error("Failed to retrain meta-label model for bot %s on decay: %s", bot_id, exc)
 

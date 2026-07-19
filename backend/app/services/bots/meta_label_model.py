@@ -281,6 +281,7 @@ def train_model_from_rows(
     min_samples: int = 20,
     val_fraction: float = 0.2,
     risk_adjusted_labels: bool = False,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Train HistGradientBoosting on pre-built feature rows (in-memory).
 
@@ -339,9 +340,10 @@ def train_model_from_rows(
         w_train[y_train == 1] *= class_weight_ratio
 
     model = HistGBC(
-        max_depth=5,
-        max_iter=120,
-        learning_rate=0.08,
+        max_depth=int(kwargs.get("gbm_max_depth", 5)),
+        max_iter=int(kwargs.get("gbm_max_iter", 120)),
+        learning_rate=float(kwargs.get("gbm_learning_rate", 0.08)),
+        l2_regularization=float(kwargs.get("gbm_l2_reg", 0.0)),
         min_samples_leaf=max(2, min_samples // 15),
         random_state=42,
     )

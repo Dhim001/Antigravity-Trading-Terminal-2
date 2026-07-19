@@ -336,7 +336,10 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
     )
 
     versions = list_model_versions(model_dir)
-    dataset = dataset_summary_from_metadata(meta)
+    try:
+        dataset = dataset_summary_from_metadata(meta)
+    except Exception:
+        dataset = None
     return {
         "trained": True,
         "trained_at": meta.get("trained_at"),
@@ -687,6 +690,22 @@ def _run_ml_validate_job(
         except Exception as exc:
             logger.exception("PBO failed for %s/%s", strategy, symbol)
             result["pbo"] = {"ok": False, "error": str(exc)}
+
+    # Stamp model metadata so deploy_gate can require WF (+ PBO when present).
+    if result.get("ok"):
+        try:
+            from app.services.bots.ml_model_artifacts import persist_ml_validation_metadata
+
+            persist_res = persist_ml_validation_metadata(
+                strategy,
+                symbol,
+                result,
+                pbo_result=result.get("pbo") if isinstance(result.get("pbo"), dict) else None,
+            )
+            result["validation_persisted"] = persist_res
+        except Exception as exc:
+            logger.exception("Failed to persist ML validation metadata for %s/%s", strategy, symbol)
+            result["validation_persisted"] = {"ok": False, "error": str(exc)}
 
     return result
 

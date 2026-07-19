@@ -147,6 +147,14 @@ export const FIELD_META = {
     hint: 'Pin a trained snapshot, or leave Latest to always use the activated model.',
   },
   model_artifact: { label: 'Model artifact', group: 'ml_model', kind: 'text', readOnly: true, hint: 'Pinned filename (.onnx / .joblib) for this deploy.' },
+  ta_strategy: { label: 'TA leg', group: 'ml_model', kind: 'text', hint: 'Technical strategy id for the ensemble TA vote (e.g. MACD_RSI).' },
+  ml_strategy: { label: 'ML leg', group: 'ml_model', kind: 'text', hint: 'ML strategy id for the ensemble ML vote (e.g. ML_SIGNAL_BOOST). Train this in Model Training.' },
+  rl_strategy: { label: 'RL leg', group: 'ml_model', kind: 'text', hint: 'RL strategy id for the ensemble RL vote (default RL_PPO_AGENT).' },
+  ensemble_weight_ta: { label: 'TA weight', group: 'ml_model', kind: 'decimal', hint: 'Relative weight of the TA vote (normalized with ML + RL).' },
+  ensemble_weight_ml: { label: 'ML weight', group: 'ml_model', kind: 'decimal', hint: 'Relative weight of the ML vote (normalized with TA + RL).' },
+  ensemble_weight_rl: { label: 'RL weight', group: 'ml_model', kind: 'decimal', hint: 'Relative weight of the RL vote (normalized with TA + ML).' },
+  ensemble_threshold: { label: 'Ensemble threshold', group: 'signal', kind: 'confidence', hint: 'Minimum weighted confidence to fire BUY/SELL.' },
+  ensemble_require_agreement: { label: 'Require agreement', group: 'ml_model', kind: 'boolean', hint: 'Require ≥2 components on the same side before firing.' },
   gamma: { label: 'Discount factor', group: 'rl_policy', kind: 'decimal', hint: 'Gamma for reward discounting (0–1).' },
   gae_lambda: { label: 'GAE lambda', group: 'rl_policy', kind: 'decimal', hint: 'Generalized advantage estimation λ.' },
   clip_epsilon: { label: 'PPO clip ε', group: 'rl_policy', kind: 'decimal', hint: 'PPO policy ratio clip bound.' },
@@ -185,6 +193,12 @@ export const STRATEGY_FIELD_KEYS = {
   ],
   TRANSFORMER_SIGNAL: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
   GNN_CROSS_ASSET: ['min_confidence', 'min_corr', 'basket_id', 'model_version', 'model_symbol', 'direction_mode'],
+  HYBRID_ENSEMBLE: [
+    'ta_strategy', 'ml_strategy', 'rl_strategy',
+    'ensemble_weight_ta', 'ensemble_weight_ml', 'ensemble_weight_rl',
+    'ensemble_threshold', 'ensemble_require_agreement',
+    'model_symbol', 'direction_mode', 'calibration_gate_enabled',
+  ],
   CVD_DIVERGENCE: ['pivot_lookback', 'adx_length', 'adx_threshold', 'atr_length', 'direction_mode'],
   WYCKOFF_SPRING: ['range_lookback', 'atr_length', 'volume_surge_mult', 'direction_mode'],
   VPOC_REVERSION: ['profile_lookback', 'value_area_pct', 'rsi_length', 'adx_length', 'adx_trend_filter', 'atr_length', 'direction_mode'],
@@ -513,7 +527,7 @@ export function pickDeployConfig(strategy, raw = {}) {
       strat === 'CHART_AGENT' || strat.startsWith('ML_') || strat === 'LSTM_DIRECTION'
       || strat === 'RL_PPO_AGENT' || strat === 'TCN_MULTI_HORIZON'
       || strat === 'VAE_REGIME_DETECTOR' || strat === 'TRANSFORMER_SIGNAL'
-      || strat === 'GNN_CROSS_ASSET'
+      || strat === 'GNN_CROSS_ASSET' || strat === 'HYBRID_ENSEMBLE'
     ) ? 'BOTH' : 'LONG_ONLY';
   }
   if (out.trailing_stop_percent == null) out.trailing_stop_percent = 2;

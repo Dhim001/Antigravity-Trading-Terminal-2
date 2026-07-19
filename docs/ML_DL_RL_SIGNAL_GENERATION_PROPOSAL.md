@@ -331,6 +331,16 @@ Instead of predicting raw price direction (noisy), we label each bar using the t
 
 This naturally handles the asymmetry between profitable and unprofitable trades and produces cleaner labels than simple `close[t+1] > close[t]`.
 
+### Implementation status (shipped)
+
+| Safeguard | Status |
+|---|---|
+| Purge + **post-test embargo** on ML walk-forward folds | ✅ `ml_walk_forward_validator.py` |
+| Walk-forward required before ML deploy | ✅ `deploy_gate` blocks unless `validated_at` / `walk_forward.ok` (escape: `ml_skip_validation_gate`) |
+| PBO / CSCV | ✅ `ml_pbo_validator.py`; validate persists `pbo` into metadata; high PBO blocks deploy; missing PBO warns (`ml_require_pbo` to block) |
+| Alpha decay (staleness + accuracy drift) | ✅ `alpha_decay.py` |
+| Meta-label gate on ML/DL/RL entries | ✅ `ml_signal_gates.apply_ml_meta_label_gate` when `calibration_gate_enabled` |
+| Triple-barrier labels | ✅ XGB / LSTM / Transformer / GNN; TCN uses multi-horizon returns; VAE/RL use their own objectives |
 ---
 
 ## 6. Frontend Integration
@@ -384,8 +394,19 @@ class EnsembleStrategy(BaseStrategy):
 This ensemble approach means:
 - If TA and ML agree but RL disagrees → signal fires (2 out of 3).
 - If only one method fires → signal suppressed (high bar reduces false signals).
-- Weights are adaptive — the `posttrade_learner.py` can adjust weights based on which component has been most accurate recently.
+- Weights are adaptive — set `ensemble_adaptive_weights` on bot config (e.g. `{ta, ml, rl}`) to override static weights; post-trade learner can write this blob later.
 
+### Implementation status (shipped)
+
+| Piece | Status |
+|---|---|
+| `HybridEnsembleStrategy` weighted vote | ✅ `strategies_ensemble.py` (`HYBRID_ENSEMBLE`) |
+| Configurable TA / ML / RL legs + weights + threshold | ✅ `indicators.STRATEGY_DEFAULTS` + bot config fields |
+| Optional ≥2-component agreement | ✅ `ensemble_require_agreement` |
+| Meta-label gate on ensemble entries | ✅ via `apply_ml_meta_label_gate` |
+| Deploy gate checks **component** ML/RL models + ML WF | ✅ `deploy_gate` ensemble branch |
+| Catalog + frontend picker | ✅ strategy catalog / `strategies.js` (not in Model Training list — train legs separately) |
+| Alpha decay uses ML leg artifact | ✅ `alpha_decay.py` |
 ---
 
 ## 8. Risk & Limitations

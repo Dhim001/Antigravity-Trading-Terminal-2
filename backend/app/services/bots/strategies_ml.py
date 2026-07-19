@@ -28,6 +28,7 @@ from app.services.bots.ml_feature_engineering import (
     bar_to_signal_features,
     signal_features_to_vector,
 )
+from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
 from app.services.bots.ml_triple_barrier import label_distribution, label_triple_barrier
 from app.services.bots.strategies import BaseStrategy
 
@@ -91,13 +92,19 @@ def train_ml_signal_model(
     """
     cfg = merge_strategy_config("ML_SIGNAL_BOOST", config or {})
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
+    wf_parity = bool(cfg.get("wf_capacity_parity", True))
     min_samples = int(cfg.get("min_train_samples", 80 if wf_mode else 200))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))
-    max_iter = int(cfg.get("max_iter", 40 if wf_mode else 150))
+    max_iter = int(cfg.get("max_iter", 40 if (wf_mode and not wf_parity) else 150))
     skip_refit = bool(cfg.get("skip_refit", wf_mode))
     skip_snapshot = bool(cfg.get("skip_snapshot", wf_mode))
+
+    # GBM architecture params — config-driven with sensible defaults
+    gbm_max_depth = int(cfg.get("gbm_max_depth", 4 if (wf_mode and not wf_parity) else 5))
+    gbm_lr = float(cfg.get("gbm_learning_rate", 0.1 if (wf_mode and not wf_parity) else 0.08))
+    gbm_l2_reg = float(cfg.get("gbm_l2_reg", 0.0))
 
     if len(candles) < min_samples + max_bars:
         return {
@@ -176,9 +183,10 @@ def train_ml_signal_model(
     HistGBC, accuracy_score, log_loss_fn, joblib = _load_sklearn()
 
     model = HistGBC(
-        max_depth=4 if wf_mode else 5,
+        max_depth=gbm_max_depth,
         max_iter=max(20, max_iter),
-        learning_rate=0.1 if wf_mode else 0.08,
+        learning_rate=gbm_lr,
+        l2_regularization=gbm_l2_reg,
         min_samples_leaf=max(2, min_samples // 20),
         random_state=42,
         class_weight="balanced",
@@ -258,6 +266,11 @@ def train_ml_signal_model(
             "atr_mult": atr_mult,
             "max_holding_bars": max_bars,
             "min_train_samples": min_samples,
+            "gbm_max_depth": gbm_max_depth,
+            "gbm_learning_rate": gbm_lr,
+            "gbm_max_iter": max(20, max_iter),
+            "gbm_l2_reg": gbm_l2_reg,
+            "wf_capacity_parity": wf_parity,
         },
     }
     with open(_metadata_path(symbol), "w", encoding="utf-8") as fh:
@@ -458,12 +471,13 @@ class MlSignalBoostStrategy(BaseStrategy):
             atr = 0.0
 
         if signal in ("BUY", "SELL") and conf >= threshold:
-            return {
+            return apply_ml_meta_label_gate({
                 "signal": signal,
                 "raw_signal": signal,
                 "confidence": conf,
                 "stop_loss_distance": atr * 1.5 if atr > 0 else None,
-            }
+                "model_type": "ml_signal_boost",
+            }, df_row, self._cfg)
 
         if signal in ("BUY", "SELL") and conf < threshold:
             return {

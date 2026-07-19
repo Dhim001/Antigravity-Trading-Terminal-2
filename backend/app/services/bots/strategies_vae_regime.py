@@ -29,6 +29,7 @@ from app.services.bots.ml_feature_engineering import (
     bar_to_signal_features,
     signal_features_to_vector,
 )
+from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
 from app.services.bots.ml_vae_regime import get_vae_store
 from app.services.bots.strategies import BaseStrategy
 
@@ -251,6 +252,7 @@ class VaeRegimeStrategy(BaseStrategy):
             if result["signal"] in ("BUY", "SELL"):
                 result["confidence"] = round(min(score / 5.0, 0.95), 4)
                 result["stop_loss_distance"] = atr * 2.0 if atr > 0 else None
+                return apply_ml_meta_label_gate(result, df_row, self._cfg)
             return result
 
         return result

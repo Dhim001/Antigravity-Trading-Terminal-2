@@ -17,6 +17,7 @@ from app.services.bots.ml_feature_engineering import (
     bar_to_signal_features,
     signal_features_to_vector,
 )
+from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
 from app.services.bots.ml_tcn_trainer import get_tcn_store
 from app.services.bots.strategies import BaseStrategy
 
@@ -84,7 +85,7 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         if ret_5 > min_ret and ret_15 > min_ret and ret_60 > min_ret:
             avg_mag = (abs(ret_5) + abs(ret_15) + abs(ret_60)) / 3
             if avg_mag >= min_conf:
-                return {
+                return apply_ml_meta_label_gate({
                     "signal": "BUY",
                     "confidence": round(min(avg_mag * 100, 1.0), 4),
                     "ret_5": round(ret_5, 6),
@@ -92,13 +93,13 @@ class TcnMultiHorizonStrategy(BaseStrategy):
                     "ret_60": round(ret_60, 6),
                     "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                     "model_type": "tcn",
-                }
+                }, df_row, self._cfg)
 
         # All horizons bearish
         if ret_5 < -min_ret and ret_15 < -min_ret and ret_60 < -min_ret:
             avg_mag = (abs(ret_5) + abs(ret_15) + abs(ret_60)) / 3
             if avg_mag >= min_conf:
-                return {
+                return apply_ml_meta_label_gate({
                     "signal": "SELL",
                     "confidence": round(min(avg_mag * 100, 1.0), 4),
                     "ret_5": round(ret_5, 6),
@@ -106,6 +107,6 @@ class TcnMultiHorizonStrategy(BaseStrategy):
                     "ret_60": round(ret_60, 6),
                     "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                     "model_type": "tcn",
-                }
+                }, df_row, self._cfg)
 
         return {"signal": "NONE"}

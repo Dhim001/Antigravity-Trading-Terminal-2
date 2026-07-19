@@ -359,10 +359,100 @@ def evaluate_deploy_gate(
     else:
         deploy_strategy = (results or {}).get("meta", {}).get("strategy") or ""
     try:
-        from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+        from app.services.bots.ml_walk_forward_validator import (
+            is_ensemble_strategy,
+            is_ml_strategy,
+        )
         from app.services.bots.ml_retrain_scheduler import get_model_age_hours, get_model_metadata
 
-        if is_ml_strategy(deploy_strategy) and symbol:
+        if is_ensemble_strategy(deploy_strategy) and symbol:
+            cfg = run_config or {}
+            ml_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
+            rl_id = str(cfg.get("rl_strategy") or "RL_PPO_AGENT").upper()
+            ta_id = str(cfg.get("ta_strategy") or "MACD_RSI").upper()
+            skip_val = bool(cfg.get("ml_skip_validation_gate"))
+
+            checks.append(_check(
+                check_id="ensemble_components",
+                level="pass",
+                ok=True,
+                message=f"Ensemble legs: TA={ta_id} · ML={ml_id} · RL={rl_id}",
+            ))
+
+            for leg_id, label in ((ml_id, "ML"), (rl_id, "RL")):
+                age = get_model_age_hours(leg_id, symbol)
+                if age is None:
+                    checks.append(_check(
+                        check_id=f"ensemble_{label.lower()}_model",
+                        level="block",
+                        ok=False,
+                        message=f"No trained {leg_id} model for {symbol} ({label} leg)",
+                        detail="Train component models in Model Training before deploying the ensemble.",
+                    ))
+                else:
+                    checks.append(_check(
+                        check_id=f"ensemble_{label.lower()}_model",
+                        level="pass",
+                        ok=True,
+                        message=f"{leg_id} model exists ({label} leg, {age:.0f}h old)",
+                    ))
+
+            # Walk-forward / PBO gates apply to the ML classification leg
+            ml_meta = get_model_metadata(ml_id, symbol) or {}
+            wf_meta = ml_meta.get("walk_forward") if isinstance(ml_meta.get("walk_forward"), dict) else {}
+            validated_at = ml_meta.get("validated_at") or wf_meta.get("validated_at")
+            wf_ok = bool(wf_meta.get("ok"))
+            recommendation = str(wf_meta.get("recommendation") or "")
+            if skip_val:
+                checks.append(_check(
+                    check_id="ml_walk_forward",
+                    level="warn",
+                    ok=False,
+                    message="Ensemble ML-leg WF gate skipped (ml_skip_validation_gate)",
+                ))
+            elif not validated_at or not wf_ok:
+                checks.append(_check(
+                    check_id="ml_walk_forward",
+                    level="block",
+                    ok=False,
+                    message=f"{ml_id} (ensemble ML leg) has not passed walk-forward validation",
+                    detail="Validate the ML component in Model Training before deploy.",
+                ))
+            elif "REJECT" in recommendation.upper():
+                checks.append(_check(
+                    check_id="ml_walk_forward",
+                    level="block",
+                    ok=False,
+                    message=f"{ml_id} walk-forward recommendation is REJECT",
+                    detail=recommendation[:200],
+                ))
+            else:
+                checks.append(_check(
+                    check_id="ml_walk_forward",
+                    level="pass",
+                    ok=True,
+                    message=f"{ml_id} walk-forward validated (ensemble ML leg)",
+                    detail=recommendation[:200] if recommendation else None,
+                ))
+
+            if ml_meta.get("pbo") is not None:
+                pbo_val = float(ml_meta["pbo"])
+                if pbo_val > 0.5:
+                    checks.append(_check(
+                        check_id="ml_pbo",
+                        level="block",
+                        ok=False,
+                        message=f"Ensemble ML-leg PBO {pbo_val:.0%} — high overfitting risk",
+                    ))
+                elif pbo_val > 0.35:
+                    checks.append(_check(
+                        check_id="ml_pbo",
+                        level="warn",
+                        ok=False,
+                        message=f"Ensemble ML-leg PBO {pbo_val:.0%} — moderate overfitting risk",
+                    ))
+
+        elif is_ml_strategy(deploy_strategy) and symbol:
             # Check 1: Model must exist
             model_age = get_model_age_hours(deploy_strategy, symbol)
             if model_age is None:
@@ -392,9 +482,51 @@ def evaluate_deploy_gate(
                         detail="Consider retraining before deployment.",
                     ))
 
-                # Check 3: PBO from model metadata
-                meta = get_model_metadata(deploy_strategy, symbol)
-                if meta and meta.get("pbo") is not None:
+                meta = get_model_metadata(deploy_strategy, symbol) or {}
+                skip_val = bool((run_config or {}).get("ml_skip_validation_gate"))
+
+                # Check 3: Walk-forward validation required before live deploy
+                wf_meta = meta.get("walk_forward") if isinstance(meta.get("walk_forward"), dict) else {}
+                validated_at = meta.get("validated_at") or wf_meta.get("validated_at")
+                wf_ok = bool(wf_meta.get("ok"))
+                recommendation = str(wf_meta.get("recommendation") or "")
+                if skip_val:
+                    checks.append(_check(
+                        check_id="ml_walk_forward",
+                        level="warn",
+                        ok=False,
+                        message="ML walk-forward gate skipped (ml_skip_validation_gate)",
+                        detail="Only use for paper/debug — philosophy requires WF before live.",
+                    ))
+                elif not validated_at or not wf_ok:
+                    checks.append(_check(
+                        check_id="ml_walk_forward",
+                        level="block",
+                        ok=False,
+                        message="ML model has not passed walk-forward validation",
+                        detail="Run Model Training → Validate (WF) before deploying.",
+                    ))
+                elif "REJECT" in recommendation.upper():
+                    checks.append(_check(
+                        check_id="ml_walk_forward",
+                        level="block",
+                        ok=False,
+                        message="Walk-forward recommendation is REJECT",
+                        detail=recommendation[:200],
+                    ))
+                else:
+                    acc = wf_meta.get("mean_oos_accuracy")
+                    acc_txt = f", mean OOS acc {float(acc):.0%}" if acc is not None else ""
+                    checks.append(_check(
+                        check_id="ml_walk_forward",
+                        level="pass",
+                        ok=True,
+                        message=f"Walk-forward validated{acc_txt}",
+                        detail=recommendation[:200] if recommendation else None,
+                    ))
+
+                # Check 4: PBO from model metadata
+                if meta.get("pbo") is not None:
                     pbo_val = float(meta["pbo"])
                     if pbo_val > 0.5:
                         checks.append(_check(
@@ -411,8 +543,31 @@ def evaluate_deploy_gate(
                             ok=False,
                             message=f"ML model PBO {pbo_val:.0%} — moderate overfitting risk",
                         ))
+                    else:
+                        checks.append(_check(
+                            check_id="ml_pbo",
+                            level="pass",
+                            ok=True,
+                            message=f"ML model PBO {pbo_val:.0%} — low overfitting risk",
+                        ))
+                elif bool((run_config or {}).get("ml_require_pbo")):
+                    checks.append(_check(
+                        check_id="ml_pbo",
+                        level="block",
+                        ok=False,
+                        message="PBO required but not present on model metadata",
+                        detail="Re-run Validate with PBO enabled, or clear ml_require_pbo.",
+                    ))
+                else:
+                    checks.append(_check(
+                        check_id="ml_pbo",
+                        level="warn",
+                        ok=False,
+                        message="No PBO audit on model metadata",
+                        detail="Optional but recommended — enable PBO on Validate.",
+                    ))
 
-                # Check 4: pinned model_version resolves to a known snapshot (or current)
+                # Check 5: pinned model_version resolves to a known snapshot (or current)
                 pinned = (run_config or {}).get("model_version")
                 if pinned:
                     from app.services.bots.ml_model_artifacts import (
@@ -422,7 +577,7 @@ def evaluate_deploy_gate(
 
                     root = model_root_for(deploy_strategy, symbol)
                     entry = find_version_entry(root, str(pinned)) if root else None
-                    current_at = (meta or {}).get("trained_at") if meta else None
+                    current_at = meta.get("trained_at") if meta else None
                     if entry:
                         is_current = bool(
                             current_at

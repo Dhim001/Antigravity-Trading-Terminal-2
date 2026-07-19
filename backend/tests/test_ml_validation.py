@@ -44,8 +44,90 @@ class TestWalkForwardFolds:
         for f in folds:
             assert f["train_end"] + f["purge_bars"] <= f["test_start"]
 
+    def test_embargo_strips_prior_oos_from_next_train(self):
+        """Fold i+1 train must not retain fold i test bars after embargo."""
+        from app.services.bots.ml_walk_forward_validator import (
+            generate_wf_folds,
+            walk_forward_ml_train,
+        )
 
-class TestWalkForwardTrain:
+        n = 1200
+        candles = [{"close": 100.0 + (i % 7), "high": 101, "low": 99, "open": 100, "volume": 1, "time": i} for i in range(n)]
+        folds = generate_wf_folds(n, n_folds=3, purge_bars=20, embargo_pct=5.0, min_train=100, min_test=80)
+        assert len(folds) >= 2
+
+        calls = []
+
+        def fake_trainer(symbol, train_candles, config=None):
+            calls.append(len(train_candles))
+            return {"ok": True, "metrics": {"val_accuracy": 0.5}}
+
+        with patch(
+            "app.services.bots.ml_walk_forward_validator.get_trainer",
+            return_value=fake_trainer,
+        ), patch(
+            "app.services.bots.ml_walk_forward_validator.evaluate_oos_accuracy",
+            return_value={"accuracy": 0.5, "n_signals": 10, "buy_count": 5, "sell_count": 5, "none_count": 0},
+        ):
+            result = walk_forward_ml_train(
+                "ML_SIGNAL_BOOST",
+                "BTCUSDT",
+                candles,
+                n_folds=3,
+                embargo_pct=5.0,
+                config={"_wf_mode": True, "skip_refit": True},
+            )
+
+        assert result["ok"] is True
+        # Second+ folds should record embargo application when prior OOS exists
+        embargo_flags = [
+            (f.get("purge") or {}).get("embargo", {}).get("applied")
+            for f in result["folds"]
+            if f.get("ok")
+        ]
+        assert any(embargo_flags), "expected at least one fold with embargo applied"
+
+
+class TestMlMetaLabelGate:
+    def test_meta_gate_noop_when_disabled(self):
+        from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
+
+        out = apply_ml_meta_label_gate(
+            {"signal": "BUY", "confidence": 0.9},
+            {"time": 1, "_symbol": "BTCUSDT"},
+            {"calibration_gate_enabled": False},
+        )
+        assert out["signal"] == "BUY"
+
+    def test_meta_gate_skips_in_wf_mode(self):
+        from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
+
+        out = apply_ml_meta_label_gate(
+            {"signal": "BUY", "confidence": 0.9},
+            {"time": 1},
+            {"calibration_gate_enabled": True, "_wf_mode": True, "_bot_id": "b1"},
+        )
+        assert out["signal"] == "BUY"
+
+    def test_meta_gate_blocks_when_reject(self):
+        from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
+
+        with patch(
+            "app.services.bots.calibration.check_meta_label_gate",
+            return_value="meta-label P(win) too low",
+        ):
+            out = apply_ml_meta_label_gate(
+                {"signal": "SELL", "confidence": 0.8},
+                {"time": 1, "_symbol": "ETHUSDT"},
+                {
+                    "calibration_gate_enabled": True,
+                    "_bot_id": "bot-1",
+                    "symbol": "ETHUSDT",
+                },
+            )
+        assert out["signal"] == "NONE"
+        assert out["reject_reason"] == "meta_label_gate"
+
     def test_unknown_strategy_error(self):
         from app.services.bots.ml_walk_forward_validator import walk_forward_ml_train
         result = walk_forward_ml_train(
@@ -286,6 +368,21 @@ class TestRetrainScheduler:
 
 
 class TestDeployGateML:
+    def _healthy_wf_meta(self, **extra):
+        meta = {
+            "validated_at": "2026-07-01T00:00:00Z",
+            "walk_forward": {
+                "ok": True,
+                "mean_oos_accuracy": 0.55,
+                "recommendation": "DEPLOY — stable OOS accuracy",
+                "successful_folds": 5,
+                "n_folds": 5,
+            },
+            "pbo": 0.2,
+        }
+        meta.update(extra)
+        return meta
+
     def test_deploy_gate_blocks_missing_ml_model(self):
         from app.services.bots.deploy_gate import evaluate_deploy_gate
 
@@ -301,12 +398,30 @@ class TestDeployGateML:
         assert ml_checks[0]["ok"] is False
         assert ml_checks[0]["level"] == "block"
 
+    def test_deploy_gate_blocks_unvalidated_ml_model(self):
+        from app.services.bots.deploy_gate import evaluate_deploy_gate
+
+        results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
+        with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", return_value=10.0), \
+             patch("app.services.bots.ml_retrain_scheduler.get_model_metadata", return_value={}):
+            gate = evaluate_deploy_gate(
+                results,
+                symbol="BTCUSDT",
+                run_config={"strategy": "ML_SIGNAL_BOOST"},
+            )
+        wf_checks = [c for c in gate["checks"] if c["id"] == "ml_walk_forward"]
+        assert len(wf_checks) == 1
+        assert wf_checks[0]["level"] == "block"
+
     def test_deploy_gate_warns_stale_ml_model(self):
         from app.services.bots.deploy_gate import evaluate_deploy_gate
 
         results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
         with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", return_value=200.0), \
-             patch("app.services.bots.ml_retrain_scheduler.get_model_metadata", return_value={}):
+             patch(
+                 "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+                 return_value=self._healthy_wf_meta(),
+             ):
             gate = evaluate_deploy_gate(
                 results,
                 symbol="BTCUSDT",
@@ -321,7 +436,10 @@ class TestDeployGateML:
 
         results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
         with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", return_value=10.0), \
-             patch("app.services.bots.ml_retrain_scheduler.get_model_metadata", return_value={"pbo": 0.7}):
+             patch(
+                 "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+                 return_value=self._healthy_wf_meta(pbo=0.7),
+             ):
             gate = evaluate_deploy_gate(
                 results,
                 symbol="BTCUSDT",
@@ -336,13 +454,17 @@ class TestDeployGateML:
 
         results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
         with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", return_value=10.0), \
-             patch("app.services.bots.ml_retrain_scheduler.get_model_metadata", return_value={"pbo": 0.2}):
+             patch(
+                 "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+                 return_value=self._healthy_wf_meta(),
+             ):
             gate = evaluate_deploy_gate(
                 results,
                 symbol="BTCUSDT",
                 run_config={"strategy": "ML_SIGNAL_BOOST"},
             )
-        ml_checks = [c for c in gate["checks"] if c["id"] == "ml_model_exists"]
+        ml_checks = [c for c in gate["checks"] if c["id"] in ("ml_model_exists", "ml_walk_forward")]
+        assert ml_checks
         assert all(c["ok"] for c in ml_checks)
 
 
@@ -362,6 +484,13 @@ class TestMLStrategyDetection:
         assert is_ml_strategy("GNN_CROSS_ASSET") is True
         assert is_ml_strategy("MACD_RSI") is False
         assert is_ml_strategy("CHART_AGENT") is False
+        assert is_ml_strategy("HYBRID_ENSEMBLE") is False
+
+    def test_is_ensemble_strategy(self):
+        from app.services.bots.ml_walk_forward_validator import is_ensemble_strategy
+
+        assert is_ensemble_strategy("HYBRID_ENSEMBLE") is True
+        assert is_ensemble_strategy("ML_SIGNAL_BOOST") is False
 
     def test_gnn_registered_when_importable(self):
         from app.services.bots.ml_walk_forward_validator import get_trainer, _TRAINER_REGISTRY

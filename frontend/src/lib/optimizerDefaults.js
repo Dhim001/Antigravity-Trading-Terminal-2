@@ -18,13 +18,14 @@ export const STRATEGY_SWEEP_DEFAULTS = {
   MARKET_MAKING: ['spread_pct', 'max_skew', 'vol_shutdown_mult'],
   CHART_AGENT: ['min_confidence', 'trailing_stop_percent', 'require_trend_alignment'],
   ABSORPTION_AGENT: ['min_confidence', 'min_score', 'trailing_stop_percent'],
-  ML_SIGNAL_BOOST: ['min_confidence', 'triple_barrier_atr_mult', 'trailing_stop_percent'],
+  ML_SIGNAL_BOOST: ['min_confidence', 'triple_barrier_atr_mult', 'trailing_stop_percent', 'gbm_learning_rate', 'gbm_max_depth'],
   LSTM_DIRECTION: ['lookback', 'min_confidence', 'trailing_stop_percent'],
   RL_PPO_AGENT: ['gamma', 'min_confidence', 'trailing_stop_percent'],
   TCN_MULTI_HORIZON: ['lookback', 'min_return', 'min_confidence'],
   VAE_REGIME_DETECTOR: ['anomaly_threshold', 'suppress_threshold', 'trailing_stop_percent'],
   TRANSFORMER_SIGNAL: ['lookback', 'min_confidence', 'trailing_stop_percent'],
   GNN_CROSS_ASSET: ['min_corr', 'min_confidence', 'trailing_stop_percent'],
+  HYBRID_ENSEMBLE: ['ensemble_threshold', 'ensemble_weight_ml', 'trailing_stop_percent'],
 };
 
 const FALLBACK_SWEEP_KEYS = ['trailing_stop_percent', 'take_profit_percent'];
@@ -105,4 +106,77 @@ export function getMlSubtypeSweepHint(strategy) {
   if (subtype === 'rl') return 'Tune PPO policy thresholds and risk exits — training lives in Model Training.';
   if (subtype === 'unsupervised') return 'Tune VAE regime thresholds and risk exits.';
   return 'Tune inference hyperparameters and risk exits — retrain models in Model Training.';
+}
+
+/**
+ * Hyperparameter sensitivity analysis for sweep results.
+ *
+ * Groups sweep results by each swept param, computes the coefficient of
+ * variation (CV) of the objective for each param value, and flags params
+ * where small changes cause large objective swings (CV > 0.3).
+ *
+ * @param {Array} sweepResults — Array of sweep result rows with `config` and objective score.
+ * @param {string} objectiveKey — Key of the objective in each row (e.g. 'robust_score').
+ * @param {string[]} sweptParams — List of param keys that were swept.
+ * @returns {{ perParam: Array<{key: string, sensitivity: number, values: number, warning: boolean}>, bestIsOutlier: boolean }}
+ */
+export function getSensitivityAnalysis(sweepResults, objectiveKey, sweptParams) {
+  if (!sweepResults?.length || !sweptParams?.length) {
+    return { perParam: [], bestIsOutlier: false };
+  }
+
+  const results = sweepResults.filter((r) => r && (r[objectiveKey] != null || r.config));
+  if (results.length < 3) {
+    return { perParam: [], bestIsOutlier: false };
+  }
+
+  const getScore = (r) => Number(r[objectiveKey] ?? r.summary?.[objectiveKey] ?? 0);
+  const getConfig = (r) => r.config || {};
+
+  const perParam = [];
+
+  for (const key of sweptParams) {
+    // Group results by this param's value
+    const groups = new Map();
+    for (const r of results) {
+      const val = String(getConfig(r)[key] ?? 'default');
+      if (!groups.has(val)) groups.set(val, []);
+      groups.get(val).push(getScore(r));
+    }
+
+    if (groups.size < 2) continue;
+
+    // Compute mean score per group, then CV of those means
+    const means = [];
+    for (const scores of groups.values()) {
+      const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+      means.push(mean);
+    }
+
+    const globalMean = means.reduce((a, b) => a + b, 0) / means.length;
+    const variance = means.reduce((a, m) => a + (m - globalMean) ** 2, 0) / means.length;
+    const std = Math.sqrt(variance);
+    const cv = Math.abs(globalMean) > 1e-8 ? std / Math.abs(globalMean) : 0;
+
+    perParam.push({
+      key,
+      sensitivity: Math.round(cv * 1000) / 1000,
+      values: groups.size,
+      warning: cv > 0.3,
+    });
+  }
+
+  // Sort by sensitivity descending
+  perParam.sort((a, b) => b.sensitivity - a.sensitivity);
+
+  // Check if the best config is an outlier (top score is >2σ above mean)
+  const allScores = results.map(getScore);
+  const mean = allScores.reduce((a, b) => a + b, 0) / allScores.length;
+  const std = Math.sqrt(
+    allScores.reduce((a, s) => a + (s - mean) ** 2, 0) / allScores.length,
+  );
+  const best = Math.max(...allScores);
+  const bestIsOutlier = std > 1e-8 && (best - mean) / std > 2.0;
+
+  return { perParam, bestIsOutlier };
 }
