@@ -11,9 +11,12 @@ from app.config import (
     SCANNER_DEPLOY_MIN_CONFIDENCE,
     SCANNER_DEPLOY_MIN_SCORE,
     SCANNER_DEPLOY_MAX_CORRELATION,
+    SCANNER_DEPLOY_MAX_PORTFOLIO_PCT,
     SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION,
     SCANNER_DEPLOY_MAX_CONCURRENT_BOTS,
     SCANNER_DEPLOY_BASE_ALLOCATION,
+    SCANNER_DEPLOY_MAX_ALLOCATION,
+    SCANNER_DEPLOY_MAX_PER_CYCLE,
     SCANNER_DEPLOY_BACKTEST_DAYS,
     SCANNER_DEPLOY_MIN_WIN_RATE,
     SCANNER_DEPLOY_MIN_TRADES,
@@ -29,6 +32,41 @@ from app.services.agent.pipeline import rank_scan_rows, active_bot_symbols
 from app.services.bots.correlation import summarize_basket_correlation
 
 logger = logging.getLogger(__name__)
+
+
+def _account_equity(oms: Any) -> float | None:
+    """Best-effort equity for portfolio-% caps (live OMS equity or cash balances)."""
+    if oms is None or not hasattr(oms, "get_account_data"):
+        return None
+    try:
+        data = oms.get_account_data() or {}
+    except Exception:
+        return None
+    raw = data.get("equity")
+    if raw is not None:
+        try:
+            eq = float(raw)
+            return eq if eq > 0 else None
+        except (TypeError, ValueError):
+            pass
+    bals = data.get("balances") or {}
+    cash = 0.0
+    for asset in ("USD", "USDT"):
+        row = bals.get(asset)
+        if isinstance(row, dict):
+            try:
+                cash += float(row.get("balance") or 0)
+            except (TypeError, ValueError):
+                pass
+    return cash if cash > 0 else None
+
+
+def _allocation_ceiling(total_allocated: float, equity: float | None) -> float:
+    """Hard dollar cap intersected with optional equity % of account."""
+    ceiling = float(SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION)
+    if equity is not None and SCANNER_DEPLOY_MAX_PORTFOLIO_PCT > 0:
+        ceiling = min(ceiling, equity * (SCANNER_DEPLOY_MAX_PORTFOLIO_PCT / 100.0))
+    return max(0.0, ceiling - total_allocated)
 
 
 class ScannerDeployAgent:
@@ -59,9 +97,18 @@ class ScannerDeployAgent:
         # Consider auto-deployed bots as those with pipeline_source="scanner"
         auto_bots = [b for b in active_bots if b.get("config", {}).get("pipeline_source") == "scanner"]
         num_auto_bots = len(auto_bots)
+        equity = _account_equity(getattr(self.bot_manager, "oms", None))
+        room = _allocation_ceiling(total_allocated, equity)
 
-        if total_allocated >= SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION:
-            logger.debug("ScannerDeployAgent blocked: total portfolio allocation (%.2f) >= max (%.2f).", total_allocated, SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION)
+        if room <= 0:
+            logger.debug(
+                "ScannerDeployAgent blocked: no allocation room "
+                "(allocated=%.2f, equity=%s, max_alloc=%.2f, max_pct=%.1f).",
+                total_allocated,
+                equity,
+                SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION,
+                SCANNER_DEPLOY_MAX_PORTFOLIO_PCT,
+            )
             return results
             
         if num_auto_bots >= SCANNER_DEPLOY_MAX_CONCURRENT_BOTS:
@@ -93,10 +140,15 @@ class ScannerDeployAgent:
             timeframe=SCANNER_DEPLOY_TIMEFRAME
         )
         all_active_symbols = {b.get("symbol") for b in active_bots if b.get("symbol")}
+        deployed_this_cycle = 0
+        max_per_cycle = max(1, int(SCANNER_DEPLOY_MAX_PER_CYCLE))
 
         for row in candidates:
             # Re-check capacity per candidate
-            if total_allocated >= SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION or num_auto_bots >= SCANNER_DEPLOY_MAX_CONCURRENT_BOTS:
+            room = _allocation_ceiling(total_allocated, equity)
+            if room <= 0 or num_auto_bots >= SCANNER_DEPLOY_MAX_CONCURRENT_BOTS:
+                break
+            if deployed_this_cycle >= max_per_cycle:
                 break
 
             symbol = _normalize_crypto_watch_symbol(row.get("symbol") or "")
@@ -204,9 +256,7 @@ class ScannerDeployAgent:
             conf = float(row.get("confidence", 0.0))
             alloc_multiplier = min(1.5, max(0.5, conf))
             allocation = SCANNER_DEPLOY_BASE_ALLOCATION * alloc_multiplier
-            
-            # Ensure we don't exceed max portfolio capacity with this allocation
-            allocation = min(allocation, SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION - total_allocated)
+            allocation = min(allocation, float(SCANNER_DEPLOY_MAX_ALLOCATION), room)
             if allocation <= 0:
                 continue
 
@@ -254,6 +304,7 @@ class ScannerDeployAgent:
                 results["deployed"].append({"bot_id": bot_id, "symbol": symbol, "allocation": allocation})
                 total_allocated += allocation
                 num_auto_bots += 1
+                deployed_this_cycle += 1
                 all_active_symbols.add(symbol)
                 logger.info("ScannerDeployAgent deployed %s on %s with $%.2f allocation.", SCANNER_DEPLOY_STRATEGY, symbol, allocation)
 

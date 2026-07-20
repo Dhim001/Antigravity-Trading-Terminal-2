@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorAffectsBacktestRun } from '../api/dispatch';
+import { errorAffectsBacktestRun } from './dispatch';
 
 describe('errorAffectsBacktestRun', () => {
   it('ignores chart analyst rate limits during backtest', () => {

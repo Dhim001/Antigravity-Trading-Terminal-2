@@ -36,7 +36,6 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 # Features & Integration Flags
 # Modes: "SIMULATED", "LIVE_ALPACA", "LIVE_BINANCE", "LIVE_ETORO", "LIVE_IB", "LIVE_MASSIVE"
 TERMINAL_MODE = os.environ.get("TERMINAL_MODE", "SIMULATED")
-USE_LIVE_FEEDS = TERMINAL_MODE != "SIMULATED"
 # Operator/admin UI — exposed on GET /api/v1/session as operator_mode.
 OPERATOR_MODE = os.environ.get("OPERATOR_MODE", "true").lower() in ("1", "true", "yes")
 
@@ -63,6 +62,24 @@ META_LABEL_MODEL_DIR = os.environ.get(
     os.path.join(BASE_DIR, "data", "meta_label_models"),
 )
 META_LABEL_MIN_TRAIN_SAMPLES = int(os.environ.get("META_LABEL_MIN_TRAIN_SAMPLES", "30"))
+# In-memory ML/ONNX model caches (per strategy store) — LRU + idle TTL.
+ML_MODEL_CACHE_MAX = int(os.environ.get("ML_MODEL_CACHE_MAX", "12"))
+ML_MODEL_CACHE_TTL_SEC = float(os.environ.get("ML_MODEL_CACHE_TTL_SEC", "3600"))
+# Isolate torch/ONNX train+validate in a max-1 process pool (MEMORY #9).
+ML_TRAIN_PROCESS_ISOLATION = os.environ.get("ML_TRAIN_PROCESS_ISOLATION", "true").lower() in (
+    "1", "true", "yes"
+)
+ML_TRAIN_MAX_WORKERS = int(os.environ.get("ML_TRAIN_MAX_WORKERS", "1"))
+# Soft RSS ceiling for train/validate worker processes (MEMORY #27). 0 = disabled.
+# Unix: resource.RLIMIT_AS (address space). Windows: best-effort log-only check via psutil.
+ML_TRAIN_RSS_LIMIT_MB = int(os.environ.get("ML_TRAIN_RSS_LIMIT_MB", "2048"))
+# Cap concurrent async train/validate tasks so candle lists are not pinned unboundedly.
+ML_ASYNC_MAX_INFLIGHT = int(os.environ.get("ML_ASYNC_MAX_INFLIGHT", "2"))
+# Drain MlRetrainScheduler pending queue into real train jobs (APP_SCAN #6).
+ML_RETRAIN_AUTO_DRAIN = os.environ.get("ML_RETRAIN_AUTO_DRAIN", "true").lower() in (
+    "1", "true", "yes"
+)
+ML_RETRAIN_DRAIN_INTERVAL_SEC = float(os.environ.get("ML_RETRAIN_DRAIN_INTERVAL_SEC", "45"))
 # Emit JSON logs on trade/agent paths when true (default off in dev).
 LOG_JSON = os.environ.get("LOG_JSON", "false").lower() in ("1", "true", "yes")
 # Simulated feed — lightweight startup (defer yfinance SBBS until after listen)
@@ -171,12 +188,10 @@ ALPHA_DECAY_AUTO_RETRAIN = os.environ.get("ALPHA_DECAY_AUTO_RETRAIN", "true").lo
 
 # Pre-Trade Intelligence Agent (last-mile entry checklist)
 PRETRADE_INTEL_ENABLED = os.environ.get("PRETRADE_INTEL_ENABLED", "true").lower() in ("1", "true", "yes")
-PRETRADE_MACRO_WINDOW_MIN = float(os.environ.get("PRETRADE_MACRO_WINDOW_MIN", "30"))
 PRETRADE_SETUP_FAIL_LIMIT = int(os.environ.get("PRETRADE_SETUP_FAIL_LIMIT", "3"))
 PRETRADE_SETUP_LOOKBACK_HOURS = float(os.environ.get("PRETRADE_SETUP_LOOKBACK_HOURS", "24"))
 PRETRADE_SENTIMENT_THRESHOLD = float(os.environ.get("PRETRADE_SENTIMENT_THRESHOLD", "0.45"))
 PRETRADE_SENTIMENT_MIN_MENTIONS = int(os.environ.get("PRETRADE_SENTIMENT_MIN_MENTIONS", "3"))
-PRETRADE_PEER_DIVERGE_PCT = float(os.environ.get("PRETRADE_PEER_DIVERGE_PCT", "0.35"))
 PRETRADE_REDUCE_SIZE_FACTOR = float(os.environ.get("PRETRADE_REDUCE_SIZE_FACTOR", "0.5"))
 PRETRADE_GAP_VETO_PCT = float(os.environ.get("PRETRADE_GAP_VETO_PCT", "3.0"))
 
@@ -217,6 +232,9 @@ TRADE_COPILOT_ENABLED = os.environ.get("TRADE_COPILOT_ENABLED", "true").lower() 
 TRADE_COPILOT_USE_LLM = os.environ.get("TRADE_COPILOT_USE_LLM", "true").lower() in ("1", "true", "yes")
 TRADE_COPILOT_HISTORY_LIMIT = int(os.environ.get("TRADE_COPILOT_HISTORY_LIMIT", "40"))
 TRADE_COPILOT_PENDING_TTL_SEC = float(os.environ.get("TRADE_COPILOT_PENDING_TTL_SEC", "600"))
+# In-memory analyze/session insight map TTL + max sessions (mirrors pending TTL pattern).
+TRADE_COPILOT_SESSION_TTL_SEC = float(os.environ.get("TRADE_COPILOT_SESSION_TTL_SEC", "7200"))
+TRADE_COPILOT_SESSION_MAX = int(os.environ.get("TRADE_COPILOT_SESSION_MAX", "32"))
 
 # Time-based risk controls (equities only — crypto exempt from no-trade + weekend flatten)
 RISK_TIME_CONTROLS_ENABLED = os.environ.get("RISK_TIME_CONTROLS_ENABLED", "true").lower() in (
@@ -274,6 +292,14 @@ ARCHIVE_RETENTION_1M_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1M_DAYS", "90"
 ARCHIVE_RETENTION_1H_DAYS = int(os.environ.get("ARCHIVE_RETENTION_1H_DAYS", "1825"))
 ARCHIVE_ROLLUP_INTERVAL = float(os.environ.get("ARCHIVE_ROLLUP_INTERVAL", "3600"))
 ARCHIVE_FLUSH_INTERVAL = float(os.environ.get("ARCHIVE_FLUSH_INTERVAL", "60"))
+# Hard cap on in-memory archive write buffer (symbol×bar keys). Prevents unbounded
+# growth if SQLite flush fails repeatedly; excess oldest rows are dropped after WAL.
+ARCHIVE_BUFFER_MAX_ROWS = int(os.environ.get("ARCHIVE_BUFFER_MAX_ROWS", "20000"))
+# Screener indicator DF cache (MEMORY #13) — entry + approx MB caps.
+SCREENER_CACHE_MAX_ENTRIES = int(os.environ.get("SCREENER_CACHE_MAX_ENTRIES", "200"))
+SCREENER_CACHE_MAX_MB = int(os.environ.get("SCREENER_CACHE_MAX_MB", "128"))
+# SQLite page cache (kibibytes; PRAGMA uses negative = KiB). Default 64 MB.
+SQLITE_CACHE_KB = int(os.environ.get("SQLITE_CACHE_KB", "64000"))
 ARCHIVE_BACKEND = os.environ.get("ARCHIVE_BACKEND", "db").lower()
 ARCHIVE_BACKFILL_ON_STARTUP = os.environ.get("ARCHIVE_BACKFILL_ON_STARTUP", "true").lower() in (
     "1", "true", "yes"

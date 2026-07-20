@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { fetchFootprint } from '../../api/endpoints';
 
 export default function FootprintChartWidget({ symbol, fromTs, toTs, priceStep = 10, timeBucketMs = 60000 }) {
@@ -127,7 +128,7 @@ export default function FootprintChartWidget({ symbol, fromTs, toTs, priceStep =
     if (!containerRef.current) return;
     
     if (!chartInstanceRef.current) {
-      chartInstanceRef.current = echarts.init(containerRef.current);
+      chartInstanceRef.current = initEcharts(containerRef.current);
     }
     
     if (Object.keys(option).length > 0) {

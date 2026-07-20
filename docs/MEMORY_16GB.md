@@ -87,6 +87,32 @@ These surfaces intentionally stay **lists + hard caps**. Streaming was applied o
 | Multi-chart maximize | Non-focused panes unmount | Shared candle buffers refill on restore |
 | Insights hub tabs | Active tab only (no `forceMount`) | Avoids duplicate Scanner/Analyst with dock |
 | Chart backtest overlay | `MAX_OVERLAY_TRADES` (200) | Full trade list stays in Lab fetch, not overlay |
+| Archive write buffer | `ARCHIVE_BUFFER_MAX_ROWS` (20 000) | Cleared after WAL on flush failure; oldest dropped at cap |
+| Copilot session memory | `TRADE_COPILOT_SESSION_TTL_SEC` / `_MAX` | TTL 2h + max 32 sessions |
+| ECharts canvas DPR | Cap 1.5 (1.0 multi-pane) | `initEcharts` — retina RAM |
+| Backtest store while Lab closed | Immediate offload to slim stub | Full tree in session/IDB only |
+| Bot logs hydrate | Cap 100 | Matches `addBotLog` |
+| ML model stores | `ML_MODEL_CACHE_MAX` (12) / `ML_MODEL_CACHE_TTL_SEC` (3600) | Shared LRU+TTL across ML/LSTM/TCN/Transformer/VAE/GNN/PPO/meta-label |
+| MiniChart live paint | Last-bucket patch only | Full re-bucket on new bar / symbol / TF |
+| Anchored walk-forward | Shared candle slice views | No per-fold prefix `list()` copies |
+| Portfolio backtest | Stream resolve in worker-sized batches | Peak ≈ `BACKTEST_PARALLEL_WORKERS` × 1 symbol |
+| ML train / validate | `ML_TRAIN_PROCESS_ISOLATION` (max 1 worker) | Torch/ONNX spike outside feed/OMS process |
+| Chart HA / Renko live | Last-bar transform patch | Full configure only on structure change |
+| SQLite page cache | `SQLITE_CACHE_KB` (64000) | Tunable; lower if multiple profiles share RAM |
+| Screener DataFrame cache | `SCREENER_CACHE_MAX_ENTRIES` (200) / `_MAX_MB` (128) | Entry + byte LRU |
+| ML retrain pending maps | TTL + size cap in scheduler | Prevents symbol×strategy ratchet |
+| Tick screener / DQ registry | Idle TTL + max symbols | Evicts cold symbols |
+| Agent event bus | `AGENT_EVENT_HANDLER_CONCURRENCY` (32) | Semaphore around handlers |
+| IDB backtest prune | Cursor + `savedAt` index | No full-blob `getAll` |
+| Long UI lists | `useVirtualRows` / `VirtualScrollList` | Optimizer, history, news, journal, bot trades |
+| Watchlist avg volume | Cached per live revision | Avoids full-buffer scan each tick |
+| TickViewer | Selector on active symbol only | Not whole `tickData` map |
+| HT candle buffers | `CompactBarSeries` via `storeHtBars` | Same packing as 1m buffers |
+| Chart display conflation | Power-of-2 OHLC merge when zoomed out | `conflateBars` — ECharts points ∝ pixels |
+| Backtest trim worker | `backtestSlim.worker.js` | Off-main-thread payload shaping |
+| Memory pressure ladder | warn/critical via `memoryPressureSignals` | DPR 1 · scanner pause · ≤2 panes · HT prune |
+| ML train RSS ceiling | `ML_TRAIN_RSS_LIMIT_MB` (2048) | Worker initializer (`RLIMIT_AS` / advisory) |
+| Subsystem accounting | Settings + `/health` `memory_subsystems` | ML caches, screener MB, ECharts count |
 | Archive history (backtest / resolve) | `ARCHIVE_QUERY_LIMIT` (50 000) | Newest-N in window; `truncated` in meta |
 | Archive history (chart WS pan) | `ARCHIVE_QUERY_LIMIT_UI` (10 000) | `purpose="ui"`; newest-N + truncation meta |
 | Archive fetchmany batch | `ARCHIVE_QUERY_BATCH_SIZE` (2000) | Iterator page size |

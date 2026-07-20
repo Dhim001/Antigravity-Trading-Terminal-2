@@ -67,26 +67,6 @@ def aggregate_portfolio_rows(
     return row
 
 
-def run_portfolio_config_eval(
-    *,
-    evaluate_symbol: Callable[[str, dict], dict],
-    symbols: list[str],
-    config: dict,
-) -> dict[str, Any]:
-    """Evaluate one config across portfolio symbols."""
-    sym_rows = []
-    for sym in symbols:
-        res = evaluate_symbol(sym, config)
-        sym_rows.append({
-            "symbol": sym,
-            "summary": res.get("summary") or {},
-            "total_pnl": res.get("total_pnl"),
-            "trade_count": res.get("trade_count"),
-            "error": res.get("error"),
-        })
-    return sym_rows
-
-
 def portfolio_sweep_row(
     config: dict,
     sym_rows: list[dict],

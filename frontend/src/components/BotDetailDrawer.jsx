@@ -38,6 +38,7 @@ import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
 import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
+import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import { openBacktestLabWithRun } from '@/lib/backtestLab';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import {
@@ -183,6 +184,11 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
   const position = botDetail?.position;
   const stats = botDetail?.stats;
   const trades = botDetail?.trades ?? [];
+  // Trade + compact explain card ≈ one virtual row (MEMORY #18).
+  const { onScroll: onTradesScroll, window: tradeWindow } = useVirtualRows(trades, {
+    rowHeight: 132,
+    overscan: 4,
+  });
   const snapshots = botDetail?.snapshots ?? [];
   const activeBots = useStore((s) => s.activeBots);
   const rawRiskHold = botDetail?.risk_hold
@@ -641,6 +647,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                         role="region"
                         aria-label="Trade fill history"
                         tabIndex={0}
+                        onScroll={onTradesScroll}
                       >
                         <table className="terminal-table bot-detail-trades-table m-0">
                           <thead>
@@ -654,10 +661,12 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                             </tr>
                           </thead>
                           <tbody>
-                            {trades.map((t) => {
+                            <VirtualTablePadding height={tradeWindow.topPad} colSpan={6} />
+                            {tradeWindow.slice.map((t, localIdx) => {
                               const showExplain = t.id != null;
+                              const rowKey = t.id ?? `${t.timestamp}-${t.side}-${t.price}-${tradeWindow.start + localIdx}`;
                               return (
-                                <React.Fragment key={t.id ?? `${t.timestamp}-${t.side}-${t.price}`}>
+                                <React.Fragment key={rowKey}>
                                   <tr>
                                     <td className="bot-detail-trades-table__time" title={formatTradeTime(t.timestamp)}>
                                       {formatTradeTime(t.timestamp)}
@@ -711,6 +720,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                                 </React.Fragment>
                               );
                             })}
+                            <VirtualTablePadding height={tradeWindow.bottomPad} colSpan={6} />
                           </tbody>
                         </table>
                       </div>

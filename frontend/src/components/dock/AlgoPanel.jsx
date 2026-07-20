@@ -62,8 +62,8 @@ import { cn } from '@/lib/utils';
 import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
-import BotRiskHoldBadge from '../BotRiskHoldBadge';
-import { useEffectiveRiskHold } from '@/lib/botRiskHold';
+import { useEffectiveRiskHold, botRuntimeActivityHint } from '@/lib/botRiskHold';
+import { getBotOwnedPositionView } from '@/lib/botAttribution';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
@@ -79,9 +79,15 @@ function statusBadgeVariant(status) {
   return 'sell';
 }
 
+function activityHintVariant(kind) {
+  if (kind === 'cooling_off') return 'outline';
+  if (kind === 'held') return 'secondary';
+  return 'outline';
+}
+
 function ActiveBotRow({
   bot,
-  pos,
+  ownedPos,
   selected,
   agentInsights,
   onSelect,
@@ -91,8 +97,9 @@ function ActiveBotRow({
   onSetStopLoss,
   onSetTakeProfit,
 }) {
-  const inPosition = pos && Math.abs(pos.size) > 0;
+  const inPosition = ownedPos && Math.abs(ownedPos.size) > 0;
   const { hold: riskHold, remaining } = useEffectiveRiskHold(bot.risk_hold);
+  const activity = botRuntimeActivityHint(bot, { hold: riskHold, remainingSec: remaining });
 
   return (
     <DataTableRow
@@ -131,8 +138,11 @@ function ActiveBotRow({
       </DataTableCell>
       <DataTableCell align="center">
         {inPosition ? (
-          <Badge variant={pos.size > 0 ? 'buy' : 'sell'}>
-            {pos.size > 0 ? 'LONG' : 'SHORT'}
+          <Badge
+            variant={ownedPos.size > 0 ? 'buy' : 'sell'}
+            title={`Bot size ${Math.abs(ownedPos.size).toFixed(4)}`}
+          >
+            {ownedPos.label}
           </Badge>
         ) : (
           <span className="text-secondary-foreground text-xs">FLAT</span>
@@ -167,7 +177,20 @@ function ActiveBotRow({
       <DataTableCell align="center">
         <div className="algo-bot-status-cell">
           <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
-          <BotRiskHoldBadge hold={riskHold} remainingSec={remaining} compact />
+          {activity && (
+            <Badge
+              variant={activityHintVariant(activity.kind)}
+              className={cn(
+                'algo-bot-activity-hint',
+                activity.kind === 'cooling_off' && 'algo-bot-activity-hint--cooloff',
+                activity.kind === 'held' && 'algo-bot-activity-hint--held',
+                activity.kind === 'no_signal' && 'algo-bot-activity-hint--no-signal',
+              )}
+              title={activity.title || activity.label}
+            >
+              {activity.label}
+            </Badge>
+          )}
         </div>
       </DataTableCell>
       <DataTableCell align="center" onClick={(e) => e.stopPropagation()}>
@@ -363,6 +386,7 @@ export function AlgoTab({ hideToolbar = false }) {
     reasoning: backtestReasoning,
     metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
     walkForward: false,
+    strategy: botStrategy,
     deferred: portfolioSymbolCount >= 2
       || parseInt(backtestDays, 10) >= 30
       || backtestReasoning
@@ -1396,6 +1420,12 @@ export function AlgoTab({ hideToolbar = false }) {
                   />
                   Calibration gate (Wilson win-rate buckets)
                 </label>
+                {!botConfig?.calibration_gate_enabled
+                  && ['gbm', 'hybrid'].includes(String(botConfig?.meta_label_model_mode || '').toLowerCase()) && (
+                  <p className="text-[0.65rem] text-amber-600 dark:text-amber-400">
+                    Meta-label mode is {botConfig.meta_label_model_mode} but ignored until Calibration gate is enabled.
+                  </p>
+                )}
                 {Boolean(botConfig?.calibration_gate_enabled) && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1881,7 +1911,7 @@ export function AlgoTab({ hideToolbar = false }) {
                   <ActiveBotRow
                     key={bot.id}
                     bot={bot}
-                    pos={positions[bot.symbol]}
+                    ownedPos={getBotOwnedPositionView(bot.id, bot.symbol, positions)}
                     selected={selectedBotId === bot.id}
                     agentInsights={agentInsights}
                     onSelect={selectBot}

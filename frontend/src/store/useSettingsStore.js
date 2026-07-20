@@ -10,8 +10,6 @@ import {
 import { applySettingsToDOM } from '../settings/applySettings';
 import { getEffectiveSettings, themeChartDefaults, APPEARANCE_DEFAULTS } from '../settings/themePresets';
 
-export const SETTINGS_THEME_CHANGE_EVENT = 'terminal:theme-change';
-
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -26,13 +24,6 @@ function persistSettings(settings) {
   try {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   } catch (_) {}
-}
-
-function dispatchThemeChange(resolvedTheme) {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(SETTINGS_THEME_CHANGE_EVENT, {
-    detail: { resolvedTheme },
-  }));
 }
 
 const initialSettings = loadSettings();
@@ -71,7 +62,6 @@ export const useSettingsStore = create(subscribeWithSelector((set, get) => ({
 
     set({ resolvedTheme: theme, settings: nextSettings });
     applySettingsToDOM(nextSettings, theme);
-    dispatchThemeChange(theme);
   },
 
   applyToDOM: () => {
@@ -97,7 +87,6 @@ export const useSettingsStore = create(subscribeWithSelector((set, get) => ({
     });
     const { settings, resolvedTheme } = get();
     applySettingsToDOM(settings, resolvedTheme);
-    dispatchThemeChange(resolvedTheme);
   },
 
   /**

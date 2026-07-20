@@ -49,6 +49,7 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
               strategy={template.strategy}
               symbol={activeSymbol}
               compact
+              showCta={false}
             />
           )}
         </span>

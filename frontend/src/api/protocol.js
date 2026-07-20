@@ -87,6 +87,7 @@ export const MessageType = Object.freeze({
   BOT_LOGS_HISTORY: 'bot_logs_history',
   BACKTEST_RESULT: 'backtest_result',
   BACKTEST_PROGRESS: 'backtest_progress',
+  ML_JOB_PROGRESS: 'ml_job_progress',
   TICKS_UPDATE: 'ticks_update',
   BOTS_HISTORY: 'bots_history',
   AGENT_INSIGHT: 'agent_insight',

@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { useStore } from '../store/useStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
@@ -18,10 +19,16 @@ const RANGES = [
   { label: '4h', ms: 4 * 60 * 60_000 },
 ];
 
+const EMPTY_TICKS = Object.freeze([]);
+
 export default function TickViewerTab() {
   const activeSymbol = useStore(s => s.activeSymbol);
   const archiveTicksEnabled = useStore(s => s.archiveTicksEnabled);
-  const tickData = useStore(s => s.tickData);
+  const ticks = useStore((s) => {
+    const sym = s.activeSymbol;
+    if (!sym) return EMPTY_TICKS;
+    return s.tickData?.[sym] ?? EMPTY_TICKS;
+  });
   const tickMeta = useStore(s => s.tickMeta);
   const chartRef = useRef(null);
   const instRef = useRef(null);
@@ -42,8 +49,6 @@ export default function TickViewerTab() {
     fetchTicks();
   }, [fetchTicks]);
 
-  const ticks = tickData?.[activeSymbol] ?? [];
-
   useEffect(() => {
     const el = chartRef.current;
     if (!el) return;
@@ -55,7 +60,7 @@ export default function TickViewerTab() {
       if (disposed || chart) return false;
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       instRef.current = chart;
       return true;
     };

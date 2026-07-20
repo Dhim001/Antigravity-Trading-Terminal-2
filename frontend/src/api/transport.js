@@ -3,7 +3,6 @@ import { Action } from './protocol';
 import { apiAction } from './client';
 import { applyHttpEnvelope, getStoreActions } from './dispatch';
 import { sendWebSocketAction } from '../services/websocket';
-import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 
 /** @typedef {{ method: string, path: (p: object) => string, body?: (p: object) => object | undefined }} HttpRoute */
@@ -152,6 +151,13 @@ export const HTTP_ROUTES = Object.freeze({
   [Action.ADMIN_RESET_SYSTEM]: { method: 'POST', path: () => '/api/v1/admin/reset' },
   [Action.ADMIN_EMERGENCY_STOP]: { method: 'POST', path: () => '/api/v1/admin/emergency-stop' },
   [Action.ADMIN_RESET_RISK_KILL_SWITCH]: { method: 'POST', path: () => '/api/v1/admin/risk/reset-kill-switch' },
+  [Action.RISK_GET_CONFIG]: { method: 'GET', path: () => '/api/v1/risk/config' },
+  [Action.RISK_PREVIEW_ENTRY]: { method: 'POST', path: () => '/api/v1/risk/preview', body: (p) => p },
+  [Action.RISK_BASKET_CORRELATION]: {
+    method: 'POST',
+    path: () => '/api/v1/risk/basket-correlation',
+    body: (p) => p,
+  },
   [Action.NOTIFY_CHANNEL_LIST]: { method: 'GET', path: () => '/api/v1/notifications/channels' },
   [Action.NOTIFY_CHANNEL_UPSERT]: {
     method: 'POST',
@@ -291,7 +297,7 @@ export function waitForScanResults({ timeoutMs = 30000, previousAt = null } = {}
       reject(new Error('Scan timed out waiting for results'));
     }, timeoutMs);
 
-    const unsub = useStore.subscribe((state) => {
+    const unsub = useResearchStore.subscribe((state) => {
       const next = state.scanResults;
       if (next?.scanned_at && next.scanned_at !== previousAt) {
         clearTimeout(timer);

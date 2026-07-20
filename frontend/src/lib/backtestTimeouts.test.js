@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getBacktestClientTimeoutMs,
+  getMlBacktestTimeoutFloorMs,
   PORTFOLIO_TIMEOUT_MIN_MS,
   PORTFOLIO_TIMEOUT_PER_SYMBOL_MS,
 } from './backtestTimeouts';
@@ -44,5 +45,63 @@ describe('getBacktestClientTimeoutMs — walk-forward', () => {
       comboCount: 6,
     });
     expect(ms).toBe(900_000 + 3 * 6 * 120_000);
+  });
+});
+
+describe('getBacktestClientTimeoutMs — ML strategies', () => {
+  it('gives ML_SIGNAL_BOOST 10 minutes (not the 2 min default)', () => {
+    expect(getBacktestClientTimeoutMs({ strategy: 'ML_SIGNAL_BOOST', days: 7 }))
+      .toBe(600_000);
+  });
+
+  it('gives deep ML strategies 15 minutes', () => {
+    expect(getBacktestClientTimeoutMs({ strategy: 'LSTM_DIRECTION', days: 7 }))
+      .toBe(900_000);
+    expect(getBacktestClientTimeoutMs({ strategy: 'TRANSFORMER_SIGNAL', days: 7 }))
+      .toBe(900_000);
+    expect(getBacktestClientTimeoutMs({ strategy: 'TCN_MULTI_HORIZON', days: 7 }))
+      .toBe(900_000);
+  });
+
+  it('gives RL_PPO_AGENT 20 minutes', () => {
+    expect(getBacktestClientTimeoutMs({ strategy: 'RL_PPO_AGENT', days: 7 }))
+      .toBe(1_200_000);
+  });
+
+  it('scales ML floors with history length', () => {
+    expect(getBacktestClientTimeoutMs({ strategy: 'LSTM_DIRECTION', days: 30 }))
+      .toBe(900_000 + 23 * 45_000);
+  });
+
+  it('raises walk-forward floor when strategy is ML', () => {
+    const plainWf = getBacktestClientTimeoutMs({
+      walkForward: true,
+      days: 7,
+      rollingFolds: 3,
+      comboCount: 1,
+    });
+    const mlWf = getBacktestClientTimeoutMs({
+      walkForward: true,
+      days: 7,
+      rollingFolds: 3,
+      comboCount: 1,
+      strategy: 'RL_PPO_AGENT',
+    });
+    expect(mlWf).toBeGreaterThan(plainWf);
+    expect(mlWf).toBe(
+      Math.max(
+        plainWf,
+        getMlBacktestTimeoutFloorMs('RL_PPO_AGENT', 7, {
+          walkForward: true,
+          folds: 3,
+          combos: 1,
+        }),
+      ),
+    );
+  });
+
+  it('uses CHART_AGENT timeout when strategy is passed through', () => {
+    expect(getBacktestClientTimeoutMs({ strategy: 'CHART_AGENT', days: 7 }))
+      .toBe(300_000);
   });
 });

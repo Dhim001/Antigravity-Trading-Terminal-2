@@ -57,6 +57,28 @@ from app.services.events import channels
 
 ensure_routes_loaded()
 
+# Bound concurrent async ML train/validate tasks (APP_SCAN #40).
+_ml_async_active = 0
+_ml_async_guard = asyncio.Lock()
+
+
+async def _reserve_ml_async_slot() -> bool:
+    global _ml_async_active
+    from app.config import ML_ASYNC_MAX_INFLIGHT
+
+    limit = max(1, int(ML_ASYNC_MAX_INFLIGHT))
+    async with _ml_async_guard:
+        if _ml_async_active >= limit:
+            return False
+        _ml_async_active += 1
+        return True
+
+
+async def _release_ml_async_slot() -> None:
+    global _ml_async_active
+    async with _ml_async_guard:
+        _ml_async_active = max(0, _ml_async_active - 1)
+
 
 async def metrics(request: Request) -> PlainTextResponse:
     from app.observability.metrics import render_prometheus
@@ -90,6 +112,12 @@ def _cheap_feed_snapshot(state: AppState) -> dict:
             body["ib"] = feed.ib_status
         except Exception:
             body["ib"] = None
+    try:
+        from app.services.memory_snapshot import memory_subsystem_snapshot
+
+        body["memory_subsystems"] = memory_subsystem_snapshot(state)
+    except Exception:
+        pass
     return body
 
 
@@ -259,6 +287,13 @@ async def _build_health_body(state: AppState) -> dict:
         except Exception:
             pass
 
+    try:
+        from app.services.memory_snapshot import memory_subsystem_snapshot
+
+        body["memory_subsystems"] = memory_subsystem_snapshot(state)
+    except Exception as exc:
+        body["memory_subsystems"] = {"error": str(exc)}
+
     return body
 
 
@@ -333,6 +368,7 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
     from app.services.bots.ml_model_artifacts import (
         dataset_summary_from_metadata,
         list_model_versions,
+        validation_summary_from_metadata,
     )
 
     versions = list_model_versions(model_dir)
@@ -340,6 +376,10 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         dataset = dataset_summary_from_metadata(meta)
     except Exception:
         dataset = None
+    try:
+        validation = validation_summary_from_metadata(meta)
+    except Exception:
+        validation = {"validated_at": None, "walk_forward": None, "pbo": None}
     return {
         "trained": True,
         "trained_at": meta.get("trained_at"),
@@ -352,6 +392,10 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         "model_type": meta.get("model_type"),
         "versions": versions,
         "dataset": dataset,
+        # Deploy-readiness (additive — older UIs ignore these keys).
+        "validated_at": validation.get("validated_at"),
+        "walk_forward": validation.get("walk_forward"),
+        "pbo": validation.get("pbo"),
     }
 
 
@@ -470,13 +514,47 @@ async def ml_train_handler(request: Request) -> JSONResponse:
         "TRANSFORMER_SIGNAL": _train_transformer,
         "GNN_CROSS_ASSET": _train_gnn,
     }
-    trainer = trainers.get(strategy)
-    if not trainer:
+    if strategy not in trainers:
         return JSONResponse({"ok": False, "error": f"training not supported for {strategy}"}, status_code=400)
 
+    from app.services.bots.ml_train_executor import submit_train_job
+
+    async_mode = bool(body.get("async"))
+    event_bus = getattr(state, "event_bus", None)
+
+    if async_mode:
+        from app.services.bots.ml_job_store import create_ml_job
+
+        if not await _reserve_ml_async_slot():
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "async ML queue full — wait for an in-flight job or raise ML_ASYNC_MAX_INFLIGHT",
+                    "retry": True,
+                },
+                status_code=429,
+            )
+
+        job_id = create_ml_job(kind="train", strategy=strategy, symbol=symbol)
+
+        async def _bg_train() -> None:
+            try:
+                await submit_train_job(
+                    strategy, symbol, candles, config,
+                    job_id=job_id, event_bus=event_bus,
+                )
+            except Exception:
+                logger.exception("Async ML train job %s failed", job_id)
+            finally:
+                await _release_ml_async_slot()
+
+        asyncio.create_task(_bg_train())
+        return JSONResponse({"ok": True, "job_id": job_id, "async": True})
+
     try:
-        import asyncio
-        result = await asyncio.to_thread(trainer, symbol, candles, config)
+        result = await submit_train_job(
+            strategy, symbol, candles, config, event_bus=event_bus,
+        )
     except Exception as exc:
         logger.exception("ML training failed for %s/%s", strategy, symbol)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -628,86 +706,19 @@ def _run_ml_validate_job(
     run_pbo: bool,
     pbo_segments: int,
 ) -> dict:
-    """CPU-bound WF (+ optional PBO). Must run off the event loop."""
-    from app.services.bots.ml_walk_forward_validator import walk_forward_ml_train
+    """CPU-bound WF (+ optional PBO). Delegates to process-safe runner."""
+    from app.services.bots.ml_train_executor import run_validate_job
 
-    # Strategies look up models by symbol; UI config often omits it.
-    cfg = dict(config or {})
-    cfg.setdefault("symbol", symbol)
-    cfg.setdefault("model_symbol", symbol)
-    cfg["_wf_mode"] = True
-    cfg.setdefault("skip_refit", True)
-    cfg.setdefault("skip_snapshot", True)
-    cfg.setdefault("max_iter", 40)
-
-    strat_u = str(strategy or "").upper()
-    # RL fold training is expensive — keep interactive validate under the UI budget.
-    if strat_u == "RL_PPO_AGENT":
-        cfg.setdefault("total_timesteps", 2048)
-        cfg.setdefault("n_steps", 512)
-        cfg.setdefault("ppo_epochs", 2)
-        cfg.setdefault("hidden_dim", 64)
-        cfg.setdefault("validate_max_bars", 1200)
-        # Full CSCV PBO re-trains PPO many times; skip unless explicitly forced.
-        if run_pbo and not bool(cfg.get("force_pbo")):
-            run_pbo = False
-            cfg["_pbo_skipped"] = "rl_too_expensive"
-
-    # Cap history so interactive validation finishes within the UI timeout.
-    max_bars = int(cfg.get("validate_max_bars", 2500))
-    if len(candles) > max_bars:
-        candles = candles[-max_bars:]
-
-    wf_result = walk_forward_ml_train(
-        strategy, symbol, candles,
-        config=cfg, n_folds=n_folds, mode=mode,
+    return run_validate_job(
+        strategy,
+        symbol,
+        candles,
+        config,
+        n_folds,
+        mode,
+        run_pbo,
+        pbo_segments,
     )
-    result = dict(wf_result)
-    # Flatten aggregate for the Model Training panel.
-    agg = result.get("aggregate") if isinstance(result.get("aggregate"), dict) else {}
-    if result.get("ok") and agg.get("mean_oos_accuracy") is not None:
-        result.setdefault("mean_accuracy", agg.get("mean_oos_accuracy"))
-
-    if cfg.get("_pbo_skipped"):
-        result["pbo"] = {
-            "ok": False,
-            "skipped": True,
-            "error": (
-                "PBO skipped for RL_PPO_AGENT (too slow for interactive validate). "
-                "Set config.force_pbo=true to run anyway."
-            ),
-        }
-
-    if run_pbo and wf_result.get("ok"):
-        try:
-            from app.services.bots.ml_pbo_validator import compute_ml_pbo
-            result["pbo"] = compute_ml_pbo(
-                strategy, symbol, candles,
-                config=cfg,
-                n_segments=min(pbo_segments, 4),
-                max_combos=min(4, int(cfg.get("pbo_max_combos", 4))),
-            )
-        except Exception as exc:
-            logger.exception("PBO failed for %s/%s", strategy, symbol)
-            result["pbo"] = {"ok": False, "error": str(exc)}
-
-    # Stamp model metadata so deploy_gate can require WF (+ PBO when present).
-    if result.get("ok"):
-        try:
-            from app.services.bots.ml_model_artifacts import persist_ml_validation_metadata
-
-            persist_res = persist_ml_validation_metadata(
-                strategy,
-                symbol,
-                result,
-                pbo_result=result.get("pbo") if isinstance(result.get("pbo"), dict) else None,
-            )
-            result["validation_persisted"] = persist_res
-        except Exception as exc:
-            logger.exception("Failed to persist ML validation metadata for %s/%s", strategy, symbol)
-            result["validation_persisted"] = {"ok": False, "error": str(exc)}
-
-    return result
 
 
 def _json_safe(value):
@@ -804,9 +815,50 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             if isinstance(row, dict) and not row.get("_symbol"):
                 row["_symbol"] = symbol
 
+        from app.services.bots.ml_train_executor import submit_validate_job
+
+        async_mode = bool(body.get("async"))
+        event_bus = getattr(state, "event_bus", None)
+
+        if async_mode:
+            from app.services.bots.ml_job_store import create_ml_job
+
+            if not await _reserve_ml_async_slot():
+                return _ml_validate_json_response(
+                    {
+                        "ok": False,
+                        "error": "async ML queue full — wait for an in-flight job or raise ML_ASYNC_MAX_INFLIGHT",
+                        "retry": True,
+                    },
+                    status_code=429,
+                )
+
+            job_id = create_ml_job(kind="validate", strategy=strategy, symbol=symbol)
+
+            async def _bg_validate() -> None:
+                try:
+                    await submit_validate_job(
+                        strategy,
+                        symbol,
+                        candles,
+                        config,
+                        n_folds=n_folds,
+                        mode=mode,
+                        run_pbo=run_pbo,
+                        pbo_segments=pbo_segments,
+                        job_id=job_id,
+                        event_bus=event_bus,
+                    )
+                except Exception:
+                    logger.exception("Async ML validate job %s failed", job_id)
+                finally:
+                    await _release_ml_async_slot()
+
+            asyncio.create_task(_bg_validate())
+            return _ml_validate_json_response({"ok": True, "job_id": job_id, "async": True})
+
         try:
-            result = await asyncio.to_thread(
-                _run_ml_validate_job,
+            result = await submit_validate_job(
                 strategy,
                 symbol,
                 candles,
@@ -815,6 +867,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                 mode=mode,
                 run_pbo=run_pbo,
                 pbo_segments=pbo_segments,
+                event_bus=event_bus,
             )
         except Exception as exc:
             logger.exception("ML validate failed for %s/%s", strategy, symbol)
@@ -861,7 +914,80 @@ async def ml_retrain_status_handler(request: Request) -> JSONResponse:
 
     scheduler = get_retrain_scheduler()
     actions = scheduler.check(bots)
-    return JSONResponse({"ok": True, "retrain_actions": actions})
+    pending = scheduler.get_pending()
+    history = scheduler.get_retrain_history(20)
+    return JSONResponse({
+        "ok": True,
+        "retrain_actions": actions,
+        # Additive — older UIs ignore these keys.
+        "pending": pending,
+        "history": history,
+    })
+
+
+async def ml_list_jobs_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/jobs — recent jobs + queue depth."""
+    from app.services.bots.ml_job_store import list_ml_jobs, ml_job_counts, public_ml_job
+
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    active_only = str(request.query_params.get("active") or "").lower() in ("1", "true", "yes")
+    jobs = [public_ml_job(j, include_result=False) for j in list_ml_jobs(limit=limit, active_only=active_only)]
+    counts = ml_job_counts()
+    return JSONResponse({
+        "ok": True,
+        "jobs": jobs,
+        "count": len(jobs),
+        "active": counts["active"],
+        "queued": counts["queued"],
+    })
+
+
+async def ml_get_job_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/jobs/{job_id} — status / progress / result."""
+    from app.services.bots.ml_job_store import get_ml_job, public_ml_job
+
+    job_id = request.path_params.get("job_id")
+    if not job_id:
+        return JSONResponse({"ok": False, "error": "job_id required"}, status_code=400)
+    job = get_ml_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "job not found"}, status_code=404)
+    return JSONResponse({"ok": True, "job": public_ml_job(job, include_result=True)})
+
+
+async def ml_cancel_job_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/jobs/{job_id}/cancel — cooperative cancel."""
+    from app.services.bots.ml_job_store import get_ml_job, public_ml_job, request_ml_job_cancel
+
+    job_id = request.path_params.get("job_id")
+    if not job_id:
+        return JSONResponse({"ok": False, "error": "job_id required"}, status_code=400)
+    if not get_ml_job(job_id):
+        return JSONResponse({"ok": False, "error": "job not found"}, status_code=404)
+    outcome = request_ml_job_cancel(job_id)
+    job = get_ml_job(job_id)
+    return JSONResponse({
+        "ok": bool(outcome.get("ok")),
+        **outcome,
+        "job": public_ml_job(job, include_result=True),
+    })
+
+
+async def ml_list_runs_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/runs — persistent train/validate history."""
+    from app.services.bots.ml_train_runs import list_ml_train_runs
+
+    symbol = (request.query_params.get("symbol") or "").strip().upper() or None
+    strategy = (request.query_params.get("strategy") or "").strip().upper() or None
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    runs = list_ml_train_runs(symbol=symbol, strategy=strategy, limit=limit)
+    return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
 
 
 async def ml_activate_version_handler(request: Request) -> JSONResponse:
@@ -1922,6 +2048,10 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/train", ml_train_handler, methods=["POST"]),
         Route("/api/v1/ml/validate", ml_validate_handler, methods=["POST"]),
         Route("/api/v1/ml/retrain-status", ml_retrain_status_handler, methods=["GET"]),
+        Route("/api/v1/ml/jobs", ml_list_jobs_handler, methods=["GET"]),
+        Route("/api/v1/ml/jobs/{job_id}", ml_get_job_handler, methods=["GET"]),
+        Route("/api/v1/ml/jobs/{job_id}/cancel", ml_cancel_job_handler, methods=["POST"]),
+        Route("/api/v1/ml/runs", ml_list_runs_handler, methods=["GET"]),
         Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
         Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),

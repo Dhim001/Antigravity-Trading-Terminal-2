@@ -844,6 +844,24 @@ def _check_wilson_meta_label_gate(
     return None
 
 
+def effective_meta_label_mode(cfg: dict | None) -> str:
+    """Single enablement surface for meta-label / Wilson gate.
+
+    Returns ``off`` when calibration gate is disabled. Otherwise returns
+    ``wilson`` / ``gbm`` / ``hybrid``. Legacy ``meta_label_model_enabled``
+    upgrades ``wilson`` → ``hybrid``.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    if not cfg.get("calibration_gate_enabled"):
+        return "off"
+    mode = str(cfg.get("meta_label_model_mode") or "wilson").lower()
+    if cfg.get("meta_label_model_enabled") and mode == "wilson":
+        return "hybrid"
+    if mode not in ("wilson", "gbm", "hybrid"):
+        return "wilson"
+    return mode
+
+
 def check_meta_label_gate(
     insight: dict,
     cfg: dict,
@@ -854,14 +872,11 @@ def check_meta_label_gate(
     bot_id: str | None = None,
 ) -> str | None:
     """Block entries via Wilson buckets and/or gradient-boosted P(win) classifier."""
-    if not cfg.get("calibration_gate_enabled"):
+    mode = effective_meta_label_mode(cfg)
+    if mode == "off":
         return None
     if not bot_id:
         return None
-
-    mode = str(cfg.get("meta_label_model_mode") or "wilson").lower()
-    if cfg.get("meta_label_model_enabled") and mode == "wilson":
-        mode = "hybrid"
 
     gbm_reason: str | None = None
     gbm_cold = False

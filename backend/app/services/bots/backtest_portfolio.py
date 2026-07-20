@@ -167,13 +167,17 @@ def run_portfolio_backtest(
 
     Supports two calling conventions:
     1. New: run_portfolio_backtest(backtester, PortfolioBacktestConfig, candles_by_symbol)
+       or with resolve_candles= (streamed load — MEMORY_CENTRIC_REVIEW #8)
     2. Legacy: run_portfolio_backtest(run_backtest=fn, symbols=[...], strategy=..., config=..., resolve_candles=fn)
     """
-    if backtester is not None and portfolio_config is not None and candles_by_symbol is not None:
+    if backtester is not None and portfolio_config is not None and (
+        candles_by_symbol is not None or resolve_candles is not None
+    ):
         return _run_portfolio(
             backtester,
             portfolio_config,
             candles_by_symbol,
+            resolve_candles=resolve_candles,
             progress_cb=progress_cb,
             cancel_cb=cancel_cb,
         )
@@ -488,22 +492,43 @@ def _run_legacy(
 def _run_portfolio(
     backtester,
     portfolio_config: PortfolioBacktestConfig,
-    candles_by_symbol: dict[str, list],
+    candles_by_symbol: dict[str, list] | None,
     *,
+    resolve_candles: Callable | None = None,
     progress_cb=None,
     cancel_cb=None,
 ) -> dict[str, Any]:
-    """Run a multi-symbol portfolio backtest with shared capital."""
+    """Run a multi-symbol portfolio backtest with shared capital.
+
+    MEMORY_CENTRIC_REVIEW #8 — stream candles in worker-sized batches:
+    load → run → keep slim result → release candles before the next batch.
+    Peak ≈ workers × 1 symbol instead of all symbols resident at once.
+    """
     cfg = portfolio_config
     total_capital = cfg.total_capital
     per_symbol_results: dict[str, dict] = {}
+    preloaded = candles_by_symbol if isinstance(candles_by_symbol, dict) else {}
 
     total_weight = sum(s.get("weight", 1.0) for s in cfg.symbols)
     n_symbols = len(cfg.symbols)
     workers = parallel_worker_count(n_symbols)
     run_bt = thread_local_backtest_runner(backtester) if workers > 1 else backtester.run_backtest
 
-    def _run_symbol(idx: int, sym_cfg: dict) -> tuple[int, str, dict]:
+    def _load_candles(symbol: str) -> list:
+        if resolve_candles is not None:
+            try:
+                resolved = resolve_candles(symbol)
+            except Exception as exc:
+                logger.warning("Portfolio candle resolve failed for %s: %s", symbol, exc)
+                return []
+            if isinstance(resolved, tuple):
+                candles = resolved[0]
+            else:
+                candles = resolved
+            return candles or []
+        return preloaded.get(symbol, []) or []
+
+    def _run_symbol(idx: int, sym_cfg: dict, candles: list) -> tuple[int, str, dict]:
         if cancel_cb and cancel_cb():
             return idx, sym_cfg["symbol"], {"cancelled": True}
 
@@ -516,7 +541,6 @@ def _run_portfolio(
         config["slippage_bps"] = cfg.slippage_bps
         config["fee_bps"] = cfg.fee_bps
 
-        candles = candles_by_symbol.get(symbol, [])
         if not candles or len(candles) < MIN_BARS:
             return idx, symbol, {"error": "Not enough data (<50 bars)", "skipped": True}
 
@@ -543,17 +567,55 @@ def _run_portfolio(
         }
 
     completed = 0
+    batch_size = max(1, workers)
 
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bt-portfolio") as pool:
-            futures = [
-                pool.submit(_run_symbol, idx, sym_cfg)
-                for idx, sym_cfg in enumerate(cfg.symbols)
-            ]
-            for fut in as_completed(futures):
+    for batch_start in range(0, n_symbols, batch_size):
+        if cancel_cb and cancel_cb():
+            return {"error": "cancelled", "cancelled": True}
+
+        batch = list(enumerate(cfg.symbols))[batch_start : batch_start + batch_size]
+        # Resolve on this thread before submit — avoid concurrent resolve races.
+        chunk_candles: dict[str, list] = {}
+        for idx, sym_cfg in batch:
+            symbol = sym_cfg["symbol"]
+            chunk_candles[symbol] = _load_candles(symbol)
+
+        if workers > 1 and len(batch) > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bt-portfolio") as pool:
+                futures = [
+                    pool.submit(
+                        _run_symbol,
+                        idx,
+                        sym_cfg,
+                        chunk_candles.get(sym_cfg["symbol"], []),
+                    )
+                    for idx, sym_cfg in batch
+                ]
+                for fut in as_completed(futures):
+                    if cancel_cb and cancel_cb():
+                        return {"error": "cancelled", "cancelled": True}
+                    idx, symbol, row = fut.result()
+                    if row.get("cancelled"):
+                        return {"error": "cancelled", "cancelled": True}
+                    per_symbol_results[symbol] = row
+                    completed += 1
+                    _notify_progress(
+                        progress_cb,
+                        symbol_index=completed,
+                        symbol_total=n_symbols,
+                        symbol=symbol,
+                        skipped=(
+                            [{"symbol": symbol, "reason": row["error"]}]
+                            if row.get("skipped")
+                            else []
+                        ),
+                    )
+        else:
+            for idx, sym_cfg in batch:
                 if cancel_cb and cancel_cb():
                     return {"error": "cancelled", "cancelled": True}
-                idx, symbol, row = fut.result()
+                symbol = sym_cfg["symbol"]
+                _, _, row = _run_symbol(idx, sym_cfg, chunk_candles.get(symbol, []))
                 if row.get("cancelled"):
                     return {"error": "cancelled", "cancelled": True}
                 per_symbol_results[symbol] = row
@@ -563,24 +625,15 @@ def _run_portfolio(
                     symbol_index=completed,
                     symbol_total=n_symbols,
                     symbol=symbol,
-                    skipped=[{"symbol": symbol, "reason": row["error"]}] if row.get("skipped") else [],
+                    skipped=(
+                        [{"symbol": symbol, "reason": row["error"]}]
+                        if row.get("skipped")
+                        else []
+                    ),
                 )
-    else:
-        for idx, sym_cfg in enumerate(cfg.symbols):
-            if cancel_cb and cancel_cb():
-                return {"error": "cancelled", "cancelled": True}
-            symbol = sym_cfg["symbol"]
-            _, _, row = _run_symbol(idx, sym_cfg)
-            if row.get("cancelled"):
-                return {"error": "cancelled", "cancelled": True}
-            per_symbol_results[symbol] = row
-            _notify_progress(
-                progress_cb,
-                symbol_index=idx + 1,
-                symbol_total=n_symbols,
-                symbol=symbol,
-                skipped=[{"symbol": symbol, "reason": row["error"]}] if row.get("skipped") else [],
-            )
+
+        # Release this batch's candle lists before loading the next.
+        chunk_candles.clear()
 
     combined_equity = _combine_equity_curves(per_symbol_results, total_capital)
     for row in per_symbol_results.values():

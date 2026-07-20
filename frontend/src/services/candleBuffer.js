@@ -84,6 +84,23 @@ export function pruneSymbolCache() {
   }
 }
 
+/** Drop HT buffers for symbols not in the keep set (MEMORY #26 critical). */
+export function pruneHtBuffersExceptPinned(keepSymbols = []) {
+  const keep = new Set(
+    (Array.isArray(keepSymbols) ? keepSymbols : [])
+      .filter(Boolean)
+      .map((s) => String(s).toUpperCase()),
+  );
+  if (pinnedSymbol) keep.add(String(pinnedSymbol).toUpperCase());
+  if (comparePinnedSymbol) keep.add(String(comparePinnedSymbol).toUpperCase());
+  for (const key of [...htBuffers.keys()]) {
+    const sym = String(key).split('|')[0].toUpperCase();
+    if (!keep.has(sym)) {
+      htBuffers.delete(key);
+    }
+  }
+}
+
 /** Pin the active chart symbol (never LRU-evicted). */
 export function setPinnedCandleSymbol(symbol) {
   pinnedSymbol = symbol || null;
@@ -193,9 +210,10 @@ function storeHtBars(key, candles, intervalSecs) {
   if (deduped.length > HT_MAX_BARS) {
     deduped.splice(0, deduped.length - HT_MAX_BARS);
   }
-  htBuffers.set(key, deduped);
+  const series = CompactBarSeries.fromCandles(deduped);
+  htBuffers.set(key, series);
   touchSymbol(symbolFromHtKey(key));
-  return deduped;
+  return series;
 }
 
 function restoreBuffersFromHmr() {
@@ -212,7 +230,11 @@ function restoreBuffersFromHmr() {
   const htSaved = import.meta.hot?.data?.htCandleBuffers;
   if (htSaved instanceof Map) {
     for (const [key, bars] of htSaved) {
-      if (Array.isArray(bars) && bars.length) htBuffers.set(key, bars);
+      if (Array.isArray(bars) && bars.length) {
+        htBuffers.set(key, CompactBarSeries.fromCandles(dedupeCandles(bars)));
+      } else if (CompactBarSeries.isSeries(bars) && bars.length) {
+        htBuffers.set(key, bars);
+      }
     }
   }
   if (import.meta.hot.data.pinnedCandleSymbol) {
@@ -234,7 +256,11 @@ if (import.meta.hot) {
       serialized.set(sym, materializeBars(buf));
     }
     data.candleBuffers = serialized;
-    data.htCandleBuffers = new Map(htBuffers);
+    const htSerialized = new Map();
+    for (const [key, buf] of htBuffers) {
+      htSerialized.set(key, materializeBars(buf));
+    }
+    data.htCandleBuffers = htSerialized;
     data.pinnedCandleSymbol = pinnedSymbol;
     data.symbolAccessOrder = [...symbolAccessOrder];
   });
@@ -313,13 +339,14 @@ function mergeHtCandleHistory(symbol, incoming, timeframe, intervalSecs) {
   const existing = htBuffers.get(key);
   const normalizedIncoming = dedupeCandles(incoming, intervalSecs);
 
-  if (!existing?.length) {
+  if (!barCount(existing)) {
     storeHtBars(key, normalizedIncoming, intervalSecs);
     return { changed: true, fullRebuild: true };
   }
 
+  const existingBars = materializeBars(existing);
   const lastIncoming = normalizedIncoming[normalizedIncoming.length - 1]?.time;
-  const lastExisting = existing[existing.length - 1]?.time;
+  const lastExisting = existingBars[existingBars.length - 1]?.time;
   if (lastIncoming == null || lastExisting == null) {
     storeHtBars(key, normalizedIncoming, intervalSecs);
     return { changed: true, fullRebuild: true };
@@ -329,27 +356,26 @@ function mergeHtCandleHistory(symbol, incoming, timeframe, intervalSecs) {
     return { changed: false, fullRebuild: false };
   }
 
-  const merged = dedupeCandles([...existing, ...normalizedIncoming], intervalSecs);
+  const merged = dedupeCandles([...existingBars, ...normalizedIncoming], intervalSecs);
   if (merged.length > HT_MAX_BARS) {
     merged.splice(0, merged.length - HT_MAX_BARS);
   }
 
   const lastMerged = merged[merged.length - 1];
   const changed =
-    merged.length !== existing.length
+    merged.length !== existingBars.length
     || lastMerged?.time !== lastExisting
-    || lastMerged?.close !== existing[existing.length - 1]?.close;
+    || lastMerged?.close !== existingBars[existingBars.length - 1]?.close;
 
-  htBuffers.set(key, merged);
-  touchSymbol(symbol);
-  const fullRebuild = Math.abs(merged.length - existing.length) > 3;
+  storeHtBars(key, merged, intervalSecs);
+  const fullRebuild = Math.abs(merged.length - existingBars.length) > 3;
   return { changed, fullRebuild };
 }
 
 export function hasCandleHistory(symbol, timeframe = '1m') {
   if (isHigherTimeframe(timeframe)) {
     const buf = htBuffers.get(candleBufferKey(symbol, timeframe));
-    return Boolean(buf && buf.length > 0);
+    return barCount(buf) > 0;
   }
   return buffers.has(symbol) && barCount(buffers.get(symbol)) > 0;
 }
@@ -358,7 +384,7 @@ export function hasCandleHistory(symbol, timeframe = '1m') {
 export function hasChartReadyHistory(symbol, minBars = CHART_READY_MIN_BARS, timeframe = '1m') {
   if (isHigherTimeframe(timeframe)) {
     const buf = htBuffers.get(candleBufferKey(symbol, timeframe));
-    return Boolean(buf && buf.length >= minBars);
+    return barCount(buf) >= minBars;
   }
   const buf = buffers.get(symbol);
   return Boolean(buf && barCount(buf) >= minBars);
@@ -367,12 +393,19 @@ export function hasChartReadyHistory(symbol, minBars = CHART_READY_MIN_BARS, tim
 export function getCandles(symbol, timeframe = '1m', intervalSecs = DEFAULT_BAR_SECS) {
   if (isHigherTimeframe(timeframe)) {
     const buf = htBuffers.get(candleBufferKey(symbol, timeframe));
-    if (!buf?.length) return [];
+    if (!barCount(buf)) return [];
+    if (CompactBarSeries.isSeries(buf)) {
+      const needsNormalize = buf.some((c) => c.time !== normalizeBarTime(c.time, intervalSecs));
+      if (!needsNormalize) return buf.toArray();
+      const fixed = dedupeCandles(materializeBars(buf), intervalSecs);
+      buf.replaceFrom(fixed);
+      return buf.toArray();
+    }
     const needsNormalize = buf.some((c) => c.time !== normalizeBarTime(c.time, intervalSecs));
     if (!needsNormalize) return buf;
     const fixed = dedupeCandles(buf, intervalSecs);
-    htBuffers.set(candleBufferKey(symbol, timeframe), fixed);
-    return fixed;
+    storeHtBars(candleBufferKey(symbol, timeframe), fixed, intervalSecs);
+    return materializeBars(htBuffers.get(candleBufferKey(symbol, timeframe)));
   }
 
   const buf = buffers.get(symbol);
@@ -484,9 +517,43 @@ export function applyLiveCandle(symbol, incoming, timeframe = '1m', intervalSecs
 function applyLiveHtCandle(symbol, incoming, timeframe, intervalSecs) {
   const key = candleBufferKey(symbol, timeframe);
   const buf = htBuffers.get(key);
-  if (!buf?.length) return false;
+  if (!barCount(buf)) return false;
 
   const bar = normalizeCandle(incoming, intervalSecs);
+  if (CompactBarSeries.isSeries(buf)) {
+    const last = buf.getLast();
+    const lastBucket = normalizeBarTime(last.time, intervalSecs);
+
+    if (lastBucket === bar.time) {
+      const updated = {
+        time: bar.time,
+        open: last.open,
+        high: Math.max(last.high, bar.high),
+        low: Math.min(last.low, bar.low),
+        close: bar.close,
+        volume: (last.volume || 0) + (bar.volume || 0),
+      };
+      if (
+        last.open === updated.open
+        && last.high === updated.high
+        && last.low === updated.low
+        && last.close === updated.close
+        && last.volume === updated.volume
+      ) {
+        return false;
+      }
+      buf.updateLast(updated);
+      touchSymbol(symbol);
+      return true;
+    }
+
+    if (bar.time < lastBucket) return false;
+    buf.push(bar);
+    while (buf.length > HT_MAX_BARS) buf.shift();
+    touchSymbol(symbol);
+    return true;
+  }
+
   const last = buf[buf.length - 1];
   const lastBucket = normalizeBarTime(last.time, intervalSecs);
 
@@ -568,9 +635,17 @@ export function patchHtFormingBarFromPrice(symbol, timeframe, intervalSecs, pric
 
   const htKey = candleBufferKey(symbol, timeframe);
   const htBuf = htBuffers.get(htKey);
-  if (!htBuf?.length) return false;
+  if (!barCount(htBuf)) return false;
 
   const live = Number(price);
+  if (CompactBarSeries.isSeries(htBuf)) {
+    if (htBuf.patchLastFromPrice(live)) {
+      touchSymbol(symbol);
+      return true;
+    }
+    return false;
+  }
+
   const last = htBuf[htBuf.length - 1];
   const updated = {
     ...last,
@@ -624,7 +699,7 @@ export function patchHtFormingBar(symbol, timeframe, intervalSecs) {
   const raw1m = buffers.get(symbol);
   const htKey = candleBufferKey(symbol, timeframe);
   const htBuf = htBuffers.get(htKey);
-  if (!barCount(raw1m) || !htBuf?.length) return false;
+  if (!barCount(raw1m) || !barCount(htBuf)) return false;
 
   const tailBars = Math.min(barCount(raw1m), Math.ceil(intervalSecs / 60) + 2);
   const rawSlice = CompactBarSeries.isSeries(raw1m)
@@ -632,6 +707,31 @@ export function patchHtFormingBar(symbol, timeframe, intervalSecs) {
     : raw1m.slice(-tailBars);
   const aggregated = aggregateBucketFrom1m(rawSlice, intervalSecs);
   if (!aggregated) return false;
+
+  if (CompactBarSeries.isSeries(htBuf)) {
+    const last = htBuf.getLast();
+    if (last.time === aggregated.time) {
+      if (
+        last.open === aggregated.open
+        && last.high === aggregated.high
+        && last.low === aggregated.low
+        && last.close === aggregated.close
+        && (last.volume || 0) === (aggregated.volume || 0)
+      ) {
+        return false;
+      }
+      htBuf.updateLast(aggregated);
+      touchSymbol(symbol);
+      return true;
+    }
+    if (aggregated.time > last.time) {
+      htBuf.push(aggregated);
+      while (htBuf.length > HT_MAX_BARS) htBuf.shift();
+      touchSymbol(symbol);
+      return true;
+    }
+    return false;
+  }
 
   const last = htBuf[htBuf.length - 1];
   if (last.time === aggregated.time) {
@@ -716,7 +816,8 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
 
   if (isHigherTimeframe(timeframe)) {
     const key = candleBufferKey(symbol, timeframe);
-    const existing = htBuffers.get(key) || [];
+    const existingBuf = htBuffers.get(key);
+    const existing = materializeBars(existingBuf) || [];
     const normalized = dedupeCandles(incoming, intervalSecs);
     if (!existing.length) {
       storeHtBars(key, normalized, intervalSecs);
@@ -727,8 +828,7 @@ export function prependCandleHistory(symbol, incoming, timeframe = '1m', interva
     if (!olderOnly.length) return { changed: false, added: 0 };
     const merged = dedupeCandles([...olderOnly, ...existing], intervalSecs);
     if (merged.length > HT_MAX_BARS) merged.splice(0, merged.length - HT_MAX_BARS);
-    htBuffers.set(key, merged);
-    touchSymbol(symbol);
+    storeHtBars(key, merged, intervalSecs);
     return { changed: true, added: olderOnly.length };
   }
 
@@ -817,7 +917,7 @@ export function getCandleBufferStats() {
   let htBars = 0;
   for (const [key, buf] of htBuffers) {
     htKeys += 1;
-    htBars += buf.length;
+    htBars += barCount(buf);
   }
   return {
     symbols1m: buffers.size,

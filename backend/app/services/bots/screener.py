@@ -23,9 +23,37 @@ class MarketScreenerService:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        # Use an OrderedDict for LRU caching to prevent memory leaks over time
+        # OrderedDict LRU — entry cap (~200) + optional MB budget (MEMORY #13).
         self._cache: collections.OrderedDict[tuple, pd.DataFrame] = collections.OrderedDict()
-        self._max_cache_size = 1000
+        from app.config import SCREENER_CACHE_MAX_ENTRIES, SCREENER_CACHE_MAX_MB
+
+        self._max_cache_size = max(16, int(SCREENER_CACHE_MAX_ENTRIES))
+        self._max_cache_bytes = max(8, int(SCREENER_CACHE_MAX_MB)) * 1024 * 1024
+        self._cache_bytes = 0
+
+    @staticmethod
+    def _df_nbytes(df: pd.DataFrame) -> int:
+        try:
+            return int(df.memory_usage(index=True, deep=False).sum())
+        except Exception:
+            return int(getattr(df, "nbytes", 0) or 0)
+
+    def _evict_cache(self) -> None:
+        while self._cache and (
+            len(self._cache) > self._max_cache_size or self._cache_bytes > self._max_cache_bytes
+        ):
+            _key, old = self._cache.popitem(last=False)
+            self._cache_bytes = max(0, self._cache_bytes - self._df_nbytes(old))
+
+    def cache_stats(self) -> dict:
+        """Entry + byte accounting for memory observability (MEMORY #25)."""
+        return {
+            "entries": len(self._cache),
+            "bytes": int(self._cache_bytes),
+            "mb": round(self._cache_bytes / (1024 * 1024), 2),
+            "max_entries": self._max_cache_size,
+            "max_mb": round(self._max_cache_bytes / (1024 * 1024), 2),
+        }
 
     def process_candles(
         self,
@@ -84,19 +112,24 @@ class MarketScreenerService:
             self.logger.error(f"Error calculating indicators for {symbol}: {e}")
 
         if bar_time is not None and not df.empty and not full_history:
-            self._cache[cache_key] = df.copy()
+            # Drop prior entry for this exact key before insert (nbytes accounting).
+            prev = self._cache.pop(cache_key, None)
+            if prev is not None:
+                self._cache_bytes = max(0, self._cache_bytes - self._df_nbytes(prev))
+            stored = df.copy()
+            self._cache[cache_key] = stored
             self._cache.move_to_end(cache_key)
-            
-            # LRU Eviction
-            while len(self._cache) > self._max_cache_size:
-                self._cache.popitem(last=False)
-                
+            self._cache_bytes += self._df_nbytes(stored)
+
             # Also proactively clean up older entries for this same symbol/strategy config
             # to keep the cache lean even before maxsize is hit.
             stale = [k for k in self._cache if k[0] == symbol and k[2] == cache_key[2] and k[1] != bar_time]
             for key in stale:
-                if key in self._cache:
-                    del self._cache[key]
+                old = self._cache.pop(key, None)
+                if old is not None:
+                    self._cache_bytes = max(0, self._cache_bytes - self._df_nbytes(old))
+
+            self._evict_cache()
 
         return df
 

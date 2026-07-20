@@ -50,6 +50,7 @@ class TestArchiveWal(unittest.TestCase):
         with patch("app.services.archive.writer._upsert_1m_rows", side_effect=RuntimeError("db down")):
             flushed = writer.flush()
         self.assertEqual(flushed, 0)
+        self.assertEqual(writer.pending_count, 0)  # cleared after WAL (no RAM leak)
         self.assertTrue(wal_mod.WAL_FILE.exists())
 
         replayed = wal_mod.replay_wal(_upsert_1m_rows)
@@ -62,7 +63,20 @@ class TestArchiveWal(unittest.TestCase):
         writer.record_bar("ETHUSDT", bar, "SIMULATED")
         flushed = writer.flush()
         self.assertEqual(flushed, 1)
+        self.assertEqual(writer.pending_count, 0)
         self.assertFalse(wal_mod.WAL_FILE.exists())
+
+    def test_buffer_hard_cap_drops_oldest(self):
+        writer = get_archive_writer()
+        with patch("app.services.archive.writer.ARCHIVE_BUFFER_MAX_ROWS", 3):
+            for i in range(5):
+                bar = {
+                    "time": 1718006400 + i * 60,
+                    "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10,
+                }
+                writer.record_bar("BTCUSDT", bar, "SIMULATED")
+            self.assertLessEqual(writer.pending_count, 3)
+            self.assertGreaterEqual(writer.total_dropped, 2)
 
 
 if __name__ == "__main__":

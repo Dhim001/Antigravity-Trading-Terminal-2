@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import {
@@ -39,9 +40,10 @@ import {
   updateLiveSeriesCache, buildLightLiveSeriesPatchesFromCache, buildNewBarSeriesPatches,
   buildIndicatorSeriesPatches, buildAgentMarkLines, getPriceDecimals, buildMarkLineData,
   buildBotTradeMarkers, buildBacktestTradeMarkers, mapBacktestEquityLine, buildTradeMarkers,
-  isChartDisposed, formatVol,
+  isChartDisposed, formatVol, volumeSeriesEntry,
   mapEmaSeries, mapRsiSeries, mapMacdSeries, mapAtrSeries, mapBbSeries, mapVwapSeries,
 } from '../lib/chart/chartHelpers';
+import { conflateForDisplay, visibleBarCount } from '../lib/chart/conflateBars';
 
 import ChartAnalystBadge from './ChartAnalystBadge';
 import {
@@ -72,7 +74,7 @@ import {
   CHART_DISPLAY_BARS_DEFAULT,
   CHART_DISPLAY_MAX_BARS,
 } from '../services/memoryBudget';
-import { applyCandleTransform, estimateRenkoBrickSize } from '../lib/chart/candleTransforms';
+import { applyCandleTransform, estimateRenkoBrickSize, patchLastTransformedMain } from '../lib/chart/candleTransforms';
 import { computeVolumeProfile, volumeProfileGraphic } from '../lib/chart/volumeProfile';
 import { alignComparisonSeries } from '../lib/chart/comparison';
 import {
@@ -93,6 +95,8 @@ export default function ChartWidget() {
   const chartRef = useRef(null);
   const candlesRef = useRef([]);
   const displayBarsRef = useRef([]);
+  const conflationFactorRef = useRef(1);
+  const conflationLiveRafRef = useRef(null);
   const chartLayoutRef = useRef({ xAxisCount: 1, showVolume: true });
   const liveRafRef = useRef(null);
   const liveLastPaintMs = useRef(0);
@@ -323,8 +327,6 @@ export default function ChartWidget() {
   }, [activeSymbol, timeframe, active]);
 
 
-  useEffect(() => { try { localStorage.setItem('terminal_tf', timeframe); } catch {} }, [timeframe]);
-
   // LIVE_MASSIVE: lazy-fetch native HT history from Massive REST on TF switch
   useEffect(() => {
     if (!useNativeHt || !activeSymbol) return;
@@ -352,9 +354,6 @@ export default function ChartWidget() {
       }).catch(() => {});
     }
   }, [activeSymbol, timeframe, useNativeHt, historyRev]);
-
-  useEffect(() => { try { localStorage.setItem('terminal_chart_type', chartType); } catch {} }, [chartType]);
-  useEffect(() => { try { localStorage.setItem('terminal_chart_indicators_active', JSON.stringify(active)); } catch {} }, [active]);
 
   useEffect(() => {
     const cl = chartLayoutFromSettings;
@@ -691,20 +690,18 @@ export default function ChartWidget() {
       liveRafRef.current = null;
     }
 
-    const candles = displayBarsRef.current.length > 0
+    const sourceCandles = displayBarsRef.current.length > 0
       ? displayBarsRef.current
       : aggregatedCandles;
-    const dec = getPriceDecimals(candles[candles.length - 1]?.close);
+    const dec = getPriceDecimals(sourceCandles[sourceCandles.length - 1]?.close);
 
-    const categoryData = buildCategoryAxisData(candles);
-
+    // Preserve zoom (% window) before conflation — percents stay valid after merge.
+    let zoomStart = null;
+    let zoomEnd = null;
     const layoutChanged = prevConfigRef.current.symbol !== activeSymbol
       || prevConfigRef.current.timeframe !== timeframe;
 
-    // Preserve zoom (% window) — skip getOption when symbol/timeframe changed (expensive + stale)
-    let zoomStart = null;
-    let zoomEnd = null;
-
+    const prelimCategory = buildCategoryAxisData(sourceCandles);
     if (!layoutChanged && chartRef.current) {
       try {
         const currentOption = chartRef.current.getOption();
@@ -713,10 +710,10 @@ export default function ChartWidget() {
         if (dataZoomList[0] && xAxisList[0]?.data) {
           const preserved = preserveDataZoomPercent(
             xAxisList[0].data,
-            categoryData,
+            prelimCategory,
             dataZoomList[0],
-            candles.length,
-            candles.length,
+            sourceCandles.length,
+            sourceCandles.length,
           );
           if (preserved) {
             zoomStart = preserved.start;
@@ -729,21 +726,34 @@ export default function ChartWidget() {
     }
 
     if (zoomStart == null || zoomEnd == null) {
-      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(candles.length, categoryData));
+      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(sourceCandles.length, prelimCategory));
       pinnedToLiveRef.current = true;
     } else {
       pinnedToLiveRef.current = isDataZoomAtLiveEdge(
         { start: zoomStart, end: zoomEnd },
-        categoryData,
+        prelimCategory,
       );
     }
     if (!Number.isFinite(zoomStart) || !Number.isFinite(zoomEnd) || zoomEnd <= zoomStart) {
-      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(candles.length, categoryData));
+      ({ start: zoomStart, end: zoomEnd } = liveEdgeDataZoomForBars(sourceCandles.length, prelimCategory));
       pinnedToLiveRef.current = true;
     }
     zoomStart = Math.max(0, Math.min(100, zoomStart));
     zoomEnd = Math.max(0, Math.min(100, zoomEnd));
     prevConfigRef.current = { symbol: activeSymbol, timeframe: timeframe };
+
+    // MEMORY #23 — conflate when zoomed out beyond ~1 bar/px.
+    const chartW = chartRef.current?.getWidth?.() || 800;
+    const visBars = visibleBarCount(sourceCandles.length, zoomStart, zoomEnd);
+    const zoomBucket = Math.round((zoomEnd - zoomStart) / 5);
+    const { bars: candles, factor: conflationFactor } = conflateForDisplay(
+      sourceCandles,
+      chartW * (sourceCandles.length / Math.max(1, visBars)),
+      `${activeSymbol}|${timeframe}|${sourceCandles.length}|${sourceCandles[sourceCandles.length - 1]?.time}|z${zoomBucket}`,
+    );
+    conflationFactorRef.current = conflationFactor;
+
+    const categoryData = buildCategoryAxisData(candles);
 
     // Heikin-Ashi / Renko render with transformed OHLC on the same category axis;
     // volume and indicators continue to use the raw candles below.
@@ -1166,14 +1176,18 @@ export default function ChartWidget() {
 
     chartLayoutRef.current = { xAxisCount: xAxes.length, showVolume: showVol };
     chartReadyRef.current = true;
+    // Seed live cache with transformed OHLC for HA/Renko; volume stays on raw bars.
     updateLiveSeriesCache(
       liveSeriesCacheRef.current,
-      candles,
+      mainCandles,
       chartType,
       active,
       indicatorTheme,
       { forceRebuild: true },
     );
+    if (active.volume && (chartType === 'heikin' || chartType === 'renko')) {
+      liveSeriesCacheRef.current.volume = buildVolumeSeriesData(candles, indicatorTheme);
+    }
 
     // Initial legend display
     const lastBar = candles[candles.length - 1];
@@ -1411,7 +1425,7 @@ export default function ChartWidget() {
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, chartTheme.echartsTheme || undefined);
+      chart = initEcharts(el, chartTheme.echartsTheme || undefined);
       chartRef.current = chart;
       chartReadyRef.current = false;
 
@@ -1759,12 +1773,18 @@ export default function ChartWidget() {
 
     candlesRef.current = bars;
     const cache = liveSeriesCacheRef.current;
+    const liveChartType = chartTypeRef.current;
+    const isTransformed = liveChartType === 'heikin' || liveChartType === 'renko';
 
-    // Heikin-Ashi / Renko depend on prior bars, so incremental OHLC patching
-    // would desync the forming bar. Rebuild the full option for correctness.
-    if (chartTypeRef.current === 'heikin' || chartTypeRef.current === 'renko') {
-      configureChartRef.current();
+    // When display is conflated, refresh via throttled configure (MEMORY #23).
+    if (conflationFactorRef.current > 1) {
       updateLegendDOM(aggregatedLive);
+      if (conflationLiveRafRef.current == null) {
+        conflationLiveRafRef.current = requestAnimationFrame(() => {
+          conflationLiveRafRef.current = null;
+          configureChartRef.current?.();
+        });
+      }
       return;
     }
 
@@ -1779,16 +1799,56 @@ export default function ChartWidget() {
           gridIndex: i,
           data: categoryData,
         }));
-        patch.series = buildNewBarSeriesPatches(bars, chartType, active, indicatorTheme, cache);
+        if (isTransformed) {
+          const mainCandles = applyCandleTransform(bars, liveChartType, {
+            renkoBrickSize: renkoBrickSizeRef.current,
+          });
+          updateLiveSeriesCache(cache, mainCandles, liveChartType, active, indicatorTheme, { forceRebuild: true });
+          if (active.volume) {
+            cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
+          }
+          const liveIds = new Set(['main', 'volume']);
+          const live = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
+          const indicators = buildIndicatorSeriesPatches(bars, active, indicatorTheme)
+            .filter((p) => !liveIds.has(p.id));
+          patch.series = [...live, ...indicators];
+        } else {
+          patch.series = buildNewBarSeriesPatches(bars, liveChartType, active, indicatorTheme, cache);
+        }
         if (pinnedToLiveRef.current) {
           const { start, end } = liveEdgeDataZoomForBars(bars.length, categoryData);
           const zoomXIndices = Array.from({ length: Math.max(1, xAxisCount) }, (_, i) => i);
           patch.dataZoom = buildDataZoomOption(start, end, zoomXIndices);
           suppressDataZoomEventsRef.current += 1;
         }
+      } else if (isTransformed) {
+        const idx = bars.length - 1;
+        const ok = patchLastTransformedMain(cache, bars[idx], liveChartType, idx, {
+          renkoBrickSize: renkoBrickSizeRef.current,
+        });
+        if (!ok) {
+          configureChartRef.current();
+          updateLegendDOM(aggregatedLive);
+          return;
+        }
+        if (active.volume) {
+          const nextVol = volumeSeriesEntry(bars[idx], indicatorTheme);
+          if (!cache.volume) {
+            cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
+          } else {
+            const prevVol = cache.volume[idx];
+            if (prevVol && typeof prevVol === 'object') {
+              prevVol.value = nextVol.value;
+              prevVol.itemStyle = nextVol.itemStyle;
+            } else {
+              cache.volume[idx] = nextVol;
+            }
+          }
+        }
+        patch.series = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
       } else {
-        updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme);
-        patch.series = buildLightLiveSeriesPatchesFromCache(cache, chartType, active);
+        updateLiveSeriesCache(cache, bars, liveChartType, active, indicatorTheme);
+        patch.series = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
       }
 
       // Merge by series id only — never replaceMerge (drops indicator series not in patch)

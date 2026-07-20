@@ -59,13 +59,21 @@ def _load_onnxruntime():
 
 
 class LstmModelStore:
-    """In-memory cache of ONNX inference sessions (per-symbol, optional version)."""
+    """In-memory cache of ONNX inference sessions (per-symbol) — LRU + TTL."""
 
     def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
         self._sessions: dict[str, Any] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
         self._scalers: dict[str, dict[str, list[float]]] = {}
         self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._sessions, self._metadata, self._scalers, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     @staticmethod
     def _cache_key(symbol: str, model_version: str | None) -> str:
@@ -74,11 +82,14 @@ class LstmModelStore:
     def invalidate(self, symbol: str | None = None) -> None:
         if symbol:
             prefix = str(symbol).upper() + "|"
+            self._lru.discard_prefix(str(symbol).upper())
+            self._lru.discard_prefix(prefix)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
                     if k == str(symbol).upper() or k.startswith(prefix):
                         d.pop(k, None)
         else:
+            self._lru.clear()
             self._sessions.clear()
             self._metadata.clear()
             self._scalers.clear()
@@ -149,6 +160,7 @@ class LstmModelStore:
 
         mtime = os.path.getmtime(onnx_path)
         if key in self._sessions and self._mtime.get(key) == mtime:
+            self._lru.touch(key)
             return self._sessions[key]
 
         ort = _load_onnxruntime()
@@ -182,6 +194,7 @@ class LstmModelStore:
         self._metadata[key] = meta
         self._scalers[key] = scaler
         self._mtime[key] = mtime
+        self._lru.touch(key)
         return session
 
 
@@ -243,6 +256,10 @@ class LstmDirectionStrategy(BaseStrategy):
             symbol = str(self.config.get("symbol", "")).upper()
         if not symbol:
             return {"signal": "NONE"}
+
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        record_ml_inference_features(symbol, "LSTM_DIRECTION", vec)
 
         # Build window array and predict
         window_array = np.array(list(self._window))  # (lookback, N_FEATURES)

@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -211,7 +212,7 @@ export default function CorrelationMatrix({
     const mount = () => {
       if (disposed || chart) return;
       if (el.clientWidth < 2 || el.clientHeight < 2) return;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartInst.current = chart;
     };
     const ro = new ResizeObserver(() => {

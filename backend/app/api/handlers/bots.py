@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from functools import partial
 
 from app.api.context import RequestContext
@@ -384,34 +385,27 @@ async def _execute_backtest(
 
             enqueue_progress({"pct": 5, "phase": "resolve", "message": f"Portfolio: {len(portfolio_symbols)} symbols…"})
 
-            candles_by_symbol: dict[str, list] = {}
-            skipped_resolve: list[dict] = []
-            for sym in portfolio_symbols:
-                if is_cancelled():
-                    await _finish("cancelled")
-                    return
+            skipped_symbols: list[dict] = []
+            skipped_lock = threading.Lock()
+            feed = ctx.oms.feed
+
+            def resolve_portfolio_symbol(sym: str):
+                """Sync resolver for streamed portfolio batches (MEMORY #8)."""
                 try:
-                    c, _m = await asyncio.to_thread(
-                        resolve_backtest_candles,
+                    c, m = resolve_backtest_candles(
                         sym,
-                        ctx.oms.feed,
+                        feed,
                         days=days,
                         interval=interval,
                         timeframe=timeframe,
                     )
                     if oos_pct:
-                        c = _apply_oos_window(c, _m, oos_pct)
-                    candles_by_symbol[sym] = c or []
+                        c = _apply_oos_window(c, m, oos_pct)
+                    return c or [], m
                 except ValueError as exc:
-                    candles_by_symbol[sym] = []
-                    skipped_resolve.append({"symbol": sym, "reason": str(exc)})
-
-            for sym, c in candles_by_symbol.items():
-                if c and len(c) >= 50:
-                    try:
-                        ctx.backtester.cache_candles(sym, strategy, c, config)
-                    except Exception:
-                        pass
+                    with skipped_lock:
+                        skipped_symbols.append({"symbol": sym, "reason": str(exc)})
+                    return [], {}
 
             slippage_bps, fee_bps = parse_cost_config(config)
             total_capital = float(config.get("allocation") or 10_000.0) * len(portfolio_symbols)
@@ -426,18 +420,16 @@ async def _execute_backtest(
                 fee_bps=fee_bps,
             )
 
-            skipped_symbols: list[dict] = list(skipped_resolve)
-
             def portfolio_progress(**kw) -> None:
                 si = kw.get("symbol_index", 1)
                 st = kw.get("symbol_total", 1)
                 sym = kw.get("symbol", "")
                 batch_skipped = kw.get("skipped") or []
-                if batch_skipped:
-                    skipped_symbols.extend(batch_skipped)
-                skip_note = ""
-                if skipped_symbols:
-                    skip_note = f" · {len(skipped_symbols)} skipped"
+                with skipped_lock:
+                    if batch_skipped:
+                        skipped_symbols.extend(batch_skipped)
+                    skip_n = len(skipped_symbols)
+                skip_note = f" · {skip_n} skipped" if skip_n else ""
                 enqueue_progress({
                     "pct": min(5 + int((si / max(st, 1)) * 85), 90),
                     "phase": "portfolio",
@@ -450,7 +442,8 @@ async def _execute_backtest(
                 run_portfolio_backtest,
                 ctx.backtester,
                 portfolio_cfg,
-                candles_by_symbol,
+                None,
+                resolve_candles=resolve_portfolio_symbol,
                 progress_cb=portfolio_progress,
                 cancel_cb=is_cancelled,
             )
@@ -758,7 +751,13 @@ async def _execute_backtest(
                     walk_forward=best_result.get("walk_forward"),
                 )
             except Exception:
-                pass
+                logger.exception(
+                    "save_optimization_run failed for %s/%s (walk-forward sweep)",
+                    symbol,
+                    strategy,
+                )
+                if isinstance(best_result, dict):
+                    best_result["optimization_save_error"] = "failed to persist optimization run"
         else:
             sweep_rows = []
             best_result = None
@@ -1331,7 +1330,13 @@ async def _execute_backtest(
                     best_config=best_config,
                 )
             except Exception:
-                pass
+                logger.exception(
+                    "save_optimization_run failed for %s/%s (parameter sweep)",
+                    symbol,
+                    strategy,
+                )
+                if isinstance(best_result, dict):
+                    best_result["optimization_save_error"] = "failed to persist optimization run"
 
         from app.services.bots.backtest_store import save_backtest_run
 
@@ -1577,7 +1582,6 @@ async def run_backtest_sweep(ctx: RequestContext) -> None:
             client_key=str(id(ctx.websocket)) if ctx.websocket else None,
         )
         # Notify UI immediately that it's running via RQ
-        from app.api.outbound import send_order_result
         await send_order_result(ctx, {"status": "success", "message": "Backtest sweep queued to RQ", "job_id": job_id})
         
         req["job_id"] = job_id

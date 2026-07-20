@@ -57,11 +57,15 @@ def _pause_before_lock_retry(attempt: int) -> None:
 
 def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     """Apply standard SQLite PRAGMAs for WAL concurrency (single source of truth)."""
+    # Negative cache_size = kibibytes. Default 64 MB; multi-profile hosts often use 32 MB.
+    from app.config import SQLITE_CACHE_KB
+
+    cache_kb = max(1024, int(SQLITE_CACHE_KB))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA cache_size = -64000")
+    conn.execute(f"PRAGMA cache_size = -{cache_kb}")
 
 
 def _adapt_sql(sql: str) -> str:

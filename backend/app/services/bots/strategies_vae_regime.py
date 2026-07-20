@@ -122,6 +122,10 @@ def assess_vae_regime_for_meta(
         logger.debug("VAE feature extract failed for %s: %s", sym, exc)
         return VaeRegimeAssessment(None, "unknown", "skip", f"features: {exc}", False)
 
+    from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+    record_ml_inference_features(sym, "VAE_REGIME_DETECTOR", feat_vec)
+
     store = get_vae_store()
     pinned = cfg.get("model_version") or None
     score = store.anomaly_score(sym, feat_vec, model_version=pinned or None)

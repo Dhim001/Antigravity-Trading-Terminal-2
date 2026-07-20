@@ -349,8 +349,11 @@ class BotManagerService:
             if isinstance(cfg, str):
                 import json as _json
                 cfg = _json.loads(cfg) if cfg else {}
-            mode = str(cfg.get("meta_label_model_mode", "")).lower()
-            if mode not in ("gbm", "hybrid") and not cfg.get("meta_label_model_enabled"):
+            mode = str(cfg.get("meta_label_model_mode") or "wilson").lower()
+            # Legacy flag upgrades wilson → hybrid (same as effective_meta_label_mode).
+            if cfg.get("meta_label_model_enabled") and mode == "wilson":
+                mode = "hybrid"
+            if mode not in ("gbm", "hybrid"):
                 return None
             from app.services.bots.meta_label_operational import get_model_staleness_report
             return get_model_staleness_report(bot_id)

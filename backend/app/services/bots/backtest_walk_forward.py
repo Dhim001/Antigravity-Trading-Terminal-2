@@ -194,8 +194,9 @@ def build_anchored_fold_windows(
         if test_end - cursor < min_test:
             break
 
-        train = list(candles[:cursor])
-        test = list(candles[cursor:test_end])
+        # Slice views share the underlying candle list (MEMORY_CENTRIC_REVIEW #7).
+        train = candles[:cursor]
+        test = candles[cursor:test_end]
         wmeta = copy.deepcopy(meta or {})
         wmeta["fold"] = fold + 1
         wmeta["wf_mode"] = "anchored"

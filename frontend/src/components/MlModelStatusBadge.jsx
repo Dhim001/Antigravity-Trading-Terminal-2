@@ -39,11 +39,35 @@ export function formatPinnedVersionShort(pin, fallbackTrainedAt) {
   return String(raw).slice(0, 16);
 }
 
+/** CTA as span — never nest <button> inside StrategyTemplateCard / other buttons. */
+function TrainCta({ label, onActivate, ariaLabel }) {
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onActivate(e);
+    }
+  };
+  return (
+    <span
+      className="ml-model-badge__train-btn"
+      role="button"
+      tabIndex={0}
+      onClick={onActivate}
+      onKeyDown={onKeyDown}
+      aria-label={ariaLabel || label}
+    >
+      {label}
+    </span>
+  );
+}
+
 export default function MlModelStatusBadge({
   strategy,
   symbol,
   modelVersion = '',
   compact = false,
+  /** When false, status-only (safe inside parent <button> cards). */
+  showCta = true,
 }) {
   const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy));
   const statusRef = useRef(status);
@@ -78,6 +102,7 @@ export default function MlModelStatusBadge({
 
   const openTraining = useCallback((e) => {
     e.stopPropagation();
+    e.preventDefault?.();
     openModelTrainingDock();
   }, []);
 
@@ -109,14 +134,8 @@ export default function MlModelStatusBadge({
     return (
       <span className="ml-model-badge ml-model-badge--error" title={status.error}>
         <AlertCircle size={10} />
-        {!compact && (
-          <button
-            className="ml-model-badge__train-btn"
-            onClick={openTraining}
-            type="button"
-          >
-            Open Training
-          </button>
+        {showCta && !compact && (
+          <TrainCta label="Open Training" onActivate={openTraining} />
         )}
       </span>
     );
@@ -125,14 +144,15 @@ export default function MlModelStatusBadge({
   return (
     <span className="ml-model-badge ml-model-badge--untrained" title="No model trained for this symbol">
       <XCircle size={10} />
-      <button
-        className="ml-model-badge__train-btn"
-        onClick={openTraining}
-        type="button"
-        aria-label="Open Model Training"
-      >
-        Train
-      </button>
+      {showCta ? (
+        <TrainCta
+          label="Train"
+          onActivate={openTraining}
+          ariaLabel="Open Model Training"
+        />
+      ) : (
+        <span className="ml-model-badge__ver">no model</span>
+      )}
     </span>
   );
 }

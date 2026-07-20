@@ -11,6 +11,7 @@ import { useResearchStore } from '../store/useResearchStore';
 import { fetchOptimizationRuns, fetchOptimizationRun } from '../api/endpoints';
 import { trimBacktestPayload } from '../lib/backtestSlim';
 import OptimizationRunCompare from './OptimizationRunCompare';
+import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import { toast } from 'sonner';
 
 const OBJECTIVE_LABELS = {
@@ -37,6 +38,10 @@ export default function OptimizationHistory() {
   const [compareIds, setCompareIds] = useState([]);
   const [compareRuns, setCompareRuns] = useState([null, null]);
   const [compareLoading, setCompareLoading] = useState(false);
+  const { onScroll: onHistScroll, window: histWindow } = useVirtualRows(runs, {
+    rowHeight: 36,
+    overscan: 8,
+  });
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -145,7 +150,10 @@ export default function OptimizationHistory() {
       ) : runs.length === 0 ? (
         <p className="text-xs text-muted-foreground">No saved optimizations yet</p>
       ) : (
-        <div className="algo-backtest-table-scroll algo-backtest-table-scroll--history">
+        <div
+          className="algo-backtest-table-scroll algo-backtest-table-scroll--history"
+          onScroll={onHistScroll}
+        >
           <table className="terminal-table algo-backtest-table m-0 text-xs">
             <thead>
               <tr>
@@ -158,7 +166,8 @@ export default function OptimizationHistory() {
               </tr>
             </thead>
             <tbody>
-              {runs.map((run) => (
+              <VirtualTablePadding height={histWindow.topPad} colSpan={6} />
+              {histWindow.slice.map((run) => (
                 <tr
                   key={run.id}
                   className="hover:bg-muted/40"
@@ -189,6 +198,7 @@ export default function OptimizationHistory() {
                   </td>
                 </tr>
               ))}
+              <VirtualTablePadding height={histWindow.bottomPad} colSpan={6} />
             </tbody>
           </table>
         </div>

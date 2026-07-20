@@ -4,6 +4,7 @@ import {
   remainingCooloffSec,
   riskHoldBadgeLabel,
   effectiveRiskHold,
+  botRuntimeActivityHint,
 } from './botRiskHold';
 
 describe('botRiskHold', () => {
@@ -76,5 +77,35 @@ describe('botRiskHold', () => {
       drawdown_pct: 15,
       max_drawdown_pct: 10,
     })).toBe('MAX DD · 15%/10%');
+  });
+
+  it('botRuntimeActivityHint prefers cooling off / held over no signal', () => {
+    expect(botRuntimeActivityHint({
+      status: 'RUNNING',
+      last_signal_at: null,
+      risk_hold: { kind: 'cooloff', cooloff_until: '2026-07-10T12:01:00.000Z' },
+    })?.kind).toBe('cooling_off');
+
+    expect(botRuntimeActivityHint({
+      status: 'RUNNING',
+      last_signal_at: null,
+      risk_hold: {
+        kind: 'streak_limit',
+        consecutive_losses: 5,
+        max_consecutive_losses: 5,
+      },
+    })?.kind).toBe('held');
+
+    expect(botRuntimeActivityHint({
+      status: 'RUNNING',
+      last_signal_at: null,
+    })?.kind).toBe('no_signal');
+
+    expect(botRuntimeActivityHint({
+      status: 'RUNNING',
+      last_signal_at: '2026-07-10T11:00:00.000Z',
+    })).toBeNull();
+
+    expect(botRuntimeActivityHint({ status: 'STOPPED' })).toBeNull();
   });
 });

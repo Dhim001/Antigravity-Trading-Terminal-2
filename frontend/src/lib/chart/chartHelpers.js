@@ -400,20 +400,32 @@ export function updateLiveSeriesCache(cache, bars, chartType, active, indicatorT
 
   const idx = barCount - 1;
   const bar = bars[idx];
-  const nextMain = cache.main.slice();
+  // Mutate in place — avoid slice() clones on every live paint (~4×/s).
   if (chartType === 'line') {
-    nextMain[idx] = bar.close;
+    cache.main[idx] = bar.close;
   } else {
-    nextMain[idx] = [bar.open, bar.close, bar.low, bar.high];
+    const prev = cache.main[idx];
+    if (Array.isArray(prev) && prev.length === 4) {
+      prev[0] = bar.open;
+      prev[1] = bar.close;
+      prev[2] = bar.low;
+      prev[3] = bar.high;
+    } else {
+      cache.main[idx] = [bar.open, bar.close, bar.low, bar.high];
+    }
   }
-  cache.main = nextMain;
   if (active.volume) {
     if (!cache.volume) {
       cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
     } else {
-      const nextVol = cache.volume.slice();
-      nextVol[idx] = volumeSeriesEntry(bar, indicatorTheme);
-      cache.volume = nextVol;
+      const prevVol = cache.volume[idx];
+      const nextVol = volumeSeriesEntry(bar, indicatorTheme);
+      if (prevVol && typeof prevVol === 'object') {
+        prevVol.value = nextVol.value;
+        prevVol.itemStyle = nextVol.itemStyle;
+      } else {
+        cache.volume[idx] = nextVol;
+      }
     }
   }
 }

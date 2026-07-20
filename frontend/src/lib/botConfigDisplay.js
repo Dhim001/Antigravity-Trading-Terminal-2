@@ -62,7 +62,7 @@ export const FIELD_META = {
   calibration_gate_enabled: { label: 'Calibration gate', group: 'agent', kind: 'boolean', hint: 'Block entries when the setup bucket underperforms in closed-trade history.' },
   calibration_min_samples: { label: 'Gate min samples', group: 'agent', kind: 'integer', hint: 'Minimum closed trades in a bucket before the gate can block.' },
   calibration_min_wilson: { label: 'Gate min Wilson', group: 'agent', kind: 'confidence', hint: 'Wilson lower-bound win rate required to allow entry (0–1).' },
-  meta_label_model_mode: { label: 'Meta-label mode', group: 'agent', kind: 'meta_label_mode', hint: 'wilson = bucket stats only; gbm = gradient-boosted P(win); hybrid = GBM when trained else Wilson.' },
+  meta_label_model_mode: { label: 'Meta-label mode', group: 'agent', kind: 'meta_label_mode', hint: 'Requires Calibration gate ON. wilson = bucket stats; gbm = P(win) model; hybrid = GBM when trained else Wilson. Legacy meta_label_model_enabled upgrades wilson→hybrid.' },
   meta_label_min_prob: { label: 'Meta-label min P(win)', group: 'agent', kind: 'confidence', hint: 'Block entries when the GBM win probability is below this (0–1).' },
   meta_label_min_train_samples: { label: 'Meta-label min trades', group: 'agent', kind: 'integer', hint: 'Minimum closed trades before training the GBM classifier.' },
   meta_label_shadow_mode: { label: 'Meta-label shadow', group: 'agent', kind: 'boolean', hint: 'Log GBM blocks without rejecting entries (evaluate before going live).' },

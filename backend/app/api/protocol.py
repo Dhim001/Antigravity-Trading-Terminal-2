@@ -67,11 +67,6 @@ class Action(StrEnum):
     RISK_GET_CONFIG = "risk_get_config"
     RISK_PREVIEW_ENTRY = "risk_preview_entry"
     RISK_BASKET_CORRELATION = "risk_basket_correlation"
-    COPILOT_CHAT = "copilot_chat"
-    COPILOT_CONFIRM = "copilot_confirm"
-    COPILOT_CANCEL = "copilot_cancel"
-    COPILOT_HISTORY = "copilot_history"
-    COPILOT_CLEAR = "copilot_clear"
 
 
 class MessageType(StrEnum):
@@ -91,6 +86,7 @@ class MessageType(StrEnum):
     BOT_LOGS_HISTORY = "bot_logs_history"
     BACKTEST_RESULT = "backtest_result"
     BACKTEST_PROGRESS = "backtest_progress"
+    ML_JOB_PROGRESS = "ml_job_progress"
     TICKS_UPDATE = "ticks_update"
     BOTS_HISTORY = "bots_history"
     AGENT_INSIGHT = "agent_insight"

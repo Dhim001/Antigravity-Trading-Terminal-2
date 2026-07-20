@@ -297,3 +297,29 @@ def get_feature_drift_monitor() -> FeatureDriftMonitor:
     if _monitor is None:
         _monitor = FeatureDriftMonitor()
     return _monitor
+
+
+def record_ml_inference_features(
+    symbol: str | None,
+    strategy: str | None,
+    features: dict | list | Any,
+) -> None:
+    """Best-effort: record live inference features for PSI / alpha-decay Metric 8.
+
+    Safe to call from hot evaluate() paths — never raises into the strategy.
+    """
+    sym = (symbol or "").strip().upper()
+    strat = (strategy or "").strip().upper()
+    if not sym or not strat or features is None:
+        return
+    try:
+        if isinstance(features, np.ndarray):
+            features = features.reshape(-1).tolist()
+        elif isinstance(features, dict):
+            from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
+
+            # Stable column order matching training / scaler baselines.
+            features = [float(features.get(n, 0.0)) for n in SIGNAL_FEATURE_NAMES]
+        get_feature_drift_monitor().record_inference(sym, strat, features)
+    except Exception as exc:
+        logger.debug("record_ml_inference_features failed for %s/%s: %s", strat, sym, exc)

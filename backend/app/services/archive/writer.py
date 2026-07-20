@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import (
     ARCHIVE_BACKEND,
+    ARCHIVE_BUFFER_MAX_ROWS,
     ARCHIVE_ENABLED,
     ARCHIVE_FLUSH_INTERVAL,
     ARCHIVE_PARQUET_ENABLED,
@@ -42,6 +43,7 @@ class ArchiveWriter:
         self._buffer: dict[tuple[str, int], dict[str, Any]] = {}
         self._last_flush = 0.0
         self._total_flushed = 0
+        self._dropped = 0
 
     @property
     def pending_count(self) -> int:
@@ -51,11 +53,34 @@ class ArchiveWriter:
     def total_flushed(self) -> int:
         return self._total_flushed
 
+    @property
+    def total_dropped(self) -> int:
+        return self._dropped
+
+    def _trim_buffer(self) -> None:
+        """Drop oldest bars when over ARCHIVE_BUFFER_MAX_ROWS (leak-on-failure guard)."""
+        max_rows = max(1, int(ARCHIVE_BUFFER_MAX_ROWS))
+        excess = len(self._buffer) - max_rows
+        if excess <= 0:
+            return
+        # Keys are (symbol, time) — sort by time then drop oldest.
+        oldest = sorted(self._buffer.keys(), key=lambda k: (k[1], k[0]))[:excess]
+        for key in oldest:
+            del self._buffer[key]
+        self._dropped += excess
+        logger.warning(
+            "Archive buffer over cap (%d) — dropped %d oldest row(s) (total dropped=%d)",
+            max_rows,
+            excess,
+            self._dropped,
+        )
+
     def record_bar(self, symbol: str, bar: dict | None, source: str) -> None:
         if not ARCHIVE_ENABLED or not symbol or not bar or bar.get("time") is None:
             return
         row = _bar_row(symbol, bar, source)
         self._buffer[(row["symbol"], row["time"])] = row
+        self._trim_buffer()
         try:
             from app.services.data_quality import registry
 
@@ -98,7 +123,11 @@ class ArchiveWriter:
 
         from app.services.archive.wal import append_wal_rows
 
+        # Durability: rows are on disk WAL — clear RAM buffer so a stuck DB
+        # cannot grow the process heap without bound (MEMORY_CENTRIC_REVIEW #1).
         append_wal_rows(rows)
+        self._buffer.clear()
+        self._last_flush = time.time()
         logger.warning(
             "Archive flush failed after retries (%d rows → WAL): %s",
             len(rows),

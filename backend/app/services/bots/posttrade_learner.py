@@ -191,6 +191,26 @@ def classify_outcome(
     return "flat", reason
 
 
+def _default_min_confidence(strategy: str) -> float:
+    s = (strategy or "").upper()
+    if s == "TCN_MULTI_HORIZON":
+        return 0.002
+    if s == "RL_PPO_AGENT":
+        return 0.28
+    return 0.55
+
+
+def _bump_min_confidence(strategy: str, conf: float) -> float:
+    """Strategy-aware min_confidence nudge (prob vs return-magnitude scales)."""
+    s = (strategy or "").upper()
+    bump = float(POSTTRADE_LEARNER_CONFIDENCE_BUMP)
+    if s == "TCN_MULTI_HORIZON":
+        return round(min(0.05, max(1e-4, conf * 1.2 + 0.0005)), 6)
+    if s == "RL_PPO_AGENT":
+        return round(min(0.7, conf + min(bump, 0.02)), 4)
+    return round(min(0.95, conf + bump), 4)
+
+
 def build_config_patch(
     outcome_class: str,
     bot_config: dict[str, Any] | None,
@@ -219,12 +239,12 @@ def build_config_patch(
 
     elif outcome_class == "regime_mismatch":
         raw["block_ranging_markets"] = True
-        conf = float(cfg.get("min_confidence") or 0.55)
-        raw["min_confidence"] = round(min(0.95, conf + POSTTRADE_LEARNER_CONFIDENCE_BUMP), 4)
+        conf = float(cfg.get("min_confidence") or _default_min_confidence(strategy))
+        raw["min_confidence"] = _bump_min_confidence(strategy, conf)
 
     elif outcome_class == "clean_loss":
-        conf = float(cfg.get("min_confidence") or 0.55)
-        raw["min_confidence"] = round(min(0.95, conf + POSTTRADE_LEARNER_CONFIDENCE_BUMP), 4)
+        conf = float(cfg.get("min_confidence") or _default_min_confidence(strategy))
+        raw["min_confidence"] = _bump_min_confidence(strategy, conf)
 
     if not raw:
         return {}

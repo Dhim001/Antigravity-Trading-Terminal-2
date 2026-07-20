@@ -4,6 +4,7 @@
  */
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { useStore } from '../store/useStore';
 import { cn } from '@/lib/utils';
 import { TrendingUp, TrendingDown, BarChart2, Target, Activity } from 'lucide-react';
@@ -190,7 +191,7 @@ export default function EquityCurveTab() {
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartInst.current = chart;
       return true;
     };

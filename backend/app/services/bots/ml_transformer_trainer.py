@@ -142,6 +142,7 @@ def train_transformer_model(
 ) -> dict[str, Any]:
     torch, nn = _get_torch()
     cfg = merge_strategy_config("TRANSFORMER_SIGNAL", config or {})
+    epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 60))
     d_model = int(cfg.get("d_model", 64))
     nhead = int(cfg.get("nhead", 4))
@@ -185,7 +186,16 @@ def train_transformer_model(
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+    )
+
+    progress_path = progress_path_from_config(cfg)
     for ep in range(epochs):
+        if ml_cancel_requested(progress_path):
+            return cancelled_train_result(symbol, "TRANSFORMER_SIGNAL")
         model.train()
         idx = torch.randperm(len(X_t))
         ep_loss = 0.0
@@ -257,14 +267,16 @@ def train_transformer_model(
         json.dump(meta, f, indent=2)
 
     _transformer_store.invalidate(symbol)
-    try:
-        from app.services.bots.ml_model_artifacts import snapshot_current_version
-        snap = snapshot_current_version(_model_dir(symbol), strategy="TRANSFORMER_SIGNAL")
-        if snap:
-            meta["version_id"] = snap.get("version_id")
-            meta["version_path"] = snap.get("path")
-    except Exception:
-        logger.exception("Failed to snapshot Transformer version for %s", symbol)
+    skip_snapshot = bool(cfg.get("skip_snapshot", cfg.get("_wf_mode", False)))
+    if not skip_snapshot:
+        try:
+            from app.services.bots.ml_model_artifacts import snapshot_current_version
+            snap = snapshot_current_version(_model_dir(symbol), strategy="TRANSFORMER_SIGNAL")
+            if snap:
+                meta["version_id"] = snap.get("version_id")
+                meta["version_path"] = snap.get("path")
+        except Exception:
+            logger.exception("Failed to snapshot Transformer version for %s", symbol)
     return {"ok": True, "symbol": symbol, **meta}
 
 
@@ -272,8 +284,19 @@ def train_transformer_model(
 
 
 class TransformerModelStore:
-    def __init__(self):
-        self._sessions, self._metadata, self._scalers, self._mtime = {}, {}, {}, {}
+    def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
+        self._sessions: dict[str, Any] = {}
+        self._metadata: dict[str, dict] = {}
+        self._scalers: dict[str, dict] = {}
+        self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._sessions, self._metadata, self._scalers, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     @staticmethod
     def _cache_key(symbol, model_version):
@@ -282,11 +305,14 @@ class TransformerModelStore:
     def invalidate(self, symbol=None):
         if symbol:
             prefix = str(symbol).upper() + "|"
+            self._lru.discard_prefix(str(symbol).upper())
+            self._lru.discard_prefix(prefix)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
                     if k == str(symbol).upper() or k.startswith(prefix):
                         d.pop(k, None)
         else:
+            self._lru.clear()
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 d.clear()
 
@@ -321,6 +347,7 @@ class TransformerModelStore:
             return None
         mt = os.path.getmtime(path)
         if key in self._sessions and self._mtime.get(key) == mt:
+            self._lru.touch(key)
             return self._sessions[key]
         try:
             import onnxruntime as ort
@@ -340,6 +367,7 @@ class TransformerModelStore:
             return None
         self._sessions[key] = s
         self._mtime[key] = mt
+        self._lru.touch(key)
         return s
 
 

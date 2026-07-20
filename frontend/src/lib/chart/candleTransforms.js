@@ -25,26 +25,33 @@ export function toHeikinAshi(bars) {
   let prevOpen;
   let prevClose;
   for (let i = 0; i < bars.length; i++) {
-    const c = bars[i];
-    const o = Number(c.open);
-    const h = Number(c.high);
-    const l = Number(c.low);
-    const cl = Number(c.close);
-    const haClose = (o + h + l + cl) / 4;
-    const haOpen = i === 0 ? (o + cl) / 2 : (prevOpen + prevClose) / 2;
-    const haHigh = Math.max(h, haOpen, haClose);
-    const haLow = Math.min(l, haOpen, haClose);
-    out[i] = {
-      ...c,
-      open: haOpen,
-      high: haHigh,
-      low: haLow,
-      close: haClose,
-    };
-    prevOpen = haOpen;
-    prevClose = haClose;
+    const ha = heikinAshiBar(bars[i], prevOpen, prevClose, i === 0);
+    out[i] = ha;
+    prevOpen = ha.open;
+    prevClose = ha.close;
   }
   return out;
+}
+
+/**
+ * Single-bar Heikin-Ashi. When `isFirst`, open = avg(O,C); else avg(prev HA open/close).
+ */
+export function heikinAshiBar(sourceBar, prevHaOpen, prevHaClose, isFirst = false) {
+  const o = Number(sourceBar.open);
+  const h = Number(sourceBar.high);
+  const l = Number(sourceBar.low);
+  const cl = Number(sourceBar.close);
+  const haClose = (o + h + l + cl) / 4;
+  const haOpen = isFirst || prevHaOpen == null || prevHaClose == null
+    ? (o + cl) / 2
+    : (prevHaOpen + prevHaClose) / 2;
+  return {
+    ...sourceBar,
+    open: haOpen,
+    high: Math.max(h, haOpen, haClose),
+    low: Math.min(l, haOpen, haClose),
+    close: haClose,
+  };
 }
 
 /**
@@ -124,24 +131,76 @@ export function toRenkoAligned(bars, brickSize) {
   const out = new Array(bars.length);
   let anchor = Number(bars[0].close);
   for (let i = 0; i < bars.length; i++) {
-    const c = bars[i];
-    const close = Number(c.close);
-    const steps = Math.trunc((close - anchor) / size);
-    const open = anchor;
-    const newClose = steps !== 0 ? anchor + steps * size : anchor;
-    out[i] = {
-      time: c.time,
-      open,
-      close: newClose,
-      high: Math.max(open, newClose),
-      low: Math.min(open, newClose),
-      volume: c.volume || 0,
-      brickDir: steps === 0 ? 0 : (steps > 0 ? 1 : -1),
-      brickCount: Math.abs(steps),
-    };
-    anchor = newClose;
+    const brick = renkoAlignedBar(bars[i], anchor, size);
+    out[i] = brick;
+    anchor = brick.close;
   }
   return out;
+}
+
+/**
+ * Single index-aligned Renko bar from a fixed brick open (anchor) + source close.
+ */
+export function renkoAlignedBar(sourceBar, anchorClose, brickSize) {
+  const size = brickSize && brickSize > 0 ? brickSize : 0;
+  const close = Number(sourceBar.close);
+  const open = Number(anchorClose);
+  if (!size || size <= 0) {
+    return {
+      time: sourceBar.time,
+      open: Number(sourceBar.open),
+      close,
+      high: Number(sourceBar.high),
+      low: Number(sourceBar.low),
+      volume: sourceBar.volume || 0,
+      brickDir: 0,
+      brickCount: 0,
+    };
+  }
+  const steps = Math.trunc((close - open) / size);
+  const newClose = steps !== 0 ? open + steps * size : open;
+  return {
+    time: sourceBar.time,
+    open,
+    close: newClose,
+    high: Math.max(open, newClose),
+    low: Math.min(open, newClose),
+    volume: sourceBar.volume || 0,
+    brickDir: steps === 0 ? 0 : (steps > 0 ? 1 : -1),
+    brickCount: Math.abs(steps),
+  };
+}
+
+/**
+ * Patch the last transformed main OHLC slot for HA/Renko forming-bar updates.
+ * `cache.main[idx]` open is treated as fixed while the source bar is forming.
+ * @returns {boolean} true if patched
+ */
+export function patchLastTransformedMain(cache, rawBar, chartType, idx, { renkoBrickSize } = {}) {
+  if (!cache?.main || !rawBar || idx < 0 || idx >= cache.main.length) return false;
+  let transformed;
+  if (chartType === 'heikin') {
+    const prev = idx > 0 ? cache.main[idx - 1] : null;
+    const prevOpen = Array.isArray(prev) ? prev[0] : undefined;
+    const prevClose = Array.isArray(prev) ? prev[1] : undefined;
+    transformed = heikinAshiBar(rawBar, prevOpen, prevClose, idx === 0);
+  } else if (chartType === 'renko') {
+    const slot = cache.main[idx];
+    const fixedOpen = Array.isArray(slot) ? slot[0] : Number(rawBar.open);
+    transformed = renkoAlignedBar(rawBar, fixedOpen, renkoBrickSize);
+  } else {
+    return false;
+  }
+  const prev = cache.main[idx];
+  if (Array.isArray(prev) && prev.length === 4) {
+    prev[0] = transformed.open;
+    prev[1] = transformed.close;
+    prev[2] = transformed.low;
+    prev[3] = transformed.high;
+  } else {
+    cache.main[idx] = [transformed.open, transformed.close, transformed.low, transformed.high];
+  }
+  return true;
 }
 
 /**

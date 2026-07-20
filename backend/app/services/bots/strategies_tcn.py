@@ -63,6 +63,10 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         if not symbol:
             return {"signal": "NONE"}
 
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        record_ml_inference_features(symbol, "TCN_MULTI_HORIZON", self._window[-1])
+
         window_array = np.array(list(self._window))
         store = get_tcn_store()
         pinned = self._cfg.get("model_version") or None

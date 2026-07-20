@@ -29,6 +29,7 @@ import OptimizerHeatmap from './OptimizerHeatmap';
 import OptimizationHistory from './OptimizationHistory';
 import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import FilterRejectsDashboard from './FilterRejectsDashboard';
+import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   scheduleBacktestClientTimeout,
   clearBacktestClientTimeout,
@@ -312,9 +313,14 @@ export default function TaOptimizerPanel({
 
   const sweep = results?.sweep;
   const activeObjective = sweep?.objective ?? results?.meta?.sweep_objective ?? objective;
+  const sweepResults = sweep?.results ?? [];
+  const { onScroll: onSweepScroll, window: sweepWindow } = useVirtualRows(sweepResults, {
+    rowHeight: 36,
+    overscan: 8,
+  });
 
   const aggregatedFilterRejects = useMemo(() => {
-    const rows = sweep?.results ?? [];
+    const rows = sweepResults;
     if (!rows.length) return null;
     const byBucket = {};
     let total = 0;
@@ -329,7 +335,7 @@ export default function TaOptimizerPanel({
       }
     }
     return total > 0 ? { rejects: byBucket, total, runs: rows.length } : null;
-  }, [sweep?.results]);
+  }, [sweepResults]);
 
   const sweepGrid = useMemo(
     () => buildSweepGrid(paramDefs, enabled, valuesByKey, maxCombos, objective, minTrades, sweepMode),
@@ -398,6 +404,7 @@ export default function TaOptimizerPanel({
       walkForward,
       rollingFolds: wfFolds,
       comboCount,
+      strategy,
       timeoutMs,
       onTimeout: (elapsedMs) => {
         if (!useResearchStore.getState().backtestRunning) return;
@@ -1017,10 +1024,10 @@ export default function TaOptimizerPanel({
           />
         )}
 
-        {sweep?.results?.length > 0 && (
+        {sweepResults.length > 0 && (
           <section className="algo-backtest-sweep__card algo-backtest-sweep__card--results">
             <h3 className="algo-backtest-sweep__card-title">Trial leaderboard</h3>
-            <div className="algo-backtest-sweep__table-wrap">
+            <div className="algo-backtest-sweep__table-wrap" onScroll={onSweepScroll}>
               <table className="terminal-table algo-backtest-table algo-backtest-sweep__table">
                 <thead>
                   <tr>
@@ -1033,7 +1040,9 @@ export default function TaOptimizerPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {sweep.results.map((row, i) => {
+                  <VirtualTablePadding height={sweepWindow.topPad} colSpan={6} />
+                  {sweepWindow.slice.map((row, localIdx) => {
+                    const i = sweepWindow.start + localIdx;
                     const isBest = i === 0;
                     const summary = row.summary ?? {};
                     return (
@@ -1072,6 +1081,7 @@ export default function TaOptimizerPanel({
                       </tr>
                     );
                   })}
+                  <VirtualTablePadding height={sweepWindow.bottomPad} colSpan={6} />
                 </tbody>
               </table>
             </div>

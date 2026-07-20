@@ -98,6 +98,11 @@ class RlPpoStrategy(BaseStrategy):
         features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
         feat_vec = signal_features_to_vector(features)
 
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        # Record raw (pre-norm) signal features so PSI matches scaler baselines.
+        record_ml_inference_features(symbol, "RL_PPO_AGENT", feat_vec)
+
         # Normalize features
         if self._feat_mean is not None and self._feat_std is not None:
             feat_vec = (feat_vec - self._feat_mean) / self._feat_std

@@ -59,6 +59,12 @@ export default function MemoryDevBadge() {
 
   const bufLine = `buf ${client.symbols1m}/${client.budgets.maxSymbols}sym · ${client.bars1m}b`
     + (client.htKeys > 0 ? ` · ht ${client.htKeys}/${client.htBars}b` : '');
+  const sub = client.subsystems;
+  const subLine = sub
+    ? `echarts ${sub.echartsInstances ?? 0}`
+      + (sub.researchStoreKb != null ? ` · research ~${sub.researchStoreKb}KB` : '')
+      + (sub.pressureLadder && sub.pressureLadder !== 'ok' ? ` · ladder ${sub.pressureLadder}` : '')
+    : null;
 
   const serverBits = [];
   if (server?.wsClients != null) serverBits.push(`ws ${server.wsClients}`);
@@ -74,6 +80,7 @@ export default function MemoryDevBadge() {
     >
       <div>{heapLine}{serverBits.length ? ` · ${serverBits.join(' · ')}` : ''}</div>
       <div className="opacity-90">{bufLine}{client.pinnedSymbol ? ` · pin ${client.pinnedSymbol}` : ''}</div>
+      {subLine && <div className="opacity-80">{subLine}</div>}
     </div>
   );
 }

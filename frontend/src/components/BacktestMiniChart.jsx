@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef, useMemo } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { cn } from '@/lib/utils';
 
 function nearestEquityIndex(equityCurve, tradeTime) {
@@ -67,7 +68,7 @@ export default function BacktestMiniChart({
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartRef.current = chart;
       return true;
     };

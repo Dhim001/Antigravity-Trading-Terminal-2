@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Badge } from '@/components/ui/badge';
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
@@ -178,7 +179,7 @@ export default function ExposureHeatmap({
     const mount = () => {
       if (disposed || chart) return;
       if (el.clientWidth < 2 || el.clientHeight < 2) return;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartInst.current = chart;
     };
     const ro = new ResizeObserver(() => {

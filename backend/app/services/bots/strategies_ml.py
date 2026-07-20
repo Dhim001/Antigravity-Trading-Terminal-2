@@ -182,6 +182,16 @@ def train_ml_signal_model(
     # Step 5: Train HistGradientBoosting
     HistGBC, accuracy_score, log_loss_fn, joblib = _load_sklearn()
 
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+    )
+
+    progress_path = progress_path_from_config(cfg)
+    if ml_cancel_requested(progress_path):
+        return cancelled_train_result(symbol, "ML_SIGNAL_BOOST")
+
     model = HistGBC(
         max_depth=gbm_max_depth,
         max_iter=max(20, max_iter),
@@ -219,6 +229,8 @@ def train_ml_signal_model(
 
     # Step 7: Refit on all data for production inference (skip in WF/PBO folds)
     if not skip_refit:
+        if ml_cancel_requested(progress_path):
+            return cancelled_train_result(symbol, "ML_SIGNAL_BOOST")
         model.fit(X, y)
         metrics["fit_samples"] = int(n)
     else:
@@ -303,21 +315,33 @@ def train_ml_signal_model(
 
 
 class MlSignalModelStore:
-    """In-memory cache of loaded ML signal models (per-symbol)."""
+    """In-memory cache of loaded ML signal models (per-symbol) — LRU + TTL."""
 
     def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
         self._models: dict[str, Any] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
         self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._models, self._metadata, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     def invalidate(self, symbol: str | None = None) -> None:
         if symbol:
             prefix = str(symbol).upper() + "|"
+            # Exact legacy key + versioned keys
+            self._lru.discard_prefix(str(symbol).upper())
+            self._lru.discard_prefix(prefix)
             for d in (self._models, self._metadata, self._mtime):
                 for k in list(d.keys()):
                     if k == str(symbol).upper() or k.startswith(prefix):
                         d.pop(k, None)
         else:
+            self._lru.clear()
             self._models.clear()
             self._metadata.clear()
             self._mtime.clear()
@@ -374,6 +398,7 @@ class MlSignalModelStore:
 
         mtime = os.path.getmtime(path)
         if key in self._models and self._mtime.get(key) == mtime:
+            self._lru.touch(key)
             return self._models[key]
 
         try:
@@ -393,6 +418,7 @@ class MlSignalModelStore:
         self._models[key] = model
         self._metadata[key] = meta
         self._mtime[key] = mtime
+        self._lru.touch(key)
         return model
 
 
@@ -448,6 +474,10 @@ class MlSignalBoostStrategy(BaseStrategy):
         # Extract features with lookback
         lookback_list = list(self._lookback)[:-1]  # all except current
         features = bar_to_signal_features(df_row, lookback_rows=lookback_list)
+
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        record_ml_inference_features(symbol, "ML_SIGNAL_BOOST", features)
 
         # Predict
         store = get_ml_signal_store()

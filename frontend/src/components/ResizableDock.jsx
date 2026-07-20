@@ -1,12 +1,9 @@
 /**
- * ResizableDock.jsx
- * Bottom docked panel with tabs:
- *   Positions | Orders | Balances | Algo Bot | Analyst | Bot History | Ticks | History | Equity Curve
+ * ResizableDock — legacy bottom dock (pre-FlexLayout).
+ * Unmounted from App: panels live in WorkspaceGrid. AlgoTab is re-exported for
+ * leftover imports; prefer `./dock/AlgoPanel` directly.
  *
- * Features:
- *  - Drag-to-resize via top handle (persists to workspace settings)
- *  - History tab can be expanded to full-screen overlay
- *  - Badge counts on Positions and Orders tabs
+ * Historical features: drag-to-resize, group rail, detachable tabs.
  */
 import React, { useState, useRef, useEffect, useCallback, useMemo, Suspense, lazy } from 'react';
 import { toast } from 'sonner';
@@ -113,6 +110,7 @@ import PositionsTab from './dock/PositionsPanel';
 import OrdersTab from './dock/OrdersPanel';
 import BalancesTab from './dock/BalancesPanel';
 import { AlgoTab } from './dock/AlgoPanel';
+// Re-export kept for any legacy imports; FlexLayout uses dock/AlgoPanel directly.
 export { AlgoTab };
 import GlobalDeployDialog from './dock/GlobalDeployDialog';
 // ── Main ResizableDock ────────────────────────────────────────────

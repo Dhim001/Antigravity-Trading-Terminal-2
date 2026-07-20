@@ -84,39 +84,40 @@ Every `echarts.init` uses default DPR; on 2× displays each canvas backing store
 
 ---
 
-## 🟡 P2 — Bounded-but-large / hygiene
+## 🟡 P2 — Bounded-but-large / hygiene — **shipped**
 
 | # | Item | Where | Fix |
 |---|------|-------|-----|
-| 13 | Screener LRU cap is entries (1000 DataFrames), not bytes | `screener.py:27–28` | Bound by approximate MB (`df.memory_usage().sum()`) or lower cap to ~200 |
-| 14 | Retrain `_pending` / `_last_retrain` grow per symbol×strategy | `ml_retrain_scheduler.py:114–116` | TTL stale pending entries; cap map size |
-| 15 | Tick-screener symbol map & data-quality registry unbounded (small values) | `tick_screener.py:22–29`, `data_quality/registry.py` | Evict symbols not seen for N hours |
-| 16 | Event-bus `create_task` per handler with no bound | `agent_event_bus.py:117–140` | Bounded `TaskGroup`/semaphore per publish burst |
-| 17 | IDB prune loads all blobs via `getAll()` | `idbBacktest.js:90–117` | Cursor over keys + `savedAt` index; delete without materializing |
-| 18 | Non-virtualized long lists | `BotDetailDrawer.jsx:657`, `TaOptimizerPanel.jsx:1036`, `OptimizationHistory.jsx:161`, `TradeJournal.jsx:152`, `NewsTab.jsx:237` | Reuse `useVirtualRows`/`VirtualTablePadding` (pattern already in TradeHistory/AlgoPanel) |
-| 19 | Watchlist volume sort scans full candle buffers per ticker change | `WatchlistWidget.jsx:355–377` | Cache avg volume per symbol keyed by candle revision |
-| 20 | `setBotLogs` uncapped (only `addBotLog` caps at 100) | `useStore.js:438` | Apply the same 100 cap |
-| 21 | TickViewer subscribes to whole `tickData` map | `TickViewerTab.jsx:24–25` | Narrow selector per visible symbol set |
-| 22 | HT buffers stored as object[] not CompactBarSeries | `candleBuffer.js:367–388` | Extend compact storage to HT keys (600 bars × N keys) |
+| 12 | SQLite page cache static 64 MB | `db/connection.py` | `SQLITE_CACHE_KB` env (default 64000) |
+| 13 | Screener LRU cap is entries (1000 DataFrames), not bytes | `screener.py` | Entry cap ~200 + `SCREENER_CACHE_MAX_MB` |
+| 14 | Retrain `_pending` / `_last_retrain` grow per symbol×strategy | `ml_retrain_scheduler.py` | TTL stale pending entries; cap map size |
+| 15 | Tick-screener symbol map & data-quality registry unbounded (small values) | `tick_screener.py`, `data_quality/registry.py` | Evict symbols not seen for N hours |
+| 16 | Event-bus `create_task` per handler with no bound | `agent_event_bus.py` | Semaphore (`AGENT_EVENT_HANDLER_CONCURRENCY`) |
+| 17 | IDB prune loads all blobs via `getAll()` | `idbBacktest.js` | Cursor over keys + `savedAt` index |
+| 18 | Non-virtualized long lists | Optimizer / History / News / Journal / BotDetail | `useVirtualRows` / `VirtualScrollList` |
+| 19 | Watchlist volume sort scans full candle buffers per ticker change | `WatchlistWidget.jsx` | Cache avg volume per symbol keyed by candle revision |
+| 20 | `setBotLogs` uncapped (only `addBotLog` caps at 100) | `useStore.js` | Same 100 cap (Week 1) |
+| 21 | TickViewer subscribes to whole `tickData` map | `TickViewerTab.jsx` | Narrow selector per active symbol |
+| 22 | HT buffers stored as object[] not CompactBarSeries | `candleBuffer.js` | `storeHtBars` → CompactBarSeries |
 
 ---
 
-## 🟢 P3 — Strategic (memory-first architecture)
+## 🟢 P3 — Strategic (memory-first architecture) — **shipped (MVP)**
 
-### 23. Display conflation (TradingView pattern)
-When zoomed out beyond ~1 bar/px, merge display bars power-of-2 style before `setOption`, so ECharts holds pixels-worth of points instead of `CHART_DISPLAY_MAX_BARS` (2500). Cache conflation levels per zoom bucket. Render memory and draw time both scale with viewport, not history.
+### 23. Display conflation (TradingView pattern) — shipped
+`lib/chart/conflateBars.js` + `ChartWidget` configure path: when zoomed out beyond ~1 bar/px, merge OHLC power-of-2 before `setOption`. Cache by zoom bucket. Live ticks throttle via configure when factor > 1.
 
-### 24. Compute workers for aggregation & slimming
-No web workers exist today; `bucketCandles`, indicator full rebuilds, `trimBacktestPayload`, and msgpack decode all run on the main thread. Moving new-bar aggregation + backtest slimming to a worker removes main-thread heap spikes (worker heap is separately collected and can be terminated). Start with `backtestSlim` — it is pure-function and message-friendly.
+### 24. Compute workers for aggregation & slimming — shipped (backtestSlim)
+`workers/backtestSlim.worker.js` + `backtestSlimAsync.js`. WS/`dispatch` and job poll trim off the main thread (sync fallback).
 
-### 25. Byte-budgeted subsystem accounting (Sierra pattern)
-Extend the dev memory badge / Settings → Memory with per-subsystem estimates: candle buffers (already), ML store count + approx bytes, screener cache MB, research store size, ECharts instance count. A budget users can *see* is a budget they can manage — and it catches regressions in dev before they become OOM reports.
+### 25. Byte-budgeted subsystem accounting — shipped
+Client: Settings → Memory shows candle/research KB estimates + ECharts instance count + pressure ladder. Backend: `memory_subsystems` on `/health` + `/health/live` (ML store counts, screener cache MB).
 
-### 26. Memory-pressure degradation ladder (extend `memoryGuard`)
-The guard already trims buffers/offloads backtests at heap thresholds. Add ladder steps: at `warn` — drop multi-chart to 2 panes + DPR 1.0, pause scanner auto-refresh; at `critical` — force-offload research store, drop HT buffers for non-active symbols. Mirrors how Quantower/Sierra stay alive under load instead of crashing.
+### 26. Memory-pressure degradation ladder — shipped
+`memoryPressureSignals` + `memoryGuard`: warn → DPR 1.0, pause scanner auto-refresh, multi-chart ≤2 panes; critical → HT prune for non-active + force research offload.
 
-### 27. Training process isolation (Hummingbot headless lesson)
-Longer-term follow-through of #9: all `Optuna` sweeps, WF validation, and deep-model training in a worker process pool with hard RSS ceilings (`resource`/Job Objects), keeping the feed/OMS process flat. This also removes GIL contention from the hot path — a CPU *and* memory win.
+### 27. Training process isolation RSS ceilings — shipped (extends #9)
+`ML_TRAIN_RSS_LIMIT_MB` (default 2048) applied via `ProcessPoolExecutor` initializer (`RLIMIT_AS` on Unix; advisory on Windows). Train/validate already process-isolated.
 
 ---
 
@@ -135,16 +136,15 @@ Longer-term follow-through of #9: all `Optuna` sweeps, WF validation, and deep-m
 | **P1** | #8 Portfolio streaming | Medium | Spike ∝ workers, not symbols |
 | **P1** | #9 Training subprocess | Medium | Spike memory returned to OS |
 | **P1** | #6 HA/Renko incremental | Medium | Per-tick rebuild removed |
-| **P2** | #13–22 hygiene batch | Small each | Cumulative; prevents regressions |
-| **P3** | #23 Conflation | Large | Render RAM ∝ pixels |
-| **P3** | #24 Workers | Medium | Main-thread spike isolation |
-| **P3** | #25–26 Budget UI + degradation ladder | Medium | Observability + crash-avoidance |
-| **P3** | #27 Full training isolation | Large | Flat always-on process |
+| **P2** | #12–22 hygiene batch — **shipped** | Small each | Cumulative; prevents regressions |
+| **P3** | #23–27 — **shipped (MVP)** | Med–Large | Viewport RAM, worker trim, ladder, RSS caps |
 
 ### Suggested sequence
-1. **Week 1 (P0):** #1, #3, #4, #10, #11, #20 — all small, independently testable, no behavior change.
-2. **Week 2 (P0/P1):** #2 (model LRU), #5 (MiniChart), #7 (WF views).
-3. **Week 3 (P1):** #8 (portfolio streaming), #9 (training subprocess), #6 (HA/Renko).
-4. **Then:** P2 hygiene batch; P3 as capacity allows.
+1. **Week 1 (P0) — shipped:** #1, #3, #4, #10, #11, #20 — archive WAL clear+cap, copilot session TTL, in-place live series cache, DPR cap, immediate backtest offload, `setBotLogs` cap.
+2. **Week 2 (P0/P1) — shipped:** #2, #5, #7 — ML model store LRU/TTL, MiniChart last-bucket patch, anchored WF shared slice views.
+3. **Week 3 (P1) — shipped:** #8, #9, #6 — portfolio candle streaming, ML train process pool, HA/Renko forming-bar patch.
+4. **P2 hygiene (#12–#22) — shipped:** SQLite `SQLITE_CACHE_KB`; screener entry+MB LRU; retrain map TTL/cap; tick-screener + DQ idle eviction; event-bus handler semaphore; IDB prune without blob `getAll`; virtualized OptimizationHistory / News / Journal / TaOptimizer leaderboard / BotDetail trades; watchlist avg-vol by revision; `setBotLogs` cap (Week 1); TickViewer narrow selector; HT `CompactBarSeries`.
+5. **P3 (#23–#27) — shipped (MVP):** display conflation; backtestSlim worker; subsystem accounting UI + `/health`; memoryGuard ladder (DPR/scanner/multi-chart/HT/offload); `ML_TRAIN_RSS_LIMIT_MB` on train pool.
+6. **Follow-ups:** Optuna/sweep process isolation; Job Object hard ceilings on Windows; bucketCandles worker; display conflation for MiniChart.
 
 Every item above preserves current latency/throughput; most reduce CPU alongside RAM (fewer clones, fewer pixels, less GC). None touches trading logic, risk gates, or the OMS.

@@ -5,6 +5,12 @@ import { useResearchStore } from '../store/useResearchStore';
 
 /** @type {Record<string, string>} */
 export const WORKSPACE_PANEL_LABELS = {
+  watchlist: 'Watchlist',
+  chart: 'Chart',
+  'order-entry': 'Trade',
+  'order-book': 'Book',
+  'depth-chart': 'Depth',
+  footprint: 'Footprint',
   positions: 'Positions',
   orders: 'Orders',
   balances: 'Balances',

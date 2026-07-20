@@ -5,7 +5,6 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useBootstrap } from './hooks/useBootstrap';
 import { lazyImport } from './lib/lazyImport';
 
-import ResizableWatchlistSidebar from './components/ResizableWatchlistSidebar';
 import SettingsBootstrap     from './components/SettingsBootstrap';
 import CommandBar            from './components/CommandBar';
 import SymbolCommandPalette  from './components/SymbolCommandPalette';
@@ -17,31 +16,18 @@ import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
 import ActivityCenter        from './components/ActivityCenter';
 import BacktestLabSheet      from './components/BacktestLabSheet';
 import SignalInsightDrawer   from './components/SignalInsightDrawer';
-import ChartContextStrip     from './components/ChartContextStrip';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
 import MemoryDevBadge from './components/MemoryDevBadge';
 import PwaInstallBanner from './components/PwaInstallBanner';
 import WorkspaceGrid from './components/WorkspaceGrid';
 
-const ChartWidget = lazyImport(() => import('./components/ChartWidget'), 'chart');
-const MultiChartGrid = lazyImport(() => import('./components/MultiChartGrid'), 'multi-chart');
 const SystemControlPanel = lazyImport(() => import('./components/SystemControlPanel'), 'system-control');
 const SettingsPanel = lazyImport(() => import('./components/SettingsPanel'), 'settings');
 const InsightsHub = lazyImport(() => import('./components/InsightsHub'), 'insights');
 const AutomationStudio = lazyImport(() => import('./components/AutomationStudio'), 'automation');
 const PortfolioDashboard = lazyImport(() => import('./components/PortfolioDashboard'), 'portfolio');
 const BotDetailDrawer = lazyImport(() => import('./components/BotDetailDrawer'), 'bot-detail');
-const TradingPanel = lazyImport(() => import('./components/TradingPanel'), 'trading');
-const ResizableDock = lazyImport(() => import('./components/ResizableDock'), 'dock');
-
-function PanelFallback({ label = 'Loading…' }) {
-  return (
-    <div className="flex min-h-[120px] flex-1 items-center justify-center text-xs text-muted-foreground">
-      {label}
-    </div>
-  );
-}
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -66,8 +52,6 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 
-const DOCK_DEFAULT = 320;
-
 export default function App() {
   const connectionStatus = useStore(state => state.connectionStatus);
   const apiStatus          = useStore(state => state.apiStatus);
@@ -90,9 +74,6 @@ export default function App() {
   useWebSocket();
 
   const [showAdmin, setShowAdmin]   = useState(false);
-  const [dockHeight, setDockHeight] = useState(() => workspace?.dockHeight || DOCK_DEFAULT);
-  const [sidebarWidth, setSidebarWidth] = useState(() => workspace?.sidebarWidth || 320);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -107,24 +88,9 @@ export default function App() {
   const layoutMode = workspace?.layoutMode || 'trade';
   const zenMode = workspace?.zenMode ?? false;
   const modeConfig = applyLayoutMode(layoutMode);
-  const panelEnabled = !zenMode && modeConfig.rightPanel;
-  const panelCollapsed = workspace?.rightPanelCollapsed ?? false;
-  const showDock = !zenMode && modeConfig.dockVisible;
   const density = workspace?.density || 'compact';
 
   useAlertMonitor();
-
-  const handleDockHeightChange = useCallback((h) => {
-    // Audit fix: don't persist dockHeight while collapsed — would restore to 44px on next expand
-    const ws = useSettingsStore.getState().settings.workspace;
-    if (ws?.dockCollapsed) return;
-    setDockHeight(h);
-    updateWorkspace({ dockHeight: h });
-  }, [updateWorkspace]);
-  const handleSidebarLayout = useCallback(({ width, collapsed }) => {
-    setSidebarWidth((prev) => (prev === width ? prev : width));
-    setSidebarCollapsed((prev) => (prev === collapsed ? prev : !!collapsed));
-  }, []);
 
   const handleLayoutModeChange = useCallback((mode) => {
     const cfg = applyLayoutMode(mode);
@@ -138,7 +104,7 @@ export default function App() {
       dockCollapsed: false,
       zenMode: false,
     });
-    setDockHeight(cfg.dockHeight);
+    // FlexLayout: focus the mode's primary dock tab + group first-tab.
     window.dispatchEvent(new CustomEvent('dock-tab', { detail: cfg.dockTab }));
     window.dispatchEvent(new CustomEvent('dock-group', { detail: cfg.dockGroup }));
   }, [updateWorkspace]);
@@ -151,20 +117,17 @@ export default function App() {
       const restore = zenPrevLayoutRef.current ?? {
         rightPanelCollapsed: false,
         dockCollapsed: false,
-        dockHeight: ws?.dockHeight || dockHeight || DOCK_DEFAULT,
       };
       updateWorkspace({ zenMode: false, ...restore });
-      setDockHeight(restore.dockHeight ?? DOCK_DEFAULT);
       zenPrevLayoutRef.current = null;
     } else {
       zenPrevLayoutRef.current = {
         rightPanelCollapsed: ws?.rightPanelCollapsed ?? false,
         dockCollapsed: ws?.dockCollapsed ?? false,
-        dockHeight: ws?.dockHeight ?? dockHeight,
       };
       updateWorkspace({ zenMode: true, rightPanelCollapsed: true, dockCollapsed: true });
     }
-  }, [updateWorkspace, dockHeight]);
+  }, [updateWorkspace]);
 
   useEffect(() => {
     if (workspaceHydrated.current) return;
@@ -198,8 +161,6 @@ export default function App() {
   useEffect(() => {
     const onWorkspaceLoaded = (e) => {
       const ws = e.detail?.workspace;
-      if (ws?.dockHeight) setDockHeight(ws.dockHeight);
-      if (ws?.sidebarWidth) setSidebarWidth(ws.sidebarWidth);
       if (ws?.viewMode) setViewMode(ws.viewMode);
       if (ws?.dockActiveTab) {
         window.dispatchEvent(new CustomEvent('dock-tab', { detail: ws.dockActiveTab }));
@@ -231,7 +192,7 @@ export default function App() {
     window.addEventListener('chart-zen-toggle', onChartZen);
     const onChartFocus = () => {
       setViewMode('single');
-      updateWorkspace({ rightPanelCollapsed: true, dockCollapsed: true });
+      window.dispatchEvent(new CustomEvent('dock-tab', { detail: 'chart' }));
     };
     window.addEventListener('chart-focus', onChartFocus);
     return () => {
@@ -304,10 +265,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [setViewMode, setSettingsOpen, toggleZenMode]);
 
-  const effectiveDockH = showDock
-    ? (workspace?.dockCollapsed ? 44 : dockHeight)
-    : 0;
-
   return (
     <div
       className="flex flex-col h-screen w-screen bg-background overflow-hidden"
@@ -315,16 +272,6 @@ export default function App() {
       data-layout-mode={layoutMode}
       data-zen={zenMode ? '' : undefined}
       data-density={density}
-      data-panel-collapsed={panelEnabled && panelCollapsed ? '' : !panelEnabled ? '' : undefined}
-      data-sidebar-collapsed={sidebarCollapsed ? '' : undefined}
-      data-dock-hidden={!showDock && !zenMode ? '' : undefined}
-      style={{
-        '--dock-h': `${effectiveDockH}px`,
-        '--dock-min': showDock ? '200px' : '36px',
-        '--sidebar-w': `${sidebarWidth}px`,
-        '--panel-w': !panelEnabled ? '0px' : undefined,
-        // Audit fix: panelCollapsed ? '44px' was redundant — CSS [data-panel-collapsed] handles it.
-      }}
     >
       <a href="#main-chart" className="skip-link">
         Skip to chart
@@ -661,7 +608,7 @@ export default function App() {
         onClick={() => setPaletteOpen(false)}
         style={{ gridColumn: '1 / -1', gridRow: '3 / -1' }}
       >
-        <WorkspaceGrid key="v5-layout-ml" viewMode={viewMode} />
+        <WorkspaceGrid key="v5-layout-footprint" viewMode={viewMode} />
       </main>
       <MemoryDevBadge />
       <PwaInstallBanner />

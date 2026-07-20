@@ -4,7 +4,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store/useStore';
-import { useLiveCandleRevision } from '../services/candleRevisions';
+import { useLiveCandleRevision, getLiveRevision } from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
 import { massiveWatchlistBadge } from '../lib/massiveMarket';
@@ -66,18 +66,31 @@ const isCrypto = (sym) => sym.includes('USDT');
 const isETF = (sym) => ['SPY', 'QQQ'].includes(sym);
 const getCategory = (sym) => (isCrypto(sym) ? 'CRYPTO' : isETF(sym) ? 'ETF' : 'EQUITY');
 
-function avgBarVolume(symbol, volume24h) {
+const _avgVolCache = new Map(); // symbol → { rev, avg }
+
+function avgBarVolume(symbol, volume24h, candleRev = 0) {
+  const cached = _avgVolCache.get(symbol);
+  if (cached && cached.rev === candleRev) return cached.avg;
+
   const candles = getCandles(symbol, '1m');
+  let avg = null;
   if (candles?.length) {
     const cutoff = Math.floor(Date.now() / 1000) - ROLLING_24H_SEC;
     let window = candles.filter((c) => c.time >= cutoff);
     if (!window.length) window = candles.slice(-1440);
-    if (!window.length) return null;
-    const total = window.reduce((s, c) => s + (c.volume || 0), 0);
-    return total / window.length;
+    if (window.length) {
+      const total = window.reduce((s, c) => s + (c.volume || 0), 0);
+      avg = total / window.length;
+    }
+  } else if (volume24h > 0) {
+    avg = volume24h / 1440;
   }
-  if (volume24h > 0) return volume24h / 1440;
-  return null;
+  _avgVolCache.set(symbol, { rev: candleRev, avg });
+  if (_avgVolCache.size > 200) {
+    const first = _avgVolCache.keys().next().value;
+    _avgVolCache.delete(first);
+  }
+  return avg;
 }
 
 const OPTIONAL_COLUMN_LABELS = {
@@ -189,7 +202,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
   const changeTone = isUp ? 'text-trading-up' : 'text-trading-down';
 
   const avgVol = useMemo(
-    () => avgBarVolume(symbol, info?.volume_24h),
+    () => avgBarVolume(symbol, info?.volume_24h, candleRev),
     [symbol, info?.volume_24h, candleRev],
   );
 
@@ -371,7 +384,7 @@ export default function WatchlistWidget() {
       return absoluteChangeFromPct(info.price, info.change_24h) ?? 0;
     }
     if (field === 'avg_volume') {
-      return avgBarVolume(sym, info.volume_24h) ?? 0;
+      return avgBarVolume(sym, info.volume_24h, getLiveRevision(sym)) ?? 0;
     }
     return info[field] ?? 0;
   }, [tickerData]);

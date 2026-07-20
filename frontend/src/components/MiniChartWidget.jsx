@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { useStore } from '../store/useStore';
 import { subscribeLiveRevisions, subscribeHistoryRevision } from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
@@ -128,6 +129,78 @@ function bucketCandles(raw, intervalSecs) {
     }
   }
   return Array.from(buckets.values()).sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Patch the last aggregated display bar from the forming 1m bucket only.
+ * Avoids full bucketCandles remaps on every live paint (MEMORY_CENTRIC_REVIEW #5).
+ * @returns {'patched'|'unchanged'|'new'|null}
+ */
+function patchLastDisplayBucket(displayBars, raw, intervalSecs) {
+  if (!displayBars?.length || !raw?.length || !intervalSecs) return null;
+  const lastRaw = raw[raw.length - 1];
+  const sec = toUnixSeconds(lastRaw.time);
+  if (sec == null) return null;
+  const bucketTime = Math.floor(sec / intervalSecs) * intervalSecs;
+  const prevLast = displayBars[displayBars.length - 1];
+  if (bucketTime > prevLast.time) return 'new';
+  if (bucketTime < prevLast.time) return null;
+
+  const barsInBucket = [];
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const s = toUnixSeconds(raw[i].time);
+    if (s == null) continue;
+    const t = Math.floor(s / intervalSecs) * intervalSecs;
+    if (t !== bucketTime) break;
+    barsInBucket.push(raw[i]);
+  }
+  if (!barsInBucket.length) return null;
+  barsInBucket.reverse();
+
+  const open = barsInBucket[0].open;
+  let high = barsInBucket[0].high;
+  let low = barsInBucket[0].low;
+  let vol = 0;
+  for (const c of barsInBucket) {
+    high = Math.max(high, c.high);
+    low = Math.min(low, c.low);
+    vol += (c.volume || 0);
+  }
+  const close = barsInBucket[barsInBucket.length - 1].close;
+
+  if (
+    prevLast.open === open
+    && prevLast.high === high
+    && prevLast.low === low
+    && prevLast.close === close
+    && prevLast.volume === vol
+  ) {
+    return 'unchanged';
+  }
+
+  prevLast.open = open;
+  prevLast.high = high;
+  prevLast.low = low;
+  prevLast.close = close;
+  prevLast.volume = vol;
+  return 'patched';
+}
+
+function patchMiniMainSlot(mainData, idx, bar, chartType) {
+  if (!mainData || idx < 0 || idx >= mainData.length || !bar) return;
+  if (chartType === 'line') {
+    mainData[idx] = bar.close;
+    return;
+  }
+  const prev = mainData[idx];
+  if (Array.isArray(prev) && prev.length === 4) {
+    prev[0] = bar.open;
+    prev[1] = bar.close;
+    prev[2] = bar.low;
+    prev[3] = bar.high;
+  } else {
+    mainData[idx] = [bar.open, bar.close, bar.low, bar.high];
+  }
 }
 
 function padMiniIndicatorValues(data) {
@@ -297,6 +370,7 @@ export default function MiniChartWidget({
   const pinnedToLiveRef = useRef(true);
   const categoryDataRef = useRef([]);
   const candlesRef = useRef([]);
+  const mainDataRef = useRef([]);
   const suppressDataZoomEventsRef = useRef(0);
   const prevLayoutRef = useRef({ timeframe: '1m', chartType: 'candle', activeKey: '' });
 
@@ -435,58 +509,58 @@ export default function MiniChartWidget({
     const resetZoom = opts.resetZoom === true;
     const zoomWindow = resolveZoomWindow(chart, candles, resetZoom);
     const categoryData = buildMiniCategoryData(candles);
+    const option = buildFullOption(candles, zoomWindow);
+    const mainSeries = option.series?.[0];
 
-    chart.setOption(buildFullOption(candles, zoomWindow), { notMerge: true });
+    chart.setOption(option, { notMerge: true });
     categoryDataRef.current = categoryData;
-    candlesRef.current = candles;
+    candlesRef.current = candles.map((c) => ({ ...c }));
+    mainDataRef.current = Array.isArray(mainSeries?.data) ? mainSeries.data : [];
     chartReadyRef.current = true;
   }, [buildFullOption, getDisplayCandles, resolveZoomWindow]);
-
-  const barMatches = (a, b) => (
-    a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close
-  );
 
   const applyLiveUpdate = useCallback(() => {
     const chart = chartRef.current;
     if (!chart || !chartReadyRef.current) return;
 
-    const candles = getDisplayCandles();
-    if (!candles.length) return;
-
     const prev = candlesRef.current;
-    const last = candles[candles.length - 1];
-    const prevLast = prev[prev.length - 1];
-    let isNewBar = false;
-
-    if (!prev.length || !last) {
+    if (!prev.length) {
       configureChart();
       return;
     }
 
-    if (last.time === prevLast?.time) {
-      if (barMatches(last, prevLast)) return;
-    } else if (last.time > (prevLast?.time ?? 0)) {
-      isNewBar = true;
-    } else {
+    const raw = getCandles(symbol);
+    if (!raw.length) return;
+
+    const patch = patchLastDisplayBucket(prev, raw, tfCfg.secs);
+    if (patch == null) {
+      configureChart();
       return;
     }
-
-    candlesRef.current = candles;
-
-    if (isNewBar) {
+    if (patch === 'unchanged') return;
+    if (patch === 'new') {
       configureChart({ resetZoom: false });
       return;
     }
 
+    const last = prev[prev.length - 1];
+    const idx = prev.length - 1;
+    const main = mainDataRef.current;
+    if (!main.length) {
+      configureChart();
+      return;
+    }
+    patchMiniMainSlot(main, idx, last, chartType);
+
     const mainId = chartType === 'line' ? 'main' : 'candles';
     try {
       chart.setOption({
-        series: [{ id: mainId, data: buildMiniMainData(candles, chartType) }],
+        series: [{ id: mainId, data: main }],
       }, { lazyUpdate: true });
     } catch (err) {
       console.warn('[MiniChartWidget] live update failed:', err);
     }
-  }, [getDisplayCandles, configureChart, chartType]);
+  }, [configureChart, chartType, symbol, tfCfg.secs]);
 
   configureChartRef.current = configureChart;
 
@@ -517,7 +591,7 @@ export default function MiniChartWidget({
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
 
-      chart = echarts.init(el, chartTheme.echartsTheme || undefined);
+      chart = initEcharts(el, chartTheme.echartsTheme || undefined, { multiPane: true });
       chartRef.current = chart;
 
       chart.on('datazoom', (ev) => {
@@ -559,6 +633,7 @@ export default function MiniChartWidget({
     prevSymbolRef.current = symbol;
     pinnedToLiveRef.current = true;
     candlesRef.current = [];
+    mainDataRef.current = [];
     categoryDataRef.current = [];
     configureChart({ resetZoom: true });
   }, [symbol, configureChart]);

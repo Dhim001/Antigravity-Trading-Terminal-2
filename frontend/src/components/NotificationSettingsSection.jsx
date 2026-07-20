@@ -96,16 +96,20 @@ export default function NotificationSettingsSection() {
   const [sendingDigest, setSendingDigest] = useState(false);
   const [webPushReady, setWebPushReady] = useState(false);
   const [subscribingPush, setSubscribingPush] = useState(false);
+  const [pushSubscriptionCount, setPushSubscriptionCount] = useState(null);
 
   const loadChannels = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, vapidRes] = await Promise.all([
+      const [res, vapidRes, pushListRes] = await Promise.all([
         invokeHttpAction(Action.NOTIFY_CHANNEL_LIST, {}),
         invokeHttpAction(Action.NOTIFY_PUSH_VAPID_PUBLIC, {}).catch(() => null),
+        invokeHttpAction(Action.NOTIFY_PUSH_LIST, {}).catch(() => null),
       ]);
       setChannels(res?.data?.notification_channels ?? []);
       setWebPushReady(Boolean(vapidRes?.data?.web_push_enabled && vapidRes?.data?.vapid_public_key));
+      const subs = pushListRes?.data?.push_subscriptions;
+      setPushSubscriptionCount(Array.isArray(subs) ? subs.length : null);
     } catch (err) {
       toast.error(err?.message || 'Failed to load notification channels');
     } finally {
@@ -375,6 +379,9 @@ export default function NotificationSettingsSection() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground max-w-xl">
           Webhooks, Telegram, email digest, and browser push. Secrets are encrypted in the database.
+          {pushSubscriptionCount != null && (
+            <> · {pushSubscriptionCount} browser push subscription{pushSubscriptionCount === 1 ? '' : 's'}.</>
+          )}
         </p>
         <div className="flex gap-1">
           <Button

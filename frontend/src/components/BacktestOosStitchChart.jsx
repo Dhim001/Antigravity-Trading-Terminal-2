@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { cn } from '@/lib/utils';
 
 export default function BacktestOosStitchChart({ stitchCurve, className }) {
@@ -12,7 +13,7 @@ export default function BacktestOosStitchChart({ stitchCurve, className }) {
     const el = containerRef.current;
     if (!el || !stitchCurve?.length) return undefined;
 
-    const chart = echarts.init(el, 'dark');
+    const chart = initEcharts(el, 'dark');
     const equities = stitchCurve.map((p) => p.equity);
     const folds = stitchCurve.map((p) => p.fold);
 

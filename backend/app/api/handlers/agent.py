@@ -201,13 +201,3 @@ async def explain_trade_handler(ctx: RequestContext) -> None:
         insight_id=(result.get("insight") or {}).get("insight_id"),
     )
     await send_to(ctx, {"type": "trade_explain", "data": result})
-
-
-async def get_agent_insights(symbol: str, ctx: RequestContext, limit: int = 20) -> None:
-    """HTTP helper — list recent insights for a symbol."""
-    analyst = ctx.chart_analyst
-    if analyst is None:
-        await send_to(ctx, error("Chart analyst service unavailable"))
-        return
-    insights = analyst.list_insights(symbol.upper(), limit=limit)
-    await send_to(ctx, {"type": "agent_insights_list", "data": insights})

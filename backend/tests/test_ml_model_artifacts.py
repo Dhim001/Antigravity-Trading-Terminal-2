@@ -14,6 +14,7 @@ from app.services.bots.ml_model_artifacts import (
     list_model_versions,
     resolve_model_dir,
     snapshot_current_version,
+    validation_summary_from_metadata,
     version_id_from_iso,
 )
 
@@ -157,3 +158,52 @@ def test_delete_model_version_removes_snapshot(tmp_path):
         ids = {v["version_id"] for v in list_model_versions(str(root))}
         assert e1["version_id"] not in ids
         assert e2["version_id"] in ids
+
+
+def test_validation_summary_from_metadata_empty():
+    empty = validation_summary_from_metadata(None)
+    assert empty["validated_at"] is None
+    assert empty["walk_forward"] is None
+    assert empty["pbo"] is None
+
+
+def test_validation_summary_from_metadata_full():
+    summary = validation_summary_from_metadata({
+        "validated_at": "2026-07-20T10:00:00Z",
+        "walk_forward": {
+            "ok": True,
+            "mean_oos_accuracy": 0.61,
+            "n_folds": 3,
+            "successful_folds": 3,
+            "recommendation": "deploy",
+            "mode": "rolling",
+        },
+        "pbo": 0.25,
+        "pbo_audit": {"recommendation": "low risk"},
+    })
+    assert summary["validated_at"] == "2026-07-20T10:00:00Z"
+    assert summary["walk_forward"]["ok"] is True
+    assert summary["walk_forward"]["mean_oos_accuracy"] == 0.61
+    assert summary["walk_forward"]["n_folds"] == 3
+    assert summary["pbo"]["pbo"] == 0.25
+    assert summary["pbo"]["ok"] is True
+    assert summary["pbo"]["skipped"] is False
+
+
+def test_validation_summary_pbo_high_and_skipped():
+    high = validation_summary_from_metadata({
+        "validated_at": "2026-07-20T10:00:00Z",
+        "walk_forward": {"ok": True},
+        "pbo": 0.72,
+    })
+    assert high["pbo"]["ok"] is False
+
+    skipped = validation_summary_from_metadata({
+        "validated_at": "2026-07-20T10:00:00Z",
+        "walk_forward": {"ok": True},
+        "pbo": None,
+        "pbo_audit": {"skipped": True, "error": "rl_too_expensive"},
+    })
+    assert skipped["pbo"]["skipped"] is True
+    assert skipped["pbo"]["ok"] is False
+    assert "rl_too_expensive" in (skipped["pbo"]["error"] or "")

@@ -192,7 +192,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   clearChartSlTpDraft: () => set({ chartSlTpDraft: null }),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
-  setAnalyticsReport: (report) => set({ analyticsReport: report }),
   
   appendCopilotMessage: (msg) => set((state) => {
     if (!msg || typeof msg !== 'object') return state;
@@ -362,8 +361,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setSystemStats: (stats) => set({ systemStats: stats }),
 
-  setTerminalMode: (mode) => set({ terminalMode: mode, isLive: mode !== 'SIMULATED' }),
-
   setTerminalConfig: ({ terminalMode, executionMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled, orderCapabilities, isOperator }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     executionMode: executionMode ?? state.executionMode,
@@ -397,8 +394,6 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   },
 
   setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),
-
-  setSymbolsList: (list) => set({ symbolsList: list }),
 
   setBots: (bots) => set({
     activeBots: bots,
@@ -435,13 +430,14 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     return { botLogs: newLogs };
   }),
   setBotLogs: (logsArray) => set({
-    botLogs: [...logsArray]
+    botLogs: [...(Array.isArray(logsArray) ? logsArray : [])]
       .sort((a, b) => {
         const ta = a.timestamp ?? 0;
         const tb = b.timestamp ?? 0;
         const toMs = (v) => (typeof v === 'string' ? new Date(v).getTime() : Number(v) || 0);
         return toMs(tb) - toMs(ta);
       })
+      .slice(0, 100)
       .map((log, i) => normalizeBotLogEntry(log, i)),
   }),
   clearBotLogs: () => set({ botLogs: [] }),

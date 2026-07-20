@@ -10,6 +10,7 @@ import { BookOpen, Plus, Trash2, Search } from 'lucide-react';
 import { useJournal } from '@/hooks/useAnalytics';
 import { compressScreenshotDataUrl } from '@/lib/analytics/helpers';
 import { cn } from '@/lib/utils';
+import VirtualScrollList from '../VirtualScrollList';
 
 function JournalEditor({ entry, onSave, onCancel }) {
   const [form, setForm] = useState({
@@ -146,33 +147,41 @@ export default function TradeJournal({ className = '', seedEntry = null, enabled
         />
       )}
 
-      <div className="max-h-[280px] space-y-2 overflow-auto">
+      <div className="h-[280px]">
         {filtered.length === 0 ? (
           <p className="py-4 text-center text-xs text-muted-foreground">No journal entries yet</p>
-        ) : filtered.map((entry) => (
-          <div key={entry.id} className="rounded-md border border-border/40 p-2 text-xs">
-            <div className="mb-1 flex items-center gap-2">
-              <span className="font-semibold num-mono">{entry.symbol || '—'}</span>
-              {(entry.tags || []).map((t) => (
-                <Badge key={t} variant={t === 'daily-briefing' ? 'default' : 'secondary'} className="h-4 px-1 text-[0.6rem]">{t}</Badge>
-              ))}
-              <Button variant="ghost" size="icon" className="ml-auto h-6 w-6" onClick={() => deleteEntry(entry.id)}>
-                <Trash2 size={12} />
-              </Button>
-            </div>
-            {entry.note && (
-               (entry.tags || []).includes('daily-briefing') ? (
-                 <pre className="text-foreground/90 whitespace-pre-wrap font-sans text-xs bg-muted/20 p-2 rounded-md">{entry.note}</pre>
-               ) : (
-                 <p className="text-foreground/90">{entry.note}</p>
-               )
+        ) : (
+          <VirtualScrollList
+            className="h-full space-y-2"
+            items={filtered}
+            rowHeight={88}
+            getKey={(entry) => entry.id}
+            renderItem={(entry) => (
+              <div className="rounded-md border border-border/40 p-2 text-xs">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="font-semibold num-mono">{entry.symbol || '—'}</span>
+                  {(entry.tags || []).map((t) => (
+                    <Badge key={t} variant={t === 'daily-briefing' ? 'default' : 'secondary'} className="h-4 px-1 text-[0.6rem]">{t}</Badge>
+                  ))}
+                  <Button variant="ghost" size="icon" className="ml-auto h-6 w-6" onClick={() => deleteEntry(entry.id)}>
+                    <Trash2 size={12} />
+                  </Button>
+                </div>
+                {entry.note && (
+                  (entry.tags || []).includes('daily-briefing') ? (
+                    <pre className="text-foreground/90 whitespace-pre-wrap font-sans text-xs bg-muted/20 p-2 rounded-md">{entry.note}</pre>
+                  ) : (
+                    <p className="text-foreground/90">{entry.note}</p>
+                  )
+                )}
+                {entry.lesson && <p className="mt-1 text-muted-foreground italic">{entry.lesson}</p>}
+                {entry.screenshot_url && (
+                  <img src={entry.screenshot_url} alt="" className="mt-2 max-h-24 rounded object-contain" />
+                )}
+              </div>
             )}
-            {entry.lesson && <p className="mt-1 text-muted-foreground italic">{entry.lesson}</p>}
-            {entry.screenshot_url && (
-              <img src={entry.screenshot_url} alt="" className="mt-2 max-h-24 rounded object-contain" />
-            )}
-          </div>
-        ))}
+          />
+        )}
       </div>
     </div>
   );

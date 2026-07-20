@@ -131,3 +131,51 @@ export function riskHoldDetailMessage(hold, remainingSec = null) {
   }
   return active.reason || null;
 }
+
+/**
+ * Compact activity chip next to RUNNING/PAUSED — held / cooling off / no signal.
+ * Prefer risk holds over "no signal"; inventory is shown in the Position column.
+ *
+ * @param {{
+ *   status?: string,
+ *   last_signal_at?: string | number | null,
+ *   risk_hold?: BotRiskHold | null,
+ * }} bot
+ * @param {{ remainingSec?: number, hold?: BotRiskHold | null }} [opts]
+ * @returns {{ kind: 'cooling_off'|'held'|'no_signal', label: string, title?: string } | null}
+ */
+export function botRuntimeActivityHint(bot, opts = {}) {
+  const status = String(bot?.status || '').toUpperCase();
+  if (status !== 'RUNNING' && status !== 'PAUSED') return null;
+
+  const hold = effectiveRiskHold(opts.hold ?? bot?.risk_hold);
+  const remaining = opts.remainingSec ?? remainingCooloffSec(hold);
+
+  if (hold?.kind === 'cooloff' && remaining > 0) {
+    return {
+      kind: 'cooling_off',
+      label: `Cooling off · ${formatCooloffRemaining(remaining)}`,
+      title: riskHoldDetailMessage(hold, remaining) || undefined,
+    };
+  }
+  if (hold?.kind === 'streak_limit' || hold?.kind === 'drawdown') {
+    const rem = remaining > 0 ? ` · ${formatCooloffRemaining(remaining)}` : '';
+    const label = hold.kind === 'drawdown' ? `Held · DD${rem}` : `Held${rem}`;
+    return {
+      kind: 'held',
+      label,
+      title: riskHoldDetailMessage(hold, remaining) || hold.block_reason || hold.reason || undefined,
+    };
+  }
+
+  // Only annotate "no signal" while the evaluator is armed and flat of holds.
+  if (status === 'RUNNING' && (bot?.last_signal_at == null || bot?.last_signal_at === '')) {
+    return {
+      kind: 'no_signal',
+      label: 'No signal',
+      title: 'Bot is running but has not emitted a trade signal yet.',
+    };
+  }
+
+  return null;
+}

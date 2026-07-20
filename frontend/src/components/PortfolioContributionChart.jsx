@@ -3,6 +3,7 @@
  */
 import { useEffect, useMemo, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { cn } from '@/lib/utils';
 
 function shortSymbol(sym) {
@@ -36,7 +37,7 @@ export default function PortfolioContributionChart({ rows, className }) {
     const mount = () => {
       if (disposed || chart) return false;
       if (el.clientWidth < 2 || el.clientHeight < 2) return false;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       return true;
     };
 

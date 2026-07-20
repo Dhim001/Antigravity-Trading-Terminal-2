@@ -22,6 +22,8 @@ def append_wal_rows(rows: list[dict]) -> None:
     with WAL_FILE.open("a", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     logger.warning("Archived %d bar(s) to WAL (%s)", len(rows), WAL_FILE)
 
 

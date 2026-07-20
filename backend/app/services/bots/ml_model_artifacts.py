@@ -253,7 +253,8 @@ def activate_model_version(
     if "metadata.json" not in copied:
         return {"ok": False, "error": "Version has no metadata.json"}
 
-    # Ensure current metadata reflects this version id
+    # Ensure current metadata reflects this version id / trained_at so UI
+    # is_current matching (trained_at equality) updates after Activate.
     meta_path = os.path.join(root, "metadata.json")
     try:
         with open(meta_path, encoding="utf-8") as f:
@@ -263,7 +264,7 @@ def activate_model_version(
     except Exception:
         meta = {}
     meta["version_id"] = entry.get("version_id")
-    if entry.get("trained_at") and not meta.get("trained_at"):
+    if entry.get("trained_at"):
         meta["trained_at"] = entry["trained_at"]
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -542,9 +543,13 @@ def persist_ml_validation_metadata(
             "n_combos": pbo.get("n_combos"),
             "skipped": bool(pbo.get("skipped")),
         }
-    elif pbo and pbo.get("skipped"):
+    elif pbo is not None:
+        # Skip / fail must clear stale champion PBO so deploy gate doesn't
+        # reuse the previous model's score against this validation.
+        meta["pbo"] = None
         meta["pbo_audit"] = {
-            "skipped": True,
+            "skipped": bool(pbo.get("skipped")),
+            "ok": False,
             "error": pbo.get("error"),
             "recommendation": pbo.get("recommendation"),
         }
@@ -577,6 +582,57 @@ def dataset_summary_from_metadata(meta: dict | None) -> dict[str, Any] | None:
         "trained_at": meta.get("trained_at"),
         "version_id": meta.get("version_id"),
         "config": meta.get("config") if isinstance(meta.get("config"), dict) else None,
+    }
+
+
+def validation_summary_from_metadata(meta: dict | None) -> dict[str, Any]:
+    """Compact deploy-readiness fields for model-status (additive, UI-safe).
+
+    Mirrors what ``deploy_gate`` reads from disk without changing gate logic.
+    """
+    if not isinstance(meta, dict):
+        return {
+            "validated_at": None,
+            "walk_forward": None,
+            "pbo": None,
+        }
+
+    wf_raw = meta.get("walk_forward") if isinstance(meta.get("walk_forward"), dict) else {}
+    validated_at = meta.get("validated_at") or wf_raw.get("validated_at")
+    walk_forward = None
+    if wf_raw or validated_at:
+        walk_forward = {
+            "ok": bool(wf_raw.get("ok")),
+            "mean_oos_accuracy": wf_raw.get("mean_oos_accuracy"),
+            "n_folds": wf_raw.get("n_folds"),
+            "successful_folds": wf_raw.get("successful_folds"),
+            "recommendation": wf_raw.get("recommendation"),
+            "mode": wf_raw.get("mode"),
+            "validated_at": validated_at,
+        }
+
+    pbo_out = None
+    pbo_val = meta.get("pbo")
+    pbo_audit = meta.get("pbo_audit") if isinstance(meta.get("pbo_audit"), dict) else {}
+    if pbo_val is not None or pbo_audit:
+        skipped = bool(pbo_audit.get("skipped"))
+        ok = False
+        if pbo_val is not None and not skipped:
+            from app.services.bots.pbo_policy import pbo_passes
+
+            ok = pbo_passes(pbo_val)
+        pbo_out = {
+            "pbo": pbo_val,
+            "ok": ok,
+            "skipped": skipped,
+            "error": pbo_audit.get("error"),
+            "recommendation": pbo_audit.get("recommendation"),
+        }
+
+    return {
+        "validated_at": validated_at,
+        "walk_forward": walk_forward,
+        "pbo": pbo_out,
     }
 
 

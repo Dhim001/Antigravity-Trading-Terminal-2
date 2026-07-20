@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { cn } from '@/lib/utils';
 
 export default function BacktestMonteCarloChart({ monteCarlo, startingEquity, className }) {
@@ -15,7 +16,7 @@ export default function BacktestMonteCarloChart({ monteCarlo, startingEquity, cl
     const el = containerRef.current;
     if (!el || !fan?.length) return undefined;
 
-    const chart = echarts.init(el, 'dark');
+    const chart = initEcharts(el, 'dark');
     chartRef.current = chart;
 
     const steps = fan.map((b) => b.step);

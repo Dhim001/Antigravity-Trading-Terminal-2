@@ -7,6 +7,7 @@ import { sendAction, runMarketScan } from '../api/transport';
 import { Action } from '../api/protocol';
 import { pipelineScanDeploy } from '../api/endpoints';
 import { buildOrderDraftFromInsight } from '../lib/insightOrderDraft';
+import { isScannerAutoRefreshPaused } from '../services/memoryPressureSignals';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -178,6 +179,7 @@ export default function ScannerTab() {
   useEffect(() => {
     if (!autoRefresh) return undefined;
     const id = setInterval(() => {
+      if (isScannerAutoRefreshPaused()) return;
       runScan();
     }, 60_000);
     return () => clearInterval(id);

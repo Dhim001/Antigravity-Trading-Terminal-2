@@ -1,5 +1,6 @@
 /**
  * Pressure-responsive memory trimming — acts on heap % thresholds.
+ * Ladder (MEMORY #26): warn → DPR/scanner/multi-chart; critical → HT prune + research offload.
  */
 
 import { buildBacktestOverlay } from '../lib/backtestSlim';
@@ -8,7 +9,12 @@ import {
   heapPressureLevel,
   bufferPressureNeedsTrim,
 } from './memoryObservability';
-import { pruneSymbolCache } from './candleBuffer';
+import { pruneSymbolCache, pruneHtBuffersExceptPinned } from './candleBuffer';
+import {
+  applyMemoryWarnLadder,
+  applyMemoryCriticalLadder,
+  clearMemoryPressureLadder,
+} from './memoryPressureSignals';
 
 const CHECK_INTERVAL_MS = 30_000;
 let timerId = null;
@@ -26,37 +32,7 @@ export function isSnapshotPaused() {
 export function startMemoryGuard(getMarketStore, getResearchStore) {
   if (typeof window === 'undefined' || timerId != null) return;
   timerId = setInterval(() => {
-    const stats = collectClientMemoryStats();
-    const heapLevel = heapPressureLevel(stats);
-    const bufferTrim = bufferPressureNeedsTrim(stats);
-
-    if (heapLevel === 'ok' && !bufferTrim) {
-      if (lastLevel !== 'ok') snapshotPaused = false;
-      lastLevel = 'ok';
-      return;
-    }
-
-    if (heapLevel === 'critical') {
-      if (lastLevel === 'critical') return;
-      lastLevel = 'critical';
-      snapshotPaused = true;
-      trimCritical(getMarketStore, getResearchStore);
-      return;
-    }
-
-    if (heapLevel === 'warn') {
-      if (lastLevel === 'warn') return;
-      lastLevel = 'warn';
-      snapshotPaused = true;
-      trimWarn(getResearchStore);
-      return;
-    }
-
-    // Heap ok but buffers at cap — trim cold-path only; snapshots stay enabled.
-    if (lastLevel === 'buffer') return;
-    lastLevel = 'buffer';
-    snapshotPaused = false;
-    trimWarn(getResearchStore, { pauseSnapshots: false });
+    tickMemoryGuard(getMarketStore, getResearchStore);
   }, CHECK_INTERVAL_MS);
 }
 
@@ -67,6 +43,7 @@ export function stopMemoryGuard() {
   }
   lastLevel = 'ok';
   snapshotPaused = false;
+  clearMemoryPressureLadder();
 }
 
 function trimVisionAndInsightHistory(research) {
@@ -105,36 +82,40 @@ function trimScanAndJournal(research) {
 }
 
 function trimWarn(getResearchStore, { pauseSnapshots = true } = {}) {
-  if (pauseSnapshots) snapshotPaused = true;
+  if (pauseSnapshots) {
+    snapshotPaused = true;
+    applyMemoryWarnLadder();
+  }
   getResearchStore().setState((current) => trimVisionAndInsightHistory(current));
 }
 
 function trimCritical(getMarketStore, getResearchStore) {
   snapshotPaused = true;
+  applyMemoryCriticalLadder();
   pruneSymbolCache();
 
+  const active = getMarketStore().getState().activeSymbol;
+  pruneHtBuffersExceptPinned(active ? [active] : []);
+
   getMarketStore().setState((market) => {
-    const active = market.activeSymbol;
+    const a = market.activeSymbol;
     return {
-      orderBooks: active && market.orderBooks[active]
-        ? { [active]: market.orderBooks[active] }
+      orderBooks: a && market.orderBooks[a]
+        ? { [a]: market.orderBooks[a] }
         : {},
     };
   });
 
+  // Force offload research backtest tree even if Lab is open (MEMORY #26).
   const research = getResearchStore().getState();
-  if (research.backtestResults && !research.backtestLabOpen && !research.backtestResults._offloaded) {
+  if (research.backtestResults && !research.backtestResults._offloaded) {
     import('./backtestStorage').then(({ offloadBacktestFromMemory }) => {
       getResearchStore().setState((current) => {
         const patches = {
           ...trimVisionAndInsightHistory(current),
           ...trimScanAndJournal(current),
         };
-        if (
-          current.backtestLabOpen
-          || !current.backtestResults
-          || current.backtestResults._offloaded
-        ) {
+        if (!current.backtestResults || current.backtestResults._offloaded) {
           return patches;
         }
         const slim = offloadBacktestFromMemory(current.backtestResults);
@@ -159,19 +140,16 @@ function trimCritical(getMarketStore, getResearchStore) {
   }));
 }
 
-/** @internal */
-export function resetMemoryGuardForTests() {
-  stopMemoryGuard();
-}
-
-/** @internal — simulate guard tick for unit tests. */
-export function runMemoryGuardTickForTests(getMarketStore, getResearchStore) {
+function tickMemoryGuard(getMarketStore, getResearchStore) {
   const stats = collectClientMemoryStats();
   const heapLevel = heapPressureLevel(stats);
   const bufferTrim = bufferPressureNeedsTrim(stats);
 
   if (heapLevel === 'ok' && !bufferTrim) {
-    if (lastLevel !== 'ok') snapshotPaused = false;
+    if (lastLevel !== 'ok') {
+      snapshotPaused = false;
+      clearMemoryPressureLadder();
+    }
     lastLevel = 'ok';
     return;
   }
@@ -196,4 +174,14 @@ export function runMemoryGuardTickForTests(getMarketStore, getResearchStore) {
   lastLevel = 'buffer';
   snapshotPaused = false;
   trimWarn(getResearchStore, { pauseSnapshots: false });
+}
+
+/** @internal */
+export function resetMemoryGuardForTests() {
+  stopMemoryGuard();
+}
+
+/** @internal — simulate guard tick for unit tests. */
+export function runMemoryGuardTickForTests(getMarketStore, getResearchStore) {
+  tickMemoryGuard(getMarketStore, getResearchStore);
 }

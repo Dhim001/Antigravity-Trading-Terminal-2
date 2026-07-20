@@ -226,6 +226,7 @@ def train_lstm_signal_model(
     torch, nn = _get_torch()
 
     cfg = merge_strategy_config("LSTM_DIRECTION", config or {})
+    epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 60))
     min_samples = int(cfg.get("min_train_samples", 500))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
@@ -317,7 +318,16 @@ def train_lstm_signal_model(
     loss_history: list[dict] = []
 
     model.train()
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+    )
+
+    progress_path = progress_path_from_config(cfg)
     for epoch in range(epochs):
+        if ml_cancel_requested(progress_path):
+            return cancelled_train_result(symbol, "LSTM_DIRECTION")
         # Mini-batch training
         indices = torch.randperm(len(X_train_t))
         epoch_loss = 0.0
@@ -445,14 +455,18 @@ def train_lstm_signal_model(
     with open(_metadata_path(symbol), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 
-    try:
-        from app.services.bots.ml_model_artifacts import snapshot_current_version
-        snap = snapshot_current_version(_model_dir(symbol), strategy="LSTM_DIRECTION")
-        if snap:
-            metadata["version_id"] = snap.get("version_id")
-            metadata["version_path"] = snap.get("path")
-    except Exception:
-        logger.exception("Failed to snapshot LSTM version for %s", symbol)
+    # Walk-forward / interactive validate sets skip_snapshot to avoid polluting
+    # version history and clobbering the live champion across folds.
+    skip_snapshot = bool(cfg.get("skip_snapshot", cfg.get("_wf_mode", False)))
+    if not skip_snapshot:
+        try:
+            from app.services.bots.ml_model_artifacts import snapshot_current_version
+            snap = snapshot_current_version(_model_dir(symbol), strategy="LSTM_DIRECTION")
+            if snap:
+                metadata["version_id"] = snap.get("version_id")
+                metadata["version_path"] = snap.get("path")
+        except Exception:
+            logger.exception("Failed to snapshot LSTM version for %s", symbol)
 
     logger.info(
         "LSTM signal model trained for %s (n=%d, val_acc=%.4f, epochs=%d)",

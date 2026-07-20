@@ -14,6 +14,8 @@ from app.config import (
     TRADE_COPILOT_ENABLED,
     TRADE_COPILOT_HISTORY_LIMIT,
     TRADE_COPILOT_PENDING_TTL_SEC,
+    TRADE_COPILOT_SESSION_MAX,
+    TRADE_COPILOT_SESSION_TTL_SEC,
     TRADE_COPILOT_USE_LLM,
 )
 from app.services.agent import copilot_store
@@ -98,6 +100,7 @@ _EXPLICIT_HELP_HINTS = (
 )
 
 # Per-session last analyze_symbol result for follow-up meta questions.
+# Bounded by TRADE_COPILOT_SESSION_TTL_SEC + TRADE_COPILOT_SESSION_MAX (MEMORY #3).
 _SESSION_MEMORY: dict[str, dict[str, Any]] = {}
 
 # Regime → preferred / avoid (mirrors regime_rotation + proposal table).
@@ -166,6 +169,40 @@ def _purge_pending() -> None:
     expired = [k for k, v in _PENDING.items() if now - float(v.get("created_at") or 0) > TRADE_COPILOT_PENDING_TTL_SEC]
     for k in expired:
         _PENDING.pop(k, None)
+
+
+def _purge_session_memory() -> None:
+    """TTL eviction for in-memory analyze insight map."""
+    now = time.time()
+    ttl = float(TRADE_COPILOT_SESSION_TTL_SEC)
+    expired = [
+        k for k, v in _SESSION_MEMORY.items()
+        if now - float(v.get("_touched_at") or 0) > ttl
+    ]
+    for k in expired:
+        _SESSION_MEMORY.pop(k, None)
+
+
+def _evict_session_overflow(keep_id: str | None = None) -> None:
+    """Enforce TRADE_COPILOT_SESSION_MAX after inserts (prefer keeping keep_id)."""
+    max_sessions = max(1, int(TRADE_COPILOT_SESSION_MAX))
+    if len(_SESSION_MEMORY) <= max_sessions:
+        return
+    ordered = sorted(
+        ((k, v) for k, v in _SESSION_MEMORY.items() if k != keep_id),
+        key=lambda kv: float(kv[1].get("_touched_at") or 0),
+    )
+    while len(_SESSION_MEMORY) > max_sessions and ordered:
+        k, _ = ordered.pop(0)
+        _SESSION_MEMORY.pop(k, None)
+
+
+def _touch_session(session_id: str) -> dict[str, Any]:
+    _purge_session_memory()
+    bucket = _SESSION_MEMORY.setdefault(session_id, {})
+    bucket["_touched_at"] = time.time()
+    _evict_session_overflow(keep_id=session_id)
+    return _SESSION_MEMORY.setdefault(session_id, bucket)
 
 
 def _store_pending(action: dict[str, Any]) -> str:
@@ -403,10 +440,14 @@ def remember_insight(session_id: str | None, insight: dict[str, Any] | None) -> 
     sym = str(insight.get("symbol") or "").upper()
     if not sym:
         return
-    bucket = _SESSION_MEMORY.setdefault(session_id, {})
+    bucket = _touch_session(session_id)
     bucket["last_insight"] = dict(insight)
     by_sym = bucket.setdefault("by_symbol", {})
     by_sym[sym] = dict(insight)
+    # Cap per-session symbol map (insights can be large)
+    if len(by_sym) > 24:
+        for drop_key in list(by_sym.keys())[: len(by_sym) - 24]:
+            by_sym.pop(drop_key, None)
     tf = insight.get("timeframe")
     if tf:
         bucket["preferred_timeframe"] = str(tf)
@@ -421,11 +462,12 @@ def remember_timeframe(session_id: str | None, timeframe: str | None) -> None:
         tf = normalize_timeframe(str(timeframe))
     except ValueError:
         return
-    _SESSION_MEMORY.setdefault(session_id, {})["preferred_timeframe"] = tf
+    _touch_session(session_id)["preferred_timeframe"] = tf
 
 
 def get_preferred_timeframe(session_id: str | None, default: str = _DEFAULT_ANALYZE_TF) -> str:
     if session_id and session_id in _SESSION_MEMORY:
+        _touch_session(session_id)
         tf = _SESSION_MEMORY[session_id].get("preferred_timeframe")
         if tf:
             return str(tf)
@@ -439,7 +481,7 @@ def get_last_insight(
     """Return last analyze payload from memory or persisted chat history."""
     sym = (symbol or "").upper() or None
     if session_id and session_id in _SESSION_MEMORY:
-        mem = _SESSION_MEMORY[session_id]
+        mem = _touch_session(session_id)
         if sym and isinstance(mem.get("by_symbol"), dict):
             hit = mem["by_symbol"].get(sym)
             if isinstance(hit, dict):

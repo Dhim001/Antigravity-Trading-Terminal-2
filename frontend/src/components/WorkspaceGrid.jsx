@@ -3,7 +3,11 @@ import { Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/dark.css';
 
 import { lazyImport } from '../lib/lazyImport';
-import { focusFlexLayoutComponent } from '../lib/flexlayoutFocus';
+import {
+  focusFlexLayoutComponent,
+  focusFlexLayoutDockGroup,
+  toggleFlexLayoutComponent,
+} from '../lib/flexlayoutFocus';
 import ChartContextStrip from './ChartContextStrip';
 import ErrorBoundary from './ErrorBoundary';
 import MountWhenVisible from './MountWhenVisible';
@@ -17,6 +21,7 @@ const MultiChartGrid = lazyImport(() => import('./MultiChartGrid'), 'multi-chart
 const OrderEntryWidget = lazyImport(() => import('./OrderEntryWidget'), 'order-entry');
 const OrderBookWidget = lazyImport(() => import('./OrderBookWidget'), 'order-book');
 const DepthChartWidget = lazyImport(() => import('./DepthChartWidget'), 'depth-chart');
+const FootprintPanel = lazyImport(() => import('./chart/FootprintPanel'), 'footprint');
 
 // Dock inner panels
 const PositionsTab = lazyImport(() => import('./dock/PositionsPanel'), 'positions');
@@ -46,6 +51,7 @@ const UNMOUNT_WHEN_HIDDEN = new Set([
   'equity',
   'ticks',
   'copilot',
+  'footprint',
 ]);
 
 function PanelFallback({ label = 'Loading…' }) {
@@ -131,10 +137,19 @@ const DEFAULT_LAYOUT = {
           { type: 'tab', name: 'Trade', component: 'order-entry', enableClose: false },
           { type: 'tab', name: 'Book', component: 'order-book', enableClose: false },
           { type: 'tab', name: 'Depth', component: 'depth-chart', enableClose: false },
+          { type: 'tab', name: 'Footprint', component: 'footprint', enableClose: false },
         ],
       },
     ],
   },
+};
+
+/** Map legacy TradingPanel rightPanelTab ids → FlexLayout component ids. */
+const RIGHT_PANEL_TAB_MAP = {
+  trade: 'order-entry',
+  book: 'order-book',
+  depth: 'depth-chart',
+  footprint: 'footprint',
 };
 
 export default function WorkspaceGrid({ viewMode }) {
@@ -144,10 +159,36 @@ export default function WorkspaceGrid({ viewMode }) {
     const onDockTab = (e) => {
       const panelId = typeof e.detail === 'string' ? e.detail : e.detail?.tab;
       if (!panelId) return;
-      focusFlexLayoutComponent(model, panelId);
+      const mapped = RIGHT_PANEL_TAB_MAP[panelId] || panelId;
+      focusFlexLayoutComponent(model, mapped);
     };
+    const onDockGroup = (e) => {
+      const group = typeof e.detail === 'string' ? e.detail : e.detail?.group;
+      if (!group) return;
+      focusFlexLayoutDockGroup(model, group);
+    };
+    const onSidebarExpand = () => {
+      focusFlexLayoutComponent(model, 'watchlist');
+    };
+    const onSidebarToggle = () => {
+      toggleFlexLayoutComponent(model, 'watchlist', 'chart');
+    };
+    const onTradingExpand = () => {
+      focusFlexLayoutComponent(model, 'order-entry');
+    };
+
     window.addEventListener('dock-tab', onDockTab);
-    return () => window.removeEventListener('dock-tab', onDockTab);
+    window.addEventListener('dock-group', onDockGroup);
+    window.addEventListener('sidebar-expand', onSidebarExpand);
+    window.addEventListener('sidebar-toggle', onSidebarToggle);
+    window.addEventListener('trading-panel-expand', onTradingExpand);
+    return () => {
+      window.removeEventListener('dock-tab', onDockTab);
+      window.removeEventListener('dock-group', onDockGroup);
+      window.removeEventListener('sidebar-expand', onSidebarExpand);
+      window.removeEventListener('sidebar-toggle', onSidebarToggle);
+      window.removeEventListener('trading-panel-expand', onTradingExpand);
+    };
   }, [model]);
 
   const factory = useCallback((node) => {
@@ -175,6 +216,13 @@ export default function WorkspaceGrid({ viewMode }) {
         break;
       case 'depth-chart':
         panel = <Suspense fallback={<PanelFallback />}><DepthChartWidget /></Suspense>;
+        break;
+      case 'footprint':
+        panel = (
+          <Suspense fallback={<PanelFallback label="Loading footprint…" />}>
+            <FootprintPanel />
+          </Suspense>
+        );
         break;
       case 'positions':
         panel = <Suspense fallback={<PanelFallback />}><PositionsTab /></Suspense>;

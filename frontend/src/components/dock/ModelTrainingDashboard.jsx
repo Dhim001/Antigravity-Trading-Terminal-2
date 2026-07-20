@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -21,11 +22,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import FeatureImportanceChart from '@/components/FeatureImportanceChart';
 import { useStore } from '@/store/useStore';
 import { apiRequest, isAbortError } from '@/api/client';
 import { getStrategyMeta, isDeepMlStrategy, isMlStrategy, ML_STRATEGY_IDS } from '@/config/strategies';
+import { buildChallengerHint } from '@/lib/mlChallengerHint';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { useVirtualRows, VirtualTablePadding } from '@/components/VirtualTableBody';
 import {
   beginMlJob,
   clearMlJobProgress,
@@ -34,6 +38,8 @@ import {
   getMlTrainingSession,
   resolveModelStatusFetch,
   setCachedModelStatus,
+  setMlJobId,
+  setMlServerProgress,
   setMlValidation,
   subscribeMlTrainingSession,
 } from '@/lib/mlTrainingSession';
@@ -60,6 +66,46 @@ function mlJobTimeoutMs(strategy, kind = 'validate') {
   if (strategy === 'RL_PPO_AGENT') return table.RL_PPO_AGENT;
   if (DEEP_ML_STRATEGIES.has(strategy)) return table.deep;
   return table.default;
+}
+
+/** Defaults match prior hardcodes in handleValidate / trainers (ML Lab §3.3). */
+function defaultAdvancedKnobs(strategy) {
+  const isRl = strategy === 'RL_PPO_AGENT';
+  let epochs = 50;
+  if (strategy === 'TCN_MULTI_HORIZON') epochs = 60;
+  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = 80;
+  else if (strategy === 'GNN_CROSS_ASSET') epochs = 40;
+  return {
+    nFolds: isRl ? 2 : 3,
+    validateMaxBars: isRl ? 1200 : 2500,
+    pboSegments: 4,
+    pboMaxCombos: 4,
+    totalTimesteps: 2048,
+    epochs,
+  };
+}
+
+function normalizeTopFeatures(top) {
+  if (!Array.isArray(top)) return [];
+  return top
+    .map((f) => {
+      if (typeof f === 'string') return { name: f, importance: 1 };
+      const name = f?.name || f?.feature;
+      if (!name) return null;
+      const importance = Number(f.importance ?? f.gain ?? f.weight ?? 0);
+      return {
+        name: String(name),
+        importance: Number.isFinite(importance) ? importance : 0,
+        category: f.category,
+      };
+    })
+    .filter(Boolean);
+}
+
+function parsePositiveInt(value, fallback, { min = 1, max = 1_000_000 } = {}) {
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
 const TRAINING_WINDOWS = [
@@ -250,6 +296,89 @@ function normalizeCurveHistory(history, trainHistory, metrics) {
   return null;
 }
 
+/** Deploy-gate mirror: trained / walk-forward / PBO from model-status enrich. */
+function DeployReadinessStrip({ status }) {
+  if (!status?.trained) return null;
+
+  const wf = status.walk_forward && typeof status.walk_forward === 'object'
+    ? status.walk_forward
+    : null;
+  const pbo = status.pbo && typeof status.pbo === 'object' ? status.pbo : null;
+  const validatedAt = status.validated_at || wf?.validated_at || null;
+
+  const trainedOk = true;
+  const wfOk = Boolean(wf?.ok && validatedAt);
+  const wfMissing = !validatedAt || !wf?.ok;
+  const pboSkipped = Boolean(pbo?.skipped);
+  const pboPresent = pbo != null && pbo.pbo != null && !pboSkipped;
+  const pboOk = pboPresent && pbo.ok === true;
+  const pboWarn = pboPresent && pbo.ok === false;
+
+  const ageLabel = (() => {
+    if (!validatedAt) return null;
+    try {
+      const d = new Date(validatedAt);
+      if (Number.isNaN(d.getTime())) return null;
+      return d.toLocaleString();
+    } catch {
+      return null;
+    }
+  })();
+
+  const chip = (ok, warn, label, title) => (
+    <span
+      className={cn(
+        'ml-training__ready-chip',
+        ok && 'ml-training__ready-chip--ok',
+        warn && 'ml-training__ready-chip--warn',
+        !ok && !warn && 'ml-training__ready-chip--fail',
+      )}
+      title={title}
+    >
+      {ok ? <CheckCircle2 size={11} aria-hidden /> : warn ? <FlaskConical size={11} aria-hidden /> : <XCircle size={11} aria-hidden />}
+      {label}
+    </span>
+  );
+
+  return (
+    <section className="ml-training__ready" aria-label="Deploy readiness">
+      <div className="ml-training__ready-head">
+        <h4 className="ml-training__section-title">Deploy readiness</h4>
+        {ageLabel && (
+          <span className="ml-training__header-meta num-mono">
+            validated {ageLabel}
+          </span>
+        )}
+      </div>
+      <div className="ml-training__ready-chips">
+        {chip(trainedOk, false, 'Trained', 'Model artifact on disk')}
+        {chip(
+          wfOk,
+          false,
+          wfOk
+            ? `Walk-forward${wf?.mean_oos_accuracy != null ? ` · ${fmtMetric(wf.mean_oos_accuracy, 3, 'mean_oos_accuracy')}` : ''}`
+            : 'Walk-forward',
+          wfMissing
+            ? 'Run Walk-forward + PBO before deploy — gate will block without it'
+            : (wf?.recommendation || 'Walk-forward validation passed'),
+        )}
+        {pboSkipped
+          ? chip(false, true, 'PBO skipped', pbo?.error || 'PBO was skipped for this strategy')
+          : pboPresent
+            ? chip(
+              pboOk,
+              pboWarn,
+              `PBO ${fmtMetric(pbo.pbo, 3, 'pbo') ?? '—'}`,
+              pboOk
+                ? 'PBO under 50% — acceptable overfitting risk'
+                : 'PBO ≥ 50% — elevated overfitting risk for deploy',
+            )
+            : chip(false, true, 'PBO', 'No PBO result yet — run Walk-forward + PBO')}
+      </div>
+    </section>
+  );
+}
+
 function LossHistoryChart({ history, trainHistory, metrics }) {
   const curve = normalizeCurveHistory(history, trainHistory, metrics);
   if (!curve || curve.rows.length < 2) {
@@ -347,7 +476,12 @@ function formatElapsed(ms) {
   return m > 0 ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
 }
 
-function JobProgressBar({ job }) {
+function formatDurationMs(ms) {
+  if (ms == null || Number.isNaN(Number(ms))) return '—';
+  return formatElapsed(Number(ms));
+}
+
+function JobProgressBar({ job, serverProgress, onCancel, cancelling }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -360,12 +494,20 @@ function JobProgressBar({ job }) {
 
   const elapsed = Math.max(0, now - (job.startedAt || now));
   const timeoutMs = Math.max(job.timeoutMs || 60_000, 15_000);
+  const hasServerPct = serverProgress?.pct != null && Number(serverProgress.pct) > 0;
   // Asymptotic estimate — never claims 100% until the request finishes.
   const ratio = Math.min(0.94, 1 - Math.exp(-elapsed / (timeoutMs * 0.45)));
-  const pct = Math.max(2, Math.round(ratio * 100));
+  const estPct = Math.max(2, Math.round(ratio * 100));
+  const pct = hasServerPct
+    ? Math.max(1, Math.min(99, Math.round(Number(serverProgress.pct))))
+    : estPct;
   const phases = job.phases || [];
   const phaseIdx = phases.findIndex((p) => pct < p.until);
   const phase = phases[phaseIdx >= 0 ? phaseIdx : Math.max(phases.length - 1, 0)];
+  const phaseLabel = hasServerPct
+    ? [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
+      || phase?.label
+    : phase?.label;
 
   return (
     <div className="ml-training__progress" role="status" aria-live="polite">
@@ -377,6 +519,7 @@ function JobProgressBar({ job }) {
         <span className="ml-training__progress-meta num-mono">
           {pct}% · {formatElapsed(elapsed)}
           {timeoutMs >= 60_000 ? ` / ~${Math.round(timeoutMs / 60_000)}m` : ''}
+          {hasServerPct ? ' · live' : ''}
         </span>
       </div>
       <div
@@ -389,9 +532,24 @@ function JobProgressBar({ job }) {
       >
         <div className="ml-training__progress-fill" style={{ width: `${pct}%` }} />
       </div>
-      {phase?.label && (
-        <p className="ml-training__progress-phase">{phase.label}</p>
-      )}
+      <div className="ml-training__progress-foot">
+        {phaseLabel && (
+          <p className="ml-training__progress-phase">{phaseLabel}</p>
+        )}
+        {typeof onCancel === 'function' && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[0.65rem] shrink-0"
+            disabled={cancelling}
+            onClick={onCancel}
+          >
+            {cancelling ? <Loader2 size={12} className="animate-spin" /> : null}
+            Cancel
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -447,7 +605,7 @@ function DatasetBrowser({
   if (!dataset && !(versions && versions.length)) return null;
   const labels = dataset?.label_distribution;
   const features = Array.isArray(dataset?.feature_names) ? dataset.feature_names : [];
-  const top = Array.isArray(dataset?.top_features) ? dataset.top_features.slice(0, 8) : [];
+  const topFeatures = normalizeTopFeatures(dataset?.top_features).slice(0, 10);
   const versionBusy = Boolean(activatingVersionId || deletingVersionId);
   return (
     <section className="ml-training__dataset">
@@ -505,13 +663,11 @@ function DatasetBrowser({
               </span>
             </p>
           )}
-          {top.length > 0 && (
-            <p className="ml-training__feature-line">
-              Top features:{' '}
-              <span className="num-mono">
-                {top.map((f) => (typeof f === 'string' ? f : f?.name || f?.feature)).filter(Boolean).join(', ')}
-              </span>
-            </p>
+          {topFeatures.length > 0 && (
+            <div className="ml-training__feature-importance">
+              <p className="ml-training__subsection-label">Feature importance</p>
+              <FeatureImportanceChart features={topFeatures} maxBars={10} compact />
+            </div>
           )}
         </div>
         {Array.isArray(versions) && versions.length > 0 && (
@@ -612,12 +768,23 @@ export default function ModelTrainingDashboard() {
     () => (isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST'),
   );
   const [trainingWindow, setTrainingWindow] = useState('3');
+  const [advanced, setAdvanced] = useState(() => defaultAdvancedKnobs(
+    isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST',
+  ));
   const [status, setStatus] = useState(null);
+  const championOosRef = useRef(null);
   const [inventory, setInventory] = useState([]);
   const [retrainActions, setRetrainActions] = useState([]);
+  const [retrainPending, setRetrainPending] = useState([]);
+  const [retrainHistory, setRetrainHistory] = useState([]);
+  const [runNowKey, setRunNowKey] = useState(null);
+  const [cancellingJob, setCancellingJob] = useState(false);
+  const [queueTelemetry, setQueueTelemetry] = useState({ active: 0, queued: 0 });
+  const [trainRuns, setTrainRuns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [activatingVersionId, setActivatingVersionId] = useState(null);
   const [deletingVersionId, setDeletingVersionId] = useState(null);
+  const [challengerDismissed, setChallengerDismissed] = useState(false);
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -625,6 +792,8 @@ export default function ModelTrainingDashboard() {
   const training = Boolean(jobMatches && mlSession.training);
   const validating = Boolean(jobMatches && mlSession.validating);
   const jobProgress = jobMatches ? mlSession.jobProgress : null;
+  const serverProgress = jobMatches ? mlSession.serverProgress : null;
+  const activeJobId = jobMatches ? mlSession.jobId : null;
   const validation = jobMatches ? mlSession.validation : null;
   const busyElsewhere = Boolean(
     (mlSession.training || mlSession.validating)
@@ -718,10 +887,57 @@ export default function ModelTrainingDashboard() {
     try {
       const body = await apiRequest('/api/v1/ml/retrain-status');
       setRetrainActions(Array.isArray(body?.retrain_actions) ? body.retrain_actions : []);
+      const pendingMap = body?.pending && typeof body.pending === 'object' ? body.pending : {};
+      setRetrainPending(
+        Object.entries(pendingMap).map(([key, info]) => ({
+          key,
+          strategy: info?.strategy,
+          symbol: info?.symbol,
+          reasons: Array.isArray(info?.reasons) ? info.reasons : [],
+          requested_at: info?.requested_at,
+        })),
+      );
+      setRetrainHistory(Array.isArray(body?.history) ? body.history : []);
     } catch (err) {
-      if (!isAbortError(err)) setRetrainActions([]);
+      if (!isAbortError(err)) {
+        setRetrainActions([]);
+        setRetrainPending([]);
+        setRetrainHistory([]);
+      }
     }
   }, []);
+
+  const fetchQueueTelemetry = useCallback(async () => {
+    try {
+      const body = await apiRequest('/api/v1/ml/jobs?limit=5');
+      setQueueTelemetry({
+        active: Number(body?.active) || 0,
+        queued: Number(body?.queued) || 0,
+      });
+    } catch (err) {
+      if (!isAbortError(err)) {
+        /* keep last known */
+      }
+    }
+  }, []);
+
+  const fetchTrainRuns = useCallback(async () => {
+    if (!activeSymbol) {
+      setTrainRuns([]);
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        symbol: activeSymbol,
+        limit: '15',
+      });
+      if (strategy) qs.set('strategy', strategy);
+      const body = await apiRequest(`/api/v1/ml/runs?${qs.toString()}`);
+      setTrainRuns(Array.isArray(body?.runs) ? body.runs : []);
+    } catch (err) {
+      if (!isAbortError(err)) setTrainRuns([]);
+    }
+  }, [activeSymbol, strategy]);
 
   const fetchStatus = useCallback(async () => {
     if (!activeSymbol || !strategy) return;
@@ -746,9 +962,20 @@ export default function ModelTrainingDashboard() {
     }
   }, [activeSymbol, strategy]);
 
-  const refreshAll = useCallback(async () => {
-    await Promise.all([fetchStatus(), fetchInventory(), fetchRetrainQueue()]);
-  }, [fetchStatus, fetchInventory, fetchRetrainQueue]);
+  const refreshAll = useCallback(async ({ clearSessionValidation = false } = {}) => {
+    if (clearSessionValidation) {
+      setMlValidation(null);
+      setChallengerDismissed(true);
+      championOosRef.current = null;
+    }
+    await Promise.all([
+      fetchStatus(),
+      fetchInventory(),
+      fetchRetrainQueue(),
+      fetchQueueTelemetry(),
+      fetchTrainRuns(),
+    ]);
+  }, [fetchStatus, fetchInventory, fetchRetrainQueue, fetchQueueTelemetry, fetchTrainRuns]);
 
   useEffect(() => {
     if (isMlStrategy(botStrategy) && botStrategy !== strategy) {
@@ -757,20 +984,70 @@ export default function ModelTrainingDashboard() {
   }, [botStrategy]); // eslint-disable-line react-hooks/exhaustive-deps -- sync bot picker → dashboard
 
   useEffect(() => {
+    setAdvanced(defaultAdvancedKnobs(strategy));
+  }, [strategy]);
+
+  useEffect(() => {
     const cached = getCachedModelStatus(activeSymbol, strategy);
     if (cached) setStatus(cached);
     refreshAll();
   }, [refreshAll]);
 
-  // Re-attach to an in-flight job when remounting the panel mid-train.
+  // Poll queue depth while the panel is open (cheap).
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      fetchQueueTelemetry();
+    }, 5_000);
+    return () => window.clearInterval(id);
+  }, [fetchQueueTelemetry]);
+
+  // Re-attach only when the panel remounts mid-job *without* a local waiter
+  // (pollMlJobUntilDone owns the submit path — avoid double finishMlJob).
+  const localJobWaiterRef = useRef(false);
   useEffect(() => {
     if (!jobMatches) return undefined;
     if (!mlSession.training && !mlSession.validating) return undefined;
-    const id = window.setInterval(() => {
-      fetchStatus();
-    }, 15_000);
-    return () => window.clearInterval(id);
-  }, [jobMatches, mlSession.training, mlSession.validating, fetchStatus]);
+    const jobId = mlSession.jobId;
+    if (!jobId) {
+      const id = window.setInterval(() => {
+        fetchStatus();
+      }, 15_000);
+      return () => window.clearInterval(id);
+    }
+    if (localJobWaiterRef.current) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`);
+        const job = body?.job;
+        if (cancelled || !job) return;
+        if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
+        if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
+          if (job.kind === 'validate' && job.result) setMlValidation(job.result);
+          finishMlJob(mlSession.jobToken, {
+            validation: job.kind === 'validate' ? job.result : undefined,
+            error: job.status === 'error' ? (job.error || 'failed') : null,
+          });
+          fetchStatus();
+        }
+      } catch {
+        /* ignore poll errors while remounted */
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [
+    jobMatches,
+    mlSession.training,
+    mlSession.validating,
+    mlSession.jobId,
+    mlSession.jobToken,
+    fetchStatus,
+  ]);
 
   const handleActivateVersion = async (version) => {
     if (!activeSymbol || !strategy || !version || activatingVersionId) return;
@@ -794,10 +1071,13 @@ export default function ModelTrainingDashboard() {
       if (body?.ok) {
         setCachedModelStatus(activeSymbol, strategy, body);
         setStatus(body);
+        setChallengerDismissed(true);
+        championOosRef.current = null;
+        setMlValidation(null);
         toast.success(
           `Activated ${body.activated_version_id || pin} as current for ${strategy} / ${activeSymbol}`,
         );
-        refreshAll();
+        await refreshAll();
       } else {
         toast.error(body?.error || 'Failed to activate version');
       }
@@ -850,7 +1130,7 @@ export default function ModelTrainingDashboard() {
         setCachedModelStatus(activeSymbol, strategy, body);
         setStatus(body);
         toast.success(`Deleted version ${body.deleted_version_id || label}`);
-        refreshAll();
+        await refreshAll();
       } else {
         toast.error(body?.error || 'Failed to delete version');
       }
@@ -861,44 +1141,126 @@ export default function ModelTrainingDashboard() {
     }
   };
 
-  const handleTrain = async () => {
-    if (training || validating || busyElsewhere || !activeSymbol) return;
-    setMlValidation(null);
-    const trainTimeoutMs = mlJobTimeoutMs(strategy, 'train');
-    const token = startJobProgress('train', strategy, activeSymbol);
+  const pollMlJobUntilDone = useCallback(async (jobId) => {
+    const terminal = new Set(['done', 'error', 'cancelled']);
+    // Allow long trains: poll for up to the largest ML timeout + buffer.
+    const deadline = Date.now() + 25 * 60_000;
+    while (Date.now() < deadline) {
+      const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`);
+      const job = body?.job;
+      if (!job) throw new Error('ML job not found');
+      if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
+      if (terminal.has(job.status)) return job;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    throw new Error('Timed out waiting for ML job');
+  }, []);
+
+  const handleCancelJob = useCallback(async () => {
+    const jobId = getMlTrainingSession().jobId;
+    if (!jobId || cancellingJob) return;
+    setCancellingJob(true);
     try {
-      if (DEEP_ML_STRATEGIES.has(strategy) || strategy === 'RL_PPO_AGENT') {
+      const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        timeoutMs: 30_000,
+      });
+      if (body?.ok) {
+        toast.message(body.immediate ? 'Job cancelled' : 'Cancel requested — finishing current step…');
+      } else {
+        toast.error(body?.error || 'Cancel failed');
+      }
+    } catch (err) {
+      if (!isAbortError(err)) toast.error(err.message || 'Cancel failed');
+    } finally {
+      setCancellingJob(false);
+    }
+  }, [cancellingJob]);
+
+  const runTrainJob = async (strat, symbol, { fromQueue = false } = {}) => {
+    if (training || validating || busyElsewhere || !symbol || !strat) return;
+    const queueKey = `${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`;
+    if (fromQueue) setRunNowKey(queueKey);
+    setMlValidation(null);
+    if (strat !== strategy) setStrategy(strat);
+    const trainTimeoutMs = mlJobTimeoutMs(strat, 'train');
+    const token = startJobProgress('train', strat, symbol);
+    const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat);
+    localJobWaiterRef.current = true;
+    try {
+      if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT') {
         toast.message(
-          `Training ${strategy}… allowing up to ${Math.round(trainTimeoutMs / 60_000)} min`,
+          `Training ${strat}… allowing up to ${Math.round(trainTimeoutMs / 60_000)} min`,
         );
       }
       const body = await apiRequest('/api/v1/ml/train', {
         method: 'POST',
         body: {
-          symbol: activeSymbol,
-          strategy,
-          config: { training_window_months: Number(trainingWindow) },
+          symbol,
+          strategy: strat,
+          async: true,
+          config: {
+            training_window_months: Number(trainingWindow),
+            ...(strat === 'RL_PPO_AGENT'
+              ? { total_timesteps: parsePositiveInt(knobs.totalTimesteps, 2048, { min: 256, max: 500_000 }) }
+              : {}),
+            ...(DEEP_ML_STRATEGIES.has(strat)
+              ? { epochs: parsePositiveInt(knobs.epochs, defaultAdvancedKnobs(strat).epochs, { min: 1, max: 500 }) }
+              : {}),
+          },
         },
-        timeoutMs: trainTimeoutMs,
+        // Submit returns immediately with job_id; candle fetch still needs headroom.
+        timeoutMs: 180_000,
       });
-      if (body?.ok) {
-        toast.success(`Training complete for ${strategy} / ${activeSymbol}`);
-        const next = { trained: true, ...body };
-        setCachedModelStatus(activeSymbol, strategy, next);
-        setStatus(next);
+      if (!body?.ok) {
+        toast.error(body?.error || 'Training failed to start');
+        return;
+      }
+      const jobId = body.job_id;
+      if (!jobId) {
+        toast.error('Server did not return a job_id');
+        return;
+      }
+      setMlJobId(jobId);
+      const job = await pollMlJobUntilDone(jobId);
+      const result = (job.result && typeof job.result === 'object') ? job.result : {};
+      if (job.status === 'cancelled' || result.cancelled) {
+        toast.message('Training cancelled');
+        return;
+      }
+      if (job.status === 'done' && result.ok !== false) {
+        toast.success(`Training complete for ${strat} / ${symbol}`);
+        // Drop from retrain audit immediately (backend also clears via record_retrain).
+        setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
+        setRetrainActions((prev) => prev.filter((a) => (
+          `${String(a.symbol || '').toUpperCase()}:${String(a.strategy || '').toUpperCase()}` !== queueKey
+        )));
       } else {
-        toast.error(body?.error || 'Training failed');
-        setStatus({ trained: false, error: body?.error || 'Training failed' });
+        toast.error(job.error || result.error || 'Training failed');
       }
     } catch (err) {
       if (!isAbortError(err)) {
         toast.error(err.message || 'Training request failed');
-        setStatus({ trained: false, error: err.message });
       }
     } finally {
+      localJobWaiterRef.current = false;
       finishJobProgress(token);
-      refreshAll();
+      if (fromQueue) setRunNowKey(null);
+      // Always refresh enriched status — never cache thin train payloads as status.
+      await refreshAll();
     }
+  };
+
+  const handleTrain = async () => {
+    await runTrainJob(strategy, activeSymbol);
+  };
+
+  const handleRunNow = async (strat, symbol) => {
+    if (!strat || !symbol) return;
+    if (symbol !== activeSymbol) {
+      toast.message(`Training ${strat} for ${symbol} (chart symbol is ${activeSymbol || '—'})`);
+    }
+    await runTrainJob(strat, symbol, { fromQueue: true });
   };
 
   const handleValidate = async () => {
@@ -906,8 +1268,25 @@ export default function ModelTrainingDashboard() {
     setMlValidation(null);
     const isRl = strategy === 'RL_PPO_AGENT';
     const isDeep = DEEP_ML_STRATEGIES.has(strategy);
+    const defaults = defaultAdvancedKnobs(strategy);
+    const nFolds = parsePositiveInt(advanced.nFolds, defaults.nFolds, { min: 2, max: 8 });
+    const validateMaxBars = parsePositiveInt(
+      advanced.validateMaxBars,
+      defaults.validateMaxBars,
+      { min: 200, max: 20_000 },
+    );
+    const pboSegments = parsePositiveInt(advanced.pboSegments, defaults.pboSegments, { min: 2, max: 8 });
+    const pboMaxCombos = parsePositiveInt(advanced.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 });
+    const totalTimesteps = parsePositiveInt(
+      advanced.totalTimesteps,
+      defaults.totalTimesteps,
+      { min: 256, max: 500_000 },
+    );
+    championOosRef.current = status?.walk_forward?.mean_oos_accuracy ?? null;
+    setChallengerDismissed(false);
     const validateTimeoutMs = mlJobTimeoutMs(strategy, 'validate');
     const token = startJobProgress('validate', strategy, activeSymbol);
+    localJobWaiterRef.current = true;
     try {
       toast.message(
         isRl
@@ -916,38 +1295,63 @@ export default function ModelTrainingDashboard() {
             ? `Running walk-forward + PBO… up to ${Math.round(validateTimeoutMs / 60_000)} min`
             : 'Running walk-forward + PBO… usually under 5 minutes',
       );
+      const deepEpochs = isDeep
+        ? parsePositiveInt(advanced.epochs, defaults.epochs, { min: 1, max: 500 })
+        : null;
       const body = await apiRequest('/api/v1/ml/validate', {
         method: 'POST',
         body: {
           symbol: activeSymbol,
           strategy,
-          n_folds: isRl ? 2 : 3,
+          async: true,
+          n_folds: nFolds,
           mode: 'rolling',
           // Full PBO re-trains every combo — too heavy for PPO in the dock.
           pbo: !isRl,
-          pbo_segments: 4,
+          pbo_segments: pboSegments,
           config: {
             training_window_months: Number(trainingWindow),
             symbol: activeSymbol,
             model_symbol: activeSymbol,
             _wf_mode: true,
-            validate_max_bars: isRl ? 1200 : 2500,
-            pbo_max_combos: 4,
+            validate_max_bars: validateMaxBars,
+            pbo_max_combos: pboMaxCombos,
             ...(isRl
-              ? { total_timesteps: 2048, n_steps: 512, ppo_epochs: 2, hidden_dim: 64 }
+              ? { total_timesteps: totalTimesteps, n_steps: 512, ppo_epochs: 2, hidden_dim: 64 }
               : {}),
+            ...(deepEpochs != null ? { epochs: deepEpochs } : {}),
           },
         },
-        timeoutMs: validateTimeoutMs,
+        timeoutMs: 180_000,
       });
-      setMlValidation(body);
-      if (body?.ok) {
-        toast.success('Walk-forward validation finished');
-      } else {
+      if (!body?.ok) {
         const foldErr = Array.isArray(body?.folds)
           ? body.folds.find((f) => f?.error)?.error
           : null;
-        toast.error(body?.error || foldErr || 'Validation failed');
+        toast.error(body?.error || foldErr || 'Validation failed to start');
+        setMlValidation(body || { ok: false, error: 'Validation failed' });
+        return;
+      }
+      const jobId = body.job_id;
+      if (!jobId) {
+        toast.error('Server did not return a job_id');
+        return;
+      }
+      setMlJobId(jobId);
+      const job = await pollMlJobUntilDone(jobId);
+      const result = (job.result && typeof job.result === 'object')
+        ? job.result
+        : { ok: false, error: job.error || 'Validation failed' };
+      setMlValidation(result);
+      if (job.status === 'cancelled' || result.cancelled) {
+        toast.message('Validation cancelled');
+      } else if (job.status === 'done' && result.ok) {
+        toast.success('Walk-forward validation finished');
+      } else {
+        const foldErr = Array.isArray(result?.folds)
+          ? result.folds.find((f) => f?.error)?.error
+          : null;
+        toast.error(job.error || result.error || foldErr || 'Validation failed');
       }
     } catch (err) {
       const msg = err?.message || String(err) || 'Validation request failed';
@@ -969,7 +1373,9 @@ export default function ModelTrainingDashboard() {
         );
       }
     } finally {
+      localJobWaiterRef.current = false;
       finishJobProgress(token);
+      await refreshAll();
     }
   };
 
@@ -984,6 +1390,45 @@ export default function ModelTrainingDashboard() {
           : 'Idle';
 
   const trainedCount = inventory.filter((r) => r.trained).length;
+  const queueBadge = (queueTelemetry.active > 0 || queueTelemetry.queued > 0)
+    ? `${queueTelemetry.active} running · ${queueTelemetry.queued} queued`
+    : null;
+
+  const { onScroll: onRunsScroll, window: runsWindow } = useVirtualRows(trainRuns, {
+    rowHeight: 32,
+    overscan: 6,
+  });
+
+  const displayValidation = validation || (
+    status?.walk_forward || status?.pbo
+      ? {
+        ok: Boolean(status.walk_forward?.ok),
+        mean_accuracy: status.walk_forward?.mean_oos_accuracy,
+        n_folds: status.walk_forward?.n_folds,
+        successful_folds: status.walk_forward?.successful_folds,
+        recommendation: status.walk_forward?.recommendation,
+        pbo: status.pbo,
+        _persisted: true,
+      }
+      : null
+  );
+
+  const challengerHint = (
+    !challengerDismissed
+    && !displayValidation?._persisted
+    && displayValidation?.ok
+  )
+    ? buildChallengerHint({
+      validation: displayValidation,
+      championOos: championOosRef.current,
+      versions: status?.versions,
+    })
+    : null;
+
+  const dismissChallengerHint = () => {
+    setChallengerDismissed(true);
+    championOosRef.current = null;
+  };
 
   return (
     <div className="dock-panel dock-panel--ml-training overflow-y-auto h-full">
@@ -994,11 +1439,18 @@ export default function ModelTrainingDashboard() {
           <BrainCircuit size={16} aria-hidden />
           Model Training
         </h3>
-        {status?.trained_at && (
-          <span className="ml-training__header-meta num-mono">
-            {new Date(status.trained_at).toLocaleString()}
-          </span>
-        )}
+        <div className="ml-training__header-right">
+          {queueBadge && (
+            <span className="ml-training__queue-badge num-mono" title="ML train/validate worker queue">
+              {queueBadge}
+            </span>
+          )}
+          {status?.trained_at && (
+            <span className="ml-training__header-meta num-mono">
+              {new Date(status.trained_at).toLocaleString()}
+            </span>
+          )}
+        </div>
       </header>
 
       <section className="ml-training__controls">
@@ -1049,16 +1501,110 @@ export default function ModelTrainingDashboard() {
           </div>
         </div>
 
-        <JobProgressBar job={jobProgress} />
+        <details className="ml-training__advanced">
+          <summary>Advanced</summary>
+          <div className="ml-training__advanced-grid">
+            <label className="ml-training__advanced-field">
+              <span>n_folds</span>
+              <Input
+                type="number"
+                min={2}
+                max={8}
+                className="h-7 text-xs"
+                value={advanced.nFolds}
+                onChange={(e) => setAdvanced((a) => ({ ...a, nFolds: e.target.value }))}
+              />
+            </label>
+            <label className="ml-training__advanced-field">
+              <span>validate_max_bars</span>
+              <Input
+                type="number"
+                min={200}
+                max={20000}
+                step={100}
+                className="h-7 text-xs"
+                value={advanced.validateMaxBars}
+                onChange={(e) => setAdvanced((a) => ({ ...a, validateMaxBars: e.target.value }))}
+              />
+            </label>
+            <label className="ml-training__advanced-field">
+              <span>pbo_segments</span>
+              <Input
+                type="number"
+                min={2}
+                max={8}
+                className="h-7 text-xs"
+                disabled={strategy === 'RL_PPO_AGENT'}
+                value={advanced.pboSegments}
+                onChange={(e) => setAdvanced((a) => ({ ...a, pboSegments: e.target.value }))}
+              />
+            </label>
+            <label className="ml-training__advanced-field">
+              <span>pbo_max_combos</span>
+              <Input
+                type="number"
+                min={1}
+                max={16}
+                className="h-7 text-xs"
+                disabled={strategy === 'RL_PPO_AGENT'}
+                value={advanced.pboMaxCombos}
+                onChange={(e) => setAdvanced((a) => ({ ...a, pboMaxCombos: e.target.value }))}
+              />
+            </label>
+            {strategy === 'RL_PPO_AGENT' && (
+              <label className="ml-training__advanced-field">
+                <span>total_timesteps</span>
+                <Input
+                  type="number"
+                  min={256}
+                  max={500000}
+                  step={256}
+                  className="h-7 text-xs"
+                  value={advanced.totalTimesteps}
+                  onChange={(e) => setAdvanced((a) => ({ ...a, totalTimesteps: e.target.value }))}
+                />
+              </label>
+            )}
+            {DEEP_ML_STRATEGIES.has(strategy) && (
+              <label className="ml-training__advanced-field">
+                <span>epochs</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={500}
+                  className="h-7 text-xs"
+                  value={advanced.epochs}
+                  onChange={(e) => setAdvanced((a) => ({ ...a, epochs: e.target.value }))}
+                />
+              </label>
+            )}
+          </div>
+          <p className="ml-training__advanced-hint">
+            Defaults match prior dock hardcodes. Leave closed for identical behaviour.
+          </p>
+        </details>
+
+        <JobProgressBar
+          job={jobProgress}
+          serverProgress={serverProgress}
+          onCancel={activeJobId ? handleCancelJob : undefined}
+          cancelling={cancellingJob}
+        />
 
         {busyElsewhere && (
           <p className="text-xs text-amber-400/90">
-            Job running for {mlSession.strategy} / {mlSession.symbol} — switch back to that
-            pair to watch progress (it keeps going in the background).
+            Job running for {mlSession.strategy} / {mlSession.symbol}
+            {queueBadge ? ` · ${queueBadge}` : ''}
+            {' '}— switch back to that pair to watch progress.
           </p>
         )}
-
+        {!busyElsewhere && queueBadge && !(training || validating) && (
+          <p className="text-xs text-muted-foreground">
+            Worker queue: {queueBadge}
+          </p>
+        )}
         <MetricChips metrics={status?.metrics} />
+        <DeployReadinessStrip status={status} />
         <LossHistoryChart
           history={status?.loss_history}
           trainHistory={status?.train_history}
@@ -1107,7 +1653,7 @@ export default function ModelTrainingDashboard() {
             size="sm"
             className="h-8 text-xs gap-1"
             disabled={loading}
-            onClick={refreshAll}
+            onClick={() => refreshAll({ clearSessionValidation: true })}
           >
             <RefreshCw size={14} />
             Refresh
@@ -1125,57 +1671,62 @@ export default function ModelTrainingDashboard() {
         onCopyPin={handleCopyPin}
       />
 
-      {validation && (
+      {displayValidation && (
         <section className="ml-training__card">
-          <h4 className="ml-training__section-title">Validation result</h4>
-          {validation.ok === false && (
+          <div className="ml-training__card-head">
+            <h4 className="ml-training__section-title">Validation result</h4>
+            {displayValidation._persisted && (
+              <span className="ml-training__header-meta">from model status</span>
+            )}
+          </div>
+          {displayValidation.ok === false && (
             <p className="text-xs text-destructive">
-              {validation.error
-                || (Array.isArray(validation.folds) && validation.folds.find((f) => f?.error)?.error)
+              {displayValidation.error
+                || (Array.isArray(displayValidation.folds) && displayValidation.folds.find((f) => f?.error)?.error)
                 || 'Validation failed'}
             </p>
           )}
-          {validation.ok && (
+          {displayValidation.ok && (
             <div className="grid gap-2 sm:grid-cols-3 text-xs">
-              {(validation.mean_accuracy ?? validation.aggregate?.mean_oos_accuracy) != null && (
+              {(displayValidation.mean_accuracy ?? displayValidation.aggregate?.mean_oos_accuracy) != null && (
                 <div>
                   <span className="text-muted-foreground">Mean OOS accuracy</span>
                   <p className="num-mono font-medium">
-                    {fmtMetric(validation.mean_accuracy ?? validation.aggregate?.mean_oos_accuracy)}
+                    {fmtMetric(displayValidation.mean_accuracy ?? displayValidation.aggregate?.mean_oos_accuracy)}
                   </p>
                 </div>
               )}
-              {validation.n_folds != null && (
+              {displayValidation.n_folds != null && (
                 <div>
                   <span className="text-muted-foreground">Folds</span>
                   <p className="num-mono font-medium">
-                    {validation.successful_folds ?? validation.n_folds}/{validation.n_folds}
+                    {displayValidation.successful_folds ?? displayValidation.n_folds}/{displayValidation.n_folds}
                   </p>
                 </div>
               )}
-              {validation.pbo?.pbo != null && (
+              {displayValidation.pbo?.pbo != null && (
                 <div>
                   <span className="text-muted-foreground">PBO</span>
                   <p className={cn(
                     'num-mono font-medium',
-                    Number(validation.pbo.pbo) > 0.5 && 'text-destructive',
+                    Number(displayValidation.pbo.pbo) > 0.5 && 'text-destructive',
                   )}
                   >
-                    {fmtMetric(validation.pbo.pbo)}
+                    {fmtMetric(displayValidation.pbo.pbo)}
                   </p>
                 </div>
               )}
-              {validation.recommendation && (
+              {displayValidation.recommendation && (
                 <div className="sm:col-span-3">
                   <span className="text-muted-foreground">Recommendation</span>
-                  <p className="text-xs">{validation.recommendation}</p>
+                  <p className="text-xs">{displayValidation.recommendation}</p>
                 </div>
               )}
             </div>
           )}
-          {Array.isArray(validation.folds) && validation.folds.length > 0 && (
+          {Array.isArray(displayValidation.folds) && displayValidation.folds.length > 0 && (
             <ul className="ml-training__fold-list text-[0.65rem] text-muted-foreground">
-              {validation.folds.slice(0, 8).map((f, i) => (
+              {displayValidation.folds.slice(0, 8).map((f, i) => (
                 <li key={i} className={cn('num-mono', f.ok === false && 'text-destructive')}>
                   fold {f.fold ?? i + 1}
                   {f.ok === false
@@ -1187,6 +1738,43 @@ export default function ModelTrainingDashboard() {
                 </li>
               ))}
             </ul>
+          )}
+          {challengerHint && (
+            <div className="ml-training__challenger">
+              <div className="ml-training__challenger-text">
+                <p className="ml-training__challenger-title">Challenger beats champion</p>
+                <p className="text-[0.65rem] text-muted-foreground num-mono">
+                  OOS {fmtMetric(challengerHint.championOos)} → {fmtMetric(challengerHint.challengerOos)}
+                  {challengerHint.version?.version_id
+                    ? ` · ${challengerHint.version.version_id}`
+                    : ''}
+                  {challengerHint.alreadyLive ? ' · already live' : ''}
+                </p>
+              </div>
+              <div className="ml-training__challenger-actions">
+                {challengerHint.canActivate && challengerHint.version && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 text-[0.65rem] gap-1 shrink-0"
+                    disabled={Boolean(activatingVersionId)}
+                    onClick={() => handleActivateVersion(challengerHint.version)}
+                  >
+                    {activatingVersionId ? <Loader2 size={12} className="animate-spin" /> : null}
+                    Activate
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[0.65rem] shrink-0"
+                  onClick={dismissChallengerHint}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            </div>
           )}
         </section>
       )}
@@ -1233,17 +1821,166 @@ export default function ModelTrainingDashboard() {
         </ul>
       </section>
 
-      {retrainActions.length > 0 && (
+      <section className="ml-training__card">
+        <div className="ml-training__card-head">
+          <h4 className="ml-training__section-title">Recent runs</h4>
+          <span className="ml-training__header-meta">
+            {trainRuns.length} · {activeSymbol || '—'}
+          </span>
+        </div>
+        {trainRuns.length === 0 ? (
+          <p className="text-[0.65rem] text-muted-foreground">
+            No train/validate history yet for this symbol/strategy.
+          </p>
+        ) : (
+          <div className="ml-training__runs-scroll" onScroll={onRunsScroll}>
+            <table className="ml-training__runs-table">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Kind</th>
+                  <th>Result</th>
+                  <th className="text-right">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                <VirtualTablePadding height={runsWindow.topPad} colSpan={4} />
+                {runsWindow.slice.map((run) => {
+                  const metricHint = run.metrics?.mean_oos_accuracy
+                    ?? run.metrics?.mean_accuracy
+                    ?? run.metrics?.val_accuracy
+                    ?? run.metrics?.pbo;
+                  return (
+                    <tr key={run.id} title={run.error || run.version_id || ''}>
+                      <td className="num-mono">
+                        {run.finished_at
+                          ? new Date(run.finished_at).toLocaleString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                          : '—'}
+                      </td>
+                      <td>{run.kind || '—'}</td>
+                      <td className={cn(
+                        'num-mono',
+                        run.ok ? 'text-emerald-400' : 'text-destructive',
+                      )}
+                      >
+                        {run.ok ? 'ok' : (run.error === 'cancelled' ? 'cancelled' : 'fail')}
+                        {metricHint != null
+                          ? ` · ${fmtMetric(metricHint, 3, 'mean_oos_accuracy') ?? metricHint}`
+                          : ''}
+                      </td>
+                      <td className="num-mono text-right">
+                        {formatDurationMs(run.duration_ms)}
+                      </td>
+                    </tr>
+                  );
+                })}
+                <VirtualTablePadding height={runsWindow.bottomPad} colSpan={4} />
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {(retrainActions.length > 0 || retrainPending.length > 0 || retrainHistory.length > 0) && (
         <section className="ml-training__card ml-training__card--warn">
-          <h4 className="ml-training__section-title">Retrain queue</h4>
-          <ul className="space-y-1 text-[0.65rem] text-muted-foreground">
-            {retrainActions.slice(0, 8).map((a, i) => (
-              <li key={`${a.strategy}-${a.symbol}-${i}`} className="num-mono">
-                {a.strategy} / {a.symbol}
-                {a.reason ? ` — ${a.reason}` : ''}
-              </li>
-            ))}
-          </ul>
+          <div className="ml-training__card-head">
+            <h4 className="ml-training__section-title">Retrain audit</h4>
+            <span className="ml-training__header-meta">
+              {retrainActions.length} due · {retrainPending.length} pending
+            </span>
+          </div>
+
+          {retrainActions.length > 0 && (
+            <div className="ml-training__retrain-block">
+              <p className="ml-training__subsection-label">Recommended</p>
+              <ul className="ml-training__retrain-list">
+                {retrainActions.slice(0, 8).map((a, i) => {
+                  const key = `${String(a.symbol || '').toUpperCase()}:${String(a.strategy || '').toUpperCase()}`;
+                  const running = runNowKey === key;
+                  return (
+                    <li key={`${key}-${i}`} className="ml-training__retrain-row">
+                      <div className="ml-training__retrain-meta">
+                        <span className="num-mono font-medium">{a.strategy} / {a.symbol}</span>
+                        <span className="text-muted-foreground">
+                          {a.reason || 'retrain'}
+                          {a.model_age_hours != null ? ` · age ${a.model_age_hours}h` : ''}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[0.65rem] gap-1 shrink-0"
+                        disabled={training || validating || busyElsewhere || Boolean(runNowKey)}
+                        onClick={() => handleRunNow(a.strategy, a.symbol)}
+                      >
+                        {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                        Run now
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {retrainPending.length > 0 && (
+            <div className="ml-training__retrain-block">
+              <p className="ml-training__subsection-label">Queued (auto-drain or Run now)</p>
+              <ul className="ml-training__retrain-list">
+                {retrainPending.slice(0, 8).map((p) => {
+                  const running = runNowKey === p.key;
+                  return (
+                    <li key={p.key} className="ml-training__retrain-row">
+                      <div className="ml-training__retrain-meta">
+                        <span className="num-mono font-medium">{p.strategy} / {p.symbol}</span>
+                        <span className="text-muted-foreground">
+                          {(p.reasons && p.reasons[0]) || 'queued'}
+                          {p.requested_at
+                            ? ` · ${new Date(p.requested_at).toLocaleString()}`
+                            : ''}
+                        </span>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[0.65rem] gap-1 shrink-0"
+                        disabled={training || validating || busyElsewhere || Boolean(runNowKey)}
+                        onClick={() => handleRunNow(p.strategy, p.symbol)}
+                      >
+                        {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                        Run now
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {retrainHistory.length > 0 && (
+            <div className="ml-training__retrain-block">
+              <p className="ml-training__subsection-label">Recent requests</p>
+              <ul className="space-y-1 text-[0.65rem] text-muted-foreground">
+                {retrainHistory.slice(0, 8).map((h, i) => (
+                  <li key={`${h.key || h.source}-${h.requested_at || i}`} className="num-mono">
+                    {h.key || '—'}
+                    {h.source ? ` · ${h.source}` : ''}
+                    {h.reason ? ` — ${h.reason}` : ''}
+                    {h.requested_at
+                      ? ` · ${new Date(h.requested_at).toLocaleString()}`
+                      : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
     </div>

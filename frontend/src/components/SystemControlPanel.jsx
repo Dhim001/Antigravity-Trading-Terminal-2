@@ -193,6 +193,22 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     },
   );
 
+  const handleArchiveImport = () => {
+    const symbol = window.prompt('Symbol for CSV/Parquet import (e.g. BTCUSDT):', activeSymbol || '');
+    if (!symbol?.trim()) return;
+    const path = window.prompt('Absolute path to CSV or Parquet file on the server:');
+    if (!path?.trim()) return;
+    runArchiveAction(
+      Action.ADMIN_ARCHIVE_IMPORT,
+      { symbol: symbol.trim().toUpperCase(), path: path.trim() },
+      {
+        pendingKey: 'import',
+        startLabel: `Importing ${symbol.trim().toUpperCase()} from ${path.trim()}…`,
+        timeoutMs: 180000,
+      },
+    );
+  };
+
   const tickRate = (1.0 / (systemStats.tick_interval || tickInterval || 0.25)).toFixed(1);
 
   useEffect(() => {
@@ -778,6 +794,19 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                     : <Database data-icon="inline-start" aria-hidden />}
                   Export Parquet (90d)
                   {parquetReason && <span className="ml-1 text-muted-foreground">· {parquetReason}</span>}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  disabled={Boolean(archivePending)}
+                  title="Import a server-side CSV/Parquet file into market_bars_1m"
+                  onClick={handleArchiveImport}
+                >
+                  {archivePending === 'import'
+                    ? <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden />
+                    : <Database data-icon="inline-start" aria-hidden />}
+                  Import user file
                 </Button>
                 </div>
                 {(systemStats.archive?.ticks ?? 0) > 0 && (

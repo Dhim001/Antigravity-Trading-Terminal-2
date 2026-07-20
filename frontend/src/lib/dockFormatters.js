@@ -3,9 +3,10 @@
  * Extracted from ResizableDock.jsx to keep panel modules lightweight.
  */
 
-/** Decimal count for sub-dollar symbols. */
-export const priceDecimals = (sym, price) =>
-  (sym?.includes('XRP') || sym?.includes('ADA') || sym?.includes('DOGE') || (price != null && price < 2.0)) ? 4 : 2;
+import { getPriceDecimals } from './formatPrice';
+
+/** Decimal count — delegates to symbol-stable getPriceDecimals (no live-price flip). */
+export const priceDecimals = (sym, _price) => getPriceDecimals(sym);
 
 /** Format a number with fixed decimals (locale-aware). */
 export const fmtP = (n, d = 2) =>

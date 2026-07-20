@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { calendarHeatmapData, calendarPnlRange } from '@/lib/analytics/helpers';
 
 export default function PnlCalendar({
@@ -72,7 +73,7 @@ export default function PnlCalendar({
     const mount = () => {
       if (disposed || chart) return;
       if (el.clientWidth < 2 || el.clientHeight < 2) return;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartInst.current = chart;
     };
     const ro = new ResizeObserver(() => {

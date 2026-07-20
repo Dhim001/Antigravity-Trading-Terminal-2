@@ -304,7 +304,7 @@ class AlphaDecayMonitor:
                     "reasons": decay_reasons,
                 })
 
-                # ML-specific retrain: use the retrain scheduler for ML strategies
+                # ML-specific retrain: queue via scheduler (drain loop / Run now trains).
                 ml_retrained = False
                 if ALPHA_DECAY_AUTO_RETRAIN:
                     try:
@@ -321,15 +321,28 @@ class AlphaDecayMonitor:
                             scheduler = get_retrain_scheduler()
                             should, reason = scheduler.should_retrain(retrain_id, symbol, alpha_score=0.8)
                             if should:
-                                scheduler.record_retrain(retrain_id, symbol)
-                                results["retrained_models"].append(bot_id)
-                                ml_retrained = True
-                                await self.bot_manager.log_bot_event(
-                                    bot_id,
-                                    "INFO",
-                                    f"Alpha Decay: ML retrain scheduled ({reason}). "
-                                    f"Model will be retrained with walk-forward validation.",
+                                req = scheduler.request_retrain(
+                                    strategy=retrain_id,
+                                    symbol=symbol,
+                                    reason=f"alpha decay ({reason}): {'; '.join(decay_reasons[:2])}",
+                                    source="alpha_decay",
                                 )
+                                if req.get("queued"):
+                                    results["retrained_models"].append(bot_id)
+                                    ml_retrained = True
+                                    await self.bot_manager.log_bot_event(
+                                        bot_id,
+                                        "INFO",
+                                        f"Alpha Decay: ML retrain queued ({reason}). "
+                                        f"Auto-drain or Model Training → Run now will train "
+                                        f"{retrain_id}/{symbol}.",
+                                    )
+                                else:
+                                    await self.bot_manager.log_bot_event(
+                                        bot_id,
+                                        "INFO",
+                                        f"Alpha Decay: ML retrain not queued ({req.get('reason')}).",
+                                    )
                     except ImportError:
                         pass
 

@@ -67,8 +67,4 @@ HTTP_BINDINGS: list[tuple[str, str, str, dict[str, str] | None]] = [
     ("GET", "/api/v1/risk/config", Action.RISK_GET_CONFIG, None),
     ("POST", "/api/v1/risk/preview", Action.RISK_PREVIEW_ENTRY, None),
     ("POST", "/api/v1/risk/basket-correlation", Action.RISK_BASKET_CORRELATION, None),
-    ("POST", "/api/v1/copilot/chat", Action.COPILOT_CHAT, None),
-    ("POST", "/api/v1/copilot/confirm", Action.COPILOT_CONFIRM, None),
-    ("GET", "/api/v1/copilot/history", Action.COPILOT_HISTORY, None),
-    ("DELETE", "/api/v1/copilot/history/{session_id}", Action.COPILOT_CLEAR, {"session_id": "session_id"}),
 ]

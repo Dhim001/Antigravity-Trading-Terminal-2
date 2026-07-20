@@ -60,6 +60,11 @@ class AgentEventBus:
 
     Construction is sync-safe. When Redis is configured, call ``await start()``
     from a running event loop (server startup) so the listener can be scheduled.
+
+    Production today mostly polls ``recent_events`` (e.g. ``BOT_PAUSED`` in
+    regime rotation). ``subscribe`` handlers are supported but none are
+    registered yet — keep publishing so history stays available for pollers
+    and future subscribers.
     """
 
     def __init__(self, max_history: int = 1000):
@@ -69,6 +74,28 @@ class AgentEventBus:
         self._redis = redis.from_url(redis_url) if redis_url else None
         self._pubsub = self._redis.pubsub() if self._redis else None
         self._listener_task: asyncio.Task | None = None
+        # Cap concurrent handler tasks per publish burst (MEMORY #16).
+        self._handler_limit = max(1, int(os.environ.get("AGENT_EVENT_HANDLER_CONCURRENCY", "32")))
+        self._handler_sem: asyncio.Semaphore | None = None
+
+    def _get_handler_sem(self) -> asyncio.Semaphore:
+        if self._handler_sem is None:
+            self._handler_sem = asyncio.Semaphore(self._handler_limit)
+        return self._handler_sem
+
+    async def _spawn_handler(self, handler: Handler, event: AgentEvent) -> None:
+        """Run handler under concurrency cap without unbounded Task pile-up."""
+        sem = self._get_handler_sem()
+        # Acquire before create_task so bursts wait here instead of queuing Tasks.
+        await sem.acquire()
+
+        async def _run() -> None:
+            try:
+                await self._safe_run(handler, event)
+            finally:
+                sem.release()
+
+        asyncio.create_task(_run())
 
     async def start(self) -> None:
         """Schedule Redis pub/sub listener once a running loop is available."""
@@ -114,7 +141,7 @@ class AgentEventBus:
                 event = AgentEvent.from_json(message["data"])
                 self._history.append(event)
                 for handler in self._handlers.get(event.event_type, []):
-                    asyncio.create_task(self._safe_run(handler, event))
+                    await self._spawn_handler(handler, event)
             except Exception as exc:
                 logger.error("Failed to parse or handle Redis AgentEvent: %s", exc)
 
@@ -125,11 +152,15 @@ class AgentEventBus:
             logger.error("AgentEventBus handler error on %s: %s", ev.event_type, exc)
 
     def subscribe(self, event_type: str, handler: Handler) -> None:
-        """Subscribe a callback to a specific agent event type."""
+        """Register a handler for ``event_type`` (optional; history still updated on publish)."""
         self._handlers.setdefault(event_type, []).append(handler)
 
     async def publish(self, event: AgentEvent) -> None:
-        """Publish an event to Redis (or locally if Redis is disabled)."""
+        """Publish an event to Redis (or locally if Redis is disabled).
+
+        Local mode appends to the ring buffer used by ``recent_events`` even when
+        no subscribers are registered.
+        """
         if self._redis:
             await self._redis.publish("agent_events", event.to_json())
             return
@@ -137,7 +168,7 @@ class AgentEventBus:
         # Fallback to local memory bus (must run under an event loop).
         self._history.append(event)
         for handler in self._handlers.get(event.event_type, []):
-            asyncio.create_task(self._safe_run(handler, event))
+            await self._spawn_handler(handler, event)
 
     def recent_events(self, event_type: str, lookback_sec: float) -> list[AgentEvent]:
         """Fetch recently published events of a certain type within the lookback window."""

@@ -1,13 +1,32 @@
 import { toast } from 'sonner';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
-import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
-import { saveFullBacktestResults } from '../services/backtestStorage';
+import { buildBacktestOverlay } from '../lib/backtestSlim';
+import { trimBacktestPayloadAsync } from '../lib/backtestSlimAsync';
+import { saveFullBacktestResults, offloadBacktestFromMemory } from '../services/backtestStorage';
 import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
 import { queueMarketUpdate } from '../services/marketUpdateBatch';
+
+/**
+ * Persist full payload; keep slim stub in Zustand unless Lab is already open
+ * (MEMORY_CENTRIC_REVIEW #11 — Lab restores from session/IDB on open).
+ */
+export function storeBacktestResultsAware(storeActions, results) {
+  if (!results) {
+    storeActions.setBacktestResults?.(null);
+    return;
+  }
+  const labOpen = Boolean(useResearchStore.getState().backtestLabOpen);
+  if (labOpen) {
+    saveFullBacktestResults(results);
+    storeActions.setBacktestResults(results);
+    return;
+  }
+  storeActions.setBacktestResults(offloadBacktestFromMemory(results));
+}
 
 /** Background feature errors that must not cancel an in-flight backtest. */
 const BACKTEST_UNRELATED_ERROR_PATTERNS = [
@@ -112,6 +131,16 @@ export function applyServerMessage(type, data, storeActions, meta) {
       storeActions.updateOrderBooks(data);
       break;
     case MessageType.ORDER_RESULT:
+      // Risk handlers reuse ORDER_RESULT as a generic reply envelope. Do not
+      // push those into orderResult or OrderEntryWidget will toast every
+      // config load / entry preview / basket-correlation check.
+      if (
+        data?.risk_config != null
+        || data?.risk_preview != null
+        || data?.basket_correlation != null
+      ) {
+        break;
+      }
       storeActions.setOrderResult(data);
       if (data?.status === 'ambiguous') {
         toast.warning(data.message || 'Order outcome unknown — reconcile before retrying.');
@@ -124,6 +153,9 @@ export function applyServerMessage(type, data, storeActions, meta) {
       }
       break;
     case MessageType.ORDER_PREVIEW:
+      // HTTP callers (previewOrder / OrderEntryWidget) read the frame from the
+      // invokeHttpAction envelope. WS dual-transport may still emit this type;
+      // ignore here so we do not toast or overwrite local preview state.
       break;
     case MessageType.TRADE_HISTORY:
       storeActions.setTradeHistory(data);
@@ -163,6 +195,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
         });
       }
       break;
+    case MessageType.ML_JOB_PROGRESS:
+      import('@/lib/mlTrainingSession').then(({ applyMlJobProgressMessage }) => {
+        applyMlJobProgressMessage(data);
+      });
+      break;
     case MessageType.BACKTEST_RESULT:
       stopBacktestJobPolling();
       clearBacktestClientTimeout();
@@ -175,49 +212,50 @@ export function applyServerMessage(type, data, storeActions, meta) {
       }
       if (data?.status === 'success' && data?.results && !data.results.error) {
         storeActions.clearBacktestLastError?.();
-        const results = trimBacktestPayload(data.results);
-        saveFullBacktestResults(results);
-        storeActions.setBacktestResults(results);
-        const sym = results?.meta?.symbol;
-        const pnl = results?.total_pnl;
-        const trades = results?.trade_count ?? 0;
-        const explained = results?.reasoning?.trade_count
-          ?? results?.reasoning?.trades?.length
-          ?? 0;
-        const pnlLabel = pnl != null
-          ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
-          : '—';
-        const explainSuffix = explained > 0 ? ` · ${explained} LLM explained` : '';
-        const readiness = results?.strategy_readiness;
-        const readinessBad = readiness && readiness.ok === false;
-        const readinessMsg = readiness?.message
-          || (Array.isArray(readiness?.warnings) ? readiness.warnings[0] : null);
-        if (readinessBad && readinessMsg) {
-          toast.warning(`Backtest · 0 actionable trades — ${readinessMsg}`, {
-            duration: 10_000,
-            action: {
-              label: 'Open Lab',
-              onClick: () => useResearchStore.getState().openBacktestLab('results'),
-            },
+        // MEMORY #24 — trim on worker thread when available.
+        void trimBacktestPayloadAsync(data.results).then((results) => {
+          storeBacktestResultsAware(storeActions, results);
+          const sym = results?.meta?.symbol;
+          const pnl = results?.total_pnl;
+          const trades = results?.trade_count ?? 0;
+          const explained = results?.reasoning?.trade_count
+            ?? results?.reasoning?.trades?.length
+            ?? 0;
+          const pnlLabel = pnl != null
+            ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
+            : '—';
+          const explainSuffix = explained > 0 ? ` · ${explained} LLM explained` : '';
+          const readiness = results?.strategy_readiness;
+          const readinessBad = readiness && readiness.ok === false;
+          const readinessMsg = readiness?.message
+            || (Array.isArray(readiness?.warnings) ? readiness.warnings[0] : null);
+          if (readinessBad && readinessMsg) {
+            toast.warning(`Backtest · 0 actionable trades — ${readinessMsg}`, {
+              duration: 10_000,
+              action: {
+                label: 'Open Lab',
+                onClick: () => useResearchStore.getState().openBacktestLab('results'),
+              },
+            });
+          } else {
+            toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
+              action: {
+                label: 'Open Lab',
+                onClick: () => useResearchStore.getState().openBacktestLab('results'),
+              },
+            });
+          }
+          const overlay = buildBacktestOverlay(results);
+          if (overlay) {
+            storeActions.setBacktestOverlay(overlay);
+          }
+          if (results?.sweep) {
+            const comboCount = results?.sweep?.configs?.length || results?.sweep?.sweep_rows?.length || '?';
+            toast.success(`Sweep complete · best of ${comboCount} combos · $${Number(results.total_pnl ?? 0).toFixed(2)}`);
+          }
+          import('./endpoints').then(({ fetchBacktestRuns }) => {
+            fetchBacktestRuns(storeActions, sym);
           });
-        } else {
-          toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
-            action: {
-              label: 'Open Lab',
-              onClick: () => useResearchStore.getState().openBacktestLab('results'),
-            },
-          });
-        }
-        const overlay = buildBacktestOverlay(results);
-        if (overlay) {
-          storeActions.setBacktestOverlay(overlay);
-        }
-        if (results?.sweep) {
-          const comboCount = results?.sweep?.configs?.length || results?.sweep?.sweep_rows?.length || '?';
-          toast.success(`Sweep complete · best of ${comboCount} combos · $${Number(results.total_pnl ?? 0).toFixed(2)}`);
-        }
-        import('./endpoints').then(({ fetchBacktestRuns }) => {
-          fetchBacktestRuns(storeActions, sym);
         });
       } else {
         const msg = data?.results?.error || data?.message || 'Backtest failed';

@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
@@ -43,7 +44,7 @@ function EChartPanel({ option, className, deps = [] }) {
     const mount = () => {
       if (disposed || chart) return;
       if (el.clientWidth < 2 || el.clientHeight < 2) return;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       inst.current = chart;
     };
     const ro = new ResizeObserver(() => {

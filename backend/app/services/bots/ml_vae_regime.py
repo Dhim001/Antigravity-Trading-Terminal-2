@@ -140,6 +140,7 @@ def train_vae_regime_model(
     torch, nn = _get_torch()
 
     cfg = merge_strategy_config("VAE_REGIME_DETECTOR", config or {})
+    epochs = int(cfg.get("epochs", epochs))
     hidden_dim = int(cfg.get("hidden_dim", 64))
     latent_dim = int(cfg.get("latent_dim", 16))
     lr = float(cfg.get("learning_rate", 0.001))
@@ -184,7 +185,16 @@ def train_vae_regime_model(
     best_state = None
     loss_history: list[dict] = []
 
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+    )
+
+    progress_path = progress_path_from_config(cfg)
     for epoch in range(epochs):
+        if ml_cancel_requested(progress_path):
+            return cancelled_train_result(symbol, "VAE_REGIME_DETECTOR")
         model.train()
         indices = torch.randperm(len(X_t))
         epoch_loss = 0.0
@@ -276,14 +286,16 @@ def train_vae_regime_model(
         json.dump(metadata, fh, indent=2)
 
     _vae_store.invalidate(symbol)
-    try:
-        from app.services.bots.ml_model_artifacts import snapshot_current_version
-        snap = snapshot_current_version(_model_dir(symbol), strategy="VAE_REGIME_DETECTOR")
-        if snap:
-            metadata["version_id"] = snap.get("version_id")
-            metadata["version_path"] = snap.get("path")
-    except Exception:
-        logger.exception("Failed to snapshot VAE version for %s", symbol)
+    skip_snapshot = bool(cfg.get("skip_snapshot", cfg.get("_wf_mode", False)))
+    if not skip_snapshot:
+        try:
+            from app.services.bots.ml_model_artifacts import snapshot_current_version
+            snap = snapshot_current_version(_model_dir(symbol), strategy="VAE_REGIME_DETECTOR")
+            if snap:
+                metadata["version_id"] = snap.get("version_id")
+                metadata["version_path"] = snap.get("path")
+        except Exception:
+            logger.exception("Failed to snapshot VAE version for %s", symbol)
     logger.info("VAE regime model trained for %s (n=%d, baseline_err=%.6f)", symbol, n, baseline_error)
     return {"ok": True, "symbol": symbol, **metadata}
 
@@ -292,11 +304,19 @@ def train_vae_regime_model(
 
 
 class VaeModelStore:
-    def __init__(self):
+    def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
         self._sessions: dict[str, Any] = {}
         self._metadata: dict[str, dict] = {}
         self._scalers: dict[str, dict] = {}
         self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._sessions, self._metadata, self._scalers, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     @staticmethod
     def _cache_key(symbol: str, model_version: str | None) -> str:
@@ -305,11 +325,14 @@ class VaeModelStore:
     def invalidate(self, symbol: str | None = None):
         if symbol:
             prefix = str(symbol).upper() + "|"
+            self._lru.discard_prefix(str(symbol).upper())
+            self._lru.discard_prefix(prefix)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
                     if k == str(symbol).upper() or k.startswith(prefix):
                         d.pop(k, None)
         else:
+            self._lru.clear()
             self._sessions.clear()
             self._metadata.clear()
             self._scalers.clear()
@@ -355,6 +378,7 @@ class VaeModelStore:
             return None
         mtime = os.path.getmtime(path)
         if key in self._sessions and self._mtime.get(key) == mtime:
+            self._lru.touch(key)
             return self._sessions[key]
         try:
             import onnxruntime as ort
@@ -375,6 +399,7 @@ class VaeModelStore:
             return None
         self._sessions[key] = session
         self._mtime[key] = mtime
+        self._lru.touch(key)
         return session
 
 

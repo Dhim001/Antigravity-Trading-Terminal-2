@@ -6,6 +6,9 @@ import {
   estimateRenkoBrickSize,
   applyCandleTransform,
   isCandleChartType,
+  heikinAshiBar,
+  renkoAlignedBar,
+  patchLastTransformedMain,
 } from './candleTransforms';
 import { computeVolumeProfile } from './volumeProfile';
 import {
@@ -53,6 +56,37 @@ describe('candleTransforms — Heikin-Ashi', () => {
   it('returns [] for empty input', () => {
     expect(toHeikinAshi([])).toEqual([]);
   });
+
+  it('heikinAshiBar matches full-series last bar on forming update', () => {
+    const bars = [
+      bar(1, 10, 12, 9, 11),
+      bar(2, 11, 13, 10, 12),
+    ];
+    const full = toHeikinAshi(bars);
+    const last = heikinAshiBar(bars[1], full[0].open, full[0].close, false);
+    expect(last.open).toBeCloseTo(full[1].open);
+    expect(last.close).toBeCloseTo(full[1].close);
+    expect(last.high).toBeCloseTo(full[1].high);
+    expect(last.low).toBeCloseTo(full[1].low);
+  });
+
+  it('patchLastTransformedMain mutates only the last HA slot', () => {
+    const bars = [
+      bar(1, 10, 12, 9, 11),
+      bar(2, 11, 13, 10, 12),
+    ];
+    const full = toHeikinAshi(bars);
+    const cache = {
+      main: full.map((c) => [c.open, c.close, c.low, c.high]),
+    };
+    const first = [...cache.main[0]];
+    const updated = { ...bars[1], high: 14, close: 13 };
+    expect(patchLastTransformedMain(cache, updated, 'heikin', 1)).toBe(true);
+    expect(cache.main[0]).toEqual(first);
+    const expected = heikinAshiBar(updated, full[0].open, full[0].close, false);
+    expect(cache.main[1][1]).toBeCloseTo(expected.close);
+    expect(cache.main[1][3]).toBeCloseTo(expected.high);
+  });
 });
 
 describe('candleTransforms — Renko', () => {
@@ -94,6 +128,22 @@ describe('candleTransforms — Renko', () => {
     expect(aligned[1].open).toBe(aligned[1].close); // no full brick → flat
     expect(aligned[2].brickDir).toBe(1);
     expect(aligned[3].close).toBe(102);
+  });
+
+  it('renkoAlignedBar + patch matches full aligned last bar', () => {
+    const bars = [
+      bar(1, 100, 100, 100, 100),
+      bar(2, 100, 101, 100, 101.2),
+    ];
+    const aligned = toRenkoAligned(bars, 1);
+    const cache = {
+      main: aligned.map((c) => [c.open, c.close, c.low, c.high]),
+    };
+    const updated = { ...bars[1], close: 102.1, high: 102.1 };
+    expect(patchLastTransformedMain(cache, updated, 'renko', 1, { renkoBrickSize: 1 })).toBe(true);
+    const expected = renkoAlignedBar(updated, aligned[1].open, 1);
+    expect(cache.main[1][0]).toBe(expected.open);
+    expect(cache.main[1][1]).toBe(expected.close);
   });
 
   it('applyCandleTransform routes by chart type', () => {

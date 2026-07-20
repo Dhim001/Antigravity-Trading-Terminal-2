@@ -165,11 +165,19 @@ def build_adjacency_from_correlations(
 class GnnModelStore:
     """Stores GNN models per basket (not per symbol — GNN operates on baskets)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
         self._sessions: dict[str, Any] = {}
         self._metadata: dict[str, dict] = {}
         self._scalers: dict[str, dict] = {}
         self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._sessions, self._metadata, self._scalers, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     @staticmethod
     def _cache_key(basket: str, model_version: str | None) -> str:
@@ -178,11 +186,14 @@ class GnnModelStore:
     def invalidate(self, basket=None):
         if basket:
             prefix = str(basket).upper() + "|"
+            self._lru.discard_prefix(str(basket).upper())
+            self._lru.discard_prefix(prefix)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
                     if k == str(basket).upper() or k.startswith(prefix):
                         d.pop(k, None)
         else:
+            self._lru.clear()
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 d.clear()
 
@@ -235,6 +246,7 @@ class GnnModelStore:
             return None
         mt = os.path.getmtime(path)
         if key in self._sessions and self._mtime.get(key) == mt:
+            self._lru.touch(key)
             return self._sessions[key]
         try:
             import onnxruntime as ort
@@ -254,6 +266,7 @@ class GnnModelStore:
             return None
         self._sessions[key] = s
         self._mtime[key] = mt
+        self._lru.touch(key)
         return s
 
 
@@ -283,6 +296,7 @@ def train_gnn_model(
 
     torch, nn = _get_torch()
     cfg = merge_strategy_config("GNN_CROSS_ASSET", config or {})
+    epochs = int(cfg.get("epochs", epochs))
     basket = str(cfg.get("basket_id") or symbol or "").upper()
     if not basket:
         return {"ok": False, "error": "basket_id or symbol required"}
@@ -356,7 +370,16 @@ def train_gnn_model(
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+    )
+
+    progress_path = progress_path_from_config(cfg)
     for ep in range(epochs):
+        if ml_cancel_requested(progress_path):
+            return cancelled_train_result(basket, "GNN_CROSS_ASSET")
         model.train()
         idx = torch.randperm(len(X_t))
         ep_loss = 0.0
@@ -458,14 +481,16 @@ def train_gnn_model(
         json.dump(meta, f, indent=2)
 
     _gnn_store.invalidate(basket)
-    try:
-        from app.services.bots.ml_model_artifacts import snapshot_current_version
-        snap = snapshot_current_version(_model_dir(basket), strategy="GNN_CROSS_ASSET")
-        if snap:
-            meta["version_id"] = snap.get("version_id")
-            meta["version_path"] = snap.get("path")
-    except Exception:
-        logger.exception("Failed to snapshot GNN version for %s", basket)
+    skip_snapshot = bool(cfg.get("skip_snapshot", cfg.get("_wf_mode", False)))
+    if not skip_snapshot:
+        try:
+            from app.services.bots.ml_model_artifacts import snapshot_current_version
+            snap = snapshot_current_version(_model_dir(basket), strategy="GNN_CROSS_ASSET")
+            if snap:
+                meta["version_id"] = snap.get("version_id")
+                meta["version_path"] = snap.get("path")
+        except Exception:
+            logger.exception("Failed to snapshot GNN version for %s", basket)
 
     logger.info("GNN model trained for basket %s (n=%d, val_acc=%.3f)", basket, n, acc)
     return {"ok": True, "symbol": str(symbol).upper(), "basket_id": basket, **meta}

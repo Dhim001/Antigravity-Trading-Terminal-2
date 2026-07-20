@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 
 function parseSnapshotTime(ts) {
   if (ts == null) return null;
@@ -38,7 +39,7 @@ export default function BotSnapshotChart({ snapshots, allocation = 0 }) {
       if (disposed || chart) return false;
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartRef.current = chart;
       return true;
     };

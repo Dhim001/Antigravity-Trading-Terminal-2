@@ -9,6 +9,7 @@ Designed to run as part of the bot manager's periodic maintenance loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -96,8 +97,8 @@ class MlRetrainScheduler:
     Usage:
         scheduler = MlRetrainScheduler()
         actions = scheduler.check(active_bots)
-        for action in actions:
-            await action["retrain_fn"](...)    """
+        # Queue via request_retrain(); ml_retrain_drain_loop submits train jobs.
+    """
 
     def __init__(
         self,
@@ -114,6 +115,42 @@ class MlRetrainScheduler:
         self._last_retrain: dict[str, float] = {}  # symbol_strategy → timestamp
         self._pending: dict[str, dict[str, Any]] = {}  # key → request info
         self._retrain_history: list[dict[str, Any]] = []  # audit trail
+        self._pending_ttl_sec = max(3600.0, float(self.cooldown_hours) * 3600 * 2)
+        self._max_last_retrain = 256
+        self._max_pending = 64
+
+    def _purge_retrain_maps(self) -> None:
+        """TTL + size caps for pending/cooldown maps (MEMORY #14)."""
+        now = time.time()
+        ttl = self._pending_ttl_sec
+        expired = []
+        for key, info in list(self._pending.items()):
+            requested = info.get("requested_at") or ""
+            try:
+                # ISO Z timestamps → epoch; fall back to drop if unparseable + over cap
+                from datetime import datetime as _dt
+                ts = _dt.fromisoformat(str(requested).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ts = 0.0
+            if ts and (now - ts) > ttl:
+                expired.append(key)
+            elif not ts:
+                expired.append(key)
+        for key in expired:
+            self._pending.pop(key, None)
+
+        while len(self._pending) > self._max_pending:
+            # Drop oldest by requested_at
+            oldest = min(
+                self._pending.items(),
+                key=lambda kv: str(kv[1].get("requested_at") or ""),
+            )[0]
+            self._pending.pop(oldest, None)
+
+        if len(self._last_retrain) > self._max_last_retrain:
+            ordered = sorted(self._last_retrain.items(), key=lambda kv: kv[1])
+            for key, _ in ordered[: len(ordered) - self._max_last_retrain]:
+                self._last_retrain.pop(key, None)
 
     def _cooldown_key(self, strategy: str, symbol: str) -> str:
         return f"{symbol.upper()}:{strategy.upper()}"
@@ -157,6 +194,8 @@ class MlRetrainScheduler:
         """
         key = self._cooldown_key(strategy, symbol)
 
+        self._purge_retrain_maps()
+
         if self._is_on_cooldown(strategy, symbol):
             logger.debug(
                 "Retrain request from %s for %s skipped (cooldown)", source, key,
@@ -193,6 +232,7 @@ class MlRetrainScheduler:
 
     def get_pending(self) -> dict[str, dict[str, Any]]:
         """Return all pending retrain requests (for dashboard display)."""
+        self._purge_retrain_maps()
         return dict(self._pending)
 
     def get_retrain_history(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -289,6 +329,184 @@ class MlRetrainScheduler:
         if alpha_score > self.alpha_threshold:
             return True, f"alpha_decay ({alpha_score:.2f} > {self.alpha_threshold:.2f})"
         return False, "healthy"
+
+    def pop_next_pending(self, *, ml_only: bool = True) -> dict[str, Any] | None:
+        """Remove and return the oldest pending retrain request.
+
+        When ``ml_only`` is True, skip entries that are not ML signal strategies
+        (e.g. META_LABEL — those train via their own callers).
+        """
+        self._purge_retrain_maps()
+        if not self._pending:
+            return None
+        ordered = sorted(
+            self._pending.items(),
+            key=lambda kv: str(kv[1].get("requested_at") or ""),
+        )
+        for key, info in ordered:
+            strategy = str(info.get("strategy") or "").upper()
+            if ml_only and not is_ml_strategy(strategy):
+                continue
+            self._pending.pop(key, None)
+            out = dict(info)
+            out["key"] = key
+            return out
+        return None
+
+
+async def _resolve_drain_candles(bot_manager, symbol: str, strategy: str) -> list[dict]:
+    """Best-effort candle pull + indicator enrich for auto-retrain."""
+    from app.services.bots.candle_source import get_bot_candles
+    from app.services.bots.screener import MarketScreenerService
+
+    feed = getattr(getattr(bot_manager, "oms", None), "feed", None)
+    if feed is None:
+        return []
+    candles = await asyncio.to_thread(
+        get_bot_candles,
+        symbol,
+        feed,
+        timeframe="1m",
+        min_bars=2000,
+    )
+    if not candles or len(candles) < 200:
+        return list(candles or [])
+    try:
+        screener = MarketScreenerService()
+
+        def _enrich():
+            return screener.process_candles(
+                symbol, candles, {}, strategy, full_history=True,
+            )
+
+        df = await asyncio.to_thread(_enrich)
+        if df is not None and not getattr(df, "empty", True):
+            out = [dict(r) for r in df.to_dict("records")]
+            for row in out:
+                row.setdefault("_symbol", symbol)
+            return out
+    except Exception:
+        logger.exception("Drain enrich failed for %s/%s — using raw candles", strategy, symbol)
+    out = [dict(c) for c in candles]
+    for row in out:
+        row.setdefault("_symbol", symbol)
+    return out
+
+
+async def drain_one_pending_retrain(
+    bot_manager,
+    *,
+    event_bus=None,
+) -> dict[str, Any] | None:
+    """Pop one pending ML retrain and submit a train job. Returns outcome or None."""
+    scheduler = get_retrain_scheduler()
+    item = scheduler.pop_next_pending(ml_only=True)
+    if not item:
+        return None
+
+    strategy = str(item.get("strategy") or "").upper()
+    symbol = str(item.get("symbol") or "").upper()
+    if not strategy or not symbol:
+        return {"ok": False, "error": "missing strategy/symbol", "item": item}
+
+    try:
+        candles = await _resolve_drain_candles(bot_manager, symbol, strategy)
+    except Exception as exc:
+        logger.exception("Drain candle fetch failed for %s/%s", strategy, symbol)
+        # Re-queue so a later cycle can retry.
+        scheduler.request_retrain(
+            strategy, symbol,
+            reason=f"drain retry after candle fetch error: {exc}",
+            source="retrain_drain",
+        )
+        return {"ok": False, "error": str(exc), "strategy": strategy, "symbol": symbol}
+
+    if len(candles) < 200:
+        logger.warning(
+            "Drain skipped %s/%s — insufficient candles (%d)",
+            strategy, symbol, len(candles),
+        )
+        scheduler.request_retrain(
+            strategy, symbol,
+            reason=f"drain retry: insufficient candles ({len(candles)})",
+            source="retrain_drain",
+        )
+        return {
+            "ok": False,
+            "error": f"insufficient candles ({len(candles)})",
+            "strategy": strategy,
+            "symbol": symbol,
+        }
+
+    from app.services.bots.ml_job_store import create_ml_job
+    from app.services.bots.ml_train_executor import submit_train_job
+
+    job_id = create_ml_job(kind="train", strategy=strategy, symbol=symbol)
+    logger.info(
+        "Retrain drain submitting train job %s for %s/%s (reasons=%s)",
+        job_id, strategy, symbol, item.get("reasons"),
+    )
+    try:
+        result = await submit_train_job(
+            strategy, symbol, candles, {},
+            job_id=job_id, event_bus=event_bus,
+        )
+    except Exception as exc:
+        logger.exception("Drain train job %s failed", job_id)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "job_id": job_id,
+            "strategy": strategy,
+            "symbol": symbol,
+        }
+
+    ok = bool(isinstance(result, dict) and result.get("ok") and not result.get("cancelled"))
+    return {
+        "ok": ok,
+        "job_id": job_id,
+        "strategy": strategy,
+        "symbol": symbol,
+        "result": result if isinstance(result, dict) else None,
+    }
+
+
+async def ml_retrain_drain_loop(bot_manager, *, event_bus=None) -> None:
+    """Background loop: drain pending ML retrain queue into real train jobs."""
+    from app.config import ML_RETRAIN_AUTO_DRAIN, ML_RETRAIN_DRAIN_INTERVAL_SEC
+
+    if not ML_RETRAIN_AUTO_DRAIN:
+        logger.info("ML retrain auto-drain disabled (ML_RETRAIN_AUTO_DRAIN=false)")
+        return
+
+    interval = max(15.0, float(ML_RETRAIN_DRAIN_INTERVAL_SEC))
+    logger.info("ML retrain drain loop started (interval=%.0fs)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            pending = get_retrain_scheduler().get_pending()
+            if not pending:
+                continue
+            # Only drain ML entries; leave META_LABEL etc. for their callers.
+            has_ml = any(
+                is_ml_strategy(str(v.get("strategy") or ""))
+                for v in pending.values()
+            )
+            if not has_ml:
+                continue
+            outcome = await drain_one_pending_retrain(bot_manager, event_bus=event_bus)
+            if outcome:
+                logger.info(
+                    "Retrain drain outcome: ok=%s %s/%s job=%s",
+                    outcome.get("ok"),
+                    outcome.get("strategy"),
+                    outcome.get("symbol"),
+                    outcome.get("job_id"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ML retrain drain loop error")
 
 
 # Module-level singleton

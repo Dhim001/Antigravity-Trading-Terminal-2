@@ -5,7 +5,8 @@
 
 const DB_NAME = 'trading_terminal_backtest';
 const STORE_NAME = 'runs';
-const DB_VERSION = 1;
+/** v2: savedAt index for prune without materializing blobs (MEMORY #17). */
+const DB_VERSION = 2;
 const MAX_IDB_RUNS = 10;
 
 function terminalProfile() {
@@ -23,10 +24,30 @@ function openDb() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (event) => {
         const db = req.result;
+        let store;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
-          db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+          store = db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+        } else {
+          store = req.transaction.objectStore(STORE_NAME);
+        }
+        if (store && !store.indexNames.contains('savedAt')) {
+          store.createIndex('savedAt', 'savedAt', { unique: false });
+        }
+        // Ensure existing rows have savedAt for the index (best-effort on upgrade).
+        if (event.oldVersion < 2 && store) {
+          const cursorReq = store.openCursor();
+          cursorReq.onsuccess = () => {
+            const cursor = cursorReq.result;
+            if (!cursor) return;
+            const row = cursor.value;
+            if (row && row.savedAt == null) {
+              row.savedAt = Date.now();
+              cursor.update(row);
+            }
+            cursor.continue();
+          };
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -86,27 +107,50 @@ export async function idbClearBacktest(runId) {
   });
 }
 
-/** Keep newest runs for this profile; always retain keepRunId. */
+/**
+ * Keep newest runs for this profile; always retain keepRunId.
+ * Uses key + savedAt only — does not materialize `results` blobs (MEMORY #17).
+ */
 export async function idbPruneBacktests(keepRunId, maxRuns = MAX_IDB_RUNS) {
   const prefix = `${terminalProfile()}:`;
-  const rows = await withStore('readonly', (store) => new Promise((resolve) => {
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result ?? []);
-    req.onerror = () => resolve([]);
+  const meta = await withStore('readonly', (store) => new Promise((resolve) => {
+    const out = [];
+    let req;
+    try {
+      if (store.indexNames.contains('savedAt')) {
+        req = store.index('savedAt').openCursor(null, 'prev');
+      } else {
+        req = store.openCursor();
+      }
+    } catch (_) {
+      resolve([]);
+      return;
+    }
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(out);
+        return;
+      }
+      const row = cursor.value;
+      if (row?.key?.startsWith(prefix)) {
+        // Only keep prune metadata — never retain results reference.
+        out.push({ key: row.key, savedAt: row.savedAt ?? 0 });
+      }
+      cursor.continue();
+    };
+    req.onerror = () => resolve(out);
   }));
-  if (!Array.isArray(rows)) return;
+  if (!Array.isArray(meta) || meta.length <= maxRuns) return;
 
-  const mine = rows
-    .filter((r) => r?.key?.startsWith(prefix))
-    .sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0));
-
-  if (mine.length <= maxRuns) return;
-
+  const mine = [...meta].sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0));
   const keepKey = storageKey(keepRunId);
-  const victims = mine
-    .filter((r) => r.key !== keepKey)
-    .slice(Math.max(0, maxRuns - 1));
-
+  const keep = new Set([keepKey]);
+  for (const row of mine) {
+    if (keep.size >= maxRuns) break;
+    keep.add(row.key);
+  }
+  const victims = mine.filter((r) => !keep.has(r.key));
   if (victims.length === 0) return;
 
   await withStore('readwrite', (store) => {

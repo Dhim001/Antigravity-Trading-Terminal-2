@@ -101,6 +101,13 @@ async def graceful_shutdown(
     except Exception as exc:
         logger.debug("Event bus shutdown: %s", exc)
 
+    try:
+        from app.services.bots.ml_train_executor import shutdown_ml_train_pool
+
+        shutdown_ml_train_pool()
+    except Exception as exc:
+        logger.debug("ML train pool shutdown: %s", exc)
+
     if not system_state.is_safe_mode_active():
         system_state.mark_shutdown_clean()
     logger.info("Graceful shutdown complete.")

@@ -3,6 +3,7 @@
  */
 import { Actions, DockLocation } from 'flexlayout-react';
 import { WORKSPACE_PANEL_LABELS } from './workspaceNav';
+import { DOCK_GROUP_CONFIG } from '../settings/layoutModes';
 
 /**
  * @param {import('flexlayout-react').Model} model
@@ -41,6 +42,12 @@ function findSiblingTabSet(model, component) {
     bots: ['algo', 'reconcile'],
     reconcile: ['algo', 'bots'],
     ticks: ['equity', 'history'],
+    'order-entry': ['order-book', 'depth-chart', 'footprint'],
+    'order-book': ['order-entry', 'depth-chart', 'footprint'],
+    'depth-chart': ['order-entry', 'order-book', 'footprint'],
+    footprint: ['order-entry', 'order-book', 'depth-chart'],
+    watchlist: ['chart'],
+    chart: ['watchlist'],
   };
   const preferred = seeds[component] || [];
   for (const seed of preferred) {
@@ -79,4 +86,35 @@ export function focusFlexLayoutComponent(model, component) {
     true,
   ));
   return true;
+}
+
+/**
+ * Focus ``primary`` unless it is already the selected tab in its tabset — then focus ``fallback``.
+ * Used for sidebar-toggle (watchlist ↔ chart).
+ * @param {import('flexlayout-react').Model} model
+ * @param {string} primary
+ * @param {string} fallback
+ */
+export function toggleFlexLayoutComponent(model, primary, fallback) {
+  if (!model || !primary) return false;
+  const tab = findTabByComponent(model, primary);
+  if (tab) {
+    const parent = tab.getParent?.();
+    const selected = parent?.getSelectedNode?.();
+    if (selected && selected.getId() === tab.getId()) {
+      return focusFlexLayoutComponent(model, fallback);
+    }
+  }
+  return focusFlexLayoutComponent(model, primary);
+}
+
+/**
+ * Focus the first tab of a legacy dock group (portfolio / intelligence / …).
+ * @param {import('flexlayout-react').Model} model
+ * @param {string} group
+ */
+export function focusFlexLayoutDockGroup(model, group) {
+  const cfg = DOCK_GROUP_CONFIG[group];
+  if (!cfg?.tabs?.length) return false;
+  return focusFlexLayoutComponent(model, cfg.tabs[0]);
 }

@@ -448,20 +448,30 @@ def train_meta_label_model(
 
 
 class MetaLabelModelStore:
-    """In-memory cache of loaded GBM artifacts."""
+    """In-memory cache of loaded GBM artifacts — LRU + TTL."""
 
     def __init__(self) -> None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
         self._models: dict[str, Any] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
         self._mtime: dict[str, float] = {}
+        self._lru = bind_dict_cache(
+            self._models, self._metadata, self._mtime,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
 
     def invalidate(self, bot_id: str | None = None) -> None:
         if bot_id:
             key = str(bot_id)
+            self._lru.discard(key)
             self._models.pop(key, None)
             self._metadata.pop(key, None)
             self._mtime.pop(key, None)
         else:
+            self._lru.clear()
             self._models.clear()
             self._metadata.clear()
             self._mtime.clear()
@@ -503,6 +513,7 @@ class MetaLabelModelStore:
             return None
         mtime = os.path.getmtime(path)
         if key in self._models and self._mtime.get(key) == mtime:
+            self._lru.touch(key)
             return self._models[key]
 
         try:
@@ -520,6 +531,7 @@ class MetaLabelModelStore:
         self._models[key] = model
         self._metadata[key] = meta
         self._mtime[key] = mtime
+        self._lru.touch(key)
         return model
 
 

@@ -74,6 +74,9 @@ class TestAnchoredWalkForward(unittest.TestCase):
         first_train = windows[0][0]
         second_train = windows[1][0]
         self.assertLess(len(first_train), len(second_train))
+        # Shared slice views — same candle dict objects as the source list
+        self.assertIs(first_train[0], candles[0])
+        self.assertIs(first_train[-1], candles[len(first_train) - 1])
 
     def test_build_fold_windows_dispatches_anchored(self):
         candles = _candles(600)

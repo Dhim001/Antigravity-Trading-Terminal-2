@@ -193,7 +193,9 @@ def evaluate_deploy_gate(
             pbo_val = float(pbo["pbo"])
             metrics["pbo"] = pbo_val
             risk = str(pbo.get("risk_label") or "low")
-            if pbo_val >= 0.5:
+            from app.services.bots.pbo_policy import pbo_is_block, pbo_is_moderate
+
+            if pbo_is_block(pbo_val):
                 checks.append(_check(
                     check_id="pbo_audit",
                     level="block",
@@ -201,7 +203,7 @@ def evaluate_deploy_gate(
                     message=f"PBO {pbo_val:.0%} — high overfit risk ({risk})",
                     detail="IS winner frequently underperforms on CSCV OOS splits",
                 ))
-            elif pbo_val >= 0.35:
+            elif pbo_is_moderate(pbo_val):
                 checks.append(_check(
                     check_id="pbo_audit",
                     level="warn",
@@ -437,14 +439,16 @@ def evaluate_deploy_gate(
 
             if ml_meta.get("pbo") is not None:
                 pbo_val = float(ml_meta["pbo"])
-                if pbo_val > 0.5:
+                from app.services.bots.pbo_policy import pbo_is_block, pbo_is_moderate
+
+                if pbo_is_block(pbo_val):
                     checks.append(_check(
                         check_id="ml_pbo",
                         level="block",
                         ok=False,
                         message=f"Ensemble ML-leg PBO {pbo_val:.0%} — high overfitting risk",
                     ))
-                elif pbo_val > 0.35:
+                elif pbo_is_moderate(pbo_val):
                     checks.append(_check(
                         check_id="ml_pbo",
                         level="warn",
@@ -528,22 +532,24 @@ def evaluate_deploy_gate(
                 # Check 4: PBO from model metadata
                 if meta.get("pbo") is not None:
                     pbo_val = float(meta["pbo"])
-                    if pbo_val > 0.5:
+                    from app.services.bots.pbo_policy import pbo_is_block, pbo_is_moderate, pbo_passes
+
+                    if pbo_is_block(pbo_val):
                         checks.append(_check(
                             check_id="ml_pbo",
                             level="block",
                             ok=False,
                             message=f"ML model PBO {pbo_val:.0%} — high overfitting risk",
-                            detail="PBO > 50% indicates model likely won't generalize.",
+                            detail="PBO >= 50% indicates model likely won't generalize.",
                         ))
-                    elif pbo_val > 0.35:
+                    elif pbo_is_moderate(pbo_val):
                         checks.append(_check(
                             check_id="ml_pbo",
                             level="warn",
                             ok=False,
                             message=f"ML model PBO {pbo_val:.0%} — moderate overfitting risk",
                         ))
-                    else:
+                    elif pbo_passes(pbo_val):
                         checks.append(_check(
                             check_id="ml_pbo",
                             level="pass",

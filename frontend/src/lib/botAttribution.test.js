@@ -3,6 +3,8 @@ import {
   buildBotLookup,
   parseTradeTrigger,
   tradeSourceDetail,
+  getBotOwnedSize,
+  getBotOwnedPositionView,
 } from './botAttribution';
 
 const lookup = buildBotLookup(
@@ -73,5 +75,45 @@ describe('buildBotLookup', () => {
       [{ id: 'b1', symbol: 'X', status: 'STOPPED', strategy: 'MACD_RSI' }],
     );
     expect(l.byId.b1.strategy).toBe('MACD_RSI');
+  });
+});
+
+describe('getBotOwnedSize / getBotOwnedPositionView', () => {
+  it('reads this bot slice from bot_owners, not full OMS size', () => {
+    const positions = {
+      BTCUSDT: {
+        size: 1.5,
+        bot_owners: [
+          { bot_id: 'bot-a', size: 0.5 },
+          { bot_id: 'bot-b', size: 1.0 },
+        ],
+      },
+    };
+    expect(getBotOwnedSize('bot-a', 'BTCUSDT', positions)).toBe(0.5);
+    expect(getBotOwnedPositionView('bot-a', 'BTCUSDT', positions)).toEqual({
+      size: 0.5,
+      side: 'LONG',
+      label: 'LONG',
+    });
+    expect(getBotOwnedPositionView('bot-c', 'BTCUSDT', positions).label).toBe('FLAT');
+  });
+
+  it('does not attribute shared OMS size when owners omit this bot', () => {
+    const positions = {
+      AAPL: { size: 10, bot_owners: [{ bot_id: 'other', size: 10 }] },
+    };
+    expect(getBotOwnedSize('mine', 'AAPL', positions)).toBe(0);
+  });
+
+  it('falls back to single bot_id when owners absent', () => {
+    const positions = {
+      ETHUSDT: { size: -2, bot_id: 'solo' },
+    };
+    expect(getBotOwnedPositionView('solo', 'ETHUSDT', positions)).toEqual({
+      size: -2,
+      side: 'SHORT',
+      label: 'SHORT',
+    });
+    expect(getBotOwnedSize('other', 'ETHUSDT', positions)).toBe(0);
   });
 });

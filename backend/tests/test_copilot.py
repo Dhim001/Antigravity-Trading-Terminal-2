@@ -741,5 +741,36 @@ class CopilotHandleTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(deleted, 1)
 
 
+class SessionMemoryCapTests(unittest.TestCase):
+    def setUp(self):
+        _SESSION_MEMORY.clear()
+
+    def tearDown(self):
+        _SESSION_MEMORY.clear()
+
+    def test_session_max_evicts_oldest(self):
+        from app.services.agent import copilot as copilot_mod
+        from app.services.agent.copilot import remember_insight
+
+        with patch.object(copilot_mod, "TRADE_COPILOT_SESSION_MAX", 2):
+            remember_insight("s1", {"symbol": "BTCUSDT", "signal": "BUY"})
+            remember_insight("s2", {"symbol": "ETHUSDT", "signal": "SELL"})
+            remember_insight("s3", {"symbol": "SOLUSDT", "signal": "BUY"})
+            self.assertLessEqual(len(_SESSION_MEMORY), 2)
+            self.assertNotIn("s1", _SESSION_MEMORY)
+
+    def test_session_ttl_expires(self):
+        import time
+        from app.services.agent import copilot as copilot_mod
+        from app.services.agent.copilot import remember_insight, get_last_insight
+
+        remember_insight("old", {"symbol": "BTCUSDT", "signal": "BUY"})
+        _SESSION_MEMORY["old"]["_touched_at"] = time.time() - 10_000
+        with patch.object(copilot_mod, "TRADE_COPILOT_SESSION_TTL_SEC", 60.0):
+            remember_insight("new", {"symbol": "ETHUSDT", "signal": "SELL"})
+            self.assertIsNone(get_last_insight("old", "BTCUSDT"))
+            self.assertIsNotNone(get_last_insight("new", "ETHUSDT"))
+
+
 if __name__ == "__main__":
     unittest.main()

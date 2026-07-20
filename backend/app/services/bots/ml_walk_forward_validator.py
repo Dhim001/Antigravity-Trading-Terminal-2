@@ -373,7 +373,36 @@ def walk_forward_ml_train(
     fold_results = []
     prev_test_start: int | None = None
     prev_test_end: int | None = None
+
+    from app.services.bots.ml_job_progress import (
+        ml_cancel_requested,
+        progress_path_from_config,
+        write_ml_progress,
+    )
+
+    progress_path = progress_path_from_config(cfg)
+    n_fold_total = max(1, len(folds))
+
     for fold in folds:
+        if ml_cancel_requested(progress_path):
+            return {
+                "ok": False,
+                "cancelled": True,
+                "error": "cancelled",
+                "folds": fold_results,
+                "strategy": strategy,
+                "symbol": symbol,
+            }
+
+        fold_num = int(fold.get("fold") or len(fold_results) + 1)
+        pct = int(5 + (fold_num - 1) / n_fold_total * 80)
+        write_ml_progress(
+            progress_path,
+            pct=pct,
+            phase=f"fold {fold_num}/{n_fold_total}",
+            detail="training",
+        )
+
         train_start = int(fold["train_start"])
         train_end = int(fold["train_end"])
         test_start = int(fold["test_start"])

@@ -50,6 +50,15 @@ BOOL_PARAMS = frozenset({
 })
 
 
+def _min_confidence_bounds(strategy: str) -> tuple[float, float]:
+    s = (strategy or "").upper()
+    if s == "TCN_MULTI_HORIZON":
+        return (0.0001, 0.05)
+    if s == "RL_PPO_AGENT":
+        return (0.05, 0.7)
+    return (0.5, 0.95)
+
+
 def _load_bot(bot_id: str) -> dict[str, Any] | None:
     from app.db.connection import get_connection
 
@@ -166,6 +175,8 @@ def validate_suggested_params(
             warnings.append(f"dropped non-numeric {key}")
             continue
         bounds = PARAM_BOUNDS.get(key)
+        if key == "min_confidence":
+            bounds = _min_confidence_bounds(strategy)
         if bounds:
             lo, hi = bounds
             if val < lo or val > hi:

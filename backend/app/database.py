@@ -327,6 +327,33 @@ def init_db():
     )
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ml_train_runs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT NOT NULL,
+            duration_ms INTEGER,
+            ok INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            metrics_json TEXT,
+            config_hash TEXT,
+            version_id TEXT,
+            job_id TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ml_train_runs_sym_strat "
+        "ON ml_train_runs (symbol, strategy, finished_at DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ml_train_runs_finished "
+        "ON ml_train_runs (finished_at DESC)"
+    )
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS optimization_runs (
             id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,

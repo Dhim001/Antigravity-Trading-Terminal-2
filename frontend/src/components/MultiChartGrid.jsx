@@ -117,8 +117,8 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
     try {
       const savedL = localStorage.getItem('terminal_multi_chart_layout_id');
       if (savedL && LAYOUTS.some(l => l.id === savedL)) savedLayoutId = savedL;
-      const savedMode = localStorage.getItem('terminal_chart_link_mode');
-      if (savedMode === 'focused' || savedMode === 'all') chartLinkMode = savedMode;
+      const fromSettings = useSettingsStore.getState().settings?.workspace?.chartLinkMode;
+      if (fromSettings === 'focused' || fromSettings === 'all') chartLinkMode = fromSettings;
     } catch (_) {}
     const layout = LAYOUTS.find(l => l.id === savedLayoutId) || LAYOUTS.find(l => l.id === '2x2');
     const count = layout?.defaults?.length ?? 4;
@@ -241,6 +241,21 @@ export default function MultiChartGrid({ onSwitchToSingle }) {
     setLinkGroups(resizeLinkGroups(linkGroups, newLayout.defaults.length, chartLinkMode));
     setFocusedIdx(0);
   };
+
+  // MEMORY #26 — under heap warn/critical, drop to ≤2 panes.
+  useEffect(() => {
+    const onEvt = (e) => {
+      const maxPanes = e.detail?.multiChartMaxPanes;
+      if (maxPanes == null) return;
+      const current = LAYOUTS.find((l) => l.id === layoutId);
+      if (!current || (current.defaults?.length ?? 0) <= maxPanes) return;
+      const fallback = LAYOUTS.find((l) => l.id === '2x1') || LAYOUTS.find((l) => l.id === '1x1');
+      if (!fallback || fallback.id === layoutId) return;
+      handleLayoutChange(fallback.id);
+    };
+    window.addEventListener('memory-pressure', onEvt);
+    return () => window.removeEventListener('memory-pressure', onEvt);
+  }, [layoutId]);
 
   const handlePaneFocus = (idx, sym) => {
     setFocusedIdx(idx);

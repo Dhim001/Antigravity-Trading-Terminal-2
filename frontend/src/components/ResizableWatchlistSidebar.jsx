@@ -1,5 +1,7 @@
 /**
- * ResizableWatchlistSidebar — drag-to-resize + collapse rail (TradingView-style).
+ * ResizableWatchlistSidebar — legacy left rail (pre-FlexLayout).
+ * Unmounted: WatchlistWidget lives in WorkspaceGrid. sidebar-toggle/expand
+ * events are handled by WorkspaceGrid → focusFlexLayoutComponent('watchlist').
  */
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PanelLeftClose, PanelLeftOpen, Activity } from 'lucide-react';

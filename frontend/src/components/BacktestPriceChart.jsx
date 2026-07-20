@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts';
+import { initEcharts } from '@/lib/echartsInit';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -182,7 +183,7 @@ export default function BacktestPriceChart({
       if (disposed || chart) return false;
       const { clientWidth, clientHeight } = el;
       if (clientWidth < 2 || clientHeight < 2) return false;
-      chart = echarts.init(el, 'dark');
+      chart = initEcharts(el, 'dark');
       chartRef.current = chart;
       return true;
     };

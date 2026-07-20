@@ -1,5 +1,6 @@
 /**
- * TradingPanel — tabbed right rail with collapse (UX-3).
+ * TradingPanel — legacy right rail (pre-FlexLayout).
+ * Unmounted: Trade/Book/Depth/Footprint live in WorkspaceGrid. Kept for reference.
  */
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useEffect, useMemo } from 'react';

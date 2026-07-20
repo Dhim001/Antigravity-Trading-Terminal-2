@@ -525,6 +525,16 @@ async def main():
                 tasks.append(asyncio.create_task(calibration_refresh_loop()))
                 tasks.append(asyncio.create_task(regime_rotation_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(alpha_decay_loop(state.bot_manager)))
+                from app.services.bots.ml_retrain_scheduler import ml_retrain_drain_loop
+
+                tasks.append(
+                    asyncio.create_task(
+                        ml_retrain_drain_loop(
+                            state.bot_manager,
+                            event_bus=getattr(state, "event_bus", None),
+                        )
+                    )
+                )
                 tasks.append(
                     asyncio.create_task(
                         scanner_deploy_loop(state.bot_manager, backtester=state.backtester, agent_event_bus=state.agent_event_bus)

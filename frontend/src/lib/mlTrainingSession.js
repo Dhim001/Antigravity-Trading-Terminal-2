@@ -16,6 +16,9 @@ let session = {
   validation: null,
   lastError: null,
   jobToken: 0,
+  // Phase 1 async jobs (additive).
+  jobId: null,
+  serverProgress: null,
 };
 
 function emit() {
@@ -60,7 +63,7 @@ export function setCachedModelStatus(symbol, strategy, body) {
   statusCache.set(statusCacheKey(symbol, strategy), body);
 }
 
-export function beginMlJob({ kind, strategy, symbol, jobProgress }) {
+export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }) {
   const jobToken = session.jobToken + 1;
   return patch({
     jobToken,
@@ -70,6 +73,8 @@ export function beginMlJob({ kind, strategy, symbol, jobProgress }) {
     validating: kind === 'validate',
     jobProgress: jobProgress ? { ...jobProgress, token: jobToken, active: true } : null,
     lastError: null,
+    jobId: jobId || null,
+    serverProgress: null,
     ...(kind === 'validate' ? { validation: null } : {}),
   });
 }
@@ -83,6 +88,8 @@ export function finishMlJob(token, { validation = undefined, error = null } = {}
       ? { ...session.jobProgress, active: false }
       : null,
     lastError: error,
+    jobId: null,
+    serverProgress: null,
     ...(validation !== undefined ? { validation } : {}),
   });
 }
@@ -90,12 +97,39 @@ export function finishMlJob(token, { validation = undefined, error = null } = {}
 export function clearMlJobProgress(token) {
   if (token != null && token !== session.jobToken) return;
   if (session.jobProgress) {
-    patch({ jobProgress: null });
+    patch({ jobProgress: null, serverProgress: null });
   }
 }
 
 export function setMlValidation(validation) {
   return patch({ validation });
+}
+
+export function setMlJobId(jobId) {
+  return patch({ jobId: jobId || null });
+}
+
+export function setMlServerProgress(progress) {
+  if (!progress || typeof progress !== 'object') {
+    return patch({ serverProgress: null });
+  }
+  return patch({
+    serverProgress: {
+      pct: Number(progress.pct) || 0,
+      phase: progress.phase || '',
+      detail: progress.detail || '',
+      status: progress.status,
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+/** Apply WS `ml_job_progress` if it matches the active session job. */
+export function applyMlJobProgressMessage(data) {
+  if (!data || typeof data !== 'object') return session;
+  const jobId = data.job_id || data.jobId;
+  if (!jobId || !session.jobId || jobId !== session.jobId) return session;
+  return setMlServerProgress(data);
 }
 
 /** Prefer cached status over transient fetch errors / aborts. */

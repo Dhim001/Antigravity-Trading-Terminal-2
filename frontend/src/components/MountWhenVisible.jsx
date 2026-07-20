@@ -12,16 +12,27 @@ export default function MountWhenVisible({ node, children, fallback = null }) {
 
   useEffect(() => {
     if (!node?.setEventListener) return undefined;
+    let cancelled = false;
+    // FlexLayout may fire visibility while Tab is still rendering — defer
+    // setState so we never update MountWhenVisible during Tab's render.
+    const apply = (next) => {
+      queueMicrotask(() => {
+        if (!cancelled) setVisible(next);
+      });
+    };
     const onVisibility = (params) => {
       if (params && typeof params.visible === 'boolean') {
-        setVisible(params.visible);
+        apply(params.visible);
       } else {
-        setVisible(Boolean(node.isVisible()));
+        apply(Boolean(node.isVisible()));
       }
     };
-    setVisible(Boolean(node.isVisible()));
+    apply(Boolean(node.isVisible()));
     node.setEventListener('visibility', onVisibility);
-    return () => node.removeEventListener('visibility');
+    return () => {
+      cancelled = true;
+      node.removeEventListener('visibility');
+    };
   }, [node]);
 
   if (!visible) return fallback;

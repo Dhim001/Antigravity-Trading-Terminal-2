@@ -9,7 +9,7 @@ import { useResearchStore } from '../store/useResearchStore';
 import { openBacktestLabResults } from '../lib/backtestLab';
 import { fetchBots } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
-import { AlgoTab } from './ResizableDock';
+import { AlgoTab } from './dock/AlgoPanel';
 import ErrorBoundary from './ErrorBoundary';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';

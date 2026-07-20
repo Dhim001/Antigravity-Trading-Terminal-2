@@ -1,13 +1,13 @@
 import { apiAction, apiRequest, isAbortError } from './client';
-import { applyHttpEnvelope } from './dispatch';
+import { applyHttpEnvelope, storeBacktestResultsAware } from './dispatch';
 import { Action, MessageType } from './protocol';
 import { invokeHttpAction } from './transport';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
-import { trimBacktestPayload, buildBacktestOverlay } from '../lib/backtestSlim';
-import { saveFullBacktestResults } from '../services/backtestStorage';
+import { buildBacktestOverlay } from '../lib/backtestSlim';
+import { trimBacktestPayloadAsync } from '../lib/backtestSlimAsync';
 import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
 import { toast } from 'sonner';
 import { normalizeOrderCapabilities } from '../lib/positionActions';
@@ -135,11 +135,13 @@ export async function fetchCopilotHistory(session_id, { limit = 40 } = {}) {
   return apiRequest(`/api/v1/copilot/history?${qs}`);
 }
 
-/** POST /api/v1/copilot/clear */
+/** DELETE /api/v1/copilot/history/{session_id} */
 export async function clearCopilotSession(session_id) {
-  return apiRequest('/api/v1/copilot/clear', {
-    method: 'POST',
-    body: { session_id },
+  if (!session_id) {
+    throw new Error('session_id required');
+  }
+  return apiRequest(`/api/v1/copilot/history/${encodeURIComponent(session_id)}`, {
+    method: 'DELETE',
   });
 }
 
@@ -626,24 +628,23 @@ export function startBacktestJobPolling(jobId, storeActions) {
         if (fresh.status === 'completed' && fresh.results) {
           stopBacktestJobPolling();
           clearBacktestClientTimeout();
-          const wire = trimBacktestPayload({
+          return trimBacktestPayloadAsync({
             ...fresh.results,
             run_id: fresh.run_id ?? fresh.results.run_id,
+          }).then((wire) => {
+            storeBacktestResultsAware(storeActions, wire);
+            storeActions.setBacktestRunning(false);
+            storeActions.setBacktestProgress(null);
+            storeActions.clearBacktestLastError?.();
+            const overlay = buildBacktestOverlay(wire);
+            if (overlay) storeActions.setBacktestOverlay(overlay);
+            const pnl = wire?.total_pnl;
+            const trades = wire?.trade_count ?? 0;
+            toast.success(
+              `Background backtest complete · ${pnl != null ? `$${Number(pnl).toFixed(2)}` : '—'} · ${trades} trades`,
+              { action: { label: 'Open Lab', onClick: () => useResearchStore.getState().openBacktestLab('results') } },
+            );
           });
-          saveFullBacktestResults(wire);
-          storeActions.setBacktestResults(wire);
-          storeActions.setBacktestRunning(false);
-          storeActions.setBacktestProgress(null);
-          storeActions.clearBacktestLastError?.();
-          const overlay = buildBacktestOverlay(wire);
-          if (overlay) storeActions.setBacktestOverlay(overlay);
-          const pnl = wire?.total_pnl;
-          const trades = wire?.trade_count ?? 0;
-          toast.success(
-            `Background backtest complete · ${pnl != null ? `$${Number(pnl).toFixed(2)}` : '—'} · ${trades} trades`,
-            { action: { label: 'Open Lab', onClick: () => useResearchStore.getState().openBacktestLab('results') } },
-          );
-          return;
         }
         if (fresh.status === 'failed' || fresh.status === 'cancelled') {
           stopBacktestJobPolling();

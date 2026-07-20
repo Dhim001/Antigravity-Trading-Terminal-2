@@ -180,6 +180,47 @@ function resolveOwnerBot(botId, symbol, size, activeBots) {
   };
 }
 
+/**
+ * Per-bot inventory size from OMS account payload (bot_owners / bot_id).
+ * Does not fall back to the full symbol OMS size — that misattributes shared symbols.
+ *
+ * @param {string} botId
+ * @param {string} symbol
+ * @param {Record<string, { size?: number, bot_id?: string, bot_owners?: Array<{ bot_id?: string, botId?: string, size?: number }> }>|null|undefined} positions
+ * @returns {number} signed size for this bot (0 if flat / unknown)
+ */
+export function getBotOwnedSize(botId, symbol, positions) {
+  if (!botId || !symbol || !positions || typeof positions !== 'object') return 0;
+  const pos = positions[symbol];
+  if (!pos) return 0;
+
+  const owners = Array.isArray(pos.bot_owners) ? pos.bot_owners : [];
+  if (owners.length) {
+    const mine = owners.find((o) => String(o?.bot_id || o?.botId || '') === String(botId));
+    return mine ? Number(mine.size) || 0 : 0;
+  }
+
+  // Single-owner legacy field on the symbol position.
+  if (pos.bot_id != null && String(pos.bot_id) === String(botId)) {
+    return Number(pos.size) || 0;
+  }
+
+  return 0;
+}
+
+/**
+ * Compact LONG/SHORT/FLAT view model for Algo Active rows.
+ * @returns {{ size: number, side: 'LONG'|'SHORT'|null, label: 'LONG'|'SHORT'|'FLAT' }}
+ */
+export function getBotOwnedPositionView(botId, symbol, positions) {
+  const size = getBotOwnedSize(botId, symbol, positions);
+  if (!(Math.abs(size) > 0)) {
+    return { size: 0, side: null, label: 'FLAT' };
+  }
+  const side = size > 0 ? 'LONG' : 'SHORT';
+  return { size, side, label: side };
+}
+
 /** Best-effort bot owner(s) for an open position. */
 export function getPositionBots(symbol, position, { activeBots = [], tradeHistory = [] } = {}) {
   if (!position || !position.size) return [];

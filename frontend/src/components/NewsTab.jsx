@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/select';
 import ChartSymbolSwitcher from './chart/ChartSymbolSwitcher';
 import { WidgetEmpty, DockScrollPanel } from './WidgetShell';
+import VirtualScrollList from './VirtualScrollList';
 import { cn } from '@/lib/utils';
 
 function formatPublished(iso) {
@@ -233,13 +234,17 @@ export default function NewsTab() {
           <WidgetEmpty message={`No recent headlines for ${symbol}. Try Refresh or another symbol.`} />
         )}
         {items.length > 0 && (
-          <ul className="news-feed__list">
-            {items.map((item) => (
-              <li key={item.id || `${item.source}-${item.headline}`}>
+          <VirtualScrollList
+            className="news-feed__list"
+            items={items}
+            rowHeight={72}
+            getKey={(item) => item.id || `${item.source}-${item.headline}`}
+            renderItem={(item) => (
+              <li className="list-none">
                 <NewsItem item={item} />
               </li>
-            ))}
-          </ul>
+            )}
+          />
         )}
       </DockScrollPanel>
     </div>

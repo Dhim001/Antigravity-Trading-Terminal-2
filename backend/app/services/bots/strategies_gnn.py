@@ -59,6 +59,10 @@ class GnnCrossAssetStrategy(BaseStrategy):
         features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
         feat_vec = signal_features_to_vector(features)
 
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        record_ml_inference_features(symbol, "GNN_CROSS_ASSET", feat_vec)
+
         # Prefer explicit basket; fall back to symbol so Model Training artifacts resolve
         basket_id = (self._cfg.get("basket_id") or symbol or "").upper()
         if not basket_id:

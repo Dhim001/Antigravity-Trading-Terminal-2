@@ -87,6 +87,31 @@ export function MemoryObservabilityBody({ client, health }) {
         <div><dt>Pinned symbol</dt><dd>{client.pinnedSymbol ?? '—'}</dd></div>
         <div><dt>Display bar budget</dt><dd>{client.budgets.defaultDisplay} default · {client.budgets.maxDisplay} max</dd></div>
         <div><dt>Archive cap (browser)</dt><dd>{client.budgets.maxArchive} bars</dd></div>
+        {client.subsystems && (
+          <>
+            <div><dt>Candle buffers (est.)</dt><dd>{client.subsystems.candleBuffersKb ?? '—'} KB</dd></div>
+            <div><dt>Research store (est.)</dt><dd>{client.subsystems.researchStoreKb ?? '—'} KB</dd></div>
+            <div><dt>ECharts instances</dt><dd>{client.subsystems.echartsInstances ?? 0}</dd></div>
+            <div><dt>Pressure ladder</dt><dd className={LEVEL_CLASS[client.subsystems.pressureLadder] || ''}>{client.subsystems.pressureLadder || 'ok'}</dd></div>
+          </>
+        )}
+        {health?.memory_subsystems?.ml_model_caches && (
+          <div>
+            <dt>ML model caches</dt>
+            <dd>{health.memory_subsystems.ml_model_caches.total_entries ?? 0} entries</dd>
+          </div>
+        )}
+        {health?.memory_subsystems?.screener_cache && (
+          <div>
+            <dt>Screener cache</dt>
+            <dd>
+              {health.memory_subsystems.screener_cache.entries ?? 0} entries
+              {health.memory_subsystems.screener_cache.mb != null
+                ? ` · ${health.memory_subsystems.screener_cache.mb} MB`
+                : ''}
+            </dd>
+          </div>
+        )}
         {health?.ws_clients != null && (
           <div><dt>WS clients</dt><dd>{health.ws_clients}</dd></div>
         )}

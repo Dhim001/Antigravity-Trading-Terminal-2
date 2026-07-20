@@ -1,5 +1,6 @@
 /**
  * Client-side memory observability — dev badge + Settings panel.
+ * Includes subsystem estimates (MEMORY #25).
  */
 
 import { getCandleBufferStats } from './candleBuffer';
@@ -10,6 +11,45 @@ import {
   CHART_DISPLAY_MAX_BARS,
   CHART_DISPLAY_BARS_DEFAULT,
 } from './memoryBudget';
+import { getEchartsInstanceCount } from '../lib/echartsInit';
+import { getMemoryPressureState } from './memoryPressureSignals';
+import { useResearchStore } from '../store/useResearchStore';
+
+function estimateBacktestKb(results) {
+  if (!results) return 0;
+  if (results._offloaded) return 2;
+  let bytes = 4096;
+  if (Array.isArray(results.trades)) bytes += results.trades.length * 180;
+  if (Array.isArray(results.equity_curve)) bytes += results.equity_curve.length * 32;
+  if (Array.isArray(results.sweep?.results)) bytes += results.sweep.results.length * 400;
+  if (Array.isArray(results.walk_forward?.folds)) {
+    bytes += results.walk_forward.folds.length * 8000;
+  }
+  return Math.round(bytes / 1024);
+}
+
+function estimateResearchStoreKb() {
+  try {
+    const s = useResearchStore.getState();
+    let kb = estimateBacktestKb(s.backtestResults);
+    if (s.scanResults?.rows) kb += Math.round((s.scanResults.rows.length * 120) / 1024);
+    if (s.journalEntries) kb += Math.round((s.journalEntries.length * 200) / 1024);
+    const insightKeys = Object.keys(s.agentInsightHistory || {});
+    for (const k of insightKeys) {
+      const arr = s.agentInsightHistory[k];
+      if (Array.isArray(arr)) kb += Math.round((arr.length * 800) / 1024);
+    }
+    return kb;
+  } catch {
+    return null;
+  }
+}
+
+/** Approximate candle buffer bytes (CompactBarSeries ≈ 48 B/bar). */
+function estimateCandleBufferKb(buf) {
+  const bars = (buf.bars1m || 0) + (buf.htBars || 0);
+  return Math.round((bars * 48) / 1024);
+}
 
 /** @returns {import('./memoryObservability').ClientMemoryStats} */
 export function collectClientMemoryStats() {
@@ -20,6 +60,10 @@ export function collectClientMemoryStats() {
   const heapPct = mem && mem.jsHeapSizeLimit > 0
     ? Math.round((mem.usedJSHeapSize / mem.jsHeapSizeLimit) * 100)
     : null;
+
+  const researchKb = estimateResearchStoreKb();
+  const candleKb = estimateCandleBufferKb(buf);
+  const pressure = getMemoryPressureState();
 
   return {
     heapMb,
@@ -32,6 +76,15 @@ export function collectClientMemoryStats() {
       maxArchive: CANDLE_ARCHIVE_MAX_BARS,
       maxDisplay: CHART_DISPLAY_MAX_BARS,
       defaultDisplay: CHART_DISPLAY_BARS_DEFAULT,
+    },
+    subsystems: {
+      candleBuffersKb: candleKb,
+      researchStoreKb: researchKb,
+      echartsInstances: getEchartsInstanceCount(),
+      pressureLadder: pressure.ladder,
+      scannerPaused: pressure.scannerPaused,
+      multiChartMaxPanes: pressure.multiChartMaxPanes,
+      forceDpr: pressure.forceDpr,
     },
   };
 }
@@ -57,5 +110,3 @@ export function memoryPressureLevel(stats) {
   if (bufferPressureNeedsTrim(stats)) return 'warn';
   return 'ok';
 }
-
-/** @typedef {{ heapMb: number | null, heapLimitMb: number | null, heapPct: number | null, symbols1m: number, bars1m: number, htKeys: number, htBars: number, pinnedSymbol: string | null, lruOrder: string[], budgets: { maxSymbols: number, maxBars1m: number, maxArchive: number, maxDisplay: number, defaultDisplay: number } }} ClientMemoryStats */

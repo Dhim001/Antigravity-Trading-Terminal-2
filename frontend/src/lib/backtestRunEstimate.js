@@ -16,6 +16,7 @@ import { formatPortfolioRunEstimate, uniqueSymbols } from './portfolioBacktest';
  *   sweepCombos?: number,
  *   walkForward?: boolean,
  *   rollingFolds?: number,
+ *   strategy?: string,
  *   deferred?: boolean,
  * }} opts
  */
@@ -28,6 +29,7 @@ export function estimateRunDurationMs({
   sweepCombos = 0,
   walkForward = false,
   rollingFolds = 3,
+  strategy = '',
   deferred = false,
 } = {}) {
   const parsedDays = parseInt(String(days), 10) || 7;
@@ -43,6 +45,7 @@ export function estimateRunDurationMs({
     comboCount: sweepCombos,
     days: parsedDays,
     portfolioSymbolCount: symbolCount,
+    strategy,
   });
 
   if (sweepCombos > 1 && !walkForward) {
@@ -74,8 +77,18 @@ export function formatRunEstimate(opts = {}) {
   else if (opts.sweepCombos > 1) parts.push(`${opts.sweepCombos} combos`);
   else if ((parseInt(String(opts.days), 10) || 7) >= 30) parts.push(`${opts.days}d archive`);
 
+  const strat = String(opts.strategy || '').toUpperCase();
+  if (strat === 'RL_PPO_AGENT') parts.push('RL');
+  else if (strat.includes('LSTM') || strat.includes('TCN') || strat.includes('TRANSFORMER')
+    || strat.includes('VAE') || strat.includes('GNN')) {
+    parts.push('deep ML');
+  }   else if (strat.startsWith('ML_')) {
+    parts.push('ML');
+  }
+
   if (opts.deferred || opts.portfolioSymbolCount >= 2 || opts.reasoning
-    || opts.walkForward || opts.metaLabelWalkForward) {
+    || opts.walkForward || opts.metaLabelWalkForward
+    || strat === 'RL_PPO_AGENT' || strat.includes('LSTM') || strat.includes('TRANSFORMER')) {
     parts.push('background job');
   }
 

@@ -69,13 +69,16 @@ def future_direction_label(close_now: float, close_future: float, deadband: floa
     return "NONE"
 
 
-def compute_alpha_decay(
+def compute_equity_edge_half_life(
     equity_curve: list[dict] | None,
     *,
     window: int = 50,
     max_points: int = 80,
 ) -> dict[str, Any] | None:
-    """Estimate half-life of edge from rolling Sharpe on the equity curve."""
+    """Estimate half-life of edge from rolling Sharpe on the equity curve.
+
+    Distinct from the live ``AlphaDecayMonitor`` (bot performance vs expectations).
+    """
     if not equity_curve or len(equity_curve) < window + 5:
         return None
     rets: list[float] = []
@@ -139,6 +142,10 @@ def compute_alpha_decay(
         "late_sharpe": round(late, 4),
         "window_bars": window,
     }
+
+
+# Legacy name — live monitor is AlphaDecayMonitor; this is equity-curve half-life only.
+compute_alpha_decay = compute_equity_edge_half_life
 
 
 class CategoryMetricsCollector:
@@ -305,11 +312,12 @@ class CategoryMetricsCollector:
         equity_curve: list[dict] | None = None,
     ) -> dict[str, Any]:
         out: dict[str, Any] = {}
-        alpha = compute_alpha_decay(equity_curve) if (self.collect_ml or self.collect_rl) else None
+        alpha = compute_equity_edge_half_life(equity_curve) if (self.collect_ml or self.collect_rl) else None
         if self.collect_ml and not self.collect_rl:
             metrics = self._build_ml_metrics(feature_importance, oos_summary, summary)
             if alpha:
-                metrics["alpha_decay"] = alpha
+                metrics["edge_half_life"] = alpha
+                metrics["alpha_decay"] = alpha  # legacy alias
             out["ml_metrics"] = metrics
         if self.collect_rl:
             out["rl_data"] = self._build_rl_data()
@@ -322,7 +330,8 @@ class CategoryMetricsCollector:
                 if is_oos and any(v is not None for v in is_oos.values()):
                     ml_stub["is_vs_oos"] = is_oos
                 if alpha:
-                    ml_stub["alpha_decay"] = alpha
+                    ml_stub["edge_half_life"] = alpha
+                    ml_stub["alpha_decay"] = alpha  # legacy alias
                 if ml_stub:
                     out["ml_metrics"] = ml_stub
         if self.collect_agent:
