@@ -36,18 +36,19 @@ GNN_MODEL_DIR = os.path.join(BASE_DIR, "data", "gnn_signal_models")
 N_FEATURES = len(SIGNAL_FEATURE_NAMES)
 
 
-def _model_dir(basket: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(basket).upper())
-    return os.path.join(GNN_MODEL_DIR, safe)
+def _model_dir(basket: str, timeframe: str | None = None) -> str:
+    from app.services.bots.ml_model_artifacts import model_storage_key
 
-def _onnx_path(basket: str) -> str:
-    return os.path.join(_model_dir(basket), "gnn_cross_asset.onnx")
+    return os.path.join(GNN_MODEL_DIR, model_storage_key(basket, timeframe))
 
-def _metadata_path(basket: str) -> str:
-    return os.path.join(_model_dir(basket), "metadata.json")
+def _onnx_path(basket: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(basket, timeframe), "gnn_cross_asset.onnx")
 
-def _scaler_path(basket: str) -> str:
-    return os.path.join(_model_dir(basket), "scaler.json")
+def _metadata_path(basket: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(basket, timeframe), "metadata.json")
+
+def _scaler_path(basket: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(basket, timeframe), "scaler.json")
 
 
 def _get_torch():
@@ -62,7 +63,7 @@ def _get_torch():
 # ── Graph Attention Layer ─────────────────────────────────────────────────
 
 
-def _build_gat(input_dim: int = N_FEATURES, hidden_dim: int = 64,
+def _build_gat(input_dim: int = N_FEATURES, hidden_dim: int = 128,
                output_dim: int = 3, n_heads: int = 4):
     """Build a 2-layer Graph Attention Network.
 
@@ -180,17 +181,30 @@ class GnnModelStore:
         )
 
     @staticmethod
-    def _cache_key(basket: str, model_version: str | None) -> str:
-        return f"{str(basket).upper()}|{model_version or 'latest'}"
+    def _cache_key(
+        basket: str,
+        model_version: str | None,
+        timeframe: str | None = None,
+    ) -> str:
+        from app.services.bots.ml_model_artifacts import model_storage_key
 
-    def invalidate(self, basket=None):
+        return f"{model_storage_key(basket, timeframe)}|{model_version or 'latest'}"
+
+    def invalidate(self, basket=None, *, timeframe: str | None = None):
+        from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
+
         if basket:
-            prefix = str(basket).upper() + "|"
-            self._lru.discard_prefix(str(basket).upper())
-            self._lru.discard_prefix(prefix)
+            if timeframe is not None:
+                sk = model_storage_key(basket, timeframe)
+                prefixes = (sk + "|", sk)
+            else:
+                sk = safe_symbol_key(basket)
+                prefixes = (sk + "|", sk + "__")
+            for p in prefixes:
+                self._lru.discard_prefix(p)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
-                    if k == str(basket).upper() or k.startswith(prefix):
+                    if any(k == p.rstrip("|") or k.startswith(p) for p in prefixes):
                         d.pop(k, None)
         else:
             self._lru.clear()
@@ -204,6 +218,7 @@ class GnnModelStore:
         adj: np.ndarray,
         *,
         model_version: str | None = None,
+        timeframe: str | None = None,
     ) -> np.ndarray | None:
         """Predict per-node signal logits.
 
@@ -215,8 +230,10 @@ class GnnModelStore:
 
         Returns (N, 3) logits or None.
         """
-        key = self._cache_key(basket, model_version)
-        session = self._ensure_loaded(basket, model_version=model_version)
+        key = self._cache_key(basket, model_version, timeframe)
+        session = self._ensure_loaded(
+            basket, model_version=model_version, timeframe=timeframe,
+        )
         if session is None:
             return None
 
@@ -236,11 +253,17 @@ class GnnModelStore:
             logger.warning("GNN predict failed for %s: %s", basket, exc)
             return None
 
-    def _ensure_loaded(self, basket: str, model_version: str | None = None):
+    def _ensure_loaded(
+        self,
+        basket: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(basket, model_version)
-        load_dir = resolve_model_dir(_model_dir(basket), model_version)
+        key = self._cache_key(basket, model_version, timeframe)
+        load_dir = resolve_model_dir(_model_dir(basket, timeframe), model_version)
         path = os.path.join(load_dir, "gnn_cross_asset.onnx")
         if not os.path.isfile(path):
             return None
@@ -284,7 +307,7 @@ def train_gnn_model(
     candles: list[dict],
     config: dict | None = None,
     *,
-    epochs: int = 40,
+    epochs: int = 60,
 ) -> dict[str, Any]:
     """Train a GAT on single-node graphs from one symbol's bars.
 
@@ -295,21 +318,42 @@ def train_gnn_model(
     from app.services.bots.ml_triple_barrier import label_distribution, label_triple_barrier
 
     torch, nn = _get_torch()
-    cfg = merge_strategy_config("GNN_CROSS_ASSET", config or {})
+    raw_cfg = dict(config or {})
+    cfg = merge_strategy_config("GNN_CROSS_ASSET", raw_cfg)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
+    cfg["timeframe"] = tf
     epochs = int(cfg.get("epochs", epochs))
     basket = str(cfg.get("basket_id") or symbol or "").upper()
     if not basket:
         return {"ok": False, "error": "basket_id or symbol required"}
 
-    hidden = int(cfg.get("hidden_dim", 64))
+    hidden = int(cfg.get("hidden_dim", 128))
     n_heads = int(cfg.get("n_heads", 4))
     lr = float(cfg.get("learning_rate", 0.001))
-    batch_size = int(cfg.get("batch_size", 64))
     min_samples = int(cfg.get("min_train_samples", 200))
     val_frac = float(cfg.get("val_fraction", 0.2))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     min_corr = float(cfg.get("min_corr", 0.3))
+    from app.services.bots.ml_torch_device import (
+        cap_wf_epochs,
+        cpu_tensor,
+        device_info,
+        ensure_cuda_ready,
+        resolve_torch_device,
+        resolve_wf_torch_device,
+        suggest_batch_size,
+    )
+
+    if bool(cfg.get("_wf_mode")):
+        epochs = cap_wf_epochs(epochs, cfg, default=8)
+        device = resolve_wf_torch_device(cfg)
+    else:
+        device = resolve_torch_device(cfg)
+    batch_size = suggest_batch_size(cfg, 64, device=device)
+    ensure_cuda_ready(device)
 
     if len(candles) < 250:
         return {"ok": False, "error": "insufficient candles", "symbol": symbol, "basket_id": basket}
@@ -355,18 +399,22 @@ def train_gnn_model(
     X_tr, X_va = X[:split], X[split:]
     y_tr, y_va = y[:split], y[split:]
 
-    model = _build_gat(N_FEATURES, hidden, 3, n_heads)
+    model = _build_gat(N_FEATURES, hidden, 3, n_heads).to(device)
     class_counts = np.bincount(y_tr, minlength=3).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
-    weights = torch.tensor((1.0 / class_counts) * class_counts.sum() / 3.0)
+    weights = torch.tensor(
+        (1.0 / class_counts) * class_counts.sum() / 3.0,
+        dtype=torch.float32,
+        device=device,
+    )
     criterion = nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
-    adj_one = torch.ones(1, 1, dtype=torch.float32)
-    X_t = torch.tensor(X_tr)
-    y_t = torch.tensor(y_tr)
-    X_v = torch.tensor(X_va)
-    y_v = torch.tensor(y_va)
+    adj_one = torch.ones(1, 1, dtype=torch.float32, device=device)
+    X_t = cpu_tensor(X_tr, dtype=torch.float32)
+    y_t = cpu_tensor(y_tr, dtype=torch.long)
+    X_v = cpu_tensor(X_va, dtype=torch.float32)
+    y_v = cpu_tensor(y_va, dtype=torch.long)
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
@@ -374,6 +422,7 @@ def train_gnn_model(
         cancelled_train_result,
         ml_cancel_requested,
         progress_path_from_config,
+        write_ml_progress,
     )
 
     progress_path = progress_path_from_config(cfg)
@@ -390,9 +439,11 @@ def train_gnn_model(
             # Batched single-node graphs: run per sample (small N=1)
             logits = []
             for j in b:
-                logits.append(model(X_t[j].unsqueeze(0), adj_one)[0])
+                xj = X_t[j].unsqueeze(0).to(device, non_blocking=True)
+                logits.append(model(xj, adj_one)[0])
             logits_t = torch.stack(logits, dim=0)
-            loss = criterion(logits_t, y_t[b])
+            yb = y_t[b].to(device, non_blocking=True)
+            loss = criterion(logits_t, yb)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -404,18 +455,26 @@ def train_gnn_model(
         with torch.no_grad():
             va_logits = []
             for j in range(len(X_v)):
-                va_logits.append(model(X_v[j].unsqueeze(0), adj_one)[0])
+                xj = X_v[j].unsqueeze(0).to(device, non_blocking=True)
+                va_logits.append(model(xj, adj_one)[0])
             va_stack = torch.stack(va_logits, dim=0)
-            vl = float(criterion(va_stack, y_v).item())
-            va_pred = va_stack.argmax(1).numpy()
+            yvb = y_v.to(device, non_blocking=True)
+            vl = float(criterion(va_stack, yvb).item())
+            va_pred = va_stack.argmax(1).detach().cpu().numpy()
         loss_history.append({
             "epoch": ep + 1,
             "train_loss": round(avg_train, 6),
             "val_loss": round(vl, 6),
         })
+        write_ml_progress(
+            progress_path,
+            pct=min(20 + int(((ep + 1) / max(epochs, 1)) * 70), 90),
+            phase="epoch",
+            detail=f"{ep + 1}/{epochs}",
+        )
         if vl < best_val:
             best_val = vl
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             pat = 0
         else:
             pat += 1
@@ -428,17 +487,19 @@ def train_gnn_model(
     with torch.no_grad():
         va_logits = []
         for j in range(len(X_v)):
-            va_logits.append(model(X_v[j].unsqueeze(0), adj_one)[0])
-        va_pred = torch.stack(va_logits, dim=0).argmax(1).numpy()
+            xj = X_v[j].unsqueeze(0).to(device, non_blocking=True)
+            va_logits.append(model(xj, adj_one)[0])
+        va_pred = torch.stack(va_logits, dim=0).argmax(1).detach().cpu().numpy()
     acc = float((va_pred == y_va).mean()) if len(y_va) else 0.0
 
-    os.makedirs(_model_dir(basket), exist_ok=True)
+    train_device_meta = device_info(device)
+    os.makedirs(_model_dir(basket, tf), exist_ok=True)
     from app.services.bots.ml_model_artifacts import export_onnx_single_file
 
     export_onnx_single_file(
         model,
         (torch.randn(1, N_FEATURES), torch.ones(1, 1)),
-        _onnx_path(basket),
+        _onnx_path(basket, tf),
         input_names=["node_features", "adjacency"],
         output_names=["logits"],
         dynamic_axes={
@@ -447,15 +508,16 @@ def train_gnn_model(
             "logits": {0: "n"},
         },
         opset_version=17,
-        invalidate=lambda: get_gnn_store().invalidate(basket),
+        invalidate=lambda: get_gnn_store().invalidate(basket, timeframe=tf),
     )
 
-    with open(_scaler_path(basket), "w", encoding="utf-8") as f:
+    with open(_scaler_path(basket, tf), "w", encoding="utf-8") as f:
         json.dump({"mean": mean.tolist(), "std": std.tolist()}, f, indent=2)
 
     meta = {
         "symbol": str(symbol).upper(),
         "basket_id": basket,
+        "timeframe": tf,
         "model_type": "gnn_cross_asset",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
         "feature_names": list(SIGNAL_FEATURE_NAMES),
@@ -468,29 +530,33 @@ def train_gnn_model(
             "val_loss": round(best_val, 4),
             "train_samples": int(len(y_tr)),
             "val_samples": int(len(y_va)),
+            "train_device": train_device_meta.get("device"),
         },
         "config": {
             "hidden_dim": hidden,
             "n_heads": n_heads,
             "min_corr": min_corr,
             "basket_id": basket,
+            "timeframe": tf,
+            "train_device": train_device_meta,
         },
+        "train_device": train_device_meta,
         "loss_history": loss_history,
     }
-    with open(_metadata_path(basket), "w", encoding="utf-8") as f:
+    with open(_metadata_path(basket, tf), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    _gnn_store.invalidate(basket)
+    _gnn_store.invalidate(basket, timeframe=tf)
     skip_snapshot = bool(cfg.get("skip_snapshot", cfg.get("_wf_mode", False)))
     if not skip_snapshot:
         try:
             from app.services.bots.ml_model_artifacts import snapshot_current_version
-            snap = snapshot_current_version(_model_dir(basket), strategy="GNN_CROSS_ASSET")
+            snap = snapshot_current_version(_model_dir(basket, tf), strategy="GNN_CROSS_ASSET")
             if snap:
                 meta["version_id"] = snap.get("version_id")
                 meta["version_path"] = snap.get("path")
         except Exception:
             logger.exception("Failed to snapshot GNN version for %s", basket)
 
-    logger.info("GNN model trained for basket %s (n=%d, val_acc=%.3f)", basket, n, acc)
-    return {"ok": True, "symbol": str(symbol).upper(), "basket_id": basket, **meta}
+    logger.info("GNN model trained for basket %s @ %s (n=%d, val_acc=%.3f)", basket, tf, n, acc)
+    return {"ok": True, "symbol": str(symbol).upper(), "basket_id": basket, "timeframe": tf, **meta}

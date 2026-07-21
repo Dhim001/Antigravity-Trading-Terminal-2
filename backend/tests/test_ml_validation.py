@@ -254,9 +254,17 @@ class TestPBOGate:
 
         assert "REJECT" in _pbo_recommendation(0.8, 0.1)
         assert "REVIEW" in _pbo_recommendation(0.55, 0.1)
+        # Exactly 0.5 must align with deploy_gate block (not "Acceptable")
+        assert "REVIEW" in _pbo_recommendation(0.5, 0.05)
         assert "DEPLOY" in _pbo_recommendation(0.2, 0.05)
         assert "degradation" in _pbo_recommendation(0.3, 0.2).lower()
 
+    def test_pbo_gate_blocks_at_exactly_half(self):
+        from app.services.bots.ml_pbo_validator import pbo_gate_check
+
+        ok, reason = pbo_gate_check({"ok": True, "pbo": 0.5, "degradation": 0.05})
+        assert ok is False
+        assert "0.50" in reason
 
 # ── Retrain Scheduler Tests ──────────────────────────────────────────────
 
@@ -448,6 +456,56 @@ class TestDeployGateML:
         pbo_checks = [c for c in gate["checks"] if c["id"] == "ml_pbo"]
         assert len(pbo_checks) == 1
         assert pbo_checks[0]["level"] == "block"
+
+    def test_deploy_gate_blocks_pbo_at_half(self):
+        """PBO == 0.5 must block (same boundary as pbo_policy)."""
+        from app.services.bots.deploy_gate import evaluate_deploy_gate
+
+        results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
+        with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", return_value=10.0), \
+             patch(
+                 "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+                 return_value=self._healthy_wf_meta(pbo=0.5),
+             ):
+            gate = evaluate_deploy_gate(
+                results,
+                symbol="BTCUSDT",
+                run_config={"strategy": "ML_SIGNAL_BOOST"},
+                run_timeframe="5m",
+            )
+        pbo_checks = [c for c in gate["checks"] if c["id"] == "ml_pbo"]
+        assert len(pbo_checks) == 1
+        assert pbo_checks[0]["level"] == "block"
+        assert "@ 5m" in pbo_checks[0]["message"]
+
+    def test_deploy_gate_ml_prefers_run_timeframe(self):
+        """Bot TF must drive artifact lookup, not stale backtest run_config TF."""
+        from app.services.bots.deploy_gate import evaluate_deploy_gate
+
+        results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
+        seen = {}
+
+        def _age(strategy, symbol, timeframe=None):
+            seen["age_tf"] = timeframe
+            return 10.0
+
+        def _meta(strategy, symbol, timeframe=None):
+            seen["meta_tf"] = timeframe
+            return self._healthy_wf_meta(pbo=0.2)
+
+        with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", side_effect=_age), \
+             patch("app.services.bots.ml_retrain_scheduler.get_model_metadata", side_effect=_meta):
+            gate = evaluate_deploy_gate(
+                results,
+                symbol="ETHUSDT",
+                run_config={"strategy": "ML_SIGNAL_BOOST", "timeframe": "1m"},
+                run_timeframe="5m",
+            )
+        assert seen.get("age_tf") == "5m"
+        assert seen.get("meta_tf") == "5m"
+        pbo_checks = [c for c in gate["checks"] if c["id"] == "ml_pbo"]
+        assert pbo_checks and pbo_checks[0]["level"] == "pass"
+        assert "@ 5m" in pbo_checks[0]["message"]
 
     def test_deploy_gate_passes_healthy_ml_model(self):
         from app.services.bots.deploy_gate import evaluate_deploy_gate

@@ -40,17 +40,18 @@ ML_SIGNAL_MODEL_DIR = os.path.join(BASE_DIR, "data", "ml_signal_models")
 # ── Model persistence helpers ────────────────────────────────────────────
 
 
-def _model_dir(symbol: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(symbol).upper())
-    return os.path.join(ML_SIGNAL_MODEL_DIR, safe)
+def _model_dir(symbol: str, timeframe: str | None = None) -> str:
+    from app.services.bots.ml_model_artifacts import model_storage_key
+
+    return os.path.join(ML_SIGNAL_MODEL_DIR, model_storage_key(symbol, timeframe))
 
 
-def _model_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "model.joblib")
+def _model_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "model.joblib")
 
 
-def _metadata_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "metadata.json")
+def _metadata_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "metadata.json")
 
 
 def _load_sklearn():
@@ -90,7 +91,12 @@ def train_ml_signal_model(
     -------
     dict with ``ok``, ``metrics``, ``label_distribution``, etc.
     """
-    cfg = merge_strategy_config("ML_SIGNAL_BOOST", config or {})
+    raw_cfg = dict(config or {})
+    cfg = merge_strategy_config("ML_SIGNAL_BOOST", raw_cfg)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
+    cfg["timeframe"] = tf
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
     wf_parity = bool(cfg.get("wf_capacity_parity", True))
     min_samples = int(cfg.get("min_train_samples", 80 if wf_mode else 200))
@@ -235,7 +241,6 @@ def train_ml_signal_model(
         metrics["fit_samples"] = int(n)
     else:
         metrics["fit_samples"] = int(len(y_train))
-        metrics["wf_mode"] = True
 
     # Feature importances
     importances = getattr(model, "feature_importances_", None)
@@ -251,14 +256,47 @@ def train_ml_signal_model(
         ]
 
     # Step 8: Persist model + metadata (atomic replace avoids EOF during WF/PBO)
-    os.makedirs(_model_dir(symbol), exist_ok=True)
-    model_path = _model_path(symbol)
+    # Walk-forward / PBO folds must NOT clobber the live champion — keep the fold
+    # model in-process for OOS eval only (see inject_session_model).
+    if skip_refit:
+        metrics["wf_mode"] = True
+        session_meta = {
+            "symbol": symbol,
+            "timeframe": tf,
+            "feature_schema_version": SIGNAL_FEATURE_VERSION,
+            "feature_names": list(SIGNAL_FEATURE_NAMES),
+            "label_map": {str(k): v for k, v in label_map.items()},
+            "reverse_map": {str(k): v for k, v in reverse_map.items()},
+            "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "sample_count": n,
+            "label_distribution": dist,
+            "metrics": metrics,
+            "top_features": top_features,
+            "config": {
+                "atr_mult": atr_mult,
+                "max_holding_bars": max_bars,
+                "min_train_samples": min_samples,
+                "gbm_max_depth": gbm_max_depth,
+                "gbm_learning_rate": gbm_lr,
+                "gbm_max_iter": max(20, max_iter),
+                "gbm_l2_reg": gbm_l2_reg,
+                "wf_capacity_parity": wf_parity,
+                "timeframe": tf,
+                "_wf_mode": True,
+            },
+        }
+        _signal_model_store.inject_session_model(symbol, model, session_meta, timeframe=tf)
+        return {"ok": True, "symbol": symbol, "timeframe": tf, **session_meta}
+
+    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
+    model_path = _model_path(symbol, tf)
     tmp_path = f"{model_path}.tmp"
     joblib.dump(model, tmp_path)
     os.replace(tmp_path, model_path)
 
     metadata = {
         "symbol": symbol,
+        "timeframe": tf,
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
         "feature_names": list(SIGNAL_FEATURE_NAMES),
         "label_map": {str(k): v for k, v in label_map.items()},
@@ -283,18 +321,26 @@ def train_ml_signal_model(
             "gbm_max_iter": max(20, max_iter),
             "gbm_l2_reg": gbm_l2_reg,
             "wf_capacity_parity": wf_parity,
+            "timeframe": tf,
         },
     }
-    with open(_metadata_path(symbol), "w", encoding="utf-8") as fh:
+    with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 
+    try:
+        from app.services.bots.ml_model_artifacts import clear_ml_validation_stamp
+
+        clear_ml_validation_stamp(_model_dir(symbol, tf))
+    except Exception:
+        logger.debug("clear_ml_validation_stamp failed for %s", symbol, exc_info=True)
+
     # Invalidate cache
-    _signal_model_store.invalidate(symbol)
+    _signal_model_store.invalidate(symbol, timeframe=tf)
 
     if not skip_snapshot:
         try:
             from app.services.bots.ml_model_artifacts import snapshot_current_version
-            snap = snapshot_current_version(_model_dir(symbol), strategy="ML_SIGNAL_BOOST")
+            snap = snapshot_current_version(_model_dir(symbol, tf), strategy="ML_SIGNAL_BOOST")
             if snap:
                 metadata["version_id"] = snap.get("version_id")
                 metadata["version_path"] = snap.get("path")
@@ -302,13 +348,14 @@ def train_ml_signal_model(
             logger.exception("Failed to snapshot ML_SIGNAL_BOOST version for %s", symbol)
 
     logger.info(
-        "ML signal model trained for %s (n=%d, val_acc=%s, dist=%s)",
+        "ML signal model trained for %s @ %s (n=%d, val_acc=%s, dist=%s)",
         symbol,
+        tf,
         n,
         metrics.get("val_accuracy"),
         dist,
     )
-    return {"ok": True, "symbol": symbol, **metadata}
+    return {"ok": True, "symbol": symbol, "timeframe": tf, **metadata}
 
 
 # ── Model store (in-memory cache) ────────────────────────────────────────
@@ -330,15 +377,21 @@ class MlSignalModelStore:
             ttl_sec=ML_MODEL_CACHE_TTL_SEC,
         )
 
-    def invalidate(self, symbol: str | None = None) -> None:
+    def invalidate(self, symbol: str | None = None, *, timeframe: str | None = None) -> None:
+        from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
+
         if symbol:
-            prefix = str(symbol).upper() + "|"
-            # Exact legacy key + versioned keys
-            self._lru.discard_prefix(str(symbol).upper())
-            self._lru.discard_prefix(prefix)
+            if timeframe is not None:
+                sk = model_storage_key(symbol, timeframe)
+                prefixes = (sk + "|", sk)
+            else:
+                sk = safe_symbol_key(symbol)
+                prefixes = (sk + "|", sk + "__")
+            for p in prefixes:
+                self._lru.discard_prefix(p)
             for d in (self._models, self._metadata, self._mtime):
                 for k in list(d.keys()):
-                    if k == str(symbol).upper() or k.startswith(prefix):
+                    if any(k == p.rstrip("|") or k.startswith(p) for p in prefixes):
                         d.pop(k, None)
         else:
             self._lru.clear()
@@ -346,13 +399,40 @@ class MlSignalModelStore:
             self._metadata.clear()
             self._mtime.clear()
 
-    def get_metadata(self, symbol: str, model_version: str | None = None) -> dict[str, Any] | None:
-        self._ensure_loaded(symbol, model_version=model_version)
-        return self._metadata.get(self._cache_key(symbol, model_version))
+    def inject_session_model(
+        self,
+        symbol: str,
+        model: Any,
+        metadata: dict[str, Any],
+        *,
+        timeframe: str | None = None,
+    ) -> None:
+        """Hold a fold/PBO model in-process without touching the live champion on disk."""
+        key = self._cache_key(symbol, None, timeframe)
+        self._models[key] = model
+        self._metadata[key] = dict(metadata or {})
+        self._mtime[key] = -1.0  # sentinel: never treat as disk-backed
+        self._lru.touch(key)
+
+    def get_metadata(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict[str, Any] | None:
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        return self._metadata.get(self._cache_key(symbol, model_version, timeframe))
 
     @staticmethod
-    def _cache_key(symbol: str, model_version: str | None) -> str:
-        return f"{str(symbol).upper()}|{model_version or 'latest'}"
+    def _cache_key(
+        symbol: str,
+        model_version: str | None,
+        timeframe: str | None = None,
+    ) -> str:
+        from app.services.bots.ml_model_artifacts import model_storage_key
+
+        return f"{model_storage_key(symbol, timeframe)}|{model_version or 'latest'}"
 
     def predict(
         self,
@@ -360,6 +440,7 @@ class MlSignalModelStore:
         features: dict[str, float],
         *,
         model_version: str | None = None,
+        timeframe: str | None = None,
     ) -> tuple[str, float] | None:
         """Predict signal class and confidence for a symbol.
 
@@ -367,11 +448,13 @@ class MlSignalModelStore:
         -------
         tuple of (signal: "BUY"|"SELL"|"NONE", confidence: float) or None if no model.
         """
-        model = self._ensure_loaded(symbol, model_version=model_version)
+        model = self._ensure_loaded(
+            symbol, model_version=model_version, timeframe=timeframe,
+        )
         if model is None:
             return None
 
-        meta = self._metadata.get(self._cache_key(symbol, model_version)) or {}
+        meta = self._metadata.get(self._cache_key(symbol, model_version, timeframe)) or {}
         reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
 
         vec = signal_features_to_vector(features).reshape(1, -1)
@@ -385,11 +468,22 @@ class MlSignalModelStore:
             logger.warning("ML signal predict failed for %s: %s", symbol, exc)
             return None
 
-    def _ensure_loaded(self, symbol: str, model_version: str | None = None):
+    def _ensure_loaded(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(symbol, model_version)
-        load_dir = resolve_model_dir(_model_dir(symbol), model_version)
+        key = self._cache_key(symbol, model_version, timeframe)
+        # Session-injected WF/PBO models (mtime sentinel -1) skip disk reload.
+        if key in self._models and self._mtime.get(key) == -1.0:
+            self._lru.touch(key)
+            return self._models[key]
+
+        load_dir = resolve_model_dir(_model_dir(symbol, timeframe), model_version)
         path = os.path.join(load_dir, "model.joblib")
         meta_path = os.path.join(load_dir, "metadata.json")
 
@@ -449,6 +543,13 @@ class MlSignalBoostStrategy(BaseStrategy):
         self._lookback: deque = deque(maxlen=25)
         self._cfg = merge_strategy_config("ML_SIGNAL_BOOST", config or {})
 
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
+
     def evaluate(self, df_row) -> dict:
         # Maintain lookback window for rolling features
         self._lookback.append(dict(df_row))
@@ -482,12 +583,15 @@ class MlSignalBoostStrategy(BaseStrategy):
         # Predict
         store = get_ml_signal_store()
         pinned = self._cfg.get("model_version") or None
-        result = store.predict(symbol, features, model_version=pinned or None)
+        tf = self._model_timeframe()
+        result = store.predict(
+            symbol, features, model_version=pinned or None, timeframe=tf,
+        )
         if result is None:
             return {
                 "signal": "NONE",
                 "reject_reason": "ml_model_missing",
-                "reject_detail": f"No trained ML_SIGNAL_BOOST model for {symbol}",
+                "reject_detail": f"No trained ML_SIGNAL_BOOST model for {symbol} @ {tf}",
             }
 
         signal, confidence = result

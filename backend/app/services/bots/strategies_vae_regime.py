@@ -128,10 +128,15 @@ def assess_vae_regime_for_meta(
 
     store = get_vae_store()
     pinned = cfg.get("model_version") or None
-    score = store.anomaly_score(sym, feat_vec, model_version=pinned or None)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(cfg.get("timeframe") or (config or {}).get("timeframe"))
+    score = store.anomaly_score(
+        sym, feat_vec, model_version=pinned or None, timeframe=tf,
+    )
     if score is None:
         return VaeRegimeAssessment(
-            None, "unknown", "skip", "no VAE model or score unavailable", False
+            None, "unknown", "skip", f"no VAE model for {sym} @ {tf} or score unavailable", False
         )
 
     anomaly_thresh = float(cfg.get("anomaly_threshold", 2.0))
@@ -201,6 +206,13 @@ class VaeRegimeStrategy(BaseStrategy):
         self._bar_history: deque = deque(maxlen=25)
         self._anomaly_history: deque = deque(maxlen=20)
 
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
+
     def evaluate(self, df_row) -> dict:
         self._bar_history.append(dict(df_row))
 
@@ -261,7 +273,14 @@ class VaeRegimeStrategy(BaseStrategy):
 
         return result
 
-    def get_anomaly_score(self, symbol: str, features: np.ndarray) -> float | None:
+    def get_anomaly_score(
+        self,
+        symbol: str,
+        features: np.ndarray,
+        *,
+        timeframe: str | None = None,
+    ) -> float | None:
         """Public API for other strategies to query regime state."""
         store = get_vae_store()
-        return store.anomaly_score(symbol, features)
+        tf = timeframe or self._model_timeframe()
+        return store.anomaly_score(symbol, features, timeframe=tf)

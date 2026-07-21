@@ -38,6 +38,7 @@ function formatVersionLabel(v) {
 export default function MlModelVersionSelect({
   strategy,
   symbol,
+  timeframe = '1m',
   value,
   onChange,
   disabled = false,
@@ -45,7 +46,8 @@ export default function MlModelVersionSelect({
   compact = false,
   showLabel = true,
 }) {
-  const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy));
+  const tf = String(timeframe || '1m').toLowerCase();
+  const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy, tf));
   const [loading, setLoading] = useState(false);
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -58,29 +60,31 @@ export default function MlModelVersionSelect({
     setLoading(true);
     try {
       const body = await apiRequest(
-        `/api/v1/ml/model-status?symbol=${encodeURIComponent(symbol)}&strategy=${encodeURIComponent(strategy)}`,
+        `/api/v1/ml/model-status?symbol=${encodeURIComponent(symbol)}&strategy=${encodeURIComponent(strategy)}&timeframe=${encodeURIComponent(tf)}`,
       );
       setStatus(resolveModelStatusFetch(symbol, strategy, {
         body,
         previous: statusRef.current,
+        timeframe: tf,
       }));
     } catch (err) {
       if (!isAbortError(err)) {
         setStatus(resolveModelStatusFetch(symbol, strategy, {
           error: err,
           previous: statusRef.current,
+          timeframe: tf,
         }));
       }
     } finally {
       setLoading(false);
     }
-  }, [symbol, strategy]);
+  }, [symbol, strategy, tf]);
 
   useEffect(() => {
-    const cached = getCachedModelStatus(symbol, strategy);
-    if (cached) setStatus(cached);
+    const cached = getCachedModelStatus(symbol, strategy, tf);
+    setStatus(cached);
     fetchStatus();
-  }, [fetchStatus, symbol, strategy]);
+  }, [fetchStatus, symbol, strategy, tf]);
 
   if (!isMlStrategy(strategy)) return null;
 

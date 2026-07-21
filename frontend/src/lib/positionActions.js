@@ -8,6 +8,8 @@ const QTY_DECIMALS = 6;
 export function partialCloseQuantity(size, fraction = 0.5) {
   const abs = Math.abs(Number(size) || 0);
   if (abs <= 0) return 0;
+  // Full close must use exact size — flooring leaves dust and looks like a half-close.
+  if (fraction >= 1) return abs;
   const factor = 10 ** QTY_DECIMALS;
   return Math.floor(abs * fraction * factor) / factor;
 }
@@ -22,6 +24,8 @@ export function buildCloseOrderPayload(symbol, size, fraction = 1) {
     type: 'MARKET',
     side: s > 0 ? 'SELL' : 'BUY',
     quantity: qty,
+    // Exits must not inherit place_order's default bracket=true.
+    bracket: false,
   };
 }
 
@@ -38,6 +42,7 @@ export function buildReverseOrderPayload(symbol, size) {
     type: 'MARKET',
     side: s > 0 ? 'SELL' : 'BUY',
     quantity: abs * 2,
+    bracket: false,
   };
 }
 

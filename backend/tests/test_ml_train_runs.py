@@ -32,7 +32,7 @@ class MlTrainRunsTests(unittest.TestCase):
             "job_id": "job-test-1",
             "kind": "train",
             "strategy": "ML_SIGNAL_BOOST",
-            "symbol": "BTCUSDT",
+            "symbol": "TESTSYM_MLRUNS",
             "status": "done",
             "started_at": "2026-07-20T12:00:00Z",
             "finished_at": "2026-07-20T12:01:30Z",
@@ -44,7 +44,7 @@ class MlTrainRunsTests(unittest.TestCase):
         }
         run_id = record_ml_train_run_from_job(job)
         self.assertTrue(run_id)
-        rows = list_ml_train_runs(symbol="BTCUSDT", strategy="ML_SIGNAL_BOOST", limit=5)
+        rows = list_ml_train_runs(symbol="TESTSYM_MLRUNS", strategy="ML_SIGNAL_BOOST", limit=5)
         self.assertGreaterEqual(len(rows), 1)
         hit = next(r for r in rows if r["id"] == run_id)
         self.assertTrue(hit["ok"])
@@ -52,6 +52,30 @@ class MlTrainRunsTests(unittest.TestCase):
         self.assertEqual(hit["duration_ms"], 90_000)
         self.assertEqual(hit["metrics"].get("val_accuracy"), 0.61)
         self.assertEqual(hit["version_id"], "20260720T120130Z")
+
+    def test_record_stores_timeframe(self):
+        job = {
+            "job_id": "job-tf-1",
+            "kind": "train",
+            "strategy": "TRANSFORMER_SIGNAL",
+            "symbol": "TESTSYM_MLTF",
+            "status": "done",
+            "started_at": "2026-07-20T12:00:00Z",
+            "finished_at": "2026-07-20T12:02:00Z",
+            "result": {
+                "ok": True,
+                "timeframe": "5m",
+                "metrics": {"val_accuracy": 0.55},
+                "version_id": "20260720T120200Z",
+            },
+        }
+        run_id = record_ml_train_run_from_job(job)
+        self.assertTrue(run_id)
+        rows = list_ml_train_runs(
+            symbol="TESTSYM_MLTF", strategy="TRANSFORMER_SIGNAL", timeframe="5m", limit=5,
+        )
+        hit = next(r for r in rows if r["id"] == run_id)
+        self.assertEqual(hit["timeframe"], "5m")
 
     def test_finish_job_persists_run(self):
         job_id = create_ml_job(kind="validate", strategy="LSTM_DIRECTION", symbol="ETHUSDT")

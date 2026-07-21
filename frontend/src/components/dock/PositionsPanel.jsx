@@ -80,7 +80,7 @@ const PositionRow = React.memo(function PositionRow({ sym, pos, ownerBots = [], 
 
   return (
     <>
-      <DataTableRow rowVariant="dock" deferred className={cn(isActive && 'row-active')}>
+      <DataTableRow rowVariant="dock" className={cn(isActive && 'row-active')}>
         <DataTableCell>
           <span className={cn('font-bold', isActive ? 'text-primary' : 'text-foreground')}>{sym}</span>
           {ownerBots.length > 0 && (

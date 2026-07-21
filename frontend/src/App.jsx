@@ -16,11 +16,13 @@ import WorkspaceSwitcher     from './components/WorkspaceSwitcher';
 import ActivityCenter        from './components/ActivityCenter';
 import BacktestLabSheet      from './components/BacktestLabSheet';
 import SignalInsightDrawer   from './components/SignalInsightDrawer';
+import GlobalDeployDialog    from './components/dock/GlobalDeployDialog';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
 import { applyLayoutMode } from './settings/layoutModes';
 import MemoryDevBadge from './components/MemoryDevBadge';
 import PwaInstallBanner from './components/PwaInstallBanner';
 import WorkspaceGrid from './components/WorkspaceGrid';
+import { focusWorkspacePanel } from './lib/workspaceNav';
 
 const SystemControlPanel = lazyImport(() => import('./components/SystemControlPanel'), 'system-control');
 const SettingsPanel = lazyImport(() => import('./components/SettingsPanel'), 'settings');
@@ -329,6 +331,8 @@ export default function App() {
       </Suspense>
       <ActivityCenter open={activityOpen} onOpenChange={setActivityOpen} />
       <BacktestLabSheet />
+      {/* Optimizer "Deploy optimized" sets pendingDeploy — dialog lived only in unmounted ResizableDock. */}
+      <GlobalDeployDialog switchToAlgoTab={() => focusWorkspacePanel('algo')} />
       <SignalInsightDrawer />
 
       <ErrorBoundary name="Header">
@@ -500,13 +504,13 @@ export default function App() {
                   size="icon-sm"
                   onClick={() => refreshFrontend()}
                   className="header-icon-btn text-muted-foreground hover:text-trading-accent"
-                  title="Refresh UI — reload app"
+                  title="Refresh UI — reload app (keeps last open tabs)"
                 >
                   <RefreshCw aria-hidden />
                   <span className="sr-only">Refresh UI</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Refresh UI</TooltipContent>
+              <TooltipContent>Refresh UI (keeps last tabs)</TooltipContent>
             </Tooltip>
 
             <Tooltip>

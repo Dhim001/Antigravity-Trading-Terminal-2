@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.services.bots.ml_train_executor import run_train_job, run_validate_job
+from app.services.bots.ml_train_executor import (
+    run_train_job,
+    run_validate_job,
+    use_process_pool_for_strategy,
+)
 
 
 class MlTrainExecutorTests(unittest.TestCase):
@@ -47,6 +51,18 @@ class MlTrainExecutorTests(unittest.TestCase):
                 )
         self.assertTrue(out["ok"])
         self.assertEqual(out.get("mean_accuracy"), 0.55)
+
+    def test_torch_strategies_prefer_in_process_thread(self):
+        with patch("app.config.ML_TRAIN_PROCESS_ISOLATION", True):
+            with patch("app.config.ML_TRAIN_TORCH_IN_PROCESS", True):
+                self.assertFalse(use_process_pool_for_strategy("LSTM_DIRECTION"))
+                self.assertFalse(use_process_pool_for_strategy("RL_PPO_AGENT"))
+                self.assertTrue(use_process_pool_for_strategy("ML_SIGNAL_BOOST"))
+
+    def test_torch_can_opt_into_process_pool(self):
+        with patch("app.config.ML_TRAIN_PROCESS_ISOLATION", True):
+            with patch("app.config.ML_TRAIN_TORCH_IN_PROCESS", False):
+                self.assertTrue(use_process_pool_for_strategy("LSTM_DIRECTION"))
 
 
 if __name__ == "__main__":

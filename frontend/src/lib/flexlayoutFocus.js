@@ -109,12 +109,23 @@ export function toggleFlexLayoutComponent(model, primary, fallback) {
 }
 
 /**
- * Focus the first tab of a legacy dock group (portfolio / intelligence / …).
+ * Focus a tab in a legacy dock group (portfolio / intelligence / …).
+ * Keeps the already-selected tab if it belongs to the group (e.g. ML Training
+ * inside intelligence) so group focus does not yank back to tabs[0].
  * @param {import('flexlayout-react').Model} model
  * @param {string} group
  */
 export function focusFlexLayoutDockGroup(model, group) {
   const cfg = DOCK_GROUP_CONFIG[group];
   if (!cfg?.tabs?.length) return false;
+  for (const tabId of cfg.tabs) {
+    const tab = findTabByComponent(model, tabId);
+    if (!tab) continue;
+    const parent = tab.getParent?.();
+    const selected = parent?.getSelectedNode?.();
+    if (selected && selected.getId() === tab.getId()) {
+      return true;
+    }
+  }
   return focusFlexLayoutComponent(model, cfg.tabs[0]);
 }

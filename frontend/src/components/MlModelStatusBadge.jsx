@@ -64,12 +64,14 @@ function TrainCta({ label, onActivate, ariaLabel }) {
 export default function MlModelStatusBadge({
   strategy,
   symbol,
+  timeframe = '1m',
   modelVersion = '',
   compact = false,
   /** When false, status-only (safe inside parent <button> cards). */
   showCta = true,
 }) {
-  const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy));
+  const tf = String(timeframe || '1m').toLowerCase();
+  const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy, tf));
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -77,11 +79,12 @@ export default function MlModelStatusBadge({
     if (!symbol || !strategy || !isMlStrategy(strategy)) return;
     try {
       const body = await apiRequest(
-        `/api/v1/ml/model-status?symbol=${encodeURIComponent(symbol)}&strategy=${encodeURIComponent(strategy)}`
+        `/api/v1/ml/model-status?symbol=${encodeURIComponent(symbol)}&strategy=${encodeURIComponent(strategy)}&timeframe=${encodeURIComponent(tf)}`,
       );
       const next = resolveModelStatusFetch(symbol, strategy, {
         body,
         previous: statusRef.current,
+        timeframe: tf,
       });
       setStatus(next);
     } catch (err) {
@@ -89,16 +92,17 @@ export default function MlModelStatusBadge({
       const next = resolveModelStatusFetch(symbol, strategy, {
         error: err,
         previous: statusRef.current,
+        timeframe: tf,
       });
       setStatus(next);
     }
-  }, [symbol, strategy]);
+  }, [symbol, strategy, tf]);
 
   useEffect(() => {
-    const cached = getCachedModelStatus(symbol, strategy);
-    if (cached) setStatus(cached);
+    const cached = getCachedModelStatus(symbol, strategy, tf);
+    setStatus(cached);
     fetchStatus();
-  }, [fetchStatus, symbol, strategy]);
+  }, [fetchStatus, symbol, strategy, tf]);
 
   const openTraining = useCallback((e) => {
     e.stopPropagation();
@@ -113,8 +117,8 @@ export default function MlModelStatusBadge({
     const pin = String(modelVersion || '').trim();
     const short = formatPinnedVersionShort(pin, status.trained_at);
     const title = pin
-      ? `Pinned model ${pin}`
-      : `Using latest activated model${status.trained_at ? ` (${status.trained_at})` : ''}`;
+      ? `Pinned ${tf} model ${pin}`
+      : `Using latest ${tf} model${status.trained_at ? ` (${status.trained_at})` : ''}`;
     return (
       <span
         className={cn(
@@ -142,7 +146,10 @@ export default function MlModelStatusBadge({
   }
 
   return (
-    <span className="ml-model-badge ml-model-badge--untrained" title="No model trained for this symbol">
+    <span
+      className="ml-model-badge ml-model-badge--untrained"
+      title={`No ${tf} model trained for this symbol`}
+    >
       <XCircle size={10} />
       {showCta ? (
         <TrainCta
@@ -151,7 +158,7 @@ export default function MlModelStatusBadge({
           ariaLabel="Open Model Training"
         />
       ) : (
-        <span className="ml-model-badge__ver">no model</span>
+        <span className="ml-model-badge__ver">no {tf}</span>
       )}
     </span>
   );

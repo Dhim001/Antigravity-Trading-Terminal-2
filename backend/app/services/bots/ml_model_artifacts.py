@@ -1,8 +1,9 @@
 """On-disk ML model versioning helpers.
 
-Layout (per strategy subdir + symbol)::
+Layout (per strategy subdir + symbol[, timeframe])::
 
-    data/{subdir}/{SYMBOL}/                 # "current" / latest (back-compat)
+    data/{subdir}/{SYMBOL}/                 # "current" / latest for 1m (back-compat)
+    data/{subdir}/{SYMBOL}__15M/            # HTF models (e.g. 15m execution)
       metadata.json
       *.onnx | model.joblib | scaler.json …
       versions/
@@ -57,6 +58,33 @@ def safe_symbol_key(symbol: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(symbol or "").upper())
 
 
+def normalize_model_timeframe(tf: str | None) -> str:
+    """Canonical bar timeframe for model storage / lookup (default ``1m``)."""
+    raw = (tf or "1m").strip()
+    if not raw or raw.lower() == "tick":
+        return "1m"
+    try:
+        from app.services.market.timeframes import normalize_timeframe
+
+        key = normalize_timeframe(raw)
+        return "1m" if key == "tick" else key
+    except Exception:
+        return "1m"
+
+
+def model_storage_key(symbol: str, timeframe: str | None = None) -> str:
+    """Filesystem folder under ``data/<strategy_subdir>/``.
+
+    ``1m`` keeps legacy ``ETHUSDT`` paths. Higher TFs use ``ETHUSDT__15M`` so
+    Lab can train separate models per execution timeframe without clobbering.
+    """
+    sym = safe_symbol_key(symbol)
+    tf = normalize_model_timeframe(timeframe)
+    if tf == "1m":
+        return sym
+    return f"{sym}__{safe_symbol_key(tf)}"
+
+
 def version_id_from_iso(trained_at: str | None) -> str:
     """Normalize ISO timestamp into a filesystem-safe version id."""
     raw = (trained_at or "").strip()
@@ -76,11 +104,15 @@ def version_id_from_iso(trained_at: str | None) -> str:
     return "".join(c for c in cleaned if c.isalnum())[:24] or "unknown"
 
 
-def model_root_for(strategy: str, symbol: str) -> str | None:
+def model_root_for(
+    strategy: str,
+    symbol: str,
+    timeframe: str | None = None,
+) -> str | None:
     sub = MODEL_SUBDIRS.get(str(strategy or "").upper())
     if not sub:
         return None
-    return os.path.join(BASE_DIR, "data", sub, safe_symbol_key(symbol))
+    return os.path.join(BASE_DIR, "data", sub, model_storage_key(symbol, timeframe))
 
 
 def versions_dir(model_root: str) -> str:
@@ -218,6 +250,7 @@ def activate_model_version(
     strategy: str,
     symbol: str,
     model_version: str,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     """
     Promote a historical snapshot to the live model root (current).
@@ -227,7 +260,7 @@ def activate_model_version(
     """
     strat = str(strategy or "").upper()
     sym = str(symbol or "").upper()
-    root = model_root_for(strat, sym)
+    root = model_root_for(strat, sym, timeframe)
     if not root or not os.path.isdir(root):
         return {"ok": False, "error": f"No model directory for {strat}/{sym}"}
 
@@ -293,6 +326,7 @@ def delete_model_version(
     strategy: str,
     symbol: str,
     model_version: str,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
     """
     Remove a historical snapshot from disk and the version index.
@@ -302,7 +336,7 @@ def delete_model_version(
     """
     strat = str(strategy or "").upper()
     sym = str(symbol or "").upper()
-    root = model_root_for(strat, sym)
+    root = model_root_for(strat, sym, timeframe)
     if not root or not os.path.isdir(root):
         return {"ok": False, "error": f"No model directory for {strat}/{sym}"}
 
@@ -490,17 +524,105 @@ def snapshot_current_version(
     return entry
 
 
+VALIDATION_SIDECAR = "validation.json"
+
+
+def validation_sidecar_path(model_root: str) -> str:
+    return os.path.join(model_root, VALIDATION_SIDECAR)
+
+
+def clear_ml_validation_stamp(model_root: str) -> None:
+    """Drop deploy-gate validation after a fresh train (new artifact fingerprint)."""
+    if not model_root:
+        return
+    unlink_quiet(validation_sidecar_path(model_root))
+    meta_path = os.path.join(model_root, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            return
+        changed = False
+        for key in ("validated_at", "walk_forward", "pbo", "pbo_audit"):
+            if key in meta:
+                meta.pop(key, None)
+                changed = True
+        if changed:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, default=str)
+    except Exception:
+        logger.debug("clear_ml_validation_stamp failed for %s", model_root, exc_info=True)
+
+
+def read_validation_sidecar(model_root: str) -> dict[str, Any] | None:
+    """Load validation.json if present and fingerprint matches live trained_at."""
+    if not model_root:
+        return None
+    path = validation_sidecar_path(model_root)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return None
+    except Exception:
+        return None
+
+    meta_path = os.path.join(model_root, "metadata.json")
+    trained_at = None
+    version_id = None
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            if isinstance(meta, dict):
+                trained_at = meta.get("trained_at")
+                version_id = meta.get("version_id")
+        except Exception:
+            pass
+
+    # Sidecar must match the live champion artifact — Activate / retrain invalidate it.
+    if payload.get("trained_at") and trained_at and payload.get("trained_at") != trained_at:
+        return None
+    if payload.get("version_id") and version_id and payload.get("version_id") != version_id:
+        return None
+    return payload
+
+
+def apply_validation_sidecar(meta: dict[str, Any] | None, model_root: str | None) -> dict[str, Any]:
+    """Merge sidecar WF/PBO into metadata dict for deploy-gate / model-status."""
+    out = dict(meta) if isinstance(meta, dict) else {}
+    side = read_validation_sidecar(model_root or "")
+    if not side:
+        return out
+    if side.get("validated_at"):
+        out["validated_at"] = side.get("validated_at")
+    if isinstance(side.get("walk_forward"), dict):
+        out["walk_forward"] = side["walk_forward"]
+    if "pbo" in side:
+        out["pbo"] = side.get("pbo")
+    if isinstance(side.get("pbo_audit"), dict):
+        out["pbo_audit"] = side["pbo_audit"]
+    return out
+
+
 def persist_ml_validation_metadata(
     strategy: str,
     symbol: str,
     wf_result: dict[str, Any] | None,
     pbo_result: dict[str, Any] | None = None,
+    timeframe: str | None = None,
 ) -> dict[str, Any]:
-    """Merge walk-forward (+ optional PBO) results into the live metadata.json.
+    """Merge walk-forward (+ optional PBO) into live metadata + validation.json.
 
-    Deploy gate reads ``validated_at`` / ``walk_forward`` / ``pbo`` from this file.
+    Deploy gate reads ``validated_at`` / ``walk_forward`` / ``pbo``. The sidecar
+    survives Activate restoring a version snapshot that lacks those keys, as long
+    as ``trained_at`` / ``version_id`` still match the validated champion.
     """
-    root = model_root_for(strategy, symbol)
+    root = model_root_for(strategy, symbol, timeframe)
     if not root:
         return {"ok": False, "error": f"unknown strategy {strategy}"}
     meta_path = os.path.join(root, "metadata.json")
@@ -518,8 +640,7 @@ def persist_ml_validation_metadata(
     wf = wf_result if isinstance(wf_result, dict) else {}
     validated_at = wf.get("validated_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     agg = wf.get("aggregate") if isinstance(wf.get("aggregate"), dict) else {}
-    meta["validated_at"] = validated_at
-    meta["walk_forward"] = {
+    walk_forward = {
         "ok": bool(wf.get("ok")),
         "mode": wf.get("mode"),
         "n_folds": wf.get("n_folds"),
@@ -529,30 +650,47 @@ def persist_ml_validation_metadata(
         "validated_at": validated_at,
         "stability": wf.get("stability") if isinstance(wf.get("stability"), dict) else None,
     }
+    meta["validated_at"] = validated_at
+    meta["walk_forward"] = walk_forward
 
     pbo = pbo_result if isinstance(pbo_result, dict) else None
+    pbo_audit: dict[str, Any] | None = None
     if pbo and pbo.get("ok") and pbo.get("pbo") is not None:
         try:
             meta["pbo"] = float(pbo["pbo"])
         except (TypeError, ValueError):
             meta["pbo"] = pbo.get("pbo")
-        meta["pbo_audit"] = {
+        pbo_audit = {
             "pbo": meta.get("pbo"),
             "recommendation": pbo.get("recommendation"),
             "degradation": pbo.get("degradation"),
             "n_combos": pbo.get("n_combos"),
             "skipped": bool(pbo.get("skipped")),
         }
+        meta["pbo_audit"] = pbo_audit
     elif pbo is not None:
         # Skip / fail must clear stale champion PBO so deploy gate doesn't
         # reuse the previous model's score against this validation.
         meta["pbo"] = None
-        meta["pbo_audit"] = {
+        pbo_audit = {
             "skipped": bool(pbo.get("skipped")),
             "ok": False,
             "error": pbo.get("error"),
             "recommendation": pbo.get("recommendation"),
         }
+        meta["pbo_audit"] = pbo_audit
+
+    sidecar = {
+        "trained_at": meta.get("trained_at"),
+        "version_id": meta.get("version_id"),
+        "validated_at": validated_at,
+        "walk_forward": walk_forward,
+        "pbo": meta.get("pbo"),
+        "pbo_audit": pbo_audit,
+        "strategy": str(strategy or "").upper(),
+        "symbol": str(symbol or "").upper(),
+        "timeframe": normalize_model_timeframe(timeframe),
+    }
 
     try:
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -560,7 +698,46 @@ def persist_ml_validation_metadata(
     except Exception as exc:
         return {"ok": False, "error": f"Failed to write metadata: {exc}"}
 
-    return {"ok": True, "validated_at": validated_at, "path": meta_path}
+    side_path = validation_sidecar_path(root)
+    try:
+        with open(side_path, "w", encoding="utf-8") as f:
+            json.dump(sidecar, f, indent=2, default=str)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Failed to write validation sidecar: {exc}",
+            "path": meta_path,
+        }
+
+    # Keep version snapshot in sync so Activate does not resurrect a stamp-less meta.
+    vid = meta.get("version_id")
+    if vid:
+        vmeta_path = os.path.join(root, "versions", str(vid), "metadata.json")
+        if os.path.isfile(vmeta_path):
+            try:
+                with open(vmeta_path, encoding="utf-8") as f:
+                    vmeta = json.load(f)
+                if not isinstance(vmeta, dict):
+                    vmeta = {}
+                vmeta["validated_at"] = validated_at
+                vmeta["walk_forward"] = walk_forward
+                if "pbo" in meta:
+                    vmeta["pbo"] = meta.get("pbo")
+                if pbo_audit is not None:
+                    vmeta["pbo_audit"] = pbo_audit
+                with open(vmeta_path, "w", encoding="utf-8") as f:
+                    json.dump(vmeta, f, indent=2, default=str)
+            except Exception:
+                logger.debug("Failed to stamp version metadata %s", vmeta_path, exc_info=True)
+
+    return {
+        "ok": True,
+        "validated_at": validated_at,
+        "path": meta_path,
+        "sidecar": side_path,
+        "trained_at": meta.get("trained_at"),
+        "version_id": meta.get("version_id"),
+    }
 
 
 def dataset_summary_from_metadata(meta: dict | None) -> dict[str, Any] | None:
@@ -568,10 +745,13 @@ def dataset_summary_from_metadata(meta: dict | None) -> dict[str, Any] | None:
     if not isinstance(meta, dict):
         return None
     metrics = meta.get("metrics") if isinstance(meta.get("metrics"), dict) else {}
+    tw = meta.get("training_window") if isinstance(meta.get("training_window"), dict) else {}
     return {
         "sample_count": meta.get("sample_count") or metrics.get("train_samples"),
         "train_samples": metrics.get("train_samples"),
         "val_samples": metrics.get("val_samples"),
+        "candle_bars": meta.get("candle_bars") if meta.get("candle_bars") is not None else tw.get("bars"),
+        "bar_target": meta.get("bar_target") if meta.get("bar_target") is not None else tw.get("bar_limit"),
         "label_distribution": meta.get("label_distribution"),
         "feature_names": meta.get("feature_names"),
         "feature_schema_version": meta.get("feature_schema_version"),
@@ -694,6 +874,30 @@ def export_onnx_single_file(
     except ImportError as exc:
         raise RuntimeError("PyTorch required for ONNX export") from exc
 
+    # Torch 2.9+ calls into the ``onnx`` package during export (onnxscript helpers).
+    try:
+        import onnx  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "ONNX export requires the 'onnx' package. "
+            "Install with: pip install onnx onnxscript"
+        ) from exc
+
+    # Train may run on CUDA; ONNX export + live ORT inference are CPU-only.
+    from app.services.bots.ml_torch_device import module_cpu_copy
+
+    export_model = module_cpu_copy(model)
+    if isinstance(args, (tuple, list)):
+        export_args = tuple(
+            a.detach().cpu() if hasattr(a, "detach") else a for a in args
+        )
+        if len(export_args) == 1:
+            export_args = export_args[0]
+    elif hasattr(args, "detach"):
+        export_args = args.detach().cpu()
+    else:
+        export_args = args
+
     export_kwargs: dict[str, Any] = {
         "input_names": list(input_names),
         "output_names": list(output_names),
@@ -709,8 +913,8 @@ def export_onnx_single_file(
             warnings.simplefilter("ignore")
             try:
                 torch.onnx.export(
-                    model,
-                    args,
+                    export_model,
+                    export_args,
                     tmp_path,
                     dynamo=False,
                     external_data=False,
@@ -718,7 +922,7 @@ def export_onnx_single_file(
                 )
             except TypeError:
                 # Older torch: no dynamo / external_data kwargs.
-                torch.onnx.export(model, args, tmp_path, **export_kwargs)
+                torch.onnx.export(export_model, export_args, tmp_path, **export_kwargs)
 
         tmp_data = tmp_path + ".data"
         if os.path.isfile(tmp_data):
@@ -752,6 +956,7 @@ def update_version_status(
     symbol: str,
     version_id: str,
     status: str,
+    timeframe: str | None = None,
 ) -> bool:
     """Update the status field of a model version in the index.
 
@@ -765,12 +970,14 @@ def update_version_status(
         Version ID to update.
     status : str
         New status: 'champion', 'challenger', or 'retired'.
+    timeframe : str, optional
+        Bar timeframe used when the model was trained (default 1m).
 
     Returns
     -------
     bool — True if the version was found and updated.
     """
-    root = model_root_for(strategy, symbol)
+    root = model_root_for(strategy, symbol, timeframe)
     if not root:
         return False
 

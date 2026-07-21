@@ -1,8 +1,8 @@
 """LSTM Direction Classifier — training pipeline with ONNX export.
 
 Trains a 2-layer LSTM on sliding windows of bar features to predict
-BUY/SELL/NONE via triple-barrier labels.  Exports to ONNX for lightweight
-CPU inference (no PyTorch needed at runtime).
+BUY/SELL/NONE via triple-barrier labels. Training uses CUDA when available;
+exports ONNX for CPU ``onnxruntime`` inference (no PyTorch at runtime).
 
 Dependencies (optional — strategy degrades gracefully if absent):
     pip install torch>=2.3.0 onnxruntime>=1.18.0
@@ -38,21 +38,22 @@ LABEL_MAP = {1: 0, 0: 1, -1: 2}
 REVERSE_MAP = {0: "BUY", 1: "NONE", 2: "SELL"}
 
 
-def _model_dir(symbol: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(symbol).upper())
-    return os.path.join(LSTM_MODEL_DIR, safe)
+def _model_dir(symbol: str, timeframe: str | None = None) -> str:
+    from app.services.bots.ml_model_artifacts import model_storage_key
+
+    return os.path.join(LSTM_MODEL_DIR, model_storage_key(symbol, timeframe))
 
 
-def _onnx_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "lstm_direction.onnx")
+def _onnx_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "lstm_direction.onnx")
 
 
-def _metadata_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "metadata.json")
+def _metadata_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "metadata.json")
 
 
-def _scaler_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "scaler.json")
+def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
 # ── Feature scaling ──────────────────────────────────────────────────────
@@ -85,19 +86,24 @@ def apply_scaler(sequences: np.ndarray, scaler: dict[str, list[float]]) -> np.nd
     return (sequences - mean) / std
 
 
-def save_scaler(symbol: str, scaler: dict[str, list[float]]) -> None:
-    os.makedirs(_model_dir(symbol), exist_ok=True)
-    with open(_scaler_path(symbol), "w", encoding="utf-8") as fh:
+def save_scaler(
+    symbol: str,
+    scaler: dict[str, list[float]],
+    *,
+    timeframe: str | None = None,
+) -> None:
+    os.makedirs(_model_dir(symbol, timeframe), exist_ok=True)
+    with open(_scaler_path(symbol, timeframe), "w", encoding="utf-8") as fh:
         json.dump(scaler, fh, indent=2)
 
 
 def load_scaler(
-    symbol: str, *, model_dir: str | None = None
+    symbol: str, *, model_dir: str | None = None, timeframe: str | None = None
 ) -> dict[str, list[float]] | None:
     path = (
         os.path.join(model_dir, "scaler.json")
         if model_dir
-        else _scaler_path(symbol)
+        else _scaler_path(symbol, timeframe)
     )
     if not os.path.isfile(path):
         return None
@@ -204,7 +210,7 @@ def train_lstm_signal_model(
     candles: list[dict],
     *,
     config: dict | None = None,
-    epochs: int = 50,
+    epochs: int = 100,
 ) -> dict[str, Any]:
     """Train an LSTM direction classifier and export to ONNX.
 
@@ -225,17 +231,54 @@ def train_lstm_signal_model(
     """
     torch, nn = _get_torch()
 
-    cfg = merge_strategy_config("LSTM_DIRECTION", config or {})
+    raw_cfg = dict(config or {})
+    cfg = merge_strategy_config("LSTM_DIRECTION", raw_cfg)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
+    cfg["timeframe"] = tf
     epochs = int(cfg.get("epochs", epochs))
-    lookback = int(cfg.get("lookback", 60))
-    min_samples = int(cfg.get("min_train_samples", 500))
+    lookback = int(cfg.get("lookback", 90))
+    # Interactive / walk-forward validation uses short fold windows — relax the
+    # production sample floor so folds can actually train (unless caller overrides).
+    if bool(cfg.get("_wf_mode")) and "min_train_samples" not in raw_cfg:
+        min_samples = int(cfg.get("wf_min_train_samples", 150))
+    else:
+        min_samples = int(cfg.get("min_train_samples", 500))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))
-    hidden_dim = int(cfg.get("hidden_dim", 64))
+    hidden_dim = int(cfg.get("hidden_dim", 128))
     num_layers = int(cfg.get("num_layers", 2))
     lr = float(cfg.get("learning_rate", 0.001))
-    batch_size = int(cfg.get("batch_size", 64))
+    from app.services.bots.ml_torch_device import (
+        cap_wf_epochs,
+        cpu_tensor,
+        device_info,
+        ensure_cuda_ready,
+        resolve_torch_device,
+        resolve_wf_torch_device,
+        suggest_batch_size,
+    )
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        ml_cancel_requested,
+        progress_path_from_config,
+        write_ml_progress,
+    )
+
+    # WF folds: CUDA when available; short epoch budget (not full Lab train).
+    if bool(cfg.get("_wf_mode")):
+        epochs = cap_wf_epochs(epochs, cfg, default=12)
+        device = resolve_wf_torch_device(cfg)
+    else:
+        device = resolve_torch_device(cfg)
+    batch_size = suggest_batch_size(
+        cfg, 128 if getattr(device, "type", None) == "cuda" else 64, device=device,
+    )
+    progress_path = progress_path_from_config(cfg)
+    write_ml_progress(progress_path, pct=8, phase="device", detail=str(device))
+    ensure_cuda_ready(device)
 
     min_candles = lookback + 20 + max_bars + min_samples
     if len(candles) < min_candles:
@@ -246,6 +289,7 @@ def train_lstm_signal_model(
         }
 
     # Step 1: Label candles
+    write_ml_progress(progress_path, pct=10, phase="labels", detail="triple-barrier")
     labels = label_triple_barrier(
         candles,
         atr_mult_upper=atr_mult,
@@ -255,6 +299,7 @@ def train_lstm_signal_model(
     dist = label_distribution(labels)
 
     # Step 2: Build sliding window sequences
+    write_ml_progress(progress_path, pct=15, phase="sequences", detail="build windows")
     X, y = build_sequences(candles, labels, lookback=lookback, max_holding_bars=max_bars)
     n = len(y)
     if n < min_samples:
@@ -284,19 +329,19 @@ def train_lstm_signal_model(
     X_train = apply_scaler(X_train, scaler)
     X_val = apply_scaler(X_val, scaler)
 
-    # Step 5: Build model
+    # Step 5: Build model (CUDA when available for production trains)
     model = _build_lstm_model(
         input_dim=N_FEATURES,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         num_classes=N_CLASSES,
-    )
+    ).to(device)
 
     # Class weights for imbalanced labels
     class_counts = np.bincount(y_train, minlength=N_CLASSES).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
     class_weights = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
-    weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
+    weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
     criterion = nn.CrossEntropyLoss(weight=weight_tensor)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -304,11 +349,20 @@ def train_lstm_signal_model(
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5,
     )
 
-    # Convert to tensors
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
-    y_train_t = torch.tensor(y_train, dtype=torch.long)
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
-    y_val_t = torch.tensor(y_val, dtype=torch.long)
+    # Keep full datasets on CPU — move mini-batches to GPU (avoids CUDA alloc hang/OOM).
+    X_train_t = cpu_tensor(X_train, dtype=torch.float32)
+    y_train_t = cpu_tensor(y_train, dtype=torch.long)
+    X_val_t = cpu_tensor(X_val, dtype=torch.float32)
+    y_val_t = cpu_tensor(y_val, dtype=torch.long)
+
+    logger.info(
+        "LSTM train %s @ %s on %s (hidden=%d layers=%d batch=%d epochs≤%d)",
+        symbol, tf, device, hidden_dim, num_layers, batch_size, epochs,
+    )
+    write_ml_progress(
+        progress_path, pct=20, phase="fit",
+        detail=f"{device} · {len(y_train)} train / {len(y_val)} val",
+    )
 
     # Step 6: Training loop
     best_val_loss = float("inf")
@@ -317,14 +371,17 @@ def train_lstm_signal_model(
     max_patience = 10
     loss_history: list[dict] = []
 
-    model.train()
-    from app.services.bots.ml_job_progress import (
-        cancelled_train_result,
-        ml_cancel_requested,
-        progress_path_from_config,
-    )
+    def _batched_val_loss() -> float:
+        total = 0.0
+        n = 0
+        for vs in range(0, len(X_val_t), batch_size):
+            xb = X_val_t[vs:vs + batch_size].to(device, non_blocking=True)
+            yb = y_val_t[vs:vs + batch_size].to(device, non_blocking=True)
+            total += float(criterion(model(xb), yb).item()) * len(xb)
+            n += len(xb)
+        return total / max(1, n)
 
-    progress_path = progress_path_from_config(cfg)
+    model.train()
     for epoch in range(epochs):
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "LSTM_DIRECTION")
@@ -336,8 +393,8 @@ def train_lstm_signal_model(
         for start in range(0, len(X_train_t), batch_size):
             end = min(start + batch_size, len(X_train_t))
             batch_idx = indices[start:end]
-            xb = X_train_t[batch_idx]
-            yb = y_train_t[batch_idx]
+            xb = X_train_t[batch_idx].to(device, non_blocking=True)
+            yb = y_train_t[batch_idx].to(device, non_blocking=True)
 
             optimizer.zero_grad()
             logits = model(xb)
@@ -350,11 +407,10 @@ def train_lstm_signal_model(
 
         avg_train_loss = epoch_loss / max(1, n_batches)
 
-        # Validation
+        # Validation (batched — never forward the full val set on GPU at once)
         model.eval()
         with torch.no_grad():
-            val_logits = model(X_val_t)
-            val_loss = criterion(val_logits, y_val_t).item()
+            val_loss = _batched_val_loss()
         model.train()
 
         loss_history.append({
@@ -362,13 +418,19 @@ def train_lstm_signal_model(
             "train_loss": round(avg_train_loss, 6),
             "val_loss": round(val_loss, 6),
         })
+        write_ml_progress(
+            progress_path,
+            pct=min(20 + int(((epoch + 1) / max(epochs, 1)) * 70), 90),
+            phase="epoch",
+            detail=f"{epoch + 1}/{epochs} · val_loss={val_loss:.4f}",
+        )
 
         scheduler.step(val_loss)
 
         # Early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             patience_counter = 0
         else:
             patience_counter += 1
@@ -382,8 +444,12 @@ def train_lstm_signal_model(
 
     # Step 7: Validation metrics
     model.eval()
+    val_logits_chunks: list = []
     with torch.no_grad():
-        val_logits = model(X_val_t)
+        for vs in range(0, len(X_val_t), batch_size):
+            xb = X_val_t[vs:vs + batch_size].to(device, non_blocking=True)
+            val_logits_chunks.append(model(xb).detach().cpu())
+        val_logits = torch.cat(val_logits_chunks, dim=0) if val_logits_chunks else torch.empty(0, N_CLASSES)
         val_proba = torch.softmax(val_logits, dim=1).numpy()
         val_preds = val_logits.argmax(dim=1).numpy()
 
@@ -396,6 +462,7 @@ def train_lstm_signal_model(
                 float((val_preds[mask] == cls_idx).mean()), 4
             )
 
+    train_device_meta = device_info(device)
     metrics = {
         "train_samples": int(len(y_train)),
         "val_samples": int(len(y_val)),
@@ -405,12 +472,14 @@ def train_lstm_signal_model(
         "hidden_dim": hidden_dim,
         "num_layers": num_layers,
         "lookback": lookback,
+        "batch_size": batch_size,
+        "train_device": train_device_meta.get("device"),
         **per_class_acc,
     }
 
     # Step 8: Export to ONNX (single-file; Windows-safe across walk-forward re-exports)
-    os.makedirs(_model_dir(symbol), exist_ok=True)
-    onnx_path = _onnx_path(symbol)
+    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
+    onnx_path = _onnx_path(symbol, tf)
     from app.services.bots.ml_model_artifacts import export_onnx_single_file
     from app.services.bots.strategies_lstm import get_lstm_store
 
@@ -425,15 +494,16 @@ def train_lstm_signal_model(
             "logits": {0: "batch_size"},
         },
         opset_version=17,
-        invalidate=lambda: get_lstm_store().invalidate(symbol),
+        invalidate=lambda: get_lstm_store().invalidate(symbol, timeframe=tf),
     )
 
     # Save scaler
-    save_scaler(symbol, scaler)
+    save_scaler(symbol, scaler, timeframe=tf)
 
     # Save metadata
     metadata = {
         "symbol": symbol,
+        "timeframe": tf,
         "model_type": "lstm_direction",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
         "feature_names": list(SIGNAL_FEATURE_NAMES),
@@ -450,9 +520,12 @@ def train_lstm_signal_model(
             "num_layers": num_layers,
             "atr_mult": atr_mult,
             "max_holding_bars": max_bars,
+            "timeframe": tf,
+            "train_device": train_device_meta,
         },
+        "train_device": train_device_meta,
     }
-    with open(_metadata_path(symbol), "w", encoding="utf-8") as fh:
+    with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 
     # Walk-forward / interactive validate sets skip_snapshot to avoid polluting
@@ -461,7 +534,7 @@ def train_lstm_signal_model(
     if not skip_snapshot:
         try:
             from app.services.bots.ml_model_artifacts import snapshot_current_version
-            snap = snapshot_current_version(_model_dir(symbol), strategy="LSTM_DIRECTION")
+            snap = snapshot_current_version(_model_dir(symbol, tf), strategy="LSTM_DIRECTION")
             if snap:
                 metadata["version_id"] = snap.get("version_id")
                 metadata["version_path"] = snap.get("path")
@@ -469,10 +542,10 @@ def train_lstm_signal_model(
             logger.exception("Failed to snapshot LSTM version for %s", symbol)
 
     logger.info(
-        "LSTM signal model trained for %s (n=%d, val_acc=%.4f, epochs=%d)",
-        symbol, n, val_acc, epoch + 1,
+        "LSTM signal model trained for %s @ %s (n=%d, val_acc=%.4f, epochs=%d)",
+        symbol, tf, n, val_acc, epoch + 1,
     )
-    return {"ok": True, "symbol": symbol, **metadata}
+    return {"ok": True, "symbol": symbol, "timeframe": tf, **metadata}
 
 
 # Back-compat alias for HTTP /api/v1/ml/train dispatchers

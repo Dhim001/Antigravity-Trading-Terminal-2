@@ -44,6 +44,13 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         self._window: deque = deque(maxlen=self._lookback)
         self._bar_history: deque = deque(maxlen=25)
 
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
+
     def evaluate(self, df_row) -> dict:
         self._bar_history.append(dict(df_row))
 
@@ -70,10 +77,17 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         window_array = np.array(list(self._window))
         store = get_tcn_store()
         pinned = self._cfg.get("model_version") or None
-        returns = store.predict(symbol, window_array, model_version=pinned or None)
+        tf = self._model_timeframe()
+        returns = store.predict(
+            symbol, window_array, model_version=pinned or None, timeframe=tf,
+        )
 
         if returns is None:
-            return {"signal": "NONE"}
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_model_missing",
+                "reject_detail": f"No trained TCN_MULTI_HORIZON model for {symbol} @ {tf}",
+            }
 
         ret_5, ret_15, ret_60 = float(returns[0]), float(returns[1]), float(returns[2])
         min_ret = float(self._cfg.get("min_return", 0.001))

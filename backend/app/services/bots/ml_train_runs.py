@@ -81,6 +81,33 @@ def _extract_metrics(result: dict | None) -> dict[str, Any]:
     return metrics
 
 
+def _extract_timeframe(result: dict | None, job: dict | None = None) -> str | None:
+    """Best-effort timeframe from train/validate result or job payload."""
+    try:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    except Exception:
+        def normalize_model_timeframe(tf):  # type: ignore
+            return (tf or "1m").strip() or "1m"
+
+    candidates = []
+    if isinstance(result, dict):
+        candidates.append(result.get("timeframe"))
+        cfg = result.get("config") if isinstance(result.get("config"), dict) else {}
+        candidates.append(cfg.get("timeframe"))
+        tw = result.get("training_window") if isinstance(result.get("training_window"), dict) else {}
+        candidates.append(tw.get("timeframe"))
+        vp = result.get("validation_persisted") if isinstance(result.get("validation_persisted"), dict) else {}
+        candidates.append(vp.get("timeframe"))
+    if isinstance(job, dict):
+        candidates.append(job.get("timeframe"))
+        jcfg = job.get("config") if isinstance(job.get("config"), dict) else {}
+        candidates.append(jcfg.get("timeframe"))
+    for raw in candidates:
+        if raw:
+            return normalize_model_timeframe(str(raw))
+    return None
+
+
 def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
     """Insert one row from a finished in-memory job. Best-effort; never raises."""
     if not isinstance(job, dict):
@@ -113,6 +140,7 @@ def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
             version_id = result.get("trained_at") or (result.get("metadata") or {}).get("trained_at")
 
     metrics = _extract_metrics(result)
+    timeframe = _extract_timeframe(result, job)
     run_id = str(uuid.uuid4())
     try:
         conn = get_connection()
@@ -123,8 +151,8 @@ def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
                 INSERT INTO ml_train_runs (
                     id, kind, strategy, symbol, started_at, finished_at,
                     duration_ms, ok, error, metrics_json, config_hash,
-                    version_id, job_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    version_id, job_id, created_at, timeframe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -141,6 +169,7 @@ def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
                     str(version_id) if version_id else None,
                     job.get("job_id"),
                     _now_iso(),
+                    timeframe,
                 ),
             )
             conn.commit()
@@ -156,6 +185,7 @@ def list_ml_train_runs(
     *,
     symbol: str | None = None,
     strategy: str | None = None,
+    timeframe: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit or 20), 100))
@@ -167,6 +197,15 @@ def list_ml_train_runs(
     if strategy:
         clauses.append("strategy = ?")
         params.append(str(strategy).upper())
+    if timeframe:
+        try:
+            from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+            tf = normalize_model_timeframe(timeframe)
+        except Exception:
+            tf = str(timeframe).strip() or "1m"
+        # Include legacy rows with NULL timeframe so history is not empty after upgrade.
+        clauses.append("(timeframe = ? OR timeframe IS NULL OR timeframe = '')")
+        params.append(tf)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
 
@@ -177,7 +216,7 @@ def list_ml_train_runs(
             f"""
             SELECT id, kind, strategy, symbol, started_at, finished_at,
                    duration_ms, ok, error, metrics_json, config_hash,
-                   version_id, job_id, created_at
+                   version_id, job_id, created_at, timeframe
             FROM ml_train_runs
             {where}
             ORDER BY finished_at DESC
@@ -206,28 +245,35 @@ def _row_to_run(row) -> dict[str, Any]:
     if isinstance(row, dict):
         item = dict(row)
     else:
-        item = {
-            "id": row[0],
-            "kind": row[1],
-            "strategy": row[2],
-            "symbol": row[3],
-            "started_at": row[4],
-            "finished_at": row[5],
-            "duration_ms": row[6],
-            "ok": row[7],
-            "error": row[8],
-            "metrics_json": row[9],
-            "config_hash": row[10],
-            "version_id": row[11],
-            "job_id": row[12],
-            "created_at": row[13],
-        }
+        # Prefer sqlite3.Row / mapping when available.
+        try:
+            keys = row.keys()  # type: ignore[attr-defined]
+            item = {k: row[k] for k in keys}
+        except Exception:
+            item = {
+                "id": row[0],
+                "kind": row[1],
+                "strategy": row[2],
+                "symbol": row[3],
+                "started_at": row[4],
+                "finished_at": row[5],
+                "duration_ms": row[6],
+                "ok": row[7],
+                "error": row[8],
+                "metrics_json": row[9],
+                "config_hash": row[10],
+                "version_id": row[11],
+                "job_id": row[12],
+                "created_at": row[13],
+                "timeframe": row[14] if len(row) > 14 else None,
+            }
     metrics = _parse_json(item.pop("metrics_json", None), {})
     return {
         "id": item.get("id"),
         "kind": item.get("kind"),
         "strategy": item.get("strategy"),
         "symbol": item.get("symbol"),
+        "timeframe": item.get("timeframe"),
         "started_at": item.get("started_at"),
         "finished_at": item.get("finished_at"),
         "duration_ms": item.get("duration_ms"),

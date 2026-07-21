@@ -1419,11 +1419,16 @@ async def bot_create(ctx: RequestContext) -> None:
                 "message": f"Backtest run {run_id} not found",
             })
             return
+        # Bot trading TF wins for ML artifact lookup (Lab Validate stamps TF-keyed models).
+        gate_run_config = dict(run.get("config") or {})
+        gate_run_config["timeframe"] = timeframe
+        if strategy:
+            gate_run_config.setdefault("strategy", strategy)
         gate = evaluate_deploy_gate(
             run.get("results"),
             symbol=str(symbol or "").upper() or None,
             deploy_fingerprint=backtest_fingerprint,
-            run_config=run.get("config"),
+            run_config=gate_run_config,
             run_days=run.get("days"),
             run_timeframe=timeframe,
             min_trades=DEPLOY_MIN_OOS_TRADES,

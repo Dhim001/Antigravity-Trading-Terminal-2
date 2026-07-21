@@ -43,18 +43,27 @@ MODEL_DIRS = {
 }
 
 
-def _model_metadata_path(strategy: str, symbol: str) -> str | None:
+def _model_metadata_path(
+    strategy: str,
+    symbol: str,
+    timeframe: str | None = None,
+) -> str | None:
     """Get metadata.json path for a trained model."""
-    subdir = MODEL_DIRS.get(strategy.upper())
-    if not subdir:
+    from app.services.bots.ml_model_artifacts import model_root_for
+
+    root = model_root_for(strategy, symbol, timeframe)
+    if not root:
         return None
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in symbol.upper())
-    return os.path.join(BASE_DIR, "data", subdir, safe, "metadata.json")
+    return os.path.join(root, "metadata.json")
 
 
-def get_model_age_hours(strategy: str, symbol: str) -> float | None:
+def get_model_age_hours(
+    strategy: str,
+    symbol: str,
+    timeframe: str | None = None,
+) -> float | None:
     """Get model age in hours. Returns None if no model exists."""
-    path = _model_metadata_path(strategy, symbol)
+    path = _model_metadata_path(strategy, symbol, timeframe)
     if not path or not os.path.isfile(path):
         return None
     try:
@@ -71,14 +80,24 @@ def get_model_age_hours(strategy: str, symbol: str) -> float | None:
         return None
 
 
-def get_model_metadata(strategy: str, symbol: str) -> dict | None:
-    """Load model metadata."""
-    path = _model_metadata_path(strategy, symbol)
+def get_model_metadata(
+    strategy: str,
+    symbol: str,
+    timeframe: str | None = None,
+) -> dict | None:
+    """Load model metadata (with validation.json sidecar merge when fingerprints match)."""
+    path = _model_metadata_path(strategy, symbol, timeframe)
     if not path or not os.path.isfile(path):
         return None
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            return None
+        from app.services.bots.ml_model_artifacts import apply_validation_sidecar, model_root_for
+
+        root = model_root_for(strategy, symbol, timeframe)
+        return apply_validation_sidecar(meta, root)
     except Exception:
         return None
 
@@ -152,17 +171,20 @@ class MlRetrainScheduler:
             for key, _ in ordered[: len(ordered) - self._max_last_retrain]:
                 self._last_retrain.pop(key, None)
 
-    def _cooldown_key(self, strategy: str, symbol: str) -> str:
-        return f"{symbol.upper()}:{strategy.upper()}"
+    def _cooldown_key(self, strategy: str, symbol: str, timeframe: str | None = None) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
 
-    def _is_on_cooldown(self, strategy: str, symbol: str) -> bool:
-        key = self._cooldown_key(strategy, symbol)
+        tf = normalize_model_timeframe(timeframe)
+        return f"{symbol.upper()}:{strategy.upper()}:{tf}"
+
+    def _is_on_cooldown(self, strategy: str, symbol: str, timeframe: str | None = None) -> bool:
+        key = self._cooldown_key(strategy, symbol, timeframe)
         last = self._last_retrain.get(key, 0)
         return (time.time() - last) < self.cooldown_hours * 3600
 
-    def record_retrain(self, strategy: str, symbol: str):
+    def record_retrain(self, strategy: str, symbol: str, timeframe: str | None = None):
         """Record that a retrain was performed (resets cooldown)."""
-        key = self._cooldown_key(strategy, symbol)
+        key = self._cooldown_key(strategy, symbol, timeframe)
         self._last_retrain[key] = time.time()
         self._pending.pop(key, None)
 
@@ -174,6 +196,7 @@ class MlRetrainScheduler:
         symbol: str,
         reason: str,
         source: str,
+        timeframe: str | None = None,
     ) -> dict[str, Any]:
         """Centralized retrain request — deduplicates and enforces cooldown.
 
@@ -187,16 +210,21 @@ class MlRetrainScheduler:
             Human-readable reason for the retrain request.
         source : str
             Trigger origin: 'alpha_decay' | 'retrain_scheduler' | 'posttrade_learner'.
+        timeframe : str, optional
+            Bar timeframe for the model artifact (default 1m).
 
         Returns
         -------
         dict with: queued (bool), reason (str), source (str), key (str).
         """
-        key = self._cooldown_key(strategy, symbol)
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        tf = normalize_model_timeframe(timeframe)
+        key = self._cooldown_key(strategy, symbol, tf)
 
         self._purge_retrain_maps()
 
-        if self._is_on_cooldown(strategy, symbol):
+        if self._is_on_cooldown(strategy, symbol, tf):
             logger.debug(
                 "Retrain request from %s for %s skipped (cooldown)", source, key,
             )
@@ -213,6 +241,7 @@ class MlRetrainScheduler:
         self._pending[key] = {
             "strategy": strategy,
             "symbol": symbol,
+            "timeframe": tf,
             "reasons": [f"{source}: {reason}"],
             "requested_at": ts,
         }
@@ -224,6 +253,7 @@ class MlRetrainScheduler:
             "source": source,
             "reason": reason,
             "requested_at": ts,
+            "timeframe": tf,
         })
         if len(self._retrain_history) > 100:
             self._retrain_history = self._retrain_history[-100:]
@@ -269,16 +299,21 @@ class MlRetrainScheduler:
             if not is_ml_strategy(strategy) or not symbol:
                 continue
 
-            key = f"{symbol}:{strategy}"
+            from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+            tf = normalize_model_timeframe(
+                bot.get("timeframe") or (bot.get("config") or {}).get("timeframe")
+            )
+            key = f"{symbol}:{strategy}:{tf}"
             if key in seen:
                 continue
             seen.add(key)
 
-            if self._is_on_cooldown(strategy, symbol):
+            if self._is_on_cooldown(strategy, symbol, tf):
                 continue
 
-            age = get_model_age_hours(strategy, symbol)
-            alpha = alpha_scores.get(key, 0.0)
+            age = get_model_age_hours(strategy, symbol, timeframe=tf)
+            alpha = alpha_scores.get(f"{symbol}:{strategy}", 0.0) or alpha_scores.get(key, 0.0)
             reason = None
             priority = 0
 
@@ -301,6 +336,7 @@ class MlRetrainScheduler:
                 actions.append({
                     "strategy": strategy,
                     "symbol": symbol,
+                    "timeframe": tf,
                     "reason": reason,
                     "priority": priority,
                     "model_age_hours": round(age, 1) if age is not None else None,
@@ -354,11 +390,19 @@ class MlRetrainScheduler:
         return None
 
 
-async def _resolve_drain_candles(bot_manager, symbol: str, strategy: str) -> list[dict]:
+async def _resolve_drain_candles(
+    bot_manager,
+    symbol: str,
+    strategy: str,
+    *,
+    timeframe: str = "1m",
+) -> list[dict]:
     """Best-effort candle pull + indicator enrich for auto-retrain."""
     from app.services.bots.candle_source import get_bot_candles
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
     from app.services.bots.screener import MarketScreenerService
 
+    tf = normalize_model_timeframe(timeframe)
     feed = getattr(getattr(bot_manager, "oms", None), "feed", None)
     if feed is None:
         return []
@@ -366,7 +410,7 @@ async def _resolve_drain_candles(bot_manager, symbol: str, strategy: str) -> lis
         get_bot_candles,
         symbol,
         feed,
-        timeframe="1m",
+        timeframe=tf,
         min_bars=2000,
     )
     if not candles or len(candles) < 200:
@@ -406,11 +450,16 @@ async def drain_one_pending_retrain(
 
     strategy = str(item.get("strategy") or "").upper()
     symbol = str(item.get("symbol") or "").upper()
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(item.get("timeframe"))
     if not strategy or not symbol:
         return {"ok": False, "error": "missing strategy/symbol", "item": item}
 
     try:
-        candles = await _resolve_drain_candles(bot_manager, symbol, strategy)
+        candles = await _resolve_drain_candles(
+            bot_manager, symbol, strategy, timeframe=tf,
+        )
     except Exception as exc:
         logger.exception("Drain candle fetch failed for %s/%s", strategy, symbol)
         # Re-queue so a later cycle can retry.
@@ -418,6 +467,7 @@ async def drain_one_pending_retrain(
             strategy, symbol,
             reason=f"drain retry after candle fetch error: {exc}",
             source="retrain_drain",
+            timeframe=tf,
         )
         return {"ok": False, "error": str(exc), "strategy": strategy, "symbol": symbol}
 
@@ -430,6 +480,7 @@ async def drain_one_pending_retrain(
             strategy, symbol,
             reason=f"drain retry: insufficient candles ({len(candles)})",
             source="retrain_drain",
+            timeframe=tf,
         )
         return {
             "ok": False,
@@ -443,12 +494,12 @@ async def drain_one_pending_retrain(
 
     job_id = create_ml_job(kind="train", strategy=strategy, symbol=symbol)
     logger.info(
-        "Retrain drain submitting train job %s for %s/%s (reasons=%s)",
-        job_id, strategy, symbol, item.get("reasons"),
+        "Retrain drain submitting train job %s for %s/%s @ %s (reasons=%s)",
+        job_id, strategy, symbol, tf, item.get("reasons"),
     )
     try:
         result = await submit_train_job(
-            strategy, symbol, candles, {},
+            strategy, symbol, candles, {"timeframe": tf},
             job_id=job_id, event_bus=event_bus,
         )
     except Exception as exc:

@@ -6879,6 +6879,54 @@ body {
   gap: 0.5rem;
 }
 
+.ml-training__poll-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.ml-training__poll-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.ml-training__poll-log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.65rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ml-training__poll-log-toggle input {
+  margin: 0;
+}
+
+.ml-training__poll-log-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ml-training__poll-log-body {
+  margin: 0;
+  max-height: 9.5rem;
+  overflow: auto;
+  padding: 0.4rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--ml-line);
+  background: color-mix(in oklab, var(--background) 88%, black);
+  font-size: 0.6rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted-foreground);
+}
+
 .ml-training__metric-chip {
   display: flex;
   flex-direction: column;

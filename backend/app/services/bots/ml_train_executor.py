@@ -20,10 +20,80 @@ logger = logging.getLogger(__name__)
 _pool: ProcessPoolExecutor | None = None
 _pool_lock = threading.Lock()
 
+# Deep / RL trainers — prefer in-process threads (see ML_TRAIN_TORCH_IN_PROCESS).
+TORCH_TRAIN_STRATEGIES = frozenset({
+    "LSTM_DIRECTION",
+    "RL_PPO_AGENT",
+    "TCN_MULTI_HORIZON",
+    "VAE_REGIME_DETECTOR",
+    "TRANSFORMER_SIGNAL",
+    "GNN_CROSS_ASSET",
+})
+
+
+def _backup_live_champion(strategy: str, symbol: str, timeframe: str | None) -> dict[str, Any] | None:
+    """Copy live root files aside so WF fold exports cannot leave a tiny champion."""
+    import os
+    import shutil
+    import tempfile
+
+    from app.services.bots.ml_model_artifacts import model_root_for
+
+    root = model_root_for(strategy, symbol, timeframe)
+    if not root or not os.path.isdir(root):
+        return None
+    files = [
+        name for name in os.listdir(root)
+        if os.path.isfile(os.path.join(root, name))
+    ]
+    if not files:
+        return None
+    tmp = tempfile.mkdtemp(prefix="ml_champion_")
+    for name in files:
+        shutil.copy2(os.path.join(root, name), os.path.join(tmp, name))
+    return {"root": root, "tmp": tmp, "files": files}
+
+
+def _restore_live_champion(snap: dict[str, Any] | None) -> None:
+    import os
+    import shutil
+
+    if not isinstance(snap, dict):
+        return
+    root = snap.get("root")
+    tmp = snap.get("tmp")
+    files = snap.get("files") or []
+    if not root or not tmp:
+        return
+    try:
+        for name in files:
+            src = os.path.join(tmp, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(root, name))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def _max_workers() -> int:
     from app.config import ML_TRAIN_MAX_WORKERS
     return max(1, int(ML_TRAIN_MAX_WORKERS))
+
+
+def use_process_pool_for_strategy(strategy: str | None) -> bool:
+    """Whether this strategy should run in ProcessPoolExecutor.
+
+    Torch/CUDA jobs default to ``asyncio.to_thread`` so we do not pickle huge
+    candle lists into a spawn worker (looks like a hang from pct=0) and avoid
+    Windows CUDA+ProcessPool fragility.
+    """
+    from app.config import ML_TRAIN_PROCESS_ISOLATION, ML_TRAIN_TORCH_IN_PROCESS
+
+    if not ML_TRAIN_PROCESS_ISOLATION:
+        return False
+    strat = str(strategy or "").upper()
+    if strat in TORCH_TRAIN_STRATEGIES and ML_TRAIN_TORCH_IN_PROCESS:
+        return False
+    return True
 
 
 def get_ml_train_pool() -> ProcessPoolExecutor:
@@ -48,7 +118,7 @@ def shutdown_ml_train_pool() -> None:
 
 
 def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None) -> dict[str, Any]:
-    """Picklable top-level entry — runs inside the worker process."""
+    """Picklable top-level entry — runs inside the worker process or thread."""
     from app.services.bots.ml_job_progress import (
         ml_cancel_requested,
         progress_path_from_config,
@@ -77,9 +147,16 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
     if not entry:
         return {"ok": False, "error": f"training not supported for {strat}"}
     mod_name, fn_name = entry
+    write_ml_progress(progress_path, pct=3, phase="import", detail=mod_name.rsplit(".", 1)[-1])
     import importlib
     mod = importlib.import_module(mod_name)
     fn = getattr(mod, fn_name)
+    write_ml_progress(
+        progress_path,
+        pct=5,
+        phase="train",
+        detail=f"{strat} · {len(candles or [])} bars",
+    )
     result = fn(symbol, candles, config=cfg)
     if isinstance(result, dict) and result.get("cancelled"):
         write_ml_progress(progress_path, pct=100, phase="cancelled", detail="cancelled")
@@ -119,27 +196,62 @@ def run_validate_job(
     cfg.setdefault("skip_refit", True)
     cfg.setdefault("skip_snapshot", True)
     cfg.setdefault("max_iter", 40)
+    # Transformer OOS uses in-memory torch; other strategies still export fold
+    # ONNX for strategy.evaluate — champion is restored after WF below.
+    if str(strategy or "").upper() == "TRANSFORMER_SIGNAL":
+        cfg.setdefault("skip_onnx_export", True)
 
     strat_u = str(strategy or "").upper()
+    champion_snap = _backup_live_champion(strat_u, symbol, cfg.get("timeframe"))
+    # Deep fold trains: prefer GPU + short epoch budgets (Lab may send train epochs).
+    _WF_EPOCH_CAPS = {
+        "LSTM_DIRECTION": 12,
+        "TRANSFORMER_SIGNAL": 8,
+        "TCN_MULTI_HORIZON": 10,
+        "VAE_REGIME_DETECTOR": 10,
+        "GNN_CROSS_ASSET": 8,
+    }
+    if strat_u in _WF_EPOCH_CAPS:
+        cfg.setdefault("wf_use_gpu", True)
+        cfg.setdefault("wf_epochs", _WF_EPOCH_CAPS[strat_u])
+        try:
+            ep = int(cfg.get("epochs", cfg["wf_epochs"]))
+        except (TypeError, ValueError):
+            ep = int(cfg["wf_epochs"])
+        cfg["epochs"] = min(max(1, ep), int(cfg["wf_epochs"]))
+        # CSCV PBO re-trains deep models many times — skip unless force_pbo.
+        if run_pbo and not bool(cfg.get("force_pbo")):
+            run_pbo = False
+            cfg["_pbo_skipped"] = "deep_too_expensive"
+
     if strat_u == "RL_PPO_AGENT":
         cfg.setdefault("total_timesteps", 2048)
         cfg.setdefault("n_steps", 512)
         cfg.setdefault("ppo_epochs", 2)
         cfg.setdefault("hidden_dim", 64)
         cfg.setdefault("validate_max_bars", 1200)
+        cfg.setdefault("wf_use_gpu", True)
         if run_pbo and not bool(cfg.get("force_pbo")):
             run_pbo = False
             cfg["_pbo_skipped"] = "rl_too_expensive"
 
     max_bars = int(cfg.get("validate_max_bars", 2500))
+    # Deep WF stays bounded, but HTF Lab windows may request more than the old 2.5k floor.
+    if strat_u in TORCH_TRAIN_STRATEGIES:
+        max_bars = min(max_bars, 12_000)
     if len(candles) > max_bars:
         candles = candles[-max_bars:]
 
-    wf_result = walk_forward_ml_train(
-        strategy, symbol, candles,
-        config=cfg, n_folds=n_folds, mode=mode,
-    )
+    try:
+        wf_result = walk_forward_ml_train(
+            strategy, symbol, candles,
+            config=cfg, n_folds=n_folds, mode=mode,
+        )
+    finally:
+        _restore_live_champion(champion_snap)
     result = dict(wf_result)
+    if cfg.get("timeframe") and "timeframe" not in result:
+        result["timeframe"] = cfg.get("timeframe")
     if result.get("cancelled"):
         write_ml_progress(progress_path, pct=100, phase="cancelled", detail="cancelled")
         return result
@@ -149,13 +261,21 @@ def run_validate_job(
         result.setdefault("mean_accuracy", agg.get("mean_oos_accuracy"))
 
     if cfg.get("_pbo_skipped"):
+        skip_reason = cfg.get("_pbo_skipped")
+        if skip_reason == "deep_too_expensive":
+            pbo_err = (
+                "PBO skipped for deep models on interactive validate. "
+                "Set config.force_pbo=true to run anyway."
+            )
+        else:
+            pbo_err = (
+                "PBO skipped for RL_PPO_AGENT (too slow for interactive validate). "
+                "Set config.force_pbo=true to run anyway."
+            )
         result["pbo"] = {
             "ok": False,
             "skipped": True,
-            "error": (
-                "PBO skipped for RL_PPO_AGENT (too slow for interactive validate). "
-                "Set config.force_pbo=true to run anyway."
-            ),
+            "error": pbo_err,
         }
 
     if run_pbo and wf_result.get("ok"):
@@ -186,8 +306,16 @@ def run_validate_job(
                 symbol,
                 result,
                 pbo_result=result.get("pbo") if isinstance(result.get("pbo"), dict) else None,
+                timeframe=cfg.get("timeframe"),
             )
             result["validation_persisted"] = persist_res
+            if not persist_res.get("ok"):
+                logger.error(
+                    "ML validation metrics ok but failed to persist stamp for %s/%s: %s",
+                    strategy,
+                    symbol,
+                    persist_res.get("error"),
+                )
         except Exception as exc:
             logger.exception("Failed to persist ML validation metadata for %s/%s", strategy, symbol)
             result["validation_persisted"] = {"ok": False, "error": str(exc)}
@@ -291,7 +419,7 @@ def _prepare_job_config(
 
 
 def _finalize_job(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    from app.services.bots.ml_job_store import finish_ml_job, is_ml_job_cancelled
+    from app.services.bots.ml_job_store import finish_ml_job, is_ml_job_cancelled, update_ml_job_progress
 
     out = dict(result) if isinstance(result, dict) else {"ok": False, "error": "invalid result"}
     out.setdefault("job_id", job_id)
@@ -300,19 +428,38 @@ def _finalize_job(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
         out["cancelled"] = True
         out["ok"] = False
         out.setdefault("error", "cancelled")
+        update_ml_job_progress(job_id, {"pct": 100, "phase": "cancelled", "detail": "cancelled"})
         finish_ml_job(job_id, "cancelled", result=out, error="cancelled")
         return out
 
     if out.get("ok"):
+        update_ml_job_progress(job_id, {"pct": 100, "phase": "done", "detail": "complete"})
         finish_ml_job(job_id, "done", result=out)
     else:
+        update_ml_job_progress(job_id, {"pct": 100, "phase": "error", "detail": str(out.get("error") or "failed")})
         finish_ml_job(job_id, "error", result=out, error=str(out.get("error") or "failed"))
     return out
 
 
-async def _run_in_pool(fn, *args, job_id: str | None = None):
-    """Submit to process pool (or thread fallback); track Future for cancel."""
-    from app.config import ML_TRAIN_PROCESS_ISOLATION
+def _with_training_window(cfg: dict, result: Any) -> dict[str, Any]:
+    """Stamp Lab training-window metadata onto job results for the UI."""
+    out = dict(result) if isinstance(result, dict) else {"ok": False, "error": "invalid result"}
+    if isinstance(cfg, dict):
+        tw = cfg.get("_training_window")
+        if isinstance(tw, dict):
+            out.setdefault("training_window", tw)
+        if cfg.get("timeframe"):
+            out.setdefault("timeframe", cfg.get("timeframe"))
+    return out
+
+
+async def _run_in_pool(fn, *args, job_id: str | None = None, strategy: str | None = None):
+    """Submit to process pool (or thread); track Future for cancel.
+
+    Torch/RL strategies default to ``asyncio.to_thread`` (see
+    ``use_process_pool_for_strategy``) so Lab Train does not hang while
+    pickling huge candle lists into a spawn worker.
+    """
     from app.services.bots.ml_job_store import (
         attach_ml_job_future,
         is_ml_job_cancelled,
@@ -323,7 +470,8 @@ async def _run_in_pool(fn, *args, job_id: str | None = None):
     if job_id and is_ml_job_cancelled(job_id):
         return {"ok": False, "cancelled": True, "error": "cancelled"}
 
-    if ML_TRAIN_PROCESS_ISOLATION:
+    use_pool = use_process_pool_for_strategy(strategy)
+    if use_pool:
         try:
             pool = get_ml_train_pool()
             if job_id and is_ml_job_cancelled(job_id):
@@ -346,7 +494,7 @@ async def _run_in_pool(fn, *args, job_id: str | None = None):
             raise
 
     mark_ml_job_running(job_id)
-    # Isolation off — cooperative cancel still via progress file.
+    # Isolation off or Torch-in-process — cooperative cancel still via progress file.
     return await asyncio.to_thread(fn, *args)
 
 
@@ -360,7 +508,7 @@ async def submit_train_job(
     event_bus: Any = None,
 ) -> dict[str, Any]:
     """Run train in process pool (or thread fallback) and invalidate parent caches."""
-    from app.services.bots.ml_job_progress import cleanup_ml_progress
+    from app.services.bots.ml_job_progress import cleanup_ml_progress, write_ml_progress
     from app.services.bots.ml_model_artifacts import invalidate_strategy_model_caches
 
     jid, cfg, progress_path = _prepare_job_config(
@@ -372,6 +520,15 @@ async def submit_train_job(
         cleanup_ml_progress(progress_path)
         return _finalize_job(jid, {"ok": False, "cancelled": True, "error": "cancelled"})
 
+    # Progress before dispatch — ProcessPool pickle can take a long time with no worker yet.
+    mode = "process" if use_process_pool_for_strategy(strategy) else "thread"
+    write_ml_progress(
+        progress_path,
+        pct=0,
+        phase="dispatch",
+        detail=f"{mode} · {len(candles or [])} bars",
+    )
+
     stop = asyncio.Event()
     poll_task = asyncio.create_task(
         _poll_progress_loop(jid, progress_path, stop, event_bus=event_bus),
@@ -380,9 +537,12 @@ async def submit_train_job(
     out: dict[str, Any] = {"ok": False, "error": "train did not complete"}
     try:
         result = await _run_in_pool(
-            run_train_job, strategy, symbol, candles, cfg, job_id=jid,
+            run_train_job, strategy, symbol, candles, cfg, job_id=jid, strategy=strategy,
         )
-        out = _finalize_job(jid, result if isinstance(result, dict) else {"ok": False, "error": "invalid train result"})
+        out = _finalize_job(
+            jid,
+            _with_training_window(cfg, result),
+        )
     except asyncio.CancelledError:
         from app.services.bots.ml_job_store import finish_ml_job, request_ml_job_cancel
         request_ml_job_cancel(jid)
@@ -431,7 +591,7 @@ async def submit_validate_job(
     job_id: str | None = None,
     event_bus: Any = None,
 ) -> dict[str, Any]:
-    from app.services.bots.ml_job_progress import cleanup_ml_progress
+    from app.services.bots.ml_job_progress import cleanup_ml_progress, write_ml_progress
     from app.services.bots.ml_model_artifacts import invalidate_strategy_model_caches
 
     jid, cfg, progress_path = _prepare_job_config(
@@ -442,6 +602,14 @@ async def submit_validate_job(
     if is_ml_job_cancelled(jid):
         cleanup_ml_progress(progress_path)
         return _finalize_job(jid, {"ok": False, "cancelled": True, "error": "cancelled"})
+
+    exec_mode = "process" if use_process_pool_for_strategy(strategy) else "thread"
+    write_ml_progress(
+        progress_path,
+        pct=0,
+        phase="dispatch",
+        detail=f"{exec_mode} · validate · {len(candles or [])} bars",
+    )
 
     stop = asyncio.Event()
     poll_task = asyncio.create_task(
@@ -461,10 +629,14 @@ async def submit_validate_job(
             run_pbo,
             pbo_segments,
             job_id=jid,
+            strategy=strategy,
         )
         out = _finalize_job(
             jid,
-            result if isinstance(result, dict) else {"ok": False, "error": "invalid validate result"},
+            _with_training_window(
+                cfg,
+                result if isinstance(result, dict) else {"ok": False, "error": "invalid validate result"},
+            ),
         )
     except asyncio.CancelledError:
         from app.services.bots.ml_job_store import finish_ml_job, request_ml_job_cancel

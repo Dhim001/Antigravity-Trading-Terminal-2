@@ -8,6 +8,11 @@ import {
   focusFlexLayoutDockGroup,
   toggleFlexLayoutComponent,
 } from '../lib/flexlayoutFocus';
+import {
+  makePersistOnModelChange,
+  persistOnSelectAction,
+  restoreFlexLayoutSelection,
+} from '../lib/flexlayoutPersist';
 import ChartContextStrip from './ChartContextStrip';
 import ErrorBoundary from './ErrorBoundary';
 import MountWhenVisible from './MountWhenVisible';
@@ -153,7 +158,12 @@ const RIGHT_PANEL_TAB_MAP = {
 };
 
 export default function WorkspaceGrid({ viewMode }) {
-  const [model] = useState(() => Model.fromJson(DEFAULT_LAYOUT));
+  const [model] = useState(() => {
+    const m = Model.fromJson(DEFAULT_LAYOUT);
+    // Restore before first paint so header Refresh UI does not flash Scanner.
+    restoreFlexLayoutSelection(m, focusFlexLayoutComponent);
+    return m;
+  });
 
   useEffect(() => {
     const onDockTab = (e) => {
@@ -277,7 +287,12 @@ export default function WorkspaceGrid({ viewMode }) {
 
   return (
     <div className="flex-1 relative w-full h-full bg-background overflow-hidden" style={{ minHeight: '500px' }}>
-      <Layout model={model} factory={factory} />
+      <Layout
+        model={model}
+        factory={factory}
+        onModelChange={makePersistOnModelChange(model)}
+        onAction={(action) => persistOnSelectAction(action, model)}
+      />
     </div>
   );
 }

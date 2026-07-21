@@ -107,7 +107,6 @@ export default function OrderEntryWidget() {
   useEffect(() => {
     if (!orderResult) return;
     if (orderResult.status === 'success') {
-      toast.success(orderResult.message);
       if (previewRef.current?.allowed) {
         const p = previewRef.current;
         setLastFillExplain({
@@ -120,9 +119,8 @@ export default function OrderEntryWidget() {
           risk_reward_ratio: p.risk_reward_ratio,
         });
       }
-    } else {
-      toast.error(orderResult.message);
     }
+    // Success/error toasts live in dispatch.js (covers Positions quick-trade too).
   }, [orderResult]);
 
   const isCrypto = activeSymbol.includes('USDT');

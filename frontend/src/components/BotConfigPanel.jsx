@@ -42,6 +42,7 @@ function ConfigField({ field, value, strategy, symbol, botTimeframe, disabled, o
         <MlModelVersionSelect
           strategy={strategy}
           symbol={symbol}
+          timeframe={botTimeframe || '1m'}
           value={value || ''}
           onChange={(v) => onChange(field.key, v)}
           disabled={disabled}

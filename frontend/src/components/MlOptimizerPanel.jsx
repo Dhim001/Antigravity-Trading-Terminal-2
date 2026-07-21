@@ -290,7 +290,7 @@ export default function MlOptimizerPanel(props) {
             </p>
           </div>
           <div className="optimizer-panel__hero-actions flex flex-col items-end gap-2">
-            <MlModelStatusBadge strategy={strategy} symbol={symbol} />
+            <MlModelStatusBadge strategy={strategy} symbol={symbol} timeframe={timeframe || '1m'} />
             <Button
               type="button"
               variant="outline"

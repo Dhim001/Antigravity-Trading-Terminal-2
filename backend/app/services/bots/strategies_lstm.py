@@ -59,7 +59,7 @@ def _load_onnxruntime():
 
 
 class LstmModelStore:
-    """In-memory cache of ONNX inference sessions (per-symbol) — LRU + TTL."""
+    """In-memory cache of ONNX inference sessions (per symbol×timeframe) — LRU + TTL."""
 
     def __init__(self) -> None:
         from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
@@ -76,17 +76,30 @@ class LstmModelStore:
         )
 
     @staticmethod
-    def _cache_key(symbol: str, model_version: str | None) -> str:
-        return f"{str(symbol).upper()}|{model_version or 'latest'}"
+    def _cache_key(
+        symbol: str,
+        model_version: str | None,
+        timeframe: str | None = None,
+    ) -> str:
+        from app.services.bots.ml_model_artifacts import model_storage_key
 
-    def invalidate(self, symbol: str | None = None) -> None:
+        return f"{model_storage_key(symbol, timeframe)}|{model_version or 'latest'}"
+
+    def invalidate(self, symbol: str | None = None, *, timeframe: str | None = None) -> None:
+        from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
+
         if symbol:
-            prefix = str(symbol).upper() + "|"
-            self._lru.discard_prefix(str(symbol).upper())
-            self._lru.discard_prefix(prefix)
+            if timeframe is not None:
+                sk = model_storage_key(symbol, timeframe)
+                prefixes = (sk + "|", sk)
+            else:
+                sk = safe_symbol_key(symbol)
+                prefixes = (sk + "|", sk + "__")
+            for p in prefixes:
+                self._lru.discard_prefix(p)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
-                    if k == str(symbol).upper() or k.startswith(prefix):
+                    if any(k == p.rstrip("|") or k.startswith(p) for p in prefixes):
                         d.pop(k, None)
         else:
             self._lru.clear()
@@ -95,9 +108,15 @@ class LstmModelStore:
             self._scalers.clear()
             self._mtime.clear()
 
-    def get_metadata(self, symbol: str, model_version: str | None = None) -> dict[str, Any] | None:
-        self._ensure_loaded(symbol, model_version=model_version)
-        return self._metadata.get(self._cache_key(symbol, model_version))
+    def get_metadata(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict[str, Any] | None:
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        return self._metadata.get(self._cache_key(symbol, model_version, timeframe))
 
     def predict(
         self,
@@ -105,6 +124,7 @@ class LstmModelStore:
         window: np.ndarray,
         *,
         model_version: str | None = None,
+        timeframe: str | None = None,
     ) -> tuple[str, float] | None:
         """Run ONNX inference on a feature window.
 
@@ -117,8 +137,10 @@ class LstmModelStore:
         -------
         tuple of (signal: "BUY"|"SELL"|"NONE", confidence: float) or None.
         """
-        key = self._cache_key(symbol, model_version)
-        session = self._ensure_loaded(symbol, model_version=model_version)
+        key = self._cache_key(symbol, model_version, timeframe)
+        session = self._ensure_loaded(
+            symbol, model_version=model_version, timeframe=timeframe,
+        )
         if session is None:
             return None
 
@@ -135,23 +157,39 @@ class LstmModelStore:
         try:
             logits = session.run(None, {"input": window_scaled})[0][0]
             proba = _softmax(logits)
-            pred_idx = int(np.argmax(proba))
-            confidence = float(proba[pred_idx])
-
             meta = self._metadata.get(key) or {}
-            reverse_map = meta.get("reverse_map", REVERSE_MAP)
-            # Handle both string and int keys in reverse_map
-            signal = reverse_map.get(str(pred_idx), "NONE")
-            return signal, confidence
+            reverse_map = meta.get("reverse_map") or REVERSE_MAP
+
+            # Map class index → name (JSON metadata uses str keys; constant uses ints).
+            named: dict[str, float] = {}
+            for i, p in enumerate(proba):
+                name = reverse_map.get(str(i), reverse_map.get(i, f"cls_{i}"))
+                named[str(name).upper()] = float(p)
+
+            buy_p = float(named.get("BUY", 0.0))
+            sell_p = float(named.get("SELL", 0.0))
+
+            # Prefer directional classes over argmax — NONE often dominates the
+            # softmax (~0.4–0.55) and would zero out all trades. Confidence is
+            # P(chosen side); evaluate() applies min_confidence.
+            if buy_p >= sell_p:
+                return "BUY", buy_p
+            return "SELL", sell_p
         except Exception as exc:
             logger.warning("LSTM predict failed for %s: %s", symbol, exc)
             return None
 
-    def _ensure_loaded(self, symbol: str, model_version: str | None = None):
+    def _ensure_loaded(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(symbol, model_version)
-        load_dir = resolve_model_dir(_model_dir(symbol), model_version)
+        key = self._cache_key(symbol, model_version, timeframe)
+        load_dir = resolve_model_dir(_model_dir(symbol, timeframe), model_version)
         onnx_path = os.path.join(load_dir, "lstm_direction.onnx")
         meta_path = os.path.join(load_dir, "metadata.json")
 
@@ -181,7 +219,7 @@ class LstmModelStore:
                 onnx_path,
                 providers=["CPUExecutionProvider"],
             )
-            scaler = load_scaler(symbol, model_dir=load_dir)
+            scaler = load_scaler(symbol, model_dir=load_dir, timeframe=timeframe)
             if scaler is None:
                 logger.warning("LSTM scaler missing for %s — retrain required", key)
                 return None
@@ -214,13 +252,14 @@ class LstmDirectionStrategy(BaseStrategy):
     Maintains a sliding window of feature vectors and runs ONNX inference
     to predict BUY/SELL/NONE.  Falls back to NONE if:
     - onnxruntime is not installed
-    - No trained model exists for the symbol
+    - No trained model exists for the symbol×timeframe
     - Insufficient bars in the lookback window
 
     Config keys:
         min_confidence (float): Minimum probability to emit signal (default 0.55).
         lookback (int): Sequence length for the LSTM (default 60).
         model_symbol (str): Override symbol for model lookup.
+        timeframe (str): Bar TF matching the trained model (default 1m).
     """
 
     def __init__(self, config: dict):
@@ -231,6 +270,14 @@ class LstmDirectionStrategy(BaseStrategy):
         self._window: deque = deque(maxlen=self._lookback)
         # Lookback for bar_to_signal_features rolling computation
         self._bar_history: deque = deque(maxlen=25)
+        self._lookback_synced = False
+
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
 
     def evaluate(self, df_row) -> dict:
         # Maintain bar history for rolling feature computation
@@ -238,7 +285,11 @@ class LstmDirectionStrategy(BaseStrategy):
 
         # Need enough bar history for feature computation
         if len(self._bar_history) < 20:
-            return {"signal": "NONE"}
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_warmup",
+                "reject_detail": "Need >= 20 bars of lookback for LSTM features",
+            }
 
         # Extract features for this bar
         lookback_rows = list(self._bar_history)[:-1]
@@ -248,30 +299,71 @@ class LstmDirectionStrategy(BaseStrategy):
 
         # Need full LSTM window
         if len(self._window) < self._lookback:
-            return {"signal": "NONE"}
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_warmup",
+                "reject_detail": f"Need {self._lookback} bars in LSTM window ({len(self._window)} so far)",
+            }
 
         # Resolve symbol
-        symbol = self._cfg.get("model_symbol") or str(df_row.get("_symbol", ""))
+        symbol = str(self._cfg.get("model_symbol") or "").strip().upper()
         if not symbol:
-            symbol = str(self.config.get("symbol", "")).upper()
+            symbol = str(df_row.get("_symbol") or self.config.get("symbol") or "").strip().upper()
         if not symbol:
-            return {"signal": "NONE"}
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_symbol_missing",
+                "reject_detail": "No model_symbol / symbol for LSTM model lookup",
+            }
 
         from app.services.bots.ml_feature_drift import record_ml_inference_features
 
         record_ml_inference_features(symbol, "LSTM_DIRECTION", vec)
 
-        # Build window array and predict
-        window_array = np.array(list(self._window))  # (lookback, N_FEATURES)
         store = get_lstm_store()
         pinned = self._cfg.get("model_version") or None
-        result = store.predict(symbol, window_array, model_version=pinned or None)
+        tf = self._model_timeframe()
+
+        # Align window length with the trained artifact once (config may disagree).
+        if not self._lookback_synced:
+            meta = store.get_metadata(symbol, model_version=pinned or None, timeframe=tf)
+            if meta:
+                trained_lb = int((meta.get("config") or {}).get("lookback") or self._lookback)
+                if trained_lb > 0 and trained_lb != self._lookback:
+                    self._lookback = trained_lb
+                    self._window = deque(list(self._window)[-trained_lb:], maxlen=trained_lb)
+                self._lookback_synced = True
+                if len(self._window) < self._lookback:
+                    return {
+                        "signal": "NONE",
+                        "reject_reason": "ml_warmup",
+                        "reject_detail": (
+                            f"Need {self._lookback} bars in LSTM window "
+                            f"({len(self._window)} so far; matched trained lookback)"
+                        ),
+                    }
+
+        window_array = np.array(list(self._window))  # (lookback, N_FEATURES)
+        result = store.predict(
+            symbol, window_array, model_version=pinned or None, timeframe=tf,
+        )
 
         if result is None:
-            return {"signal": "NONE"}
+            ort = _load_onnxruntime()
+            detail = (
+                f"No trained LSTM_DIRECTION model for {symbol} @ {tf}"
+                if ort is not None
+                else "onnxruntime not installed — pip install onnxruntime>=1.18.0"
+            )
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_model_missing",
+                "reject_detail": detail,
+            }
 
         signal, confidence = result
         threshold = float(self._cfg.get("min_confidence", 0.55))
+        conf = round(float(confidence), 4)
 
         atr = df_row.get("ATR_14") or df_row.get("ATRr_14") or 0
         try:
@@ -279,12 +371,26 @@ class LstmDirectionStrategy(BaseStrategy):
         except (TypeError, ValueError):
             atr = 0.0
 
-        if signal in ("BUY", "SELL") and confidence >= threshold:
+        if signal in ("BUY", "SELL") and conf >= threshold:
             return apply_ml_meta_label_gate({
                 "signal": signal,
-                "confidence": round(confidence, 4),
+                "raw_signal": signal,
+                "confidence": conf,
                 "stop_loss_distance": atr * 1.5 if atr > 0 else None,
                 "model_type": "lstm",
             }, df_row, self._cfg)
 
-        return {"signal": "NONE"}
+        if signal in ("BUY", "SELL") and conf < threshold:
+            return {
+                "signal": "NONE",
+                "raw_signal": signal,
+                "confidence": conf,
+                "reject_reason": "ml_confidence",
+                "reject_detail": f"confidence {conf:.2f} below min {threshold:.2f}",
+            }
+
+        return {
+            "signal": "NONE",
+            "raw_signal": signal if signal in ("BUY", "SELL", "NONE") else "NONE",
+            "confidence": conf,
+        }

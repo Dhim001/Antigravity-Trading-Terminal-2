@@ -3,7 +3,7 @@ import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { buildBacktestOverlay } from '../lib/backtestSlim';
 import { trimBacktestPayloadAsync } from '../lib/backtestSlimAsync';
 import { saveFullBacktestResults, offloadBacktestFromMemory } from '../services/backtestStorage';
-import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
+import { stopBacktestJobPolling, scheduleBacktestJobPoll, claimBacktestJobCompletion } from '../lib/backtestPolling';
 import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
@@ -142,7 +142,12 @@ export function applyServerMessage(type, data, storeActions, meta) {
         break;
       }
       storeActions.setOrderResult(data);
-      if (data?.status === 'ambiguous') {
+      // Toast here so Positions quick-trade works even when Order Entry is unmounted.
+      if (data?.status === 'success') {
+        toast.success(data.message || 'Order filled');
+      } else if (data?.status === 'error') {
+        toast.error(data.message || 'Order failed');
+      } else if (data?.status === 'ambiguous') {
         toast.warning(data.message || 'Order outcome unknown — reconcile before retrying.');
       }
       if (data?.reconciliation?.pending) {
@@ -212,10 +217,21 @@ export function applyServerMessage(type, data, storeActions, meta) {
       }
       if (data?.status === 'success' && data?.results && !data.results.error) {
         storeActions.clearBacktestLastError?.();
+        // Deferred jobs also complete via HTTP poll — claim once to avoid double toasts.
+        const claimed = claimBacktestJobCompletion(data?.job_id);
         // MEMORY #24 — trim on worker thread when available.
         void trimBacktestPayloadAsync(data.results).then((results) => {
           storeBacktestResultsAware(storeActions, results);
+          const overlay = buildBacktestOverlay(results);
+          if (overlay) {
+            storeActions.setBacktestOverlay(overlay);
+          }
           const sym = results?.meta?.symbol;
+          import('./endpoints').then(({ fetchBacktestRuns }) => {
+            fetchBacktestRuns(storeActions, sym);
+          });
+          if (!claimed) return;
+
           const pnl = results?.total_pnl;
           const trades = results?.trade_count ?? 0;
           const explained = results?.reasoning?.trade_count
@@ -229,33 +245,28 @@ export function applyServerMessage(type, data, storeActions, meta) {
           const readinessBad = readiness && readiness.ok === false;
           const readinessMsg = readiness?.message
             || (Array.isArray(readiness?.warnings) ? readiness.warnings[0] : null);
+          const openLab = {
+            label: 'Open Lab',
+            onClick: () => useResearchStore.getState().openBacktestLab('results'),
+          };
           if (readinessBad && readinessMsg) {
             toast.warning(`Backtest · 0 actionable trades — ${readinessMsg}`, {
               duration: 10_000,
-              action: {
-                label: 'Open Lab',
-                onClick: () => useResearchStore.getState().openBacktestLab('results'),
-              },
+              action: openLab,
             });
+          } else if (results?.sweep) {
+            const comboCount = results?.sweep?.configs?.length
+              || results?.sweep?.sweep_rows?.length
+              || '?';
+            toast.success(
+              `Sweep complete · best of ${comboCount} combos · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}`,
+              { action: openLab },
+            );
           } else {
             toast.success(`Backtest complete · ${pnlLabel} · ${trades} trade${trades !== 1 ? 's' : ''}${explainSuffix}`, {
-              action: {
-                label: 'Open Lab',
-                onClick: () => useResearchStore.getState().openBacktestLab('results'),
-              },
+              action: openLab,
             });
           }
-          const overlay = buildBacktestOverlay(results);
-          if (overlay) {
-            storeActions.setBacktestOverlay(overlay);
-          }
-          if (results?.sweep) {
-            const comboCount = results?.sweep?.configs?.length || results?.sweep?.sweep_rows?.length || '?';
-            toast.success(`Sweep complete · best of ${comboCount} combos · $${Number(results.total_pnl ?? 0).toFixed(2)}`);
-          }
-          import('./endpoints').then(({ fetchBacktestRuns }) => {
-            fetchBacktestRuns(storeActions, sym);
-          });
         });
       } else {
         const msg = data?.results?.error || data?.message || 'Backtest failed';

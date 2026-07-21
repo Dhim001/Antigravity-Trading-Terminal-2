@@ -11,6 +11,10 @@ describe('partialCloseQuantity', () => {
     expect(partialCloseQuantity(1.234567, 0.5)).toBe(0.617283);
   });
 
+  it('returns exact abs size for full close (no floor dust)', () => {
+    expect(partialCloseQuantity(1.23456789, 1)).toBe(1.23456789);
+  });
+
   it('returns zero for flat', () => {
     expect(partialCloseQuantity(0, 0.5)).toBe(0);
   });
@@ -23,6 +27,7 @@ describe('buildCloseOrderPayload', () => {
       type: 'MARKET',
       side: 'SELL',
       quantity: 5,
+      bracket: false,
     });
   });
 
@@ -32,6 +37,7 @@ describe('buildCloseOrderPayload', () => {
       type: 'MARKET',
       side: 'BUY',
       quantity: 4,
+      bracket: false,
     });
   });
 });
@@ -43,6 +49,7 @@ describe('buildReverseOrderPayload', () => {
       type: 'MARKET',
       side: 'SELL',
       quantity: 4,
+      bracket: false,
     });
   });
 });

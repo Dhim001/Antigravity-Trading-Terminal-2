@@ -70,6 +70,13 @@ class RlPpoStrategy(BaseStrategy):
         self._feat_std: np.ndarray | None = None
         self._scaler_loaded = False
 
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
+
     def evaluate(self, df_row) -> dict:
         self._bar_history.append(dict(df_row))
         self._bar_count += 1
@@ -89,11 +96,12 @@ class RlPpoStrategy(BaseStrategy):
         # Keep shadow aligned with the engine/live position when provided.
         self._sync_shadow_from_row(df_row, close)
 
+        tf = self._model_timeframe()
+
         # Load scaler if not yet loaded
         if not self._scaler_loaded:
-            self._load_scaler(symbol)
+            self._load_scaler(symbol, timeframe=tf)
 
-        # Extract features
         lookback_rows = list(self._bar_history)[:-1]
         features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
         feat_vec = signal_features_to_vector(features)
@@ -124,10 +132,14 @@ class RlPpoStrategy(BaseStrategy):
         # Query PPO policy
         store = get_ppo_store()
         pinned = self._cfg.get("model_version") or None
-        result = store.predict_action(symbol, obs, model_version=pinned or None)
+        result = store.predict_action(
+            symbol, obs, model_version=pinned or None, timeframe=tf,
+        )
         if result is None:
             return {
                 "signal": "NONE",
+                "reject_reason": "ml_model_missing",
+                "reject_detail": f"No trained RL_PPO_AGENT model for {symbol} @ {tf}",
                 "rl_step": {
                     "observation": obs.tolist()[:24],
                     "action": [0],
@@ -210,11 +222,13 @@ class RlPpoStrategy(BaseStrategy):
             "rl_step": _step_payload("NONE"),
         }
 
-    def _load_scaler(self, symbol: str) -> None:
+    def _load_scaler(self, symbol: str, *, timeframe: str | None = None) -> None:
         self._scaler_loaded = True
         store = get_ppo_store()
         pinned = self._cfg.get("model_version") or None
-        scaler = store.get_scaler(symbol, model_version=pinned or None)
+        scaler = store.get_scaler(
+            symbol, model_version=pinned or None, timeframe=timeframe,
+        )
         if scaler:
             mean = scaler.get("feat_mean")
             std = scaler.get("feat_std")

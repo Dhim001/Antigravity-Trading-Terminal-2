@@ -1,5 +1,6 @@
 import uuid
 import time
+import logging
 from typing import Dict, List, Any
 from app.database import get_connection
 from app.config import MAX_ORDER_VALUE, PAPER_SHORTS_ENABLED
@@ -21,6 +22,8 @@ from app.services.order_bracket import (
     new_group_id,
     resolve_bracket_levels,
 )
+
+logger = logging.getLogger(__name__)
 
 class SimulatedOMSService(BaseOMSService):
     def __init__(self, feed):
@@ -339,6 +342,22 @@ class SimulatedOMSService(BaseOMSService):
 
             if pending_bot_fill:
                 self._apply_bot_fill(pending_bot_fill)
+            elif (
+                order_type == "MARKET"
+                and not bot_id
+                and symbol in self.feed._symbols
+            ):
+                # Manual close/rev from Positions panel — keep bot ledgers in sync.
+                try:
+                    bot_positions.apply_unattributed_close(
+                        symbol, side, quantity, market_price, feed=self.feed,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to sync bot slices after unattributed fill %s %s",
+                        side,
+                        symbol,
+                    )
 
             if order_type == "MARKET":
                 self.invalidate_trade_history_cache()
@@ -680,6 +699,25 @@ class SimulatedOMSService(BaseOMSService):
                 else:
                     high_wm = None
                     low_wm = None
+
+                # Partial close / reverse leaves stale OCO qty or wrong exit side.
+                reduced = abs(new_size) < abs(current_size) - 1e-12
+                flipped = (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0)
+                if reduced or flipped:
+                    cancel_oco_for_symbol(cursor, symbol)
+                    if sl_price is not None or tp_price is not None:
+                        create_oco_exit_orders(
+                            cursor,
+                            symbol=symbol,
+                            quantity=abs(new_size),
+                            position_size=new_size,
+                            oco_group_id=new_group_id(),
+                            order_group_id=None,
+                            stop_loss_price=sl_price,
+                            take_profit_price=tp_price,
+                            parent_order_id=order_id or new_group_id(),
+                            bot_id=bot_id,
+                        )
 
             cursor.execute("""
                 UPDATE positions

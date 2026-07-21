@@ -45,7 +45,8 @@ optuna>=3.6.0
 rq>=1.16.0
 # ML/RL trainers (LSTM, PPO, TCN, …) — optional; strategies return NONE if missing.
 # On Python 3.14 / Windows CPU, install from the PyTorch index:
-#   pip install "torch>=2.3.0" --index-url https://download.pytorch.org/whl/cpu
+#   pip install "torch>=2.3.0" --index-url https://download.pytorch.org/whl/cu128
+#   (or cu124 / cu130 matching your driver — CUDA builds train on GPU; CPU wheel also works)
 #   pip install "onnxruntime>=1.18.0" onnxscript onnx
 # torch>=2.3.0
 # onnxruntime>=1.18.0

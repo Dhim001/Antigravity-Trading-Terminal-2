@@ -72,9 +72,17 @@ ML_TRAIN_PROCESS_ISOLATION = os.environ.get("ML_TRAIN_PROCESS_ISOLATION", "true"
 ML_TRAIN_MAX_WORKERS = int(os.environ.get("ML_TRAIN_MAX_WORKERS", "1"))
 # Soft RSS ceiling for train/validate worker processes (MEMORY #27). 0 = disabled.
 # Unix: resource.RLIMIT_AS (address space). Windows: best-effort log-only check via psutil.
-ML_TRAIN_RSS_LIMIT_MB = int(os.environ.get("ML_TRAIN_RSS_LIMIT_MB", "2048"))
+ML_TRAIN_RSS_LIMIT_MB = int(os.environ.get("ML_TRAIN_RSS_LIMIT_MB", "4096"))
 # Cap concurrent async train/validate tasks so candle lists are not pinned unboundedly.
-ML_ASYNC_MAX_INFLIGHT = int(os.environ.get("ML_ASYNC_MAX_INFLIGHT", "2"))
+ML_ASYNC_MAX_INFLIGHT = int(os.environ.get("ML_ASYNC_MAX_INFLIGHT", "1"))
+# Torch/RL trains: run in a worker thread (not ProcessPool). Pickling tens of thousands of
+# enriched candles into a spawned process hangs Lab Train from the start on Windows, and
+# CUDA + spawn is fragile once the parent has touched the GPU. GBM still uses the pool.
+ML_TRAIN_TORCH_IN_PROCESS = os.environ.get("ML_TRAIN_TORCH_IN_PROCESS", "true").lower() in (
+    "1", "true", "yes"
+)
+# Training device override: empty = auto (CUDA if available). Example: ML_TRAIN_DEVICE=cpu
+# Live inference stays CPU ONNX regardless.
 # Drain MlRetrainScheduler pending queue into real train jobs (APP_SCAN #6).
 ML_RETRAIN_AUTO_DRAIN = os.environ.get("ML_RETRAIN_AUTO_DRAIN", "true").lower() in (
     "1", "true", "yes"

@@ -344,6 +344,7 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    _safe_alter(cursor, "ALTER TABLE ml_train_runs ADD COLUMN timeframe TEXT")
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ml_train_runs_sym_strat "
         "ON ml_train_runs (symbol, strategy, finished_at DESC)"
@@ -351,6 +352,10 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ml_train_runs_finished "
         "ON ml_train_runs (finished_at DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ml_train_runs_tf "
+        "ON ml_train_runs (symbol, strategy, timeframe, finished_at DESC)"
     )
 
     cursor.execute("""

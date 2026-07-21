@@ -31,21 +31,22 @@ logger = logging.getLogger(__name__)
 PPO_MODEL_DIR = os.path.join(BASE_DIR, "data", "rl_ppo_models")
 
 
-def _model_dir(symbol: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(symbol).upper())
-    return os.path.join(PPO_MODEL_DIR, safe)
+def _model_dir(symbol: str, timeframe: str | None = None) -> str:
+    from app.services.bots.ml_model_artifacts import model_storage_key
+
+    return os.path.join(PPO_MODEL_DIR, model_storage_key(symbol, timeframe))
 
 
-def _onnx_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "ppo_policy.onnx")
+def _onnx_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "ppo_policy.onnx")
 
 
-def _metadata_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "metadata.json")
+def _metadata_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "metadata.json")
 
 
-def _scaler_path(symbol: str) -> str:
-    return os.path.join(_model_dir(symbol), "scaler.json")
+def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
 def _get_torch():
@@ -59,7 +60,7 @@ def _get_torch():
         ) from exc
 
 
-def _export_policy_onnx(symbol: str, model) -> str:
+def _export_policy_onnx(symbol: str, model, *, timeframe: str | None = None) -> str:
     """Export PPO policy to a single-file ONNX, safe for Windows re-exports."""
     torch, _nn = _get_torch()
     from app.services.bots.ml_model_artifacts import export_onnx_single_file
@@ -68,7 +69,7 @@ def _export_policy_onnx(symbol: str, model) -> str:
     return export_onnx_single_file(
         model,
         torch.randn(1, OBS_DIM),
-        _onnx_path(symbol),
+        _onnx_path(symbol, timeframe),
         input_names=["observation"],
         output_names=["action_logits"],
         dynamic_axes={
@@ -76,7 +77,7 @@ def _export_policy_onnx(symbol: str, model) -> str:
             "action_logits": {0: "batch"},
         },
         opset_version=18,
-        invalidate=lambda: get_ppo_store().invalidate(symbol),
+        invalidate=lambda: get_ppo_store().invalidate(symbol, timeframe=tf),
     )
 
 
@@ -112,7 +113,8 @@ def _build_actor_critic(obs_dim: int = OBS_DIM, act_dim: int = N_ACTIONS,
 
         def get_action(self, obs_np: np.ndarray) -> tuple[int, float, float]:
             """Sample action from policy, return (action, log_prob, value)."""
-            x = torch.tensor(obs_np, dtype=torch.float32).unsqueeze(0)
+            device = next(self.parameters()).device
+            x = torch.tensor(obs_np, dtype=torch.float32, device=device).unsqueeze(0)
             with torch.no_grad():
                 logits, value = self.policy(x)
                 dist = torch.distributions.Categorical(logits=logits)
@@ -209,7 +211,7 @@ def train_ppo_agent(
     candles: list[dict],
     *,
     config: dict | None = None,
-    total_timesteps: int = 50_000,
+    total_timesteps: int = 200_000,
 ) -> dict[str, Any]:
     """Train a PPO agent on a simulated trading environment.
 
@@ -230,7 +232,12 @@ def train_ppo_agent(
     """
     torch, nn = _get_torch()
 
-    cfg = merge_strategy_config("RL_PPO_AGENT", config or {})
+    raw_cfg = dict(config or {})
+    cfg = merge_strategy_config("RL_PPO_AGENT", raw_cfg)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
+    cfg["timeframe"] = tf
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
 
     # Interactive WF/PBO calls trainer(symbol, candles, config=cfg) without
@@ -249,12 +256,24 @@ def train_ppo_agent(
         ppo_epochs = min(ppo_epochs, 2)
         n_steps = min(n_steps, 512)
         total_timesteps = min(total_timesteps, max(n_steps, 2048))
-    hidden_dim = int(cfg.get("hidden_dim", 64 if wf_mode else 128))
+    hidden_dim = int(cfg.get("hidden_dim", 64 if wf_mode else 256))
     lr = float(cfg.get("learning_rate", 3e-4))
-    batch_size = int(cfg.get("batch_size", 64))
     vf_coef = float(cfg.get("vf_coef", 0.5))
     ent_coef = float(cfg.get("ent_coef", 0.01))
     max_grad_norm = float(cfg.get("max_grad_norm", 0.5))
+    from app.services.bots.ml_torch_device import (
+        device_info,
+        ensure_cuda_ready,
+        resolve_torch_device,
+        resolve_wf_torch_device,
+        suggest_batch_size,
+    )
+
+    device = resolve_wf_torch_device(cfg) if wf_mode else resolve_torch_device(cfg)
+    batch_size = suggest_batch_size(
+        cfg, 128 if getattr(device, "type", None) == "cuda" else 64, device=device,
+    )
+    ensure_cuda_ready(device)
 
     min_candles = 200
     if len(candles) < min_candles:
@@ -264,11 +283,13 @@ def train_ppo_agent(
             "symbol": symbol,
         }
 
-    # Create environment
+    # Create environment (numpy / CPU)
     env = TradingEnv(candles, config=cfg)
 
-    # Build model
-    model = _build_actor_critic(obs_dim=OBS_DIM, act_dim=N_ACTIONS, hidden_dim=hidden_dim)
+    # Build model on train device
+    model = _build_actor_critic(
+        obs_dim=OBS_DIM, act_dim=N_ACTIONS, hidden_dim=hidden_dim,
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-5)
 
     # Training loop
@@ -339,7 +360,7 @@ def train_ppo_agent(
         # ── Compute advantages ────────────────────────────────────
         with torch.no_grad():
             _, next_value = model.policy(
-                torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             )
             next_value = float(next_value.item())
 
@@ -354,12 +375,12 @@ def train_ppo_agent(
         if adv_std > 1e-8:
             advantages = (advantages - adv_mean) / adv_std
 
-        # Convert to tensors
-        obs_t = torch.tensor(np.stack(buffer.obs), dtype=torch.float32)
-        actions_t = torch.tensor(buffer.actions, dtype=torch.long)
-        old_log_probs_t = torch.tensor(buffer.log_probs, dtype=torch.float32)
-        advantages_t = torch.tensor(advantages, dtype=torch.float32)
-        returns_t = torch.tensor(returns, dtype=torch.float32)
+        # Convert to tensors on train device
+        obs_t = torch.tensor(np.stack(buffer.obs), dtype=torch.float32, device=device)
+        actions_t = torch.tensor(buffer.actions, dtype=torch.long, device=device)
+        old_log_probs_t = torch.tensor(buffer.log_probs, dtype=torch.float32, device=device)
+        advantages_t = torch.tensor(advantages, dtype=torch.float32, device=device)
+        returns_t = torch.tensor(returns, dtype=torch.float32, device=device)
 
         # ── PPO update ────────────────────────────────────────────
         model.train()
@@ -401,15 +422,16 @@ def train_ppo_agent(
                 best_mean_return = mean_ret
 
     # ── Export to ONNX (single-file; invalidate ORT mmap before rewrite) ──
-    os.makedirs(_model_dir(symbol), exist_ok=True)
-    _export_policy_onnx(symbol, model)
+    train_device_meta = device_info(device)
+    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
+    _export_policy_onnx(symbol, model, timeframe=tf)
 
     # Save environment scaler
     scaler = {
         "feat_mean": env._feat_mean.tolist(),
         "feat_std": env._feat_std.tolist(),
     }
-    with open(_scaler_path(symbol), "w", encoding="utf-8") as fh:
+    with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(scaler, fh, indent=2)
 
     # Metrics
@@ -421,6 +443,7 @@ def train_ppo_agent(
         "mean_trades_per_episode": round(sum(episode_trades) / max(1, len(episode_trades)), 1) if episode_trades else 0,
         "last_10_returns": [round(r, 4) for r in episode_returns[-10:]],
         "hidden_dim": hidden_dim,
+        "train_device": train_device_meta.get("device"),
     }
 
     train_history = [
@@ -430,6 +453,7 @@ def train_ppo_agent(
 
     metadata = {
         "symbol": symbol,
+        "timeframe": tf,
         "model_type": "rl_ppo",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
         "feature_names": list(SIGNAL_FEATURE_NAMES),
@@ -451,13 +475,16 @@ def train_ppo_agent(
             "n_steps": n_steps,
             "hidden_dim": hidden_dim,
             "learning_rate": lr,
+            "timeframe": tf,
+            "train_device": train_device_meta,
         },
+        "train_device": train_device_meta,
     }
-    with open(_metadata_path(symbol), "w", encoding="utf-8") as fh:
+    with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 
     # Invalidate model cache so the next OOS eval reloads this artifact.
-    _ppo_model_store.invalidate(symbol)
+    _ppo_model_store.invalidate(symbol, timeframe=tf)
 
     # Walk-forward / interactive validate sets skip_snapshot to avoid copying
     # ONNX while ORT may still hold Windows file mappings across folds.
@@ -465,7 +492,7 @@ def train_ppo_agent(
     if not skip_snapshot:
         try:
             from app.services.bots.ml_model_artifacts import snapshot_current_version
-            snap = snapshot_current_version(_model_dir(symbol), strategy="RL_PPO_AGENT")
+            snap = snapshot_current_version(_model_dir(symbol, tf), strategy="RL_PPO_AGENT")
             if snap:
                 metadata["version_id"] = snap.get("version_id")
                 metadata["version_path"] = snap.get("path")
@@ -473,10 +500,10 @@ def train_ppo_agent(
             logger.exception("Failed to snapshot PPO version for %s", symbol)
 
     logger.info(
-        "PPO agent trained for %s (steps=%d, episodes=%d, mean_return=%.2f%%)",
-        symbol, total_steps, episode_count, metrics["mean_return_pct"],
+        "PPO agent trained for %s @ %s (steps=%d, episodes=%d, mean_return=%.2f%%)",
+        symbol, tf, total_steps, episode_count, metrics["mean_return_pct"],
     )
-    return {"ok": True, "symbol": symbol, **metadata}
+    return {"ok": True, "symbol": symbol, "timeframe": tf, **metadata}
 
 
 # ── Model store ───────────────────────────────────────────────────────────
@@ -500,17 +527,30 @@ class PpoModelStore:
         )
 
     @staticmethod
-    def _cache_key(symbol: str, model_version: str | None) -> str:
-        return f"{str(symbol).upper()}|{model_version or 'latest'}"
+    def _cache_key(
+        symbol: str,
+        model_version: str | None,
+        timeframe: str | None = None,
+    ) -> str:
+        from app.services.bots.ml_model_artifacts import model_storage_key
 
-    def invalidate(self, symbol: str | None = None) -> None:
+        return f"{model_storage_key(symbol, timeframe)}|{model_version or 'latest'}"
+
+    def invalidate(self, symbol: str | None = None, *, timeframe: str | None = None) -> None:
+        from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
+
         if symbol:
-            prefix = str(symbol).upper() + "|"
-            self._lru.discard_prefix(str(symbol).upper())
-            self._lru.discard_prefix(prefix)
+            if timeframe is not None:
+                sk = model_storage_key(symbol, timeframe)
+                prefixes = (sk + "|", sk)
+            else:
+                sk = safe_symbol_key(symbol)
+                prefixes = (sk + "|", sk + "__")
+            for p in prefixes:
+                self._lru.discard_prefix(p)
             for d in (self._sessions, self._metadata, self._scalers, self._mtime):
                 for k in list(d.keys()):
-                    if k == str(symbol).upper() or k.startswith(prefix):
+                    if any(k == p.rstrip("|") or k.startswith(p) for p in prefixes):
                         d.pop(k, None)
         else:
             self._lru.clear()
@@ -519,9 +559,15 @@ class PpoModelStore:
             self._scalers.clear()
             self._mtime.clear()
 
-    def get_metadata(self, symbol: str, model_version: str | None = None) -> dict | None:
-        self._ensure_loaded(symbol, model_version=model_version)
-        return self._metadata.get(self._cache_key(symbol, model_version))
+    def get_metadata(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict | None:
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        return self._metadata.get(self._cache_key(symbol, model_version, timeframe))
 
     def predict_action(
         self,
@@ -529,12 +575,15 @@ class PpoModelStore:
         obs: np.ndarray,
         *,
         model_version: str | None = None,
+        timeframe: str | None = None,
     ) -> tuple[int, float] | None:
         """Run ONNX inference to get best action and confidence.
 
         Returns (action_idx, confidence) or None.
         """
-        session = self._ensure_loaded(symbol, model_version=model_version)
+        session = self._ensure_loaded(
+            symbol, model_version=model_version, timeframe=timeframe,
+        )
         if session is None:
             return None
 
@@ -552,15 +601,27 @@ class PpoModelStore:
             logger.warning("PPO predict failed for %s: %s", symbol, exc)
             return None
 
-    def get_scaler(self, symbol: str, model_version: str | None = None) -> dict | None:
-        self._ensure_loaded(symbol, model_version=model_version)
-        return self._scalers.get(self._cache_key(symbol, model_version))
+    def get_scaler(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict | None:
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        return self._scalers.get(self._cache_key(symbol, model_version, timeframe))
 
-    def _ensure_loaded(self, symbol: str, model_version: str | None = None):
+    def _ensure_loaded(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(symbol, model_version)
-        load_dir = resolve_model_dir(_model_dir(symbol), model_version)
+        key = self._cache_key(symbol, model_version, timeframe)
+        load_dir = resolve_model_dir(_model_dir(symbol, timeframe), model_version)
         onnx_path = os.path.join(load_dir, "ppo_policy.onnx")
         meta_path = os.path.join(load_dir, "metadata.json")
 

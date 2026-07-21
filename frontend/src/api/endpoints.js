@@ -8,7 +8,7 @@ import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { buildBacktestOverlay } from '../lib/backtestSlim';
 import { trimBacktestPayloadAsync } from '../lib/backtestSlimAsync';
-import { stopBacktestJobPolling, scheduleBacktestJobPoll } from '../lib/backtestPolling';
+import { stopBacktestJobPolling, scheduleBacktestJobPoll, claimBacktestJobCompletion } from '../lib/backtestPolling';
 import { toast } from 'sonner';
 import { normalizeOrderCapabilities } from '../lib/positionActions';
 
@@ -628,6 +628,7 @@ export function startBacktestJobPolling(jobId, storeActions) {
         if (fresh.status === 'completed' && fresh.results) {
           stopBacktestJobPolling();
           clearBacktestClientTimeout();
+          const claimed = claimBacktestJobCompletion(jobId);
           return trimBacktestPayloadAsync({
             ...fresh.results,
             run_id: fresh.run_id ?? fresh.results.run_id,
@@ -638,12 +639,30 @@ export function startBacktestJobPolling(jobId, storeActions) {
             storeActions.clearBacktestLastError?.();
             const overlay = buildBacktestOverlay(wire);
             if (overlay) storeActions.setBacktestOverlay(overlay);
+            if (!claimed) return;
             const pnl = wire?.total_pnl;
             const trades = wire?.trade_count ?? 0;
-            toast.success(
-              `Background backtest complete · ${pnl != null ? `$${Number(pnl).toFixed(2)}` : '—'} · ${trades} trades`,
-              { action: { label: 'Open Lab', onClick: () => useResearchStore.getState().openBacktestLab('results') } },
-            );
+            const pnlLabel = pnl != null
+              ? `${Number(pnl) >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
+              : '—';
+            const openLab = {
+              label: 'Open Lab',
+              onClick: () => useResearchStore.getState().openBacktestLab('results'),
+            };
+            if (wire?.sweep) {
+              const comboCount = wire?.sweep?.configs?.length
+                || wire?.sweep?.sweep_rows?.length
+                || '?';
+              toast.success(
+                `Sweep complete · best of ${comboCount} combos · ${pnlLabel} · ${trades} trades`,
+                { action: openLab },
+              );
+            } else {
+              toast.success(
+                `Background backtest complete · ${pnlLabel} · ${trades} trades`,
+                { action: openLab },
+              );
+            }
           });
         }
         if (fresh.status === 'failed' || fresh.status === 'cancelled') {

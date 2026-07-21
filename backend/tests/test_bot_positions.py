@@ -75,6 +75,23 @@ class BotPositionsTests(unittest.TestCase):
         pos = bot_positions.get_bot_position(self.bot_id, "BTCUSDT")
         self.assertAlmostEqual(pos["size"], 0.0)
 
+    def test_unattributed_close_reduces_bot_slice(self):
+        bot_positions.apply_fill(self.bot_id, "BTCUSDT", "BUY", 2.0, 100.0)
+        applied = bot_positions.apply_unattributed_close("BTCUSDT", "SELL", 2.0, 105.0)
+        self.assertAlmostEqual(applied, 2.0)
+        pos = bot_positions.get_bot_position(self.bot_id, "BTCUSDT")
+        self.assertAlmostEqual(pos["size"], 0.0)
+
+    def test_unattributed_close_partial_and_ignores_open(self):
+        bot_positions.apply_fill(self.bot_id, "BTCUSDT", "BUY", 2.0, 100.0)
+        applied = bot_positions.apply_unattributed_close("BTCUSDT", "SELL", 0.5, 105.0)
+        self.assertAlmostEqual(applied, 0.5)
+        pos = bot_positions.get_bot_position(self.bot_id, "BTCUSDT")
+        self.assertAlmostEqual(pos["size"], 1.5)
+        # Opening-direction fill must not create bot exposure.
+        applied_open = bot_positions.apply_unattributed_close("BTCUSDT", "BUY", 1.0, 105.0)
+        self.assertAlmostEqual(applied_open, 0.0)
+
     def test_symbol_owners_payload(self):
         bot_positions.apply_fill(self.bot_id, "BTCUSDT", "BUY", 2.5, 50.0)
         owners = bot_positions.owners_for_account_payload("BTCUSDT")

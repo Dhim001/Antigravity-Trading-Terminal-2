@@ -1,7 +1,7 @@
 /**
  * Saved optimization sessions — list, load, compare (Tier 4).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,14 +30,17 @@ function fmtCreated(ts) {
 }
 
 export default function OptimizationHistory() {
-  const backtestResults = useResearchStore((s) => s.backtestResults);
   const setBacktestResults = useResearchStore((s) => s.setBacktestResults);
   const backtestRunning = useResearchStore((s) => s.backtestRunning);
+  const setBotStrategy = useStore((s) => s.setBotStrategy);
+  const setActiveSymbol = useStore((s) => s.setActiveSymbol);
+  const setBotTimeframe = useStore((s) => s.setBotTimeframe);
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [compareIds, setCompareIds] = useState([]);
   const [compareRuns, setCompareRuns] = useState([null, null]);
   const [compareLoading, setCompareLoading] = useState(false);
+  const wasRunningRef = useRef(false);
   const { onScroll: onHistScroll, window: histWindow } = useVirtualRows(runs, {
     rowHeight: 36,
     overscan: 8,
@@ -53,7 +56,15 @@ export default function OptimizationHistory() {
 
   useEffect(() => {
     refresh();
-  }, [refresh, backtestRunning, backtestResults?.sweep]);
+  }, [refresh]);
+
+  // Refresh when a sweep finishes — not on every sweep payload mutation mid-run.
+  useEffect(() => {
+    if (wasRunningRef.current && !backtestRunning) {
+      refresh();
+    }
+    wasRunningRef.current = backtestRunning;
+  }, [backtestRunning, refresh]);
 
   const loadRun = async (run) => {
     try {
@@ -61,8 +72,11 @@ export default function OptimizationHistory() {
       if (!full) return;
       const req = full.request ?? {};
       const wf = full.walk_forward ?? null;
+      if (full.strategy) setBotStrategy(full.strategy);
+      if (full.symbol) setActiveSymbol(String(full.symbol).toUpperCase());
+      const tf = req.timeframe || full.timeframe;
+      if (tf) setBotTimeframe(tf);
       const merged = {
-        ...(backtestResults ?? {}),
         sweep: {
           configs_tested: full.results?.length ?? 0,
           best_config: full.best_config,
@@ -70,7 +84,6 @@ export default function OptimizationHistory() {
           results: full.results ?? [],
         },
         meta: {
-          ...(backtestResults?.meta ?? {}),
           symbol: full.symbol,
           strategy: full.strategy,
           sweep_objective: full.objective,
@@ -78,6 +91,8 @@ export default function OptimizationHistory() {
           rolling_folds: req.rolling_folds ?? wf?.rolling_folds ?? 1,
           train_pct: req.train_pct ?? wf?.train_pct ?? 70,
         },
+        total_pnl: full.best_metrics?.total_pnl,
+        trade_count: full.best_metrics?.trade_count,
       };
       if (wf) {
         merged.walk_forward = wf;

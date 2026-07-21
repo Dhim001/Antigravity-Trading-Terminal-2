@@ -207,3 +207,62 @@ def test_validation_summary_pbo_high_and_skipped():
     assert skipped["pbo"]["skipped"] is True
     assert skipped["pbo"]["ok"] is False
     assert "rl_too_expensive" in (skipped["pbo"]["error"] or "")
+
+
+def test_persist_validation_sidecar_survives_metadata_wipe(tmp_path, monkeypatch):
+    """Activate/restore can wipe WF keys from metadata.json; sidecar must still apply."""
+    from app.services.bots import ml_model_artifacts as arts
+
+    root = tmp_path / "BNBUSDT__5M"
+    root.mkdir()
+    meta = {
+        "trained_at": "2026-07-20T21:06:06Z",
+        "version_id": "20260720T210606Z",
+        "symbol": "BNBUSDT",
+        "timeframe": "5m",
+    }
+    (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    (root / "model.joblib").write_bytes(b"fake")
+
+    monkeypatch.setattr(
+        arts,
+        "model_root_for",
+        lambda strategy, symbol, timeframe=None: str(root),
+    )
+
+    res = arts.persist_ml_validation_metadata(
+        "ML_SIGNAL_BOOST",
+        "BNBUSDT",
+        {
+            "ok": True,
+            "mode": "rolling",
+            "n_folds": 3,
+            "successful_folds": 3,
+            "recommendation": "DEPLOY_WITH_CAUTION — test",
+            "aggregate": {"mean_oos_accuracy": 0.48},
+            "validated_at": "2026-07-20T21:09:44Z",
+        },
+        pbo_result={"ok": True, "pbo": 0.25, "recommendation": "ok"},
+        timeframe="5m",
+    )
+    assert res["ok"] is True
+    assert (root / "validation.json").is_file()
+
+    # Simulate Activate restoring a stamp-less version snapshot over live metadata.
+    wiped = dict(meta)
+    wiped["version_path"] = "versions/20260720T210606Z"
+    (root / "metadata.json").write_text(json.dumps(wiped), encoding="utf-8")
+
+    merged = arts.apply_validation_sidecar(wiped, str(root))
+    assert merged.get("validated_at") == "2026-07-20T21:09:44Z"
+    assert merged.get("walk_forward", {}).get("ok") is True
+    assert merged.get("pbo") == 0.25
+
+    # Retrain fingerprint mismatch invalidates sidecar.
+    wiped2 = dict(wiped)
+    wiped2["trained_at"] = "2026-07-20T22:00:00Z"
+    (root / "metadata.json").write_text(json.dumps(wiped2), encoding="utf-8")
+    assert arts.apply_validation_sidecar(wiped2, str(root)).get("walk_forward") is None
+
+    arts.clear_ml_validation_stamp(str(root))
+    assert not (root / "validation.json").is_file()

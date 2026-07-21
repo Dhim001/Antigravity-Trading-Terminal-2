@@ -11,6 +11,17 @@ trainer signature changes. Each phase ships independently.
 
 ---
 
+## Training window + timeframe (shipped)
+
+Lab **Training window** (`config.training_window_months`: 1 / 3 / 6 / 12) and **Bar timeframe**
+(`config.timeframe`: 1m / 5m / 15m / 1h / 4h) drive `_fetch_training_candles` via
+`ml_training_window.py`. Models are stored per TF: `1m` keeps `data/.../ETHUSDT/`;
+HTF uses `ETHUSDT__15M`. Bots inject their bar TF into strategy config so inference
+loads the matching artifact. Soft caps keep Lab jobs memory-safe; hard max is
+`ML_TRAIN_CANDLE_MAX` (default 50k).
+
+---
+
 ## Current state (summary)
 
 - Train/validate are **single blocking HTTP requests** (client timeouts 5–20 min).

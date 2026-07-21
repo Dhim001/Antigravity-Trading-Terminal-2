@@ -485,6 +485,7 @@ async def learn_from_closed_trade(
                     symbol=str(bot.get("symbol", bot_id)),
                     reason=f"periodic retrain after {exits} exits",
                     source="posttrade_learner",
+                    timeframe=bot.get("timeframe") or (bot.get("config") or {}).get("timeframe"),
                 )
                 if req.get("queued"):
                     from app.services.bots.meta_label_model import train_meta_label_model

@@ -598,6 +598,59 @@ def apply_fill(
         conn.close()
 
 
+def apply_unattributed_close(
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    *,
+    feed: Any = None,
+) -> float:
+    """Reduce bot slices when an account fill has no ``bot_id`` (manual close/rev).
+
+    Only closes existing same-direction inventory (FIFO by largest slice). Never
+    opens new bot exposure from a manual order. Returns quantity applied to bots.
+    """
+    if not symbol or quantity <= _EPS:
+        return 0.0
+    side_u = (side or "").upper()
+    if side_u not in ("BUY", "SELL"):
+        return 0.0
+
+    owners = get_symbol_owners(symbol)
+    if not owners:
+        return 0.0
+
+    # SELL reduces longs; BUY reduces shorts.
+    eligible = [
+        o
+        for o in owners
+        if (o["size"] > _EPS if side_u == "SELL" else o["size"] < -_EPS)
+    ]
+    if not eligible:
+        return 0.0
+
+    remaining = float(quantity)
+    applied = 0.0
+    for owner in eligible:
+        if remaining <= _EPS:
+            break
+        take = min(abs(float(owner["size"])), remaining)
+        if take <= _EPS:
+            continue
+        apply_fill(
+            owner["bot_id"],
+            symbol,
+            side_u,
+            take,
+            price,
+            feed=feed,
+        )
+        remaining -= take
+        applied += take
+    return applied
+
+
 def clear_symbol(symbol: str) -> None:
     if not symbol:
         return

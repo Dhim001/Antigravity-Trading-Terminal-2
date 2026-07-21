@@ -183,12 +183,17 @@ def evaluate_oos_accuracy(
     strategy_cls,
     test_candles: list[dict],
     config: dict,
+    train_result: dict | None = None,
 ) -> dict[str, Any]:
     """Run a trained strategy over OOS candles and compute metrics.
 
     Returns dict with: accuracy, n_signals, buy_count, sell_count, none_count.
     """
     key = str(strategy_cls or "").upper()
+    bundle = (train_result or {}).get("_wf_bundle") if isinstance(train_result, dict) else None
+    if isinstance(bundle, dict) and bundle.get("strategy") == "TRANSFORMER_SIGNAL":
+        return _evaluate_oos_transformer_torch(test_candles, bundle, config or {})
+
     # Fast path: batch predict for XGB signal model (avoids per-bar strategy overhead).
     if key == "ML_SIGNAL_BOOST":
         try:
@@ -211,13 +216,16 @@ def evaluate_oos_accuracy(
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
 
     # Stride long OOS windows in WF/PBO to keep validation responsive.
+    # Sequential models must still *see* every bar so sliding windows stay causal;
+    # only accuracy accounting is sparsified.
     stride = 1
     if bool((config or {}).get("_wf_mode")) and len(test_candles) > 400:
         stride = max(1, len(test_candles) // 400)
 
-    for i in range(0, len(test_candles), stride):
-        candle = test_candles[i]
+    for i, candle in enumerate(test_candles):
         result = strat.evaluate(candle)
+        if i % stride != 0:
+            continue
         signal = result.get("signal", "NONE")
         counts[signal] = counts.get(signal, 0) + 1
 
@@ -244,6 +252,92 @@ def evaluate_oos_accuracy(
     }
 
 
+def _evaluate_oos_transformer_torch(
+    test_candles: list[dict],
+    bundle: dict,
+    config: dict,
+) -> dict[str, Any]:
+    """In-memory Transformer OOS eval — no ONNX reload between WF folds."""
+    from app.services.bots.ml_feature_engineering import (
+        bar_to_signal_features,
+        signal_features_to_vector,
+    )
+
+    import torch
+
+    model = bundle.get("model")
+    if model is None:
+        raise ValueError("transformer wf bundle missing model")
+    lookback = int(bundle.get("lookback") or config.get("lookback") or 60)
+    mean = np.asarray(bundle.get("mean"), dtype=np.float32)
+    std = np.asarray(bundle.get("std"), dtype=np.float32)
+    std = np.where(std < 1e-8, 1.0, std)
+    reverse_map = bundle.get("reverse_map") or {0: "BUY", 1: "NONE", 2: "SELL"}
+    # reverse_map may be int->str or str->str
+    def _cls_to_signal(cls_idx: int) -> str:
+        if cls_idx in reverse_map:
+            return str(reverse_map[cls_idx])
+        return str(reverse_map.get(str(cls_idx), "NONE"))
+
+    threshold = float(bundle.get("min_confidence") or config.get("min_confidence") or 0.55)
+    feature_lb = 20
+    max_bars = int(config.get("triple_barrier_max_bars", 30))
+    labels = label_triple_barrier(
+        test_candles,
+        atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
+        atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
+        max_holding_bars=max_bars,
+    )
+
+    stride = 1
+    if len(test_candles) > 400:
+        stride = max(1, len(test_candles) // 400)
+
+    model.eval()
+    correct = 0
+    total = 0
+    counts = {"BUY": 0, "SELL": 0, "NONE": 0}
+
+    with torch.no_grad():
+        for i in range(lookback + feature_lb, len(test_candles)):
+            if i % stride != 0:
+                continue
+            window = []
+            for j in range(i - lookback + 1, i + 1):
+                lb_start = max(0, j - feature_lb)
+                feat = bar_to_signal_features(
+                    test_candles[j], lookback_rows=test_candles[lb_start:j],
+                )
+                window.append(signal_features_to_vector(feat))
+            x = np.stack(window).astype(np.float32)
+            x = (x - mean) / std
+            logits = model(torch.from_numpy(x).unsqueeze(0))
+            probs = torch.softmax(logits, dim=-1)[0]
+            cls_idx = int(torch.argmax(probs).item())
+            conf = float(probs[cls_idx].item())
+            signal = _cls_to_signal(cls_idx)
+            if signal not in ("BUY", "SELL") or conf < threshold:
+                counts["NONE"] += 1
+                continue
+            counts[signal] = counts.get(signal, 0) + 1
+            if i < len(labels):
+                actual = labels[i].get("label", 0)
+                if (signal == "BUY" and actual == 1) or (signal == "SELL" and actual == -1):
+                    correct += 1
+                total += 1
+
+    accuracy = correct / total if total > 0 else 0.0
+    return {
+        "accuracy": round(accuracy, 4),
+        "n_signals": total,
+        "n_correct": correct,
+        "buy_count": counts.get("BUY", 0),
+        "sell_count": counts.get("SELL", 0),
+        "none_count": counts.get("NONE", 0),
+        "total_bars": len(test_candles),
+    }
+
+
 def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dict[str, Any]:
     """Vectorized OOS accuracy for ML_SIGNAL_BOOST using the on-disk model."""
     from app.services.bots.ml_feature_engineering import bar_to_signal_features
@@ -256,6 +350,9 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
     store = get_ml_signal_store()
     threshold = float(config.get("min_confidence", 0.55))
     lookback_size = 20
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    tf = normalize_model_timeframe(config.get("timeframe"))
     labels = label_triple_barrier(
         test_candles,
         atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
@@ -273,7 +370,12 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
             continue
         lookback = test_candles[max(0, i - lookback_size):i]
         features = bar_to_signal_features(candle, lookback_rows=lookback)
-        pred = store.predict(symbol, features, model_version=config.get("model_version") or None)
+        pred = store.predict(
+            symbol,
+            features,
+            model_version=config.get("model_version") or None,
+            timeframe=tf,
+        )
         if pred is None:
             counts["NONE"] += 1
             continue
@@ -488,10 +590,20 @@ def walk_forward_ml_train(
             continue
 
         # Evaluate on OOS fold (must not abort the whole WF run)
+        write_ml_progress(
+            progress_path,
+            pct=int(5 + (fold_num - 0.35) / n_fold_total * 80),
+            phase=f"fold {fold_num}/{n_fold_total}",
+            detail="oos",
+        )
         try:
-            oos_metrics = evaluate_oos_accuracy(strategy, test_candles, cfg)
+            oos_metrics = evaluate_oos_accuracy(
+                strategy, test_candles, cfg, train_result=train_result,
+            )
         except Exception as exc:
             logger.warning("WF fold %d OOS eval failed: %s", fold["fold"], exc)
+            if isinstance(train_result, dict):
+                train_result.pop("_wf_bundle", None)
             fold_results.append({
                 "fold": fold["fold"],
                 "ok": False,
@@ -504,6 +616,9 @@ def walk_forward_ml_train(
             prev_test_start = test_start
             prev_test_end = test_end
             continue
+
+        if isinstance(train_result, dict):
+            train_result.pop("_wf_bundle", None)
 
         train_metrics = train_result.get("metrics", {})
         if isinstance(train_metrics, dict) and str(strategy).upper() == "RL_PPO_AGENT":
@@ -532,6 +647,12 @@ def walk_forward_ml_train(
             "oos_metrics": oos_metrics,
             "purge": purge_info,
         })
+        write_ml_progress(
+            progress_path,
+            pct=min(90, int(5 + fold_num / n_fold_total * 80)),
+            phase=f"fold {fold_num}/{n_fold_total}",
+            detail=f"acc={oos_metrics.get('accuracy')}",
+        )
         prev_test_start = test_start
         prev_test_end = test_end
 

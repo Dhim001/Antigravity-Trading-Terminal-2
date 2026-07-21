@@ -341,36 +341,54 @@ async def list_strategies(request: Request) -> JSONResponse:
 
 
 async def ml_model_status(request: Request) -> JSONResponse:
-    """GET /api/v1/ml/model-status?symbol=X&strategy=Y — check if model exists."""
+    """GET /api/v1/ml/model-status?symbol=X&strategy=Y&timeframe=15m — check if model exists."""
     symbol = (request.query_params.get("symbol") or "").upper()
     strategy = (request.query_params.get("strategy") or "").upper()
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+    timeframe = normalize_model_timeframe(request.query_params.get("timeframe"))
     if not symbol or not strategy:
         return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
 
     model_loaders = {
-        "ML_SIGNAL_BOOST": lambda s: _ml_model_status_xgb(s),
-        "LSTM_DIRECTION": lambda s: _ml_model_status_onnx(s, "lstm_signal_models", onnx_name="lstm_direction.onnx"),
-        "RL_PPO_AGENT": lambda s: _ml_model_status_onnx(s, "rl_ppo_models", onnx_name="ppo_policy.onnx"),
-        "TCN_MULTI_HORIZON": lambda s: _ml_model_status_onnx(s, "tcn_signal_models", onnx_name="tcn_multi_horizon.onnx"),
-        "VAE_REGIME_DETECTOR": lambda s: _ml_model_status_onnx(s, "vae_regime_models", onnx_name="vae_regime.onnx"),
-        "TRANSFORMER_SIGNAL": lambda s: _ml_model_status_onnx(s, "transformer_signal_models", onnx_name="transformer_signal.onnx"),
-        "GNN_CROSS_ASSET": lambda s: _ml_model_status_onnx(s, "gnn_signal_models", onnx_name="gnn_cross_asset.onnx"),
+        "ML_SIGNAL_BOOST": lambda s, tf: _ml_model_status_xgb(s, timeframe=tf),
+        "LSTM_DIRECTION": lambda s, tf: _ml_model_status_onnx(
+            s, "lstm_signal_models", onnx_name="lstm_direction.onnx", timeframe=tf,
+        ),
+        "RL_PPO_AGENT": lambda s, tf: _ml_model_status_onnx(
+            s, "rl_ppo_models", onnx_name="ppo_policy.onnx", timeframe=tf,
+        ),
+        "TCN_MULTI_HORIZON": lambda s, tf: _ml_model_status_onnx(
+            s, "tcn_signal_models", onnx_name="tcn_multi_horizon.onnx", timeframe=tf,
+        ),
+        "VAE_REGIME_DETECTOR": lambda s, tf: _ml_model_status_onnx(
+            s, "vae_regime_models", onnx_name="vae_regime.onnx", timeframe=tf,
+        ),
+        "TRANSFORMER_SIGNAL": lambda s, tf: _ml_model_status_onnx(
+            s, "transformer_signal_models", onnx_name="transformer_signal.onnx", timeframe=tf,
+        ),
+        "GNN_CROSS_ASSET": lambda s, tf: _ml_model_status_onnx(
+            s, "gnn_signal_models", onnx_name="gnn_cross_asset.onnx", timeframe=tf,
+        ),
     }
     loader = model_loaders.get(strategy)
     if not loader:
         return JSONResponse({"ok": True, "trained": False, "error": "unknown strategy"})
 
-    result = loader(symbol)
+    result = loader(symbol, timeframe)
+    result["timeframe"] = timeframe
     return JSONResponse({"ok": True, **result})
 
 
 def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
     from app.services.bots.ml_model_artifacts import (
+        apply_validation_sidecar,
         dataset_summary_from_metadata,
         list_model_versions,
         validation_summary_from_metadata,
     )
 
+    meta = apply_validation_sidecar(meta if isinstance(meta, dict) else {}, model_dir)
     versions = list_model_versions(model_dir)
     try:
         dataset = dataset_summary_from_metadata(meta)
@@ -399,13 +417,13 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
     }
 
 
-def _ml_model_status_xgb(symbol: str) -> dict:
+def _ml_model_status_xgb(symbol: str, *, timeframe: str | None = None) -> dict:
     import os, json
-    from app.config import BASE_DIR
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in symbol)
-    model_dir = os.path.join(BASE_DIR, "data", "ml_signal_models", safe)
-    meta_path = os.path.join(model_dir, "metadata.json")
-    if not os.path.isfile(meta_path):
+    from app.services.bots.ml_model_artifacts import model_root_for
+
+    model_dir = model_root_for("ML_SIGNAL_BOOST", symbol, timeframe) or ""
+    meta_path = os.path.join(model_dir, "metadata.json") if model_dir else ""
+    if not model_dir or not os.path.isfile(meta_path):
         return {"trained": False, "versions": [], "dataset": None}
     try:
         with open(meta_path, encoding="utf-8") as f:
@@ -419,10 +437,18 @@ def _ml_model_status_xgb(symbol: str) -> dict:
         return {"trained": False, "versions": [], "dataset": None}
 
 
-def _ml_model_status_onnx(symbol: str, subdir: str, onnx_name: str = "model.onnx") -> dict:
+def _ml_model_status_onnx(
+    symbol: str,
+    subdir: str,
+    onnx_name: str = "model.onnx",
+    *,
+    timeframe: str | None = None,
+) -> dict:
     import os, json
     from app.config import BASE_DIR
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in symbol)
+    from app.services.bots.ml_model_artifacts import model_storage_key
+
+    safe = model_storage_key(symbol, timeframe)
     model_dir = os.path.join(BASE_DIR, "data", subdir, safe)
     meta_path = os.path.join(model_dir, "metadata.json")
     if not os.path.isfile(meta_path):
@@ -487,24 +513,22 @@ async def ml_train_handler(request: Request) -> JSONResponse:
     if not symbol or not strategy:
         return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
 
-    # Fetch candles from live feed / archive
-    state: AppState = request.app.state.terminal
-    try:
-        candles = await _fetch_training_candles(state, symbol)
-    except Exception as exc:
-        logger.exception("Failed to fetch training candles for %s", symbol)
-        return JSONResponse({"ok": False, "error": f"failed to fetch candles: {exc}"}, status_code=500)
-
-    if len(candles) < 200:
-        return JSONResponse({"ok": False, "error": f"insufficient candles ({len(candles)})"}, status_code=400)
-
     config = body.get("config") if isinstance(body.get("config"), dict) else {}
-    try:
-        candles = _enrich_training_candles(symbol, candles, strategy, config)
-    except Exception as exc:
-        logger.exception("Failed to enrich training candles for %s", symbol)
-        return JSONResponse({"ok": False, "error": f"indicator enrichment failed: {exc}"}, status_code=500)
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import (
+        bar_limit_for_training_window,
+        parse_training_window_months,
+        summarize_training_window,
+    )
 
+    win_months = parse_training_window_months(config)
+    tf = normalize_model_timeframe(
+        config.get("timeframe") or body.get("timeframe")
+    )
+    bar_limit = bar_limit_for_training_window(win_months, timeframe=tf, purpose="train")
+
+    # Fetch candles from live feed / archive sized to Lab training window + TF
+    state: AppState = request.app.state.terminal
     trainers = {
         "ML_SIGNAL_BOOST": _train_xgb,
         "LSTM_DIRECTION": _train_lstm,
@@ -521,9 +545,20 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     async_mode = bool(body.get("async"))
     event_bus = getattr(state, "event_bus", None)
+    config = {
+        **config,
+        "timeframe": tf,
+        "training_window_months": win_months,
+    }
 
     if async_mode:
-        from app.services.bots.ml_job_store import create_ml_job
+        from app.services.bots.ml_job_progress import make_progress_path, write_ml_progress
+        from app.services.bots.ml_job_store import (
+            create_ml_job,
+            finish_ml_job,
+            mark_ml_job_running,
+            update_ml_job_progress,
+        )
 
         if not await _reserve_ml_async_slot():
             return JSONResponse(
@@ -535,21 +570,96 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                 status_code=429,
             )
 
-        job_id = create_ml_job(kind="train", strategy=strategy, symbol=symbol)
+        progress_path = make_progress_path(f"train_{symbol}")
+        job_id = create_ml_job(
+            kind="train",
+            strategy=strategy,
+            symbol=symbol,
+            progress_path=progress_path,
+        )
+        write_ml_progress(progress_path, pct=1, phase="queued", detail="starting")
+        update_ml_job_progress(job_id, {"pct": 1, "phase": "queued", "detail": "starting"})
 
         async def _bg_train() -> None:
+            cfg = dict(config)
             try:
+                mark_ml_job_running(job_id)
+                write_ml_progress(
+                    progress_path, pct=2, phase="fetch",
+                    detail=f"candles ≤{bar_limit} bars",
+                )
+                update_ml_job_progress(
+                    job_id,
+                    {"pct": 2, "phase": "fetch", "detail": f"candles ≤{bar_limit} bars"},
+                )
+                candles = await _fetch_training_candles(
+                    state, symbol, tf=tf, months=win_months, limit=bar_limit,
+                )
+                if len(candles) < 200:
+                    finish_ml_job(
+                        job_id,
+                        "error",
+                        result={"ok": False, "error": f"insufficient candles ({len(candles)})"},
+                        error=f"insufficient candles ({len(candles)})",
+                    )
+                    return
+                write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
+                candles = _enrich_training_candles(symbol, candles, strategy, cfg)
+                window_meta = summarize_training_window(
+                    candles, win_months, bar_limit=bar_limit, timeframe=tf,
+                )
+                cfg["_training_window"] = window_meta
+                cfg["_progress_path"] = progress_path
+                write_ml_progress(
+                    progress_path, pct=5, phase="train",
+                    detail=f"{strategy} · {len(candles)} bars",
+                )
                 await submit_train_job(
-                    strategy, symbol, candles, config,
+                    strategy, symbol, candles, cfg,
                     job_id=job_id, event_bus=event_bus,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("Async ML train job %s failed", job_id)
+                finish_ml_job(
+                    job_id,
+                    "error",
+                    result={"ok": False, "error": str(exc)},
+                    error=str(exc),
+                )
             finally:
                 await _release_ml_async_slot()
 
         asyncio.create_task(_bg_train())
-        return JSONResponse({"ok": True, "job_id": job_id, "async": True})
+        return JSONResponse({
+            "ok": True,
+            "job_id": job_id,
+            "async": True,
+        })
+
+    try:
+        candles = await _fetch_training_candles(
+            state, symbol, tf=tf, months=win_months, limit=bar_limit,
+        )
+    except Exception as exc:
+        logger.exception("Failed to fetch training candles for %s", symbol)
+        return JSONResponse({"ok": False, "error": f"failed to fetch candles: {exc}"}, status_code=500)
+
+    if len(candles) < 200:
+        return JSONResponse({"ok": False, "error": f"insufficient candles ({len(candles)})"}, status_code=400)
+
+    try:
+        candles = _enrich_training_candles(symbol, candles, strategy, config)
+    except Exception as exc:
+        logger.exception("Failed to enrich training candles for %s", symbol)
+        return JSONResponse({"ok": False, "error": f"indicator enrichment failed: {exc}"}, status_code=500)
+
+    window_meta = summarize_training_window(
+        candles, win_months, bar_limit=bar_limit, timeframe=tf,
+    )
+    config = {
+        **config,
+        "_training_window": window_meta,
+    }
 
     try:
         result = await submit_train_job(
@@ -561,6 +671,8 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     try:
         import json as _json
+        if isinstance(result, dict):
+            result = {**result, "training_window": window_meta}
         payload = _json.loads(_json.dumps(result, default=str))
     except Exception:
         payload = {"ok": bool(result.get("ok")), "error": "training result not serializable"}
@@ -571,20 +683,40 @@ async def _fetch_training_candles(
     state: AppState,
     symbol: str,
     tf: str = "1m",
-    limit: int = 5000,
+    limit: int | None = None,
+    *,
+    months: int | None = None,
 ) -> list[dict]:
-    """Pull historical candles for training from feed, archive, or Massive/Binance REST."""
+    """Pull historical candles for training from feed, archive, or Massive/Binance REST.
+
+    When ``months`` is set (ML Lab Training window), sizes the request and
+    time-trims to that calendar window. ``limit`` overrides the bar target
+    when provided explicitly.
+    """
     import asyncio
     import time
 
     from app.config import TERMINAL_MODE
     from app.services.bots.candle_source import get_bot_candles
+    from app.services.bots.ml_training_window import (
+        bar_limit_for_training_window,
+        parse_training_window_months,
+        training_window_seconds,
+        trim_candles_to_training_window,
+    )
     from app.services.market.timeframes import normalize_timeframe
 
     symbol = _normalize_ml_symbol(symbol)
     tf = normalize_timeframe(tf or "1m")
     feed = getattr(state, "feed", None) or getattr(getattr(state, "oms", None), "feed", None)
-    min_bars = max(200, min(int(limit or 5000), 10_000))
+
+    win_months = parse_training_window_months(
+        {"training_window_months": months if months is not None else 3}
+    )
+    if limit is not None:
+        min_bars = max(200, int(limit))
+    else:
+        min_bars = bar_limit_for_training_window(win_months, timeframe=tf, purpose="train")
 
     candles: list[dict] = []
     if feed is not None:
@@ -597,14 +729,15 @@ async def _fetch_training_candles(
         )
         candles = [dict(c) for c in (candles or [])]
 
-    if len(candles) >= min(200, min_bars):
-        return candles
-
-    # Deep REST seed when live buffer/archive is shallow (common for newly chosen symbols).
     def _deep_rest() -> list[dict]:
         to_ts = int(time.time())
-        # ~1.2× bars in seconds for 1m; scale a bit for HT
-        span = max(3 * 86400, int(min_bars * 60 * 1.5))
+        try:
+            from app.services.market.timeframes import timeframe_to_secs
+
+            bar_secs = max(60, int(timeframe_to_secs(tf)))
+        except Exception:
+            bar_secs = 60
+        span = max(training_window_seconds(win_months), int(min_bars * bar_secs * 1.25))
         from_ts = to_ts - span
         info = None
         if feed is not None:
@@ -622,7 +755,6 @@ async def _fetch_training_candles(
 
         if _is_crypto(symbol) and tf == "1m":
             rows = fetch_binance_1m_bars(symbol, from_ts, to_ts) or []
-            # DB-shaped rows → OHLCV dicts
             out = []
             for r in rows:
                 out.append({
@@ -636,9 +768,17 @@ async def _fetch_training_candles(
             return out
         return []
 
-    deep = await asyncio.to_thread(_deep_rest)
-    if deep:
-        return [dict(c) for c in deep]
+    # Need a deep seed when archive/live buffer is shorter than the Lab window.
+    if len(candles) < min_bars:
+        deep = await asyncio.to_thread(_deep_rest)
+        if deep:
+            from app.services.archive.resolve import merge_candle_series
+
+            candles = [dict(c) for c in merge_candle_series(deep, candles)]
+
+    candles = trim_candles_to_training_window(candles, win_months)
+    if len(candles) > min_bars:
+        candles = candles[-min_bars:]
     return candles
 
 
@@ -795,9 +935,143 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
         except (TypeError, ValueError):
             pbo_segments = 6
 
-        state: AppState = request.app.state.terminal
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+        from app.services.bots.ml_training_window import (
+            bar_limit_for_training_window,
+            parse_training_window_months,
+            summarize_training_window,
+        )
+
+        win_months = parse_training_window_months(config)
+        tf = normalize_model_timeframe(
+            config.get("timeframe") or body.get("timeframe")
+        )
+        bar_limit = bar_limit_for_training_window(win_months, timeframe=tf, purpose="validate")
+        # Honor Lab validate_max_bars. Do NOT inflate past the client value — that
+        # made async Validate block for minutes on deep REST before returning job_id.
         try:
-            candles = await _fetch_training_candles(state, symbol, limit=10000)
+            user_vmax = int(config.get("validate_max_bars") or 0)
+        except (TypeError, ValueError):
+            user_vmax = 0
+        if user_vmax > 0:
+            vmax = min(user_vmax, bar_limit, 8_000)
+        else:
+            vmax = min(2_500, bar_limit)
+        config = {
+            **config,
+            "timeframe": tf,
+            "training_window_months": win_months,
+            "validate_max_bars": vmax,
+        }
+
+        state: AppState = request.app.state.terminal
+        from app.services.bots.ml_train_executor import submit_validate_job
+
+        async_mode = bool(body.get("async"))
+        event_bus = getattr(state, "event_bus", None)
+
+        if async_mode:
+            from app.services.bots.ml_job_progress import make_progress_path, write_ml_progress
+            from app.services.bots.ml_job_store import (
+                create_ml_job,
+                finish_ml_job,
+                mark_ml_job_running,
+                update_ml_job_progress,
+            )
+
+            if not await _reserve_ml_async_slot():
+                return _ml_validate_json_response(
+                    {
+                        "ok": False,
+                        "error": "async ML queue full — wait for an in-flight job or raise ML_ASYNC_MAX_INFLIGHT",
+                        "retry": True,
+                    },
+                    status_code=429,
+                )
+
+            progress_path = make_progress_path(f"validate_{symbol}")
+            job_id = create_ml_job(
+                kind="validate",
+                strategy=strategy,
+                symbol=symbol,
+                progress_path=progress_path,
+            )
+            write_ml_progress(progress_path, pct=1, phase="queued", detail="starting")
+            update_ml_job_progress(job_id, {"pct": 1, "phase": "queued", "detail": "starting"})
+
+            async def _bg_validate() -> None:
+                cfg = dict(config)
+                try:
+                    mark_ml_job_running(job_id)
+                    write_ml_progress(
+                        progress_path, pct=2, phase="fetch",
+                        detail=f"candles ≤{vmax} bars",
+                    )
+                    update_ml_job_progress(
+                        job_id, {"pct": 2, "phase": "fetch", "detail": f"candles ≤{vmax} bars"},
+                    )
+                    # Fetch only what WF will use — not the full Lab train window.
+                    candles = await _fetch_training_candles(
+                        state, symbol, tf=tf, months=win_months, limit=vmax,
+                    )
+                    write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
+                    update_ml_job_progress(
+                        job_id, {"pct": 4, "phase": "enrich", "detail": "indicators"},
+                    )
+                    candles = _enrich_training_candles(symbol, candles, strategy, cfg)
+                    if len(candles) < 500:
+                        finish_ml_job(
+                            job_id,
+                            "error",
+                            result={
+                                "ok": False,
+                                "error": f"Need >= 500 candles for validation, got {len(candles)}",
+                            },
+                            error=f"Need >= 500 candles for validation, got {len(candles)}",
+                        )
+                        return
+                    window_meta = summarize_training_window(
+                        candles, win_months, bar_limit=vmax, timeframe=tf,
+                    )
+                    cfg["_training_window"] = window_meta
+                    cfg["_progress_path"] = progress_path
+                    for row in candles:
+                        if isinstance(row, dict) and not row.get("_symbol"):
+                            row["_symbol"] = symbol
+                    write_ml_progress(
+                        progress_path, pct=5, phase="validate",
+                        detail=f"walk-forward · {len(candles)} bars",
+                    )
+                    await submit_validate_job(
+                        strategy,
+                        symbol,
+                        candles,
+                        cfg,
+                        n_folds=n_folds,
+                        mode=mode,
+                        run_pbo=run_pbo,
+                        pbo_segments=pbo_segments,
+                        job_id=job_id,
+                        event_bus=event_bus,
+                    )
+                except Exception as exc:
+                    logger.exception("Async ML validate job %s failed", job_id)
+                    finish_ml_job(
+                        job_id,
+                        "error",
+                        result={"ok": False, "error": str(exc)},
+                        error=str(exc),
+                    )
+                finally:
+                    await _release_ml_async_slot()
+
+            asyncio.create_task(_bg_validate())
+            return _ml_validate_json_response({"ok": True, "job_id": job_id, "async": True})
+
+        try:
+            candles = await _fetch_training_candles(
+                state, symbol, tf=tf, months=win_months, limit=vmax,
+            )
             candles = _enrich_training_candles(symbol, candles, strategy, config)
         except Exception as exc:
             logger.exception("Failed to fetch/enrich candles for validate %s", symbol)
@@ -811,51 +1085,13 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                 status_code=400,
             )
 
+        window_meta = summarize_training_window(
+            candles, win_months, bar_limit=vmax, timeframe=tf,
+        )
+        config["_training_window"] = window_meta
         for row in candles:
             if isinstance(row, dict) and not row.get("_symbol"):
                 row["_symbol"] = symbol
-
-        from app.services.bots.ml_train_executor import submit_validate_job
-
-        async_mode = bool(body.get("async"))
-        event_bus = getattr(state, "event_bus", None)
-
-        if async_mode:
-            from app.services.bots.ml_job_store import create_ml_job
-
-            if not await _reserve_ml_async_slot():
-                return _ml_validate_json_response(
-                    {
-                        "ok": False,
-                        "error": "async ML queue full — wait for an in-flight job or raise ML_ASYNC_MAX_INFLIGHT",
-                        "retry": True,
-                    },
-                    status_code=429,
-                )
-
-            job_id = create_ml_job(kind="validate", strategy=strategy, symbol=symbol)
-
-            async def _bg_validate() -> None:
-                try:
-                    await submit_validate_job(
-                        strategy,
-                        symbol,
-                        candles,
-                        config,
-                        n_folds=n_folds,
-                        mode=mode,
-                        run_pbo=run_pbo,
-                        pbo_segments=pbo_segments,
-                        job_id=job_id,
-                        event_bus=event_bus,
-                    )
-                except Exception:
-                    logger.exception("Async ML validate job %s failed", job_id)
-                finally:
-                    await _release_ml_async_slot()
-
-            asyncio.create_task(_bg_validate())
-            return _ml_validate_json_response({"ok": True, "job_id": job_id, "async": True})
 
         try:
             result = await submit_validate_job(
@@ -982,11 +1218,14 @@ async def ml_list_runs_handler(request: Request) -> JSONResponse:
 
     symbol = (request.query_params.get("symbol") or "").strip().upper() or None
     strategy = (request.query_params.get("strategy") or "").strip().upper() or None
+    timeframe = (request.query_params.get("timeframe") or "").strip() or None
     try:
         limit = int(request.query_params.get("limit", "20"))
     except (TypeError, ValueError):
         limit = 20
-    runs = list_ml_train_runs(symbol=symbol, strategy=strategy, limit=limit)
+    runs = list_ml_train_runs(
+        symbol=symbol, strategy=strategy, timeframe=timeframe, limit=limit,
+    )
     return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
 
 
@@ -1006,25 +1245,32 @@ async def ml_activate_version_handler(request: Request) -> JSONResponse:
     model_version = str(
         body.get("model_version") or body.get("version_id") or body.get("trained_at") or ""
     ).strip()
+    from app.services.bots.ml_model_artifacts import (
+        activate_model_version,
+        invalidate_strategy_model_caches,
+        model_root_for,
+        normalize_model_timeframe,
+    )
+
+    timeframe = normalize_model_timeframe(
+        body.get("timeframe")
+        or (body.get("config") if isinstance(body.get("config"), dict) else {}).get("timeframe")
+    )
     if not symbol or not strategy:
         return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
     if not model_version:
         return JSONResponse({"ok": False, "error": "model_version required"}, status_code=400)
 
-    from app.services.bots.ml_model_artifacts import (
-        activate_model_version,
-        invalidate_strategy_model_caches,
-        model_root_for,
-    )
-
-    if model_root_for(strategy, symbol) is None:
+    if model_root_for(strategy, symbol, timeframe) is None:
         return JSONResponse(
             {"ok": False, "error": f"unknown strategy {strategy}"},
             status_code=400,
         )
 
     try:
-        result = await asyncio.to_thread(activate_model_version, strategy, symbol, model_version)
+        result = await asyncio.to_thread(
+            activate_model_version, strategy, symbol, model_version, timeframe,
+        )
     except Exception as exc:
         logger.exception("activate-version failed for %s/%s", strategy, symbol)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -1035,7 +1281,7 @@ async def ml_activate_version_handler(request: Request) -> JSONResponse:
     invalidate_strategy_model_caches(strategy, symbol)
 
     # Enrich like model-status so the UI can refresh in one round-trip.
-    root = model_root_for(strategy, symbol)
+    root = model_root_for(strategy, symbol, timeframe)
     artifact = None
     if strategy == "ML_SIGNAL_BOOST":
         art = "model.joblib"
@@ -1080,24 +1326,31 @@ async def ml_delete_version_handler(request: Request) -> JSONResponse:
     model_version = str(
         body.get("model_version") or body.get("version_id") or body.get("trained_at") or ""
     ).strip()
+    from app.services.bots.ml_model_artifacts import (
+        delete_model_version,
+        model_root_for,
+        normalize_model_timeframe,
+    )
+
+    timeframe = normalize_model_timeframe(
+        body.get("timeframe")
+        or (body.get("config") if isinstance(body.get("config"), dict) else {}).get("timeframe")
+    )
     if not symbol or not strategy:
         return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
     if not model_version:
         return JSONResponse({"ok": False, "error": "model_version required"}, status_code=400)
 
-    from app.services.bots.ml_model_artifacts import (
-        delete_model_version,
-        model_root_for,
-    )
-
-    if model_root_for(strategy, symbol) is None:
+    if model_root_for(strategy, symbol, timeframe) is None:
         return JSONResponse(
             {"ok": False, "error": f"unknown strategy {strategy}"},
             status_code=400,
         )
 
     try:
-        result = await asyncio.to_thread(delete_model_version, strategy, symbol, model_version)
+        result = await asyncio.to_thread(
+            delete_model_version, strategy, symbol, model_version, timeframe,
+        )
     except Exception as exc:
         logger.exception("delete-version failed for %s/%s", strategy, symbol)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -1109,7 +1362,7 @@ async def ml_delete_version_handler(request: Request) -> JSONResponse:
         return JSONResponse(result, status_code=status)
 
     # Refresh status payload so the UI can drop the row in one round-trip.
-    root = model_root_for(strategy, symbol)
+    root = model_root_for(strategy, symbol, timeframe)
     artifact = None
     if strategy == "ML_SIGNAL_BOOST":
         art = "model.joblib"

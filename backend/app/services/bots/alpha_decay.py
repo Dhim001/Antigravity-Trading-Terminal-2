@@ -326,6 +326,7 @@ class AlphaDecayMonitor:
                                     symbol=symbol,
                                     reason=f"alpha decay ({reason}): {'; '.join(decay_reasons[:2])}",
                                     source="alpha_decay",
+                                    timeframe=bot.get("timeframe") or cfg.get("timeframe"),
                                 )
                                 if req.get("queued"):
                                     results["retrained_models"].append(bot_id)
@@ -357,6 +358,7 @@ class AlphaDecayMonitor:
                             symbol=symbol,
                             reason=f"alpha decay ({'; '.join(decay_reasons[:2])})",
                             source="alpha_decay",
+                            timeframe=bot.get("timeframe") or cfg.get("timeframe"),
                         )
                         if req.get("queued"):
                             retrain_res = await asyncio.to_thread(train_meta_label_model, bot_id)

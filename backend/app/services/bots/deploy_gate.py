@@ -457,22 +457,31 @@ def evaluate_deploy_gate(
                     ))
 
         elif is_ml_strategy(deploy_strategy) and symbol:
-            # Check 1: Model must exist
-            model_age = get_model_age_hours(deploy_strategy, symbol)
+            # Check 1: Model must exist (match bot trading TF — same path live inference uses)
+            from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+            # Prefer bot create timeframe (run_timeframe) over backtest run_config.
+            # run_config alone often defaults to 1m and can point at a stale champion
+            # while Lab validated the HTF artifact the bot will actually load.
+            deploy_tf = normalize_model_timeframe(
+                run_timeframe
+                or (run_config or {}).get("timeframe")
+            )
+            model_age = get_model_age_hours(deploy_strategy, symbol, timeframe=deploy_tf)
             if model_age is None:
                 checks.append(_check(
                     check_id="ml_model_exists",
                     level="block",
                     ok=False,
-                    message=f"No trained {deploy_strategy} model for {symbol}",
-                    detail="Train a model before deploying an ML strategy.",
+                    message=f"No trained {deploy_strategy} model for {symbol} @ {deploy_tf}",
+                    detail="Train a model on this timeframe in Model Training before deploying.",
                 ))
             else:
                 checks.append(_check(
                     check_id="ml_model_exists",
                     level="pass",
                     ok=True,
-                    message=f"{deploy_strategy} model exists for {symbol}",
+                    message=f"{deploy_strategy} model exists for {symbol} @ {deploy_tf}",
                 ))
 
                 # Check 2: Model age
@@ -486,7 +495,7 @@ def evaluate_deploy_gate(
                         detail="Consider retraining before deployment.",
                     ))
 
-                meta = get_model_metadata(deploy_strategy, symbol) or {}
+                meta = get_model_metadata(deploy_strategy, symbol, timeframe=deploy_tf) or {}
                 skip_val = bool((run_config or {}).get("ml_skip_validation_gate"))
 
                 # Check 3: Walk-forward validation required before live deploy
@@ -529,7 +538,7 @@ def evaluate_deploy_gate(
                         detail=recommendation[:200] if recommendation else None,
                     ))
 
-                # Check 4: PBO from model metadata
+                # Check 4: PBO from model metadata (same TF-keyed artifact as WF)
                 if meta.get("pbo") is not None:
                     pbo_val = float(meta["pbo"])
                     from app.services.bots.pbo_policy import pbo_is_block, pbo_is_moderate, pbo_passes
@@ -539,22 +548,32 @@ def evaluate_deploy_gate(
                             check_id="ml_pbo",
                             level="block",
                             ok=False,
-                            message=f"ML model PBO {pbo_val:.0%} — high overfitting risk",
-                            detail="PBO >= 50% indicates model likely won't generalize.",
+                            message=(
+                                f"ML model PBO {pbo_val:.0%} @ {deploy_tf} — high overfitting risk"
+                            ),
+                            detail=(
+                                "PBO >= 50% on the bot timeframe's champion indicates the model "
+                                "likely won't generalize. Re-run Lab Validate (+ PBO) on this "
+                                f"timeframe ({deploy_tf}), or retrain."
+                            ),
                         ))
                     elif pbo_is_moderate(pbo_val):
                         checks.append(_check(
                             check_id="ml_pbo",
                             level="warn",
                             ok=False,
-                            message=f"ML model PBO {pbo_val:.0%} — moderate overfitting risk",
+                            message=(
+                                f"ML model PBO {pbo_val:.0%} @ {deploy_tf} — moderate overfitting risk"
+                            ),
                         ))
                     elif pbo_passes(pbo_val):
                         checks.append(_check(
                             check_id="ml_pbo",
                             level="pass",
                             ok=True,
-                            message=f"ML model PBO {pbo_val:.0%} — low overfitting risk",
+                            message=(
+                                f"ML model PBO {pbo_val:.0%} @ {deploy_tf} — low overfitting risk"
+                            ),
                         ))
                 elif bool((run_config or {}).get("ml_require_pbo")):
                     checks.append(_check(
@@ -581,7 +600,7 @@ def evaluate_deploy_gate(
                         model_root_for,
                     )
 
-                    root = model_root_for(deploy_strategy, symbol)
+                    root = model_root_for(deploy_strategy, symbol, deploy_tf)
                     entry = find_version_entry(root, str(pinned)) if root else None
                     current_at = meta.get("trained_at") if meta else None
                     if entry:

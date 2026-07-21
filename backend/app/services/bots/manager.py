@@ -121,12 +121,12 @@ def _strategy_runtime_config(bot_id: str, bot: dict) -> dict:
     symbol = (bot.get("symbol") or "").upper()
     if strat == "CHART_AGENT":
         config["symbol"] = bot.get("symbol")
-        config["timeframe"] = _bot_bar_timeframe(bot)
     elif symbol:
         # ML/RL strategies resolve ONNX/joblib artifacts by symbol.
         config.setdefault("symbol", symbol)
         if not str(config.get("model_symbol") or "").strip():
             config["model_symbol"] = symbol
+    config["timeframe"] = _bot_bar_timeframe(bot)
     return config
 
 

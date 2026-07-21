@@ -37,6 +37,13 @@ class TransformerSignalStrategy(BaseStrategy):
         self._window: deque = deque(maxlen=self._lookback)
         self._bar_history: deque = deque(maxlen=25)
 
+    def _model_timeframe(self) -> str:
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        return normalize_model_timeframe(
+            self._cfg.get("timeframe") or self.config.get("timeframe")
+        )
+
     def evaluate(self, df_row) -> dict:
         self._bar_history.append(dict(df_row))
 
@@ -63,10 +70,17 @@ class TransformerSignalStrategy(BaseStrategy):
         window_array = np.array(list(self._window))
         store = get_transformer_store()
         pinned = self._cfg.get("model_version") or None
-        result = store.predict(symbol, window_array, model_version=pinned or None)
+        tf = self._model_timeframe()
+        result = store.predict(
+            symbol, window_array, model_version=pinned or None, timeframe=tf,
+        )
 
         if result is None:
-            return {"signal": "NONE"}
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_model_missing",
+                "reject_detail": f"No trained TRANSFORMER_SIGNAL model for {symbol} @ {tf}",
+            }
 
         signal, confidence = result
         threshold = float(self._cfg.get("min_confidence", 0.55))

@@ -5,8 +5,8 @@ specifically for ML strategies.  Partitions data into segments, trains
 on each IS combination, evaluates on OOS, and computes the probability
 that an in-sample winner underperforms out-of-sample.
 
-A PBO > 0.5 indicates overfitting is likely.
-A PBO > 0.75 strongly suggests the strategy won't generalize.
+A PBO >= 0.5 indicates overfitting is likely (deploy gate blocks).
+A PBO >= 0.75 strongly suggests the strategy won't generalize.
 """
 
 from __future__ import annotations
@@ -163,11 +163,19 @@ def compute_ml_pbo(
 
 
 def _pbo_recommendation(pbo: float, degradation: float) -> str:
-    """Generate recommendation based on PBO analysis."""
-    if pbo > 0.75:
-        return "REJECT — High probability of overfitting (PBO > 0.75). Model unlikely to generalize."
-    if pbo > 0.5:
-        return "REVIEW — Moderate overfitting risk (PBO > 0.5). Consider simplifying model or adding regularization."
+    """Generate recommendation based on PBO analysis.
+
+    Thresholds match ``pbo_policy`` / deploy_gate: PBO >= 0.5 blocks deploy.
+    """
+    from app.services.bots.pbo_policy import PBO_BLOCK_THRESHOLD
+
+    if pbo >= 0.75:
+        return "REJECT — High probability of overfitting (PBO >= 0.75). Model unlikely to generalize."
+    if pbo >= PBO_BLOCK_THRESHOLD:
+        return (
+            "REVIEW — Overfitting risk (PBO >= 0.5). Deploy gate will block; "
+            "simplify the model, add regularization, or retrain on a cleaner window."
+        )
     if degradation > 0.15:
         return "REVIEW — Significant IS→OOS accuracy degradation. Model may be memorizing training patterns."
     if pbo < 0.3:
@@ -183,7 +191,8 @@ def pbo_gate_check(
 ) -> tuple[bool, str]:
     """Binary deploy gate check based on PBO results.
 
-    Returns (passed, reason).
+    Returns (passed, reason). Uses ``>= max_pbo`` so the default 0.5 matches
+    ``pbo_policy.pbo_is_block`` and deploy_gate.
     """
     if not pbo_result.get("ok"):
         return True, "PBO not computed — skipping gate"
@@ -191,7 +200,7 @@ def pbo_gate_check(
     pbo = pbo_result.get("pbo", 1.0)
     degradation = pbo_result.get("degradation", 0.0)
 
-    if pbo > max_pbo:
+    if pbo >= max_pbo:
         return False, f"PBO = {pbo:.2f} exceeds threshold {max_pbo:.2f}"
     if degradation > max_degradation:
         return False, f"IS→OOS degradation = {degradation:.2f} exceeds {max_degradation:.2f}"

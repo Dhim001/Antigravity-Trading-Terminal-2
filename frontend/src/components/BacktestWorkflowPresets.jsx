@@ -168,12 +168,11 @@ export function applyWorkflowPreset(
       setMetaLabelWalkForward(true);
       setBacktestSimMode('live_aligned');
       setBacktestLiveParity(true);
-      openBacktestLab('optimizer');
+      // Meta-label WF lives on Algo BACKTEST (not Lab Optimizer).
       break;
     default:
       return false;
   }
-  if (setBacktestLabTab) setBacktestLabTab('results');
   return true;
 }
 

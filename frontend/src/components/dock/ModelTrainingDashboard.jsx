@@ -33,6 +33,7 @@ import { useVirtualRows, VirtualTablePadding } from '@/components/VirtualTableBo
 import {
   beginMlJob,
   clearMlJobProgress,
+  clearMlPollLog,
   finishMlJob,
   getCachedModelStatus,
   getMlTrainingSession,
@@ -42,46 +43,45 @@ import {
   setMlServerProgress,
   setMlValidation,
   subscribeMlTrainingSession,
+  appendMlPollLog,
 } from '@/lib/mlTrainingSession';
+import {
+  formatMlJobBudgetLabel,
+  isTransientMlPollError,
+  ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  ML_JOB_SUBMIT_TIMEOUT_MS,
+  mlJobPollDeadlineMs,
+  mlJobPollIntervalMs,
+  mlJobTimeoutMs,
+} from '@/lib/mlJobTimeouts';
 
 const ML_STRATEGIES = ML_STRATEGY_IDS;
 const DEEP_ML_STRATEGIES = new Set(
   ML_STRATEGY_IDS.filter((id) => isDeepMlStrategy(id)),
 );
 
-/** Client abort budgets (ms) — must stay above worst-case fold training. */
-const ML_TRAIN_TIMEOUT_MS = {
-  RL_PPO_AGENT: 900_000, // 15 min
-  deep: 600_000, // 10 min
-  default: 300_000, // 5 min (GBDT + enrich)
-};
-const ML_VALIDATE_TIMEOUT_MS = {
-  RL_PPO_AGENT: 1_200_000, // 20 min (multi-fold PPO)
-  deep: 600_000, // 10 min
-  default: 300_000, // 5 min
-};
-
-function mlJobTimeoutMs(strategy, kind = 'validate') {
-  const table = kind === 'train' ? ML_TRAIN_TIMEOUT_MS : ML_VALIDATE_TIMEOUT_MS;
-  if (strategy === 'RL_PPO_AGENT') return table.RL_PPO_AGENT;
-  if (DEEP_ML_STRATEGIES.has(strategy)) return table.deep;
-  return table.default;
-}
-
-/** Defaults match prior hardcodes in handleValidate / trainers (ML Lab §3.3). */
-function defaultAdvancedKnobs(strategy) {
+/** Defaults: Train uses GPU-era capacity; Validate stays interactive-sized. */
+function defaultAdvancedKnobs(strategy, kind = 'validate') {
   const isRl = strategy === 'RL_PPO_AGENT';
-  let epochs = 50;
-  if (strategy === 'TCN_MULTI_HORIZON') epochs = 60;
-  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = 80;
-  else if (strategy === 'GNN_CROSS_ASSET') epochs = 40;
+  const train = kind === 'train';
+  // Validate fold budgets (GPU) — not full production train schedules.
+  let epochs = train ? 100 : 12;
+  if (strategy === 'TCN_MULTI_HORIZON') epochs = train ? 100 : 10;
+  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = train ? 120 : 10;
+  else if (strategy === 'GNN_CROSS_ASSET') epochs = train ? 60 : 8;
+  else if (strategy === 'TRANSFORMER_SIGNAL') epochs = train ? 80 : 8;
+  else if (strategy === 'LSTM_DIRECTION') epochs = train ? 100 : 12;
   return {
     nFolds: isRl ? 2 : 3,
     validateMaxBars: isRl ? 1200 : 2500,
     pboSegments: 4,
     pboMaxCombos: 4,
-    totalTimesteps: 2048,
+    // Lab Train previously defaulted PPO to 2048 — that made models look weak.
+    totalTimesteps: train ? 200_000 : 2048,
     epochs,
+    hiddenDim: train ? (isRl ? 256 : 128) : (isRl ? 64 : 64),
+    gbmMaxIter: train ? 300 : 40,
+    gbmMaxDepth: train ? 6 : 4,
   };
 }
 
@@ -109,11 +109,109 @@ function parsePositiveInt(value, fallback, { min = 1, max = 1_000_000 } = {}) {
 }
 
 const TRAINING_WINDOWS = [
-  { value: '1', label: '1 month' },
-  { value: '3', label: '3 months' },
-  { value: '6', label: '6 months' },
-  { value: '12', label: '12 months' },
+  { value: '1', label: '1 month', targetBars1m: 12000 },
+  { value: '3', label: '3 months', targetBars1m: 25000 },
+  { value: '6', label: '6 months', targetBars1m: 40000 },
+  { value: '12', label: '12 months', targetBars1m: 50000 },
 ];
+
+const TRAINING_TIMEFRAMES = [
+  { value: '1m', label: '1 minute', secs: 60 },
+  { value: '5m', label: '5 minutes', secs: 300 },
+  { value: '15m', label: '15 minutes', secs: 900 },
+  { value: '1h', label: '1 hour', secs: 3600 },
+  { value: '4h', label: '4 hours', secs: 14400 },
+];
+
+const ML_LAB_WINDOW_KEY = 'ml-lab-training-window';
+const ML_LAB_TF_KEY = 'ml-lab-training-timeframe';
+
+function estimateTrainingBars(monthsValue, tfValue) {
+  // Mirror backend ``bar_limit_for_training_window`` (train purpose).
+  const months = Number(monthsValue) || 3;
+  const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
+  const secs = tf.secs || 60;
+  const hard = 50_000;
+  const ideal = Math.floor(months * 30 * 86400 / secs);
+  if (secs > 60) {
+    // HTF: honor calendar window up to hard max (do not scale-crush from 1m caps).
+    return Math.max(500, Math.min(ideal, hard));
+  }
+  const win = TRAINING_WINDOWS.find((w) => w.value === String(monthsValue));
+  const cap1m = win?.targetBars1m ?? 25000;
+  return Math.max(500, Math.min(ideal, cap1m, hard));
+}
+
+/** Interactive Validate budget — mirrors backend HTF lean + Lab 8k ceiling. */
+function estimateValidateBars(monthsValue, tfValue, strategy) {
+  if (strategy === 'RL_PPO_AGENT') return 1200;
+  const trainBars = estimateTrainingBars(monthsValue, tfValue);
+  const months = Number(monthsValue) || 3;
+  const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
+  const secs = tf.secs || 60;
+  if (secs > 60) {
+    const ideal = Math.floor(months * 30 * 86400 / secs);
+    return Math.max(500, Math.min(trainBars, Math.max(2_500, Math.floor(ideal / 3)), 12_000, 8_000));
+  }
+  const byMonth = { 1: 2_000, 3: 2_500, 6: 5_000, 12: 8_000 };
+  return Math.max(500, Math.min(byMonth[months] ?? 2_500, trainBars, 8_000));
+}
+
+function suggestedNFolds(monthsValue, strategy) {
+  if (strategy === 'RL_PPO_AGENT') return 2;
+  const months = Number(monthsValue) || 3;
+  if (months >= 12) return 4;
+  if (months >= 6) return 3;
+  return 3;
+}
+
+function suggestedPboSegments(monthsValue, strategy) {
+  if (strategy === 'RL_PPO_AGENT') return 4;
+  const months = Number(monthsValue) || 3;
+  if (months >= 12) return 6;
+  if (months >= 6) return 5;
+  return 4;
+}
+
+/** Apply window/TF-driven defaults onto Advanced knobs (keeps architecture fields). */
+function syncAdvancedForWindow(prev, strategy, monthsValue, tfValue) {
+  const base = defaultAdvancedKnobs(strategy, 'train');
+  return {
+    ...base,
+    ...prev,
+    // Always re-derive data-budget knobs from the Lab window pick.
+    nFolds: String(suggestedNFolds(monthsValue, strategy)),
+    validateMaxBars: String(estimateValidateBars(monthsValue, tfValue, strategy)),
+    pboSegments: String(suggestedPboSegments(monthsValue, strategy)),
+    // Keep user architecture / epochs if they already edited them this session.
+    epochs: prev?.epochs ?? base.epochs,
+    hiddenDim: prev?.hiddenDim ?? base.hiddenDim,
+    totalTimesteps: prev?.totalTimesteps ?? base.totalTimesteps,
+    gbmMaxIter: prev?.gbmMaxIter ?? base.gbmMaxIter,
+    gbmMaxDepth: prev?.gbmMaxDepth ?? base.gbmMaxDepth,
+    pboMaxCombos: prev?.pboMaxCombos ?? base.pboMaxCombos,
+  };
+}
+
+function readStoredTrainingWindow() {
+  try {
+    const v = window.localStorage.getItem(ML_LAB_WINDOW_KEY);
+    if (TRAINING_WINDOWS.some((w) => w.value === v)) return v;
+  } catch {
+    /* ignore */
+  }
+  return '3';
+}
+
+function readStoredTrainingTimeframe(fallback) {
+  try {
+    const v = window.localStorage.getItem(ML_LAB_TF_KEY);
+    if (TRAINING_TIMEFRAMES.some((t) => t.value === v)) return v;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
 
 const METRIC_LABELS = {
   total_timesteps: 'Timesteps',
@@ -471,14 +569,88 @@ function LossHistoryChart({ history, trainHistory, metrics }) {
 
 function formatElapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(s / 60);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
   const r = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
   return m > 0 ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
 }
 
 function formatDurationMs(ms) {
   if (ms == null || Number.isNaN(Number(ms))) return '—';
   return formatElapsed(Number(ms));
+}
+
+function formatPollLogTime(ts) {
+  try {
+    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
+  } catch {
+    return '—';
+  }
+}
+
+function formatPollLogLine(entry) {
+  const bits = [formatPollLogTime(entry.t)];
+  if (entry.status) bits.push(`status=${entry.status}`);
+  if (entry.pct != null) bits.push(`pct=${Math.round(entry.pct)}`);
+  if (entry.phase) bits.push(`phase=${entry.phase}`);
+  if (entry.detail) bits.push(`detail=${entry.detail}`);
+  if (entry.note) bits.push(entry.note);
+  return bits.join(' ');
+}
+
+const POLL_LOG_PREF_KEY = 'ml-lab-show-poll-log';
+
+function JobPollLog({ entries, enabled, onEnabledChange, onClear }) {
+  const logRef = useRef(null);
+  const lines = Array.isArray(entries) ? entries : [];
+
+  useEffect(() => {
+    if (!enabled || !logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [enabled, lines.length, lines[lines.length - 1]?.t]);
+
+  return (
+    <div className="ml-training__poll-log">
+      <div className="ml-training__poll-log-head">
+        <label className="ml-training__poll-log-toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => onEnabledChange(Boolean(e.target.checked))}
+          />
+          <span>Show poll log</span>
+        </label>
+        {enabled && (
+          <div className="ml-training__poll-log-actions">
+            <span className="ml-training__header-meta num-mono">{lines.length} lines</span>
+            {lines.length > 0 && typeof onClear === 'function' && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[0.6rem]"
+                onClick={onClear}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+      {enabled && (
+        <pre
+          ref={logRef}
+          className="ml-training__poll-log-body num-mono"
+          aria-label="Training job poll log"
+        >
+          {lines.length === 0
+            ? '# Poll snapshots appear while Train / Validate runs…'
+            : lines.map(formatPollLogLine).join('\n')}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function JobProgressBar({ job, serverProgress, onCancel, cancelling }) {
@@ -518,7 +690,7 @@ function JobProgressBar({ job, serverProgress, onCancel, cancelling }) {
         </span>
         <span className="ml-training__progress-meta num-mono">
           {pct}% · {formatElapsed(elapsed)}
-          {timeoutMs >= 60_000 ? ` / ~${Math.round(timeoutMs / 60_000)}m` : ''}
+          {timeoutMs >= 60_000 ? ` / ~${formatMlJobBudgetLabel(timeoutMs)}` : ''}
           {hasServerPct ? ' · live' : ''}
         </span>
       </div>
@@ -620,11 +792,17 @@ function DatasetBrowser({
           {dataset && (
             <div className="ml-training__dataset-stats">
               <div>
-                <span className="text-muted-foreground">Samples</span>
+                <span className="text-muted-foreground">Seq. samples</span>
                 <p className="num-mono font-medium">
                   {dataset.sample_count ?? dataset.train_samples ?? '—'}
                   {dataset.val_samples != null ? ` / val ${dataset.val_samples}` : ''}
                 </p>
+                {(dataset.candle_bars != null || dataset.bar_target != null) && (
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {dataset.candle_bars != null ? `${dataset.candle_bars} bars` : null}
+                    {dataset.bar_target != null ? ` · target ${dataset.bar_target}` : null}
+                  </p>
+                )}
               </div>
               <div>
                 <span className="text-muted-foreground">Schema</span>
@@ -758,6 +936,7 @@ function DatasetBrowser({
 export default function ModelTrainingDashboard() {
   const activeSymbol = useStore((s) => s.activeSymbol);
   const botStrategy = useStore((s) => s.botStrategy);
+  const botTimeframe = useStore((s) => s.botTimeframe);
   const mlSession = useSyncExternalStore(
     subscribeMlTrainingSession,
     getMlTrainingSession,
@@ -767,10 +946,25 @@ export default function ModelTrainingDashboard() {
   const [strategy, setStrategy] = useState(
     () => (isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST'),
   );
-  const [trainingWindow, setTrainingWindow] = useState('3');
-  const [advanced, setAdvanced] = useState(() => defaultAdvancedKnobs(
-    isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST',
-  ));
+  const [trainingWindow, setTrainingWindow] = useState(readStoredTrainingWindow);
+  const [trainingTimeframe, setTrainingTimeframe] = useState(() => {
+    const tf = String(botTimeframe || '1m').toLowerCase();
+    const botTf = tf === 'tick' ? '1m' : (tf || '1m');
+    return readStoredTrainingTimeframe(botTf);
+  });
+  const [advanced, setAdvanced] = useState(() => {
+    const strat = isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST';
+    const win = readStoredTrainingWindow();
+    const tf = String(botTimeframe || '1m').toLowerCase();
+    const botTf = tf === 'tick' ? '1m' : (tf || '1m');
+    const timeframe = readStoredTrainingTimeframe(botTf);
+    return syncAdvancedForWindow(
+      defaultAdvancedKnobs(strat, 'train'),
+      strat,
+      win,
+      timeframe,
+    );
+  });
   const [status, setStatus] = useState(null);
   const championOosRef = useRef(null);
   const [inventory, setInventory] = useState([]);
@@ -782,9 +976,18 @@ export default function ModelTrainingDashboard() {
   const [queueTelemetry, setQueueTelemetry] = useState({ active: 0, queued: 0 });
   const [trainRuns, setTrainRuns] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const panelScrollRef = useRef(null);
   const [activatingVersionId, setActivatingVersionId] = useState(null);
   const [deletingVersionId, setDeletingVersionId] = useState(null);
   const [challengerDismissed, setChallengerDismissed] = useState(false);
+  const [showPollLog, setShowPollLog] = useState(() => {
+    try {
+      return window.localStorage.getItem(POLL_LOG_PREF_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const statusRef = useRef(status);
   statusRef.current = status;
 
@@ -793,6 +996,7 @@ export default function ModelTrainingDashboard() {
   const validating = Boolean(jobMatches && mlSession.validating);
   const jobProgress = jobMatches ? mlSession.jobProgress : null;
   const serverProgress = jobMatches ? mlSession.serverProgress : null;
+  const pollLog = jobMatches ? (mlSession.pollLog || []) : [];
   const activeJobId = jobMatches ? mlSession.jobId : null;
   const validation = jobMatches ? mlSession.validation : null;
   const busyElsewhere = Boolean(
@@ -844,29 +1048,31 @@ export default function ModelTrainingDashboard() {
       ML_STRATEGIES.map(async (id) => {
         try {
           const body = await apiRequest(
-            `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(id)}`,
+            `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(id)}&timeframe=${encodeURIComponent(trainingTimeframe)}`,
           );
-          if (body) setCachedModelStatus(activeSymbol, id, body);
+          if (body) setCachedModelStatus(activeSymbol, id, body, trainingTimeframe);
           return {
             strategy: id,
             trained: Boolean(body?.trained),
             trained_at: body?.trained_at,
             metrics: body?.metrics || {},
             error: body?.error,
+            timeframe: body?.timeframe || trainingTimeframe,
           };
         } catch (err) {
           if (isAbortError(err)) {
-            const cached = getCachedModelStatus(activeSymbol, id);
+            const cached = getCachedModelStatus(activeSymbol, id, trainingTimeframe);
             if (cached) {
               return {
                 strategy: id,
                 trained: Boolean(cached.trained),
                 trained_at: cached.trained_at,
                 metrics: cached.metrics || {},
+                timeframe: trainingTimeframe,
               };
             }
           }
-          const cached = getCachedModelStatus(activeSymbol, id);
+          const cached = getCachedModelStatus(activeSymbol, id, trainingTimeframe);
           if (cached?.trained) {
             return {
               strategy: id,
@@ -874,14 +1080,15 @@ export default function ModelTrainingDashboard() {
               trained_at: cached.trained_at,
               metrics: cached.metrics || {},
               stale: true,
+              timeframe: trainingTimeframe,
             };
           }
-          return { strategy: id, trained: false, error: err.message };
+          return { strategy: id, trained: false, error: err.message, timeframe: trainingTimeframe };
         }
       }),
     );
     setInventory(rows);
-  }, [activeSymbol]);
+  }, [activeSymbol, trainingTimeframe]);
 
   const fetchRetrainQueue = useCallback(async () => {
     try {
@@ -930,6 +1137,7 @@ export default function ModelTrainingDashboard() {
       const qs = new URLSearchParams({
         symbol: activeSymbol,
         limit: '15',
+        timeframe: trainingTimeframe,
       });
       if (strategy) qs.set('strategy', strategy);
       const body = await apiRequest(`/api/v1/ml/runs?${qs.toString()}`);
@@ -937,45 +1145,73 @@ export default function ModelTrainingDashboard() {
     } catch (err) {
       if (!isAbortError(err)) setTrainRuns([]);
     }
-  }, [activeSymbol, strategy]);
+  }, [activeSymbol, strategy, trainingTimeframe]);
 
-  const fetchStatus = useCallback(async () => {
+  const fetchStatus = useCallback(async ({ quiet = false } = {}) => {
     if (!activeSymbol || !strategy) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     try {
       const body = await apiRequest(
-        `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(strategy)}`,
+        `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(strategy)}&timeframe=${encodeURIComponent(trainingTimeframe)}`,
       );
       const next = resolveModelStatusFetch(activeSymbol, strategy, {
         body,
         previous: statusRef.current,
+        timeframe: trainingTimeframe,
       });
       setStatus(next);
     } catch (err) {
       const next = resolveModelStatusFetch(activeSymbol, strategy, {
         error: err,
         previous: statusRef.current,
+        timeframe: trainingTimeframe,
       });
       setStatus(next);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
-  }, [activeSymbol, strategy]);
+  }, [activeSymbol, strategy, trainingTimeframe]);
 
-  const refreshAll = useCallback(async ({ clearSessionValidation = false } = {}) => {
+  const refreshAll = useCallback(async ({
+    clearSessionValidation = false,
+    quiet = false,
+    preserveScroll = false,
+  } = {}) => {
+    const scroller = panelScrollRef.current;
+    const scrollTop = preserveScroll && scroller ? scroller.scrollTop : null;
     if (clearSessionValidation) {
       setMlValidation(null);
       setChallengerDismissed(true);
       championOosRef.current = null;
     }
     await Promise.all([
-      fetchStatus(),
+      fetchStatus({ quiet }),
       fetchInventory(),
       fetchRetrainQueue(),
       fetchQueueTelemetry(),
       fetchTrainRuns(),
     ]);
+    if (scrollTop != null && scroller) {
+      requestAnimationFrame(() => {
+        scroller.scrollTop = scrollTop;
+      });
+    }
   }, [fetchStatus, fetchInventory, fetchRetrainQueue, fetchQueueTelemetry, fetchTrainRuns]);
+
+  const handleManualRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      // Soft refresh: keep validation block + scroll position; do not jump the panel.
+      await refreshAll({
+        clearSessionValidation: false,
+        quiet: true,
+        preserveScroll: true,
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshAll, refreshing]);
 
   useEffect(() => {
     if (isMlStrategy(botStrategy) && botStrategy !== strategy) {
@@ -983,15 +1219,56 @@ export default function ModelTrainingDashboard() {
     }
   }, [botStrategy]); // eslint-disable-line react-hooks/exhaustive-deps -- sync bot picker → dashboard
 
+  const lastBotTfRef = useRef(null);
   useEffect(() => {
-    setAdvanced(defaultAdvancedKnobs(strategy));
+    const tf = String(botTimeframe || '1m').toLowerCase();
+    if (!tf || tf === 'tick') return;
+    // First mount: keep Lab TF from localStorage (already in state). Only follow
+    // the bot picker when the bot timeframe itself changes afterward.
+    if (lastBotTfRef.current === null) {
+      lastBotTfRef.current = tf;
+      return;
+    }
+    if (lastBotTfRef.current === tf) return;
+    lastBotTfRef.current = tf;
+    setTrainingTimeframe(tf);
+  }, [botTimeframe]);
+
+  // Strategy change: reset architecture defaults, then re-apply window budgets.
+  useEffect(() => {
+    setAdvanced((prev) => syncAdvancedForWindow(
+      defaultAdvancedKnobs(strategy, 'train'),
+      strategy,
+      trainingWindow,
+      trainingTimeframe,
+    ));
+    // trainingWindow/TF intentionally omitted — window effect owns those syncs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategy]);
 
+  // Training window / bar TF: immediately retarget Validate bars, folds, PBO.
   useEffect(() => {
-    const cached = getCachedModelStatus(activeSymbol, strategy);
-    if (cached) setStatus(cached);
-    refreshAll();
-  }, [refreshAll]);
+    setAdvanced((prev) => syncAdvancedForWindow(
+      prev,
+      strategy,
+      trainingWindow,
+      trainingTimeframe,
+    ));
+    try {
+      window.localStorage.setItem(ML_LAB_WINDOW_KEY, String(trainingWindow));
+      window.localStorage.setItem(ML_LAB_TF_KEY, String(trainingTimeframe));
+    } catch {
+      /* ignore */
+    }
+  }, [trainingWindow, trainingTimeframe, strategy]);
+
+  useEffect(() => {
+    // Clear previous TF's status immediately so we never flash the wrong model.
+    const cached = getCachedModelStatus(activeSymbol, strategy, trainingTimeframe);
+    setStatus(cached);
+    // Quiet background refresh — avoid freezing the controls spinner on every pick.
+    refreshAll({ quiet: true, preserveScroll: true });
+  }, [refreshAll, trainingTimeframe, activeSymbol, strategy]);
 
   // Poll queue depth while the panel is open (cheap).
   useEffect(() => {
@@ -1018,7 +1295,9 @@ export default function ModelTrainingDashboard() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`);
+        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`, {
+          timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+        });
         const job = body?.job;
         if (cancelled || !job) return;
         if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
@@ -1031,7 +1310,12 @@ export default function ModelTrainingDashboard() {
           fetchStatus();
         }
       } catch {
-        /* ignore poll errors while remounted */
+        appendMlPollLog({
+          status: 'running',
+          phase: 'waiting',
+          detail: 'server busy — still polling…',
+          note: 'poll_err',
+        });
       }
     };
     tick();
@@ -1063,13 +1347,14 @@ export default function ModelTrainingDashboard() {
         body: {
           symbol: activeSymbol,
           strategy,
+          timeframe: trainingTimeframe,
           model_version: pin,
           version_id: version.version_id,
         },
         timeoutMs: 60_000,
       });
       if (body?.ok) {
-        setCachedModelStatus(activeSymbol, strategy, body);
+        setCachedModelStatus(activeSymbol, strategy, body, trainingTimeframe);
         setStatus(body);
         setChallengerDismissed(true);
         championOosRef.current = null;
@@ -1121,13 +1406,14 @@ export default function ModelTrainingDashboard() {
         body: {
           symbol: activeSymbol,
           strategy,
+          timeframe: trainingTimeframe,
           model_version: pin,
           version_id: version.version_id,
         },
         timeoutMs: 60_000,
       });
       if (body?.ok) {
-        setCachedModelStatus(activeSymbol, strategy, body);
+        setCachedModelStatus(activeSymbol, strategy, body, trainingTimeframe);
         setStatus(body);
         toast.success(`Deleted version ${body.deleted_version_id || label}`);
         await refreshAll();
@@ -1141,20 +1427,61 @@ export default function ModelTrainingDashboard() {
     }
   };
 
-  const pollMlJobUntilDone = useCallback(async (jobId) => {
+  const pollMlJobUntilDone = useCallback(async (jobId, { strategy: strat, kind = 'train' } = {}) => {
     const terminal = new Set(['done', 'error', 'cancelled']);
-    // Allow long trains: poll for up to the largest ML timeout + buffer.
-    const deadline = Date.now() + 25 * 60_000;
-    while (Date.now() < deadline) {
-      const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`);
-      const job = body?.job;
-      if (!job) throw new Error('ML job not found');
-      if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
-      if (terminal.has(job.status)) return job;
-      await new Promise((r) => setTimeout(r, 3000));
+    const budgetMs = mlJobPollDeadlineMs(strat || strategy, kind);
+    const started = Date.now();
+    const deadline = started + budgetMs;
+    let transientStreak = 0;
+    let warnedTransient = false;
+    let warnedPastBudget = false;
+    // Keep polling until the job reaches a terminal status. Transient HTTP
+    // timeouts and even the soft budget must not clear the progress bar.
+    for (;;) {
+      const pastBudget = Date.now() >= deadline;
+      if (pastBudget && !warnedPastBudget) {
+        warnedPastBudget = true;
+        toast.message(
+          `Still ${kind === 'train' ? 'training' : 'validating'} past ${formatMlJobBudgetLabel(budgetMs)} — progress stays open`,
+        );
+      }
+      try {
+        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`, {
+          timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+        });
+        transientStreak = 0;
+        const job = body?.job;
+        if (!job) throw new Error('ML job not found');
+        if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
+        if (terminal.has(job.status)) return job;
+      } catch (err) {
+        // Single GET timeouts must not kill the progress bar — GPU trains can
+        // starve the event loop briefly; the job is usually still running.
+        if (!isTransientMlPollError(err)) throw err;
+        transientStreak += 1;
+        const prev = getMlTrainingSession().serverProgress || {};
+        setMlServerProgress({
+          pct: Number(prev.pct) || 0,
+          phase: prev.phase || 'waiting',
+          detail: 'server busy — still polling…',
+          status: prev.status || 'running',
+          note: 'poll_err',
+        });
+        if (!warnedTransient) {
+          warnedTransient = true;
+          toast.message('Job status briefly unreachable — keeping progress open and retrying…');
+        }
+        const backoff = Math.min(15_000, 2_000 * transientStreak);
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
+      const elapsed = Date.now() - started;
+      const interval = pastBudget
+        ? Math.max(8_000, mlJobPollIntervalMs(elapsed, budgetMs))
+        : mlJobPollIntervalMs(elapsed, budgetMs);
+      await new Promise((r) => setTimeout(r, interval));
     }
-    throw new Error('Timed out waiting for ML job');
-  }, []);
+  }, [strategy]);
 
   const handleCancelJob = useCallback(async () => {
     const jobId = getMlTrainingSession().jobId;
@@ -1185,12 +1512,13 @@ export default function ModelTrainingDashboard() {
     if (strat !== strategy) setStrategy(strat);
     const trainTimeoutMs = mlJobTimeoutMs(strat, 'train');
     const token = startJobProgress('train', strat, symbol);
-    const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat);
+    const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
+    const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     localJobWaiterRef.current = true;
     try {
-      if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT') {
+      if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
-          `Training ${strat}… allowing up to ${Math.round(trainTimeoutMs / 60_000)} min`,
+          `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
         );
       }
       const body = await apiRequest('/api/v1/ml/train', {
@@ -1200,17 +1528,40 @@ export default function ModelTrainingDashboard() {
           strategy: strat,
           async: true,
           config: {
+            timeframe: trainingTimeframe,
             training_window_months: Number(trainingWindow),
             ...(strat === 'RL_PPO_AGENT'
-              ? { total_timesteps: parsePositiveInt(knobs.totalTimesteps, 2048, { min: 256, max: 500_000 }) }
+              ? {
+                  total_timesteps: parsePositiveInt(
+                    knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
+                  ),
+                  hidden_dim: parsePositiveInt(
+                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                  ),
+                }
               : {}),
             ...(DEEP_ML_STRATEGIES.has(strat)
-              ? { epochs: parsePositiveInt(knobs.epochs, defaultAdvancedKnobs(strat).epochs, { min: 1, max: 500 }) }
+              ? {
+                  epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
+                  hidden_dim: parsePositiveInt(
+                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                  ),
+                  ...(strat === 'TRANSFORMER_SIGNAL'
+                    ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
+                    : {}),
+                  ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
+                }
+              : {}),
+            ...(strat === 'ML_SIGNAL_BOOST'
+              ? {
+                  gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
+                  gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
+                }
               : {}),
           },
         },
-        // Submit returns immediately with job_id; candle fetch still needs headroom.
-        timeoutMs: 180_000,
+        // Candle fetch for long Lab windows; train itself is async + polled.
+        timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
       });
       if (!body?.ok) {
         toast.error(body?.error || 'Training failed to start');
@@ -1222,14 +1573,20 @@ export default function ModelTrainingDashboard() {
         return;
       }
       setMlJobId(jobId);
-      const job = await pollMlJobUntilDone(jobId);
+      const job = await pollMlJobUntilDone(jobId, { strategy: strat, kind: 'train' });
       const result = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Training cancelled');
         return;
       }
       if (job.status === 'done' && result.ok !== false) {
-        toast.success(`Training complete for ${strat} / ${symbol}`);
+        const tw = result.training_window;
+        const twNote = tw?.bars != null
+          ? ` · ${Number(tw.bars).toLocaleString()} bars`
+            + (tw.span_days != null ? ` (~${tw.span_days}d)` : '')
+            + (tw.training_window_months != null ? ` / ${tw.training_window_months}mo` : '')
+          : '';
+        toast.success(`Training complete for ${strat} / ${symbol}${twNote}`);
         // Drop from retrain audit immediately (backend also clears via record_retrain).
         setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
         setRetrainActions((prev) => prev.filter((a) => (
@@ -1268,7 +1625,7 @@ export default function ModelTrainingDashboard() {
     setMlValidation(null);
     const isRl = strategy === 'RL_PPO_AGENT';
     const isDeep = DEEP_ML_STRATEGIES.has(strategy);
-    const defaults = defaultAdvancedKnobs(strategy);
+    const defaults = defaultAdvancedKnobs(strategy, 'validate');
     const nFolds = parsePositiveInt(advanced.nFolds, defaults.nFolds, { min: 2, max: 8 });
     const validateMaxBars = parsePositiveInt(
       advanced.validateMaxBars,
@@ -1290,13 +1647,14 @@ export default function ModelTrainingDashboard() {
     try {
       toast.message(
         isRl
-          ? `Running RL walk-forward (fast mode, no PBO)… up to ${Math.round(validateTimeoutMs / 60_000)} min`
+          ? `Running RL walk-forward (fast mode, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
           : isDeep
-            ? `Running walk-forward + PBO… up to ${Math.round(validateTimeoutMs / 60_000)} min`
-            : 'Running walk-forward + PBO… usually under 5 minutes',
+            ? `Running walk-forward (fast folds, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
+            : `Running walk-forward + PBO… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`,
       );
-      const deepEpochs = isDeep
-        ? parsePositiveInt(advanced.epochs, defaults.epochs, { min: 1, max: 500 })
+      // Do not reuse Train Advanced epochs (e.g. 80) — those interrupt WF before folds finish.
+      const wfEpochs = isDeep
+        ? parsePositiveInt(defaults.epochs, defaults.epochs, { min: 1, max: 40 })
         : null;
       const body = await apiRequest('/api/v1/ml/validate', {
         method: 'POST',
@@ -1306,23 +1664,26 @@ export default function ModelTrainingDashboard() {
           async: true,
           n_folds: nFolds,
           mode: 'rolling',
-          // Full PBO re-trains every combo — too heavy for PPO in the dock.
-          pbo: !isRl,
+          // Deep/RL fold PBO re-trains every combo — too heavy for Lab Validate.
+          pbo: !isRl && !isDeep,
           pbo_segments: pboSegments,
+          timeframe: trainingTimeframe,
           config: {
+            timeframe: trainingTimeframe,
             training_window_months: Number(trainingWindow),
             symbol: activeSymbol,
             model_symbol: activeSymbol,
             _wf_mode: true,
+            wf_use_gpu: true,
             validate_max_bars: validateMaxBars,
             pbo_max_combos: pboMaxCombos,
             ...(isRl
               ? { total_timesteps: totalTimesteps, n_steps: 512, ppo_epochs: 2, hidden_dim: 64 }
               : {}),
-            ...(deepEpochs != null ? { epochs: deepEpochs } : {}),
+            ...(wfEpochs != null ? { epochs: wfEpochs, wf_epochs: wfEpochs } : {}),
           },
         },
-        timeoutMs: 180_000,
+        timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
       });
       if (!body?.ok) {
         const foldErr = Array.isArray(body?.folds)
@@ -1338,7 +1699,7 @@ export default function ModelTrainingDashboard() {
         return;
       }
       setMlJobId(jobId);
-      const job = await pollMlJobUntilDone(jobId);
+      const job = await pollMlJobUntilDone(jobId, { strategy, kind: 'validate' });
       const result = (job.result && typeof job.result === 'object')
         ? job.result
         : { ok: false, error: job.error || 'Validation failed' };
@@ -1346,7 +1707,20 @@ export default function ModelTrainingDashboard() {
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Validation cancelled');
       } else if (job.status === 'done' && result.ok) {
-        toast.success('Walk-forward validation finished');
+        const tw = result.training_window;
+        const twNote = tw?.bars != null
+          ? ` · ${Number(tw.bars).toLocaleString()} bars`
+            + (tw.span_days != null ? ` (~${tw.span_days}d)` : '')
+          : '';
+        const persisted = result.validation_persisted;
+        if (persisted && persisted.ok === false) {
+          toast.error(
+            persisted.error
+              || 'Walk-forward finished but deploy stamp was not saved — retry Validate',
+          );
+        } else {
+          toast.success(`Walk-forward validation finished${twNote}`);
+        }
       } else {
         const foldErr = Array.isArray(result?.folds)
           ? result.folds.find((f) => f?.error)?.error
@@ -1355,22 +1729,13 @@ export default function ModelTrainingDashboard() {
       }
     } catch (err) {
       const msg = err?.message || String(err) || 'Validation request failed';
-      const timedOut = /timed out|aborted|failed to fetch|network/i.test(msg);
       const badJson = /invalid json|internal server error/i.test(msg);
-      const friendly = timedOut
-        ? `${msg} — server may still be finishing folds. Wait, then Refresh; recycle only if the backend is unresponsive.`
-        : badJson
-          ? 'Validation hit a server error (non-JSON response). Recycle Massive backend and retry — RL walk-forward needs the latest ONNX export fix.'
-          : msg;
+      const friendly = badJson
+        ? 'Validation hit a server error (non-JSON response). Recycle Massive backend and retry — RL walk-forward needs the latest ONNX export fix.'
+        : msg;
       setMlValidation({ ok: false, error: friendly });
       if (!isAbortError(err)) {
-        toast.error(
-          timedOut
-            ? `Validation timed out after ${Math.round(validateTimeoutMs / 60_000)} min`
-            : badJson
-              ? 'Validation failed — recycle backend and retry'
-              : msg,
-        );
+        toast.error(badJson ? 'Validation failed — recycle backend and retry' : msg);
       }
     } finally {
       localJobWaiterRef.current = false;
@@ -1431,7 +1796,10 @@ export default function ModelTrainingDashboard() {
   };
 
   return (
-    <div className="dock-panel dock-panel--ml-training overflow-y-auto h-full">
+    <div
+      ref={panelScrollRef}
+      className="dock-panel dock-panel--ml-training overflow-y-auto h-full"
+    >
       <header
         title="Train and validate ML models per symbol. Optimizer Lab handles hyperparameter sweeps only."
       >
@@ -1447,7 +1815,12 @@ export default function ModelTrainingDashboard() {
           )}
           {status?.trained_at && (
             <span className="ml-training__header-meta num-mono">
-              {new Date(status.trained_at).toLocaleString()}
+              {trainingTimeframe} · {new Date(status.trained_at).toLocaleString()}
+            </span>
+          )}
+          {status && !status.trained && (
+            <span className="ml-training__header-meta text-muted-foreground">
+              no {trainingTimeframe} model
             </span>
           )}
         </div>
@@ -1475,8 +1848,29 @@ export default function ModelTrainingDashboard() {
             </Select>
           </div>
           <div className="ml-training__field">
+            <Label className="text-xs">Bar timeframe</Label>
+            <Select value={trainingTimeframe} onValueChange={setTrainingTimeframe}>
+              <SelectTrigger size="sm" className="h-8">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TRAINING_TIMEFRAMES.map((t) => (
+                  <SelectItem key={t.value} value={t.value} className="text-xs">
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">
+              Must match the bot execution TF. HTF models store separately (e.g. ETHUSDT__15M).
+            </p>
+          </div>
+          <div className="ml-training__field">
             <Label className="text-xs">Training window</Label>
-            <Select value={trainingWindow} onValueChange={setTrainingWindow}>
+            <Select
+              value={trainingWindow}
+              onValueChange={(v) => setTrainingWindow(v)}
+            >
               <SelectTrigger size="sm" className="h-8">
                 <SelectValue />
               </SelectTrigger>
@@ -1488,6 +1882,12 @@ export default function ModelTrainingDashboard() {
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-[10px] text-muted-foreground mt-0.5 leading-snug">
+              Train ~{estimateTrainingBars(trainingWindow, trainingTimeframe).toLocaleString()}{' '}
+              {trainingTimeframe} bars · Validate ~{estimateValidateBars(trainingWindow, trainingTimeframe, strategy).toLocaleString()}{' '}
+              bars · {suggestedNFolds(trainingWindow, strategy)} folds
+              (Advanced knobs update with this pick).
+            </p>
           </div>
           <div className="ml-training__field">
             <Label className="text-xs">Status</Label>
@@ -1565,9 +1965,23 @@ export default function ModelTrainingDashboard() {
                 />
               </label>
             )}
+            {(DEEP_ML_STRATEGIES.has(strategy) || strategy === 'RL_PPO_AGENT') && (
+              <label className="ml-training__advanced-field">
+                <span>hidden_dim</span>
+                <Input
+                  type="number"
+                  min={32}
+                  max={1024}
+                  step={32}
+                  className="h-7 text-xs"
+                  value={advanced.hiddenDim}
+                  onChange={(e) => setAdvanced((a) => ({ ...a, hiddenDim: e.target.value }))}
+                />
+              </label>
+            )}
             {DEEP_ML_STRATEGIES.has(strategy) && (
               <label className="ml-training__advanced-field">
-                <span>epochs</span>
+                <span>train epochs</span>
                 <Input
                   type="number"
                   min={1}
@@ -1578,9 +1992,38 @@ export default function ModelTrainingDashboard() {
                 />
               </label>
             )}
+            {strategy === 'ML_SIGNAL_BOOST' && (
+              <>
+                <label className="ml-training__advanced-field">
+                  <span>gbm_max_iter</span>
+                  <Input
+                    type="number"
+                    min={40}
+                    max={1000}
+                    step={10}
+                    className="h-7 text-xs"
+                    value={advanced.gbmMaxIter}
+                    onChange={(e) => setAdvanced((a) => ({ ...a, gbmMaxIter: e.target.value }))}
+                  />
+                </label>
+                <label className="ml-training__advanced-field">
+                  <span>gbm_max_depth</span>
+                  <Input
+                    type="number"
+                    min={3}
+                    max={12}
+                    className="h-7 text-xs"
+                    value={advanced.gbmMaxDepth}
+                    onChange={(e) => setAdvanced((a) => ({ ...a, gbmMaxDepth: e.target.value }))}
+                  />
+                </label>
+              </>
+            )}
           </div>
           <p className="ml-training__advanced-hint">
-            Defaults match prior dock hardcodes. Leave closed for identical behaviour.
+            Train uses GPU (CUDA) when PyTorch detects it; Validate stays lighter on CPU.
+            Client waits up to ~90 min for PPO / ~60 min for deep models (plus a poll buffer).
+            Live bots still infer via CPU ONNX. Retrain after changing hidden_dim / architecture.
           </p>
         </details>
 
@@ -1589,6 +2032,19 @@ export default function ModelTrainingDashboard() {
           serverProgress={serverProgress}
           onCancel={activeJobId ? handleCancelJob : undefined}
           cancelling={cancellingJob}
+        />
+        <JobPollLog
+          entries={pollLog}
+          enabled={showPollLog}
+          onEnabledChange={(on) => {
+            setShowPollLog(on);
+            try {
+              window.localStorage.setItem(POLL_LOG_PREF_KEY, on ? '1' : '0');
+            } catch {
+              /* ignore */
+            }
+          }}
+          onClear={() => clearMlPollLog()}
         />
 
         {busyElsewhere && (
@@ -1652,13 +2108,22 @@ export default function ModelTrainingDashboard() {
             variant="outline"
             size="sm"
             className="h-8 text-xs gap-1"
-            disabled={loading}
-            onClick={() => refreshAll({ clearSessionValidation: true })}
+            disabled={refreshing}
+            aria-busy={refreshing}
+            onClick={handleManualRefresh}
+            title="Reload model status without leaving this panel"
           >
-            <RefreshCw size={14} />
+            {refreshing
+              ? <Loader2 size={14} className="animate-spin" />
+              : <RefreshCw size={14} />}
             Refresh
           </Button>
         </div>
+        <p className="text-[10px] text-muted-foreground -mt-1">
+          Trigger retrain uses the Training window above. Walk-forward uses validate_max_bars
+          ({Number(advanced.validateMaxBars).toLocaleString()} bars) — both update when you
+          change months / timeframe.
+        </p>
       </section>
 
       <DatasetBrowser
@@ -1709,7 +2174,7 @@ export default function ModelTrainingDashboard() {
                   <span className="text-muted-foreground">PBO</span>
                   <p className={cn(
                     'num-mono font-medium',
-                    Number(displayValidation.pbo.pbo) > 0.5 && 'text-destructive',
+                    Number(displayValidation.pbo.pbo) >= 0.5 && 'text-destructive',
                   )}
                   >
                     {fmtMetric(displayValidation.pbo.pbo)}
@@ -1839,12 +2304,13 @@ export default function ModelTrainingDashboard() {
                 <tr>
                   <th>When</th>
                   <th>Kind</th>
+                  <th>TF</th>
                   <th>Result</th>
                   <th className="text-right">Duration</th>
                 </tr>
               </thead>
               <tbody>
-                <VirtualTablePadding height={runsWindow.topPad} colSpan={4} />
+                <VirtualTablePadding height={runsWindow.topPad} colSpan={5} />
                 {runsWindow.slice.map((run) => {
                   const metricHint = run.metrics?.mean_oos_accuracy
                     ?? run.metrics?.mean_accuracy
@@ -1863,6 +2329,7 @@ export default function ModelTrainingDashboard() {
                           : '—'}
                       </td>
                       <td>{run.kind || '—'}</td>
+                      <td className="num-mono text-muted-foreground">{run.timeframe || '—'}</td>
                       <td className={cn(
                         'num-mono',
                         run.ok ? 'text-emerald-400' : 'text-destructive',
@@ -1879,7 +2346,7 @@ export default function ModelTrainingDashboard() {
                     </tr>
                   );
                 })}
-                <VirtualTablePadding height={runsWindow.bottomPad} colSpan={4} />
+                <VirtualTablePadding height={runsWindow.bottomPad} colSpan={5} />
               </tbody>
             </table>
           </div>

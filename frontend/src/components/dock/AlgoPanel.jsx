@@ -127,6 +127,7 @@ function ActiveBotRow({
             <MlModelStatusBadge
               strategy={bot.strategy}
               symbol={bot.symbol}
+              timeframe={bot.timeframe || bot.config?.timeframe || '1m'}
               modelVersion={bot.config?.model_version}
               compact
             />
@@ -434,7 +435,7 @@ export function AlgoTab({ hideToolbar = false }) {
     });
     if (ok) {
       setActiveWorkflowPreset(presetId);
-      const opensLabOnly = ['wf_optimize', 'meta_label_validate', 'wf_rigorous', 'meta_label_sweep', 'portfolio_optimize'].includes(presetId);
+      const opensLabOnly = ['wf_optimize', 'wf_rigorous', 'meta_label_sweep', 'portfolio_optimize'].includes(presetId);
       if (!opensLabOnly) {
         toast.message('Preset applied — review settings then RUN');
       }
@@ -963,6 +964,7 @@ export function AlgoTab({ hideToolbar = false }) {
                 <MlModelVersionSelect
                   strategy={botStrategy}
                   symbol={activeSymbol}
+                  timeframe={botExecutionMode === 'TICK' ? '1m' : botTimeframe}
                   value={botConfig?.model_version || ''}
                   onChange={(v) => updateBotConfig({ model_version: v || undefined })}
                 />

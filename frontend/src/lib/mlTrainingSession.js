@@ -19,7 +19,11 @@ let session = {
   // Phase 1 async jobs (additive).
   jobId: null,
   serverProgress: null,
+  /** Ring buffer of poll snapshots for optional Lab inspection. */
+  pollLog: [],
 };
+
+const ML_POLL_LOG_MAX = 250;
 
 function emit() {
   listeners.forEach((fn) => {
@@ -37,6 +41,31 @@ function patch(partial) {
   return session;
 }
 
+function nextPollLog(prev, entry) {
+  const line = {
+    t: typeof entry?.t === 'number' ? entry.t : Date.now(),
+    status: entry?.status != null ? String(entry.status) : '',
+    pct: entry?.pct != null && Number.isFinite(Number(entry.pct)) ? Number(entry.pct) : null,
+    phase: entry?.phase != null ? String(entry.phase) : '',
+    detail: entry?.detail != null ? String(entry.detail) : '',
+    note: entry?.note != null ? String(entry.note) : '',
+  };
+  const list = Array.isArray(prev) ? prev : [];
+  const last = list[list.length - 1];
+  if (
+    last
+    && last.status === line.status
+    && last.pct === line.pct
+    && last.phase === line.phase
+    && last.detail === line.detail
+    && last.note === line.note
+  ) {
+    // Refresh timestamp on identical snapshot (still one row).
+    return [...list.slice(0, -1), { ...last, t: line.t }];
+  }
+  return [...list, line].slice(-ML_POLL_LOG_MAX);
+}
+
 export function getMlTrainingSession() {
   return session;
 }
@@ -46,21 +75,23 @@ export function subscribeMlTrainingSession(listener) {
   return () => listeners.delete(listener);
 }
 
-export function statusCacheKey(symbol, strategy) {
-  return `${String(symbol || '').toUpperCase()}|${String(strategy || '').toUpperCase()}`;
+export function statusCacheKey(symbol, strategy, timeframe = '1m') {
+  const tf = String(timeframe || '1m').toLowerCase();
+  return `${String(symbol || '').toUpperCase()}|${String(strategy || '').toUpperCase()}|${tf}`;
 }
 
-export function getCachedModelStatus(symbol, strategy) {
-  return statusCache.get(statusCacheKey(symbol, strategy)) ?? null;
+export function getCachedModelStatus(symbol, strategy, timeframe = '1m') {
+  return statusCache.get(statusCacheKey(symbol, strategy, timeframe)) ?? null;
 }
 
-export function setCachedModelStatus(symbol, strategy, body) {
+export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
   if (!symbol || !strategy || !body || typeof body !== 'object') return;
+  const tf = body.timeframe || timeframe || '1m';
   // Don't cache hard failures as the only truth — keep last good if present.
-  if (body.error && !body.trained && getCachedModelStatus(symbol, strategy)?.trained) {
+  if (body.error && !body.trained && getCachedModelStatus(symbol, strategy, tf)?.trained) {
     return;
   }
-  statusCache.set(statusCacheKey(symbol, strategy), body);
+  statusCache.set(statusCacheKey(symbol, strategy, tf), body);
 }
 
 export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }) {
@@ -75,6 +106,7 @@ export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }
     lastError: null,
     jobId: jobId || null,
     serverProgress: null,
+    pollLog: [],
     ...(kind === 'validate' ? { validation: null } : {}),
   });
 }
@@ -113,15 +145,32 @@ export function setMlServerProgress(progress) {
   if (!progress || typeof progress !== 'object') {
     return patch({ serverProgress: null });
   }
+  const serverProgress = {
+    pct: Number(progress.pct) || 0,
+    phase: progress.phase || '',
+    detail: progress.detail || '',
+    status: progress.status,
+    updatedAt: Date.now(),
+  };
   return patch({
-    serverProgress: {
-      pct: Number(progress.pct) || 0,
-      phase: progress.phase || '',
-      detail: progress.detail || '',
-      status: progress.status,
-      updatedAt: Date.now(),
-    },
+    serverProgress,
+    pollLog: nextPollLog(session.pollLog, {
+      status: serverProgress.status,
+      pct: serverProgress.pct,
+      phase: serverProgress.phase,
+      detail: serverProgress.detail,
+      note: progress.note || '',
+    }),
   });
+}
+
+/** Explicit poll-log row (timeouts / notes that are not a progress snapshot). */
+export function appendMlPollLog(entry) {
+  return patch({ pollLog: nextPollLog(session.pollLog, entry) });
+}
+
+export function clearMlPollLog() {
+  return patch({ pollLog: [] });
 }
 
 /** Apply WS `ml_job_progress` if it matches the active session job. */
@@ -133,15 +182,16 @@ export function applyMlJobProgressMessage(data) {
 }
 
 /** Prefer cached status over transient fetch errors / aborts. */
-export function resolveModelStatusFetch(symbol, strategy, { body, error, previous }) {
+export function resolveModelStatusFetch(symbol, strategy, { body, error, previous, timeframe = '1m' }) {
+  const tf = (body && body.timeframe) || timeframe || '1m';
   if (body && typeof body === 'object') {
-    setCachedModelStatus(symbol, strategy, body);
+    setCachedModelStatus(symbol, strategy, body, tf);
     return body;
   }
   if (error && isAbortError(error)) {
-    return previous ?? getCachedModelStatus(symbol, strategy);
+    return previous ?? getCachedModelStatus(symbol, strategy, tf);
   }
-  const cached = getCachedModelStatus(symbol, strategy);
+  const cached = getCachedModelStatus(symbol, strategy, tf);
   if (cached?.trained) {
     return {
       ...cached,
@@ -149,7 +199,7 @@ export function resolveModelStatusFetch(symbol, strategy, { body, error, previou
       fetch_error: error?.message || 'Status temporarily unavailable',
     };
   }
-  if (previous?.trained) {
+  if (previous?.trained && (previous.timeframe || '1m') === String(tf).toLowerCase()) {
     return {
       ...previous,
       stale: true,
@@ -158,6 +208,7 @@ export function resolveModelStatusFetch(symbol, strategy, { body, error, previou
   }
   return {
     trained: false,
+    timeframe: tf,
     error: error?.message || 'Status unavailable',
     versions: previous?.versions || cached?.versions || [],
     dataset: previous?.dataset || cached?.dataset || null,

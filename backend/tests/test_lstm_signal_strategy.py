@@ -146,6 +146,7 @@ class TestLstmDirectionStrategy:
         for i in range(80):
             result = strat.evaluate({**bar, "close": 100 + i * 0.1})
         assert result["signal"] == "NONE"
+        assert result.get("reject_reason") in ("ml_model_missing", "ml_warmup")
 
     def test_returns_none_with_insufficient_lookback(self):
         from app.services.bots.strategies_lstm import LstmDirectionStrategy
@@ -154,6 +155,18 @@ class TestLstmDirectionStrategy:
         # Only 1 bar
         result = strat.evaluate(bar)
         assert result["signal"] == "NONE"
+        assert result.get("reject_reason") == "ml_warmup"
+
+    def test_reverse_map_accepts_int_and_str_keys(self):
+        from app.services.bots.ml_lstm_trainer import REVERSE_MAP
+        from app.services.bots.strategies_lstm import _softmax
+        # Simulate predict path resolution
+        for reverse_map in (REVERSE_MAP, {str(k): v for k, v in REVERSE_MAP.items()}):
+            pred_idx = 0
+            signal = reverse_map.get(str(pred_idx), reverse_map.get(pred_idx, "NONE"))
+            assert signal == "BUY"
+            proba = _softmax(np.array([3.0, 0.1, 0.1]))
+            assert np.argmax(proba) == 0
 
 
 class TestLstmRegistration:
