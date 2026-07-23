@@ -104,6 +104,14 @@ function normalizeDockTab(tab) {
 
 import { useDetachedPanels } from '../hooks/useDetachedPanels';
 import DetachedPanelPortal from './dock/DetachedPanelPortal';
+import MlTrainingFlexPanel from './dock/MlTrainingFlexPanel';
+import AlgoFlexPanel from './dock/AlgoFlexPanel';
+import CopilotFlexPanel from './dock/CopilotFlexPanel';
+import InsightsFlexPanel from './dock/InsightsFlexPanel';
+import {
+  getStandalonePanelDef,
+  subscribeStandaloneEvents,
+} from '../lib/standalonePanels';
 import { ExternalLink } from 'lucide-react';
 
 import PositionsTab from './dock/PositionsPanel';
@@ -137,6 +145,11 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
   const { isDetached, detach, attach } = useDetachedPanels();
 
   const renderTabContent = (tabId, ContentComponent) => {
+    if (tabId === 'ml-training') return <MlTrainingFlexPanel />;
+    if (tabId === 'algo') return <AlgoFlexPanel />;
+    if (tabId === 'copilot') return <CopilotFlexPanel />;
+    if (tabId === 'scanner') return <InsightsFlexPanel tab="scanner" />;
+    if (tabId === 'analyst') return <InsightsFlexPanel tab="analyst" />;
     if (isDetached(tabId)) {
       return (
         <div className="flex h-full flex-col items-center justify-center text-muted-foreground p-8">
@@ -228,6 +241,14 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
       window.removeEventListener('dock-group', onDockGroup);
     };
   }, [updateWorkspace]);
+
+  useEffect(() => {
+    return subscribeStandaloneEvents(undefined, (msg) => {
+      if (msg?.type !== 'closed' && msg?.type !== 'reattach') return;
+      const def = getStandalonePanelDef(msg.panelId);
+      for (const t of def?.dockTabs || []) attach(t);
+    });
+  }, [attach]);
 
   const expandDock = useCallback(() => {
     updateWorkspace({ dockCollapsed: false });
@@ -342,31 +363,6 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
             <BalancesTab />
           </DetachedPanelPortal>
         )}
-        {isDetached('algo') && (
-          <DetachedPanelPortal title="Algo Bot" onClose={() => attach('algo')}>
-            <AlgoTab />
-          </DetachedPanelPortal>
-        )}
-        {isDetached('scanner') && (
-          <DetachedPanelPortal title="Scanner" onClose={() => attach('scanner')}>
-            <DetachedLazyPanel><ScannerTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('analyst') && (
-          <DetachedPanelPortal title="Analyst" onClose={() => attach('analyst')}>
-            <DetachedLazyPanel><AnalystTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('copilot') && (
-          <DetachedPanelPortal title="Copilot" onClose={() => attach('copilot')}>
-            <DetachedLazyPanel><CopilotTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('ml-training') && (
-          <DetachedPanelPortal title="ML Training" onClose={() => attach('ml-training')}>
-            <DetachedLazyPanel><ModelTrainingDashboard /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
         {isDetached('reconcile') && (
           <DetachedPanelPortal title="Reconcile" onClose={() => attach('reconcile')}>
             <ReconciliationTab />
@@ -461,31 +457,6 @@ export default function ResizableDock({ setDockHeight: setParentDockHeight, init
         {isDetached('balances') && (
           <DetachedPanelPortal title="Balances" onClose={() => attach('balances')}>
             <BalancesTab />
-          </DetachedPanelPortal>
-        )}
-        {isDetached('algo') && (
-          <DetachedPanelPortal title="Algo Bot" onClose={() => attach('algo')}>
-            <AlgoTab />
-          </DetachedPanelPortal>
-        )}
-        {isDetached('scanner') && (
-          <DetachedPanelPortal title="Scanner" onClose={() => attach('scanner')}>
-            <DetachedLazyPanel><ScannerTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('analyst') && (
-          <DetachedPanelPortal title="Analyst" onClose={() => attach('analyst')}>
-            <DetachedLazyPanel><AnalystTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('copilot') && (
-          <DetachedPanelPortal title="Copilot" onClose={() => attach('copilot')}>
-            <DetachedLazyPanel><CopilotTab /></DetachedLazyPanel>
-          </DetachedPanelPortal>
-        )}
-        {isDetached('ml-training') && (
-          <DetachedPanelPortal title="ML Training" onClose={() => attach('ml-training')}>
-            <DetachedLazyPanel><ModelTrainingDashboard /></DetachedLazyPanel>
           </DetachedPanelPortal>
         )}
         {isDetached('reconcile') && (

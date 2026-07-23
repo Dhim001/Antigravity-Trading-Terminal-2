@@ -137,7 +137,7 @@ function BotRankingList({ title, bots, variant = 'up' }) {
   );
 }
 
-export default function PortfolioDashboard({ open = false, onOpenChange }) {
+export default function PortfolioDashboard({ open = false, onOpenChange, standalone = false }) {
   const [period, setPeriod] = useState('ALL');
   const [source, setSource] = useState('combined');
   const [groupBy, setGroupBy] = useState('strategy');
@@ -182,18 +182,20 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
     [tradeHistory, tradeStats, positions, activeBots, symbolUniverse, settingsUpdatedAt],
   );
 
-  const { data, loading, error, refresh } = useAnalytics('dashboard', params, { enabled: open, invalidateKey });
+  const active = standalone || open;
+  const { data, loading, error, refresh } = useAnalytics('dashboard', params, { enabled: active, invalidateKey });
 
   useEffect(() => {
+    if (standalone) return undefined;
     const onOpen = () => requestAnimationFrame(() => onOpenChange?.(true));
     window.addEventListener('portfolio-dashboard-open', onOpen);
     return () => window.removeEventListener('portfolio-dashboard-open', onOpen);
-  }, [onOpenChange]);
+  }, [onOpenChange, standalone]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!active) return;
     fetchBenchmarks(period === 'ALL' ? '3mo' : period, ['SPY', 'BTC']);
-  }, [open, period]);
+  }, [active, period]);
 
   useEffect(() => {
     if (analyticsBenchmarks) setBenchmarks(analyticsBenchmarks);
@@ -617,18 +619,8 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
   const topBots = data?.bot_rankings?.top || [];
   const bottomBots = data?.bot_rankings?.bottom || [];
 
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        showCloseButton
-        overlayClassName="portfolio-dashboard__overlay"
-        className={cn(
-          'terminal-sheet portfolio-dashboard w-full sm:max-w-none',
-          'flex flex-col gap-0 p-0',
-        )}
-        aria-label="Portfolio Dashboard"
-      >
+  const dashboardBody = (
+    <>
         <SheetHeader className="terminal-sheet__header portfolio-dashboard__header shrink-0">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex min-w-0 flex-col gap-1">
@@ -980,11 +972,40 @@ export default function PortfolioDashboard({ open = false, onOpenChange }) {
               </TabsContent>
 
               <TabsContent value="journal" className="portfolio-dashboard__panel">
-                <TradeJournal enabled={open} />
+                <TradeJournal enabled={active} />
               </TabsContent>
             </Tabs>
           )}
         </div>
+    </>
+  );
+
+  if (standalone) {
+    return (
+      <div
+        className={cn(
+          'portfolio-dashboard flex h-full w-full flex-col gap-0 overflow-hidden bg-background',
+        )}
+        aria-label="Portfolio Dashboard"
+      >
+        {dashboardBody}
+      </div>
+    );
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        showCloseButton
+        overlayClassName="portfolio-dashboard__overlay"
+        className={cn(
+          'terminal-sheet portfolio-dashboard w-full sm:max-w-none',
+          'flex flex-col gap-0 p-0',
+        )}
+        aria-label="Portfolio Dashboard"
+      >
+        {dashboardBody}
       </SheetContent>
     </Sheet>
   );

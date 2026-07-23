@@ -481,9 +481,12 @@ async def learn_from_closed_trade(
 
                 # Route through centralized coordinator for cooldown/dedup
                 req = get_retrain_scheduler().request_retrain(
-                    strategy=str(bot.get("strategy", "META_LABEL")),
+                    strategy="META_LABEL",
                     symbol=str(bot.get("symbol", bot_id)),
-                    reason=f"periodic retrain after {exits} exits",
+                    reason=(
+                        f"periodic meta-label retrain after {exits} exits "
+                        f"({bot.get('strategy') or 'bot'})"
+                    ),
                     source="posttrade_learner",
                     timeframe=bot.get("timeframe") or (bot.get("config") or {}).get("timeframe"),
                 )
@@ -494,7 +497,7 @@ async def learn_from_closed_trade(
                     retrained = bool(res.get("ok"))
                     if retrained:
                         get_retrain_scheduler().record_retrain(
-                            str(bot.get("strategy", "META_LABEL")),
+                            "META_LABEL",
                             str(bot.get("symbol", bot_id)),
                         )
                         if bot_manager is not None:

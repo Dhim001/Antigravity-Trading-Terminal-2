@@ -25,6 +25,27 @@ from app.services.bots.ml_walk_forward_validator import (
 
 logger = logging.getLogger(__name__)
 
+# Cooldown / pending key for meta-label GBM (technical + agent bots).
+# Never use a TA strategy id here — Lab train rejects those (e.g. MACD_RSI).
+META_LABEL_STRATEGY = "META_LABEL"
+
+LAB_TRAIN_UNSUPPORTED_MSG = (
+    "Lab training not supported for {strategy} — ML Lab trains ML/DL/RL models only. "
+    "Technical and agent bots use meta-label retrain (and indicator warm-up), not Lab training."
+)
+
+
+def normalize_retrain_strategy(strategy: str | None) -> str:
+    """Map bot strategy → retrain queue key (ML id or META_LABEL)."""
+    s = str(strategy or "").upper().strip()
+    if is_ml_strategy(s):
+        return s
+    return META_LABEL_STRATEGY
+
+
+def lab_train_unsupported_error(strategy: str | None) -> str:
+    return LAB_TRAIN_UNSUPPORTED_MSG.format(strategy=str(strategy or "?").upper() or "?")
+
 # ── Configuration ─────────────────────────────────────────────────────────
 
 DEFAULT_MAX_MODEL_AGE_HOURS = 168  # 7 days
@@ -219,12 +240,14 @@ class MlRetrainScheduler:
         """
         from app.services.bots.ml_model_artifacts import normalize_model_timeframe
 
+        raw_strategy = str(strategy or "").upper().strip()
+        strat = normalize_retrain_strategy(raw_strategy)
         tf = normalize_model_timeframe(timeframe)
-        key = self._cooldown_key(strategy, symbol, tf)
+        key = self._cooldown_key(strat, symbol, tf)
 
         self._purge_retrain_maps()
 
-        if self._is_on_cooldown(strategy, symbol, tf):
+        if self._is_on_cooldown(strat, symbol, tf):
             logger.debug(
                 "Retrain request from %s for %s skipped (cooldown)", source, key,
             )
@@ -238,32 +261,60 @@ class MlRetrainScheduler:
             return {"queued": False, "reason": "already_pending", "source": source, "key": key}
 
         ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        self._pending[key] = {
-            "strategy": strategy,
+        entry: dict[str, Any] = {
+            "strategy": strat,
             "symbol": symbol,
             "timeframe": tf,
             "reasons": [f"{source}: {reason}"],
             "requested_at": ts,
         }
+        # Preserve original TA/agent id for audit when normalized to META_LABEL.
+        if raw_strategy and raw_strategy != strat:
+            entry["bot_strategy"] = raw_strategy
+        self._pending[key] = entry
         logger.info("Retrain queued for %s by %s: %s", key, source, reason)
 
         # Record in audit history (keep last 100 entries)
-        self._retrain_history.append({
+        hist: dict[str, Any] = {
             "key": key,
             "source": source,
             "reason": reason,
             "requested_at": ts,
             "timeframe": tf,
-        })
+            "strategy": strat,
+        }
+        if raw_strategy and raw_strategy != strat:
+            hist["bot_strategy"] = raw_strategy
+        self._retrain_history.append(hist)
         if len(self._retrain_history) > 100:
             self._retrain_history = self._retrain_history[-100:]
 
         return {"queued": True, "reason": reason, "source": source, "key": key}
 
-    def get_pending(self) -> dict[str, dict[str, Any]]:
-        """Return all pending retrain requests (for dashboard display)."""
+    def get_pending(self, *, ml_only: bool = False) -> dict[str, dict[str, Any]]:
+        """Return pending retrain requests.
+
+        When ``ml_only`` is True, omit META_LABEL / non-ML entries (Lab dashboard).
+        """
         self._purge_retrain_maps()
-        return dict(self._pending)
+        if not ml_only:
+            return dict(self._pending)
+        return {
+            k: v for k, v in self._pending.items()
+            if is_ml_strategy(str(v.get("strategy") or ""))
+        }
+
+    def drop_stale_lab_incompatible_pending(self) -> int:
+        """Remove pending keys that Lab cannot train (legacy TA ids like MACD_RSI)."""
+        self._purge_retrain_maps()
+        drop = [
+            k for k, v in self._pending.items()
+            if not is_ml_strategy(str(v.get("strategy") or ""))
+            and str(v.get("strategy") or "").upper() != META_LABEL_STRATEGY
+        ]
+        for k in drop:
+            self._pending.pop(k, None)
+        return len(drop)
 
     def get_retrain_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return recent retrain history for audit trail."""

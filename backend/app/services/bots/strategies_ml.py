@@ -104,8 +104,21 @@ def train_ml_signal_model(
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))
     max_iter = int(cfg.get("max_iter", 40 if (wf_mode and not wf_parity) else 150))
-    skip_refit = bool(cfg.get("skip_refit", wf_mode))
+    # skip_refit: keep train-split weights (no full-series refit into val).
+    # Default True for WF folds and when ML calendar holdout is on (Lab champion).
+    _cal_skip = False
+    try:
+        from app.services.bots.ml_data_calendar import calendar_holdout_enabled
+
+        _cal_skip = calendar_holdout_enabled(cfg)
+    except Exception:
+        pass
+    skip_refit = bool(cfg.get("skip_refit", wf_mode or _cal_skip))
     skip_snapshot = bool(cfg.get("skip_snapshot", wf_mode))
+    # Persist champion unless WF / skip_live_artifact_writes (decoupled from skip_refit).
+    from app.services.bots.ml_training_window import skip_live_artifact_writes
+
+    skip_persist = bool(wf_mode or skip_live_artifact_writes(cfg) or cfg.get("skip_persist"))
 
     # GBM architecture params — config-driven with sensible defaults
     gbm_max_depth = int(cfg.get("gbm_max_depth", 4 if (wf_mode and not wf_parity) else 5))
@@ -258,7 +271,7 @@ def train_ml_signal_model(
     # Step 8: Persist model + metadata (atomic replace avoids EOF during WF/PBO)
     # Walk-forward / PBO folds must NOT clobber the live champion — keep the fold
     # model in-process for OOS eval only (see inject_session_model).
-    if skip_refit:
+    if skip_persist:
         metrics["wf_mode"] = True
         session_meta = {
             "symbol": symbol,
@@ -283,6 +296,7 @@ def train_ml_signal_model(
                 "wf_capacity_parity": wf_parity,
                 "timeframe": tf,
                 "_wf_mode": True,
+                "skip_refit": True,
             },
         }
         _signal_model_store.inject_session_model(symbol, model, session_meta, timeframe=tf)
@@ -322,8 +336,14 @@ def train_ml_signal_model(
             "gbm_l2_reg": gbm_l2_reg,
             "wf_capacity_parity": wf_parity,
             "timeframe": tf,
+            "skip_refit": skip_refit,
         },
     }
+    cal = cfg.get("_data_calendar")
+    if isinstance(cal, dict):
+        from app.services.bots.ml_data_calendar import merge_calendar_into_metadata
+
+        metadata = merge_calendar_into_metadata(metadata, cal)
     with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 

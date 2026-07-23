@@ -638,6 +638,32 @@ def persist_ml_validation_metadata(
         return {"ok": False, "error": f"Failed to read metadata: {exc}"}
 
     wf = wf_result if isinstance(wf_result, dict) else {}
+
+    # Reject stamping when champion FIT ends after the WF candle window
+    # (retrain race / clock skew) — WF would not validate the live weights.
+    try:
+        from app.services.bots.ml_data_calendar import load_data_calendar_from_metadata
+
+        cal = load_data_calendar_from_metadata(meta)
+        fit_end = int((cal or {}).get("fit_end_ts") or meta.get("fit_end_ts") or 0)
+        wf_to = wf.get("to_ts") or wf.get("candle_to_ts")
+        tw = wf.get("training_window") if isinstance(wf.get("training_window"), dict) else {}
+        if wf_to is None and tw:
+            wf_to = tw.get("to_ts")
+        if fit_end and wf_to:
+            if int(fit_end) > int(wf_to) + 3600:
+                return {
+                    "ok": False,
+                    "error": (
+                        "validation window ends before champion fit_end_ts — "
+                        "re-run Validate on the current FIT slice"
+                    ),
+                    "fit_end_ts": fit_end,
+                    "wf_to_ts": int(wf_to),
+                }
+    except Exception:
+        pass
+
     validated_at = wf.get("validated_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     agg = wf.get("aggregate") if isinstance(wf.get("aggregate"), dict) else {}
     walk_forward = {
@@ -650,6 +676,8 @@ def persist_ml_validation_metadata(
         "validated_at": validated_at,
         "stability": wf.get("stability") if isinstance(wf.get("stability"), dict) else None,
     }
+    if meta.get("fit_end_ts"):
+        walk_forward["fit_end_ts"] = meta.get("fit_end_ts")
     meta["validated_at"] = validated_at
     meta["walk_forward"] = walk_forward
 

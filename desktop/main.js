@@ -140,6 +140,30 @@ function createWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Same-origin app windows (standalone ML Lab at ?panel=ml-lab, etc.).
+    const sameOrigin = url.startsWith(appUrl);
+    const blank = !url || url === 'about:blank' || url.startsWith('about:blank');
+    if (sameOrigin || blank) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: sameOrigin ? 1120 : 1120,
+          height: sameOrigin ? 820 : 820,
+          minWidth: 720,
+          minHeight: 480,
+          backgroundColor: '#0f0f14',
+          autoHideMenuBar: true,
+          title: sameOrigin ? 'ML Lab · Antigravity' : 'Antigravity Panel',
+          webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+            webSecurity: false,
+          },
+        },
+      };
+    }
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url);
     }

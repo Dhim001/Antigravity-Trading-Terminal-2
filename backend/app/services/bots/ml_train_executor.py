@@ -145,7 +145,8 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
     }
     entry = trainers.get(strat)
     if not entry:
-        return {"ok": False, "error": f"training not supported for {strat}"}
+        from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
+        return {"ok": False, "error": lab_train_unsupported_error(strat)}
     mod_name, fn_name = entry
     write_ml_progress(progress_path, pct=3, phase="import", detail=mod_name.rsplit(".", 1)[-1])
     import importlib
@@ -161,6 +162,38 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
     if isinstance(result, dict) and result.get("cancelled"):
         write_ml_progress(progress_path, pct=100, phase="cancelled", detail="cancelled")
         return result
+
+    # Attach FIT/EMBARGO/HOLDOUT calendar onto champion metadata (all strategies).
+    cal = cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None
+    if isinstance(result, dict) and result.get("ok") and cal and not cfg.get("_wf_mode"):
+        try:
+            from app.services.bots.ml_data_calendar import merge_calendar_into_metadata
+            from app.services.bots.ml_model_artifacts import model_root_for
+            import json as _json
+            import os as _os
+
+            merged = merge_calendar_into_metadata(result, cal)
+            result.update({
+                k: merged[k]
+                for k in (
+                    "data_calendar", "fit_end_ts", "holdout_start_ts",
+                    "holdout_end_ts", "holdout_days", "calendar_version",
+                )
+                if k in merged
+            })
+            root = model_root_for(strat, symbol, cfg.get("timeframe"))
+            if root:
+                meta_path = _os.path.join(root, "metadata.json")
+                if _os.path.isfile(meta_path):
+                    with open(meta_path, encoding="utf-8") as fh:
+                        disk = _json.load(fh)
+                    if isinstance(disk, dict):
+                        disk = merge_calendar_into_metadata(disk, cal)
+                        with open(meta_path, "w", encoding="utf-8") as fh:
+                            _json.dump(disk, fh, indent=2)
+        except Exception:
+            logger.exception("Failed to stamp data_calendar on %s/%s", strat, symbol)
+
     write_ml_progress(progress_path, pct=100, phase="done", detail="complete")
     return result
 

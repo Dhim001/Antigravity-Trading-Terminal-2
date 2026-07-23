@@ -48,7 +48,8 @@ import { fetchHealth } from './api/endpoints';
 import IbFeedStatusBanner from './components/IbFeedStatusBanner';
 import MassiveFeedStatusBanner from './components/MassiveFeedStatusBanner';
 import { getStoreActions } from './api/dispatch';
-import { openBacktestLabResults } from './lib/backtestLab';
+import { openBacktestLabResults, openBacktestLabStandalone } from './lib/backtestLab';
+import { openStandaloneWindow } from './lib/standalonePanels';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -177,13 +178,22 @@ export default function App() {
 
   useEffect(() => {
     const onInsights = () => {
-      requestAnimationFrame(() => setInsightsOpen(true));
+      requestAnimationFrame(() => {
+        if (!openStandaloneWindow('insights')) setInsightsOpen(true);
+        else setInsightsOpen(false);
+      });
     };
     const onAutomation = () => {
-      requestAnimationFrame(() => setAutomationOpen(true));
+      requestAnimationFrame(() => {
+        if (!openStandaloneWindow('automation')) setAutomationOpen(true);
+        else setAutomationOpen(false);
+      });
     };
     const onPortfolio = () => {
-      requestAnimationFrame(() => setPortfolioOpen(true));
+      requestAnimationFrame(() => {
+        if (!openStandaloneWindow('portfolio')) setPortfolioOpen(true);
+        else setPortfolioOpen(false);
+      });
     };
     const onSettings = (e) => setSettingsOpen(true, e.detail);
     window.addEventListener('insights-hub-open', onInsights);
@@ -242,7 +252,8 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
         e.preventDefault();
-        setInsightsOpen(true);
+        if (!openStandaloneWindow('insights')) setInsightsOpen(true);
+        else setInsightsOpen(false);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === '[') {
         e.preventDefault();
@@ -419,9 +430,11 @@ export default function App() {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => openBacktestLabResults()}
+                  onClick={() => {
+                    if (!openBacktestLabStandalone('results')) openBacktestLabResults();
+                  }}
                   className="header-icon-btn text-muted-foreground hover:text-trading-accent"
-                  title="Backtest Lab — Results, Optimizer, Jobs"
+                  title="Backtest Lab — standalone window (Results, Optimizer, Jobs)"
                 >
                   <Activity aria-hidden />
                   <span className="sr-only">Backtest Lab</span>
@@ -435,7 +448,10 @@ export default function App() {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  onClick={() => setPortfolioOpen(true)}
+                  onClick={() => {
+                    if (!openStandaloneWindow('portfolio')) setPortfolioOpen(true);
+                    else setPortfolioOpen(false);
+                  }}
                   className="header-icon-btn text-muted-foreground hover:text-trading-accent"
                   title="Portfolio Dashboard"
                 >

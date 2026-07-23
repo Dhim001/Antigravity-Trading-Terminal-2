@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Activity, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
+import { Activity, ExternalLink, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
@@ -13,6 +13,8 @@ import BacktestProgressBar from './BacktestProgressBar';
 import ErrorBoundary from './ErrorBoundary';
 import { lazyImport } from '../lib/lazyImport';
 import { getStrategyCategory } from '../config/strategies';
+import { openBacktestLabStandalone } from '../lib/backtestLab';
+import { toast } from 'sonner';
 
 const BacktestResultsPanel = lazyImport(() => import('./BacktestResultsPanel'), 'backtest-results');
 const BacktestSweepPanel = lazyImport(() => import('./BacktestSweepPanel'), 'backtest-sweep');
@@ -186,6 +188,26 @@ function BacktestLabSheetInner() {
             </SheetDescription>
           </div>
           <div className="backtest-lab__header-tools">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs gap-1 shrink-0"
+              onClick={() => {
+                const win = openBacktestLabStandalone(labTab);
+                if (!win) {
+                  toast.error('Popup blocked', {
+                    description: 'Allow popups, then click Detach again.',
+                  });
+                  return;
+                }
+                setOpen(false);
+              }}
+              title="Open Backtest Lab in a separate window"
+            >
+              <ExternalLink size={14} aria-hidden />
+              Detach
+            </Button>
             <Button
               type="button"
               variant="ghost"

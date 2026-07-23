@@ -13,17 +13,25 @@ MIN_TRAIN_BARS = 50
 
 
 def estimate_purge_bars(config: dict | None, *, timeframe: str = "1m") -> int:
-    """Estimate label overlap horizon from risk params (bars to purge before OOS)."""
+    """Estimate label overlap horizon from risk params (bars to purge before OOS).
+
+    Always at least ``triple_barrier_max_bars`` (label vertical barrier) so
+    purged CV matches AFML when Lab calendar holdout is active.
+    """
     cfg = config or {}
     _ = timeframe
     base = max(20, MIN_WARMUP_BARS // 2)
+    try:
+        label_horizon = max(1, int(cfg.get("triple_barrier_max_bars", 30)))
+    except (TypeError, ValueError):
+        label_horizon = 30
     trailing = float(cfg.get("trailing_stop_percent") or cfg.get("stop_loss_percent") or 2)
     tp = float(cfg.get("take_profit_percent") or 0)
     hold_hint = float(cfg.get("avg_hold_hours") or 0)
     sl_bars = int(max(10, trailing * 4))
     tp_bars = int(max(10, tp * 3)) if tp > 0 else 0
     hold_bars = int(max(0, hold_hint * 12)) if hold_hint > 0 else 0
-    return min(200, max(base, sl_bars, tp_bars, hold_bars))
+    return min(200, max(base, label_horizon, sl_bars, tp_bars, hold_bars))
 
 
 def embargo_bars_for_segment(segment_len: int, embargo_pct: float) -> int:

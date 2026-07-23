@@ -3,6 +3,11 @@ import { Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/dark.css';
 
 import { lazyImport } from '../lib/lazyImport';
+import { useDetachedPanels } from '../hooks/useDetachedPanels';
+import {
+  getStandalonePanelDef,
+  subscribeStandaloneEvents,
+} from '../lib/standalonePanels';
 import {
   focusFlexLayoutComponent,
   focusFlexLayoutDockGroup,
@@ -14,8 +19,11 @@ import {
   restoreFlexLayoutSelection,
 } from '../lib/flexlayoutPersist';
 import ChartContextStrip from './ChartContextStrip';
-import ErrorBoundary from './ErrorBoundary';
 import MountWhenVisible from './MountWhenVisible';
+import MlTrainingFlexPanel from './dock/MlTrainingFlexPanel';
+import AlgoFlexPanel from './dock/AlgoFlexPanel';
+import CopilotFlexPanel from './dock/CopilotFlexPanel';
+import InsightsFlexPanel from './dock/InsightsFlexPanel';
 
 // Lazy load actual inner panels instead of Resizable wrappers
 const WatchlistSidebar = lazyImport(() => import('./WatchlistWidget'), 'watchlist');
@@ -32,13 +40,6 @@ const FootprintPanel = lazyImport(() => import('./chart/FootprintPanel'), 'footp
 const PositionsTab = lazyImport(() => import('./dock/PositionsPanel'), 'positions');
 const OrdersTab = lazyImport(() => import('./dock/OrdersPanel'), 'orders');
 const BalancesTab = lazyImport(() => import('./dock/BalancesPanel'), 'balances');
-const AlgoTab = lazyImport(() => import('./dock/AlgoPanel').then(m => ({ default: m.AlgoTab })), 'algo');
-const ModelTrainingDashboard = lazyImport(() => import('./dock/ModelTrainingDashboard'), 'ml-training');
-
-// Intelligence inner panels
-const ScannerTab = lazyImport(() => import('./ScannerTab'), 'scanner');
-const AnalystTab = lazyImport(() => import('./AnalystTab'), 'analyst');
-const CopilotTab = lazyImport(() => import('./dock/CopilotTab'), 'copilot');
 
 // Automation and Data inner panels
 const ReconciliationTab = lazyImport(() => import('./ReconciliationTab'), 'reconcile');
@@ -158,6 +159,8 @@ const RIGHT_PANEL_TAB_MAP = {
 };
 
 export default function WorkspaceGrid({ viewMode }) {
+  const { attach } = useDetachedPanels();
+
   const [model] = useState(() => {
     const m = Model.fromJson(DEFAULT_LAYOUT);
     // Restore before first paint so header Refresh UI does not flash Scanner.
@@ -200,6 +203,15 @@ export default function WorkspaceGrid({ viewMode }) {
       window.removeEventListener('trading-panel-expand', onTradingExpand);
     };
   }, [model]);
+
+  // Standalone panel windows closed / reattached → restore dock tabs.
+  useEffect(() => {
+    return subscribeStandaloneEvents(undefined, (msg) => {
+      if (msg?.type !== 'closed' && msg?.type !== 'reattach') return;
+      const def = getStandalonePanelDef(msg.panelId);
+      for (const t of def?.dockTabs || []) attach(t);
+    });
+  }, [attach]);
 
   const factory = useCallback((node) => {
     const component = node.getComponent();
@@ -244,25 +256,19 @@ export default function WorkspaceGrid({ viewMode }) {
         panel = <Suspense fallback={<PanelFallback />}><BalancesTab /></Suspense>;
         break;
       case 'algo':
-        panel = <Suspense fallback={<PanelFallback />}><AlgoTab /></Suspense>;
+        panel = <AlgoFlexPanel />;
         break;
       case 'scanner':
-        panel = <Suspense fallback={<PanelFallback />}><ScannerTab /></Suspense>;
+        panel = <InsightsFlexPanel tab="scanner" />;
         break;
       case 'analyst':
-        panel = <Suspense fallback={<PanelFallback />}><AnalystTab /></Suspense>;
+        panel = <InsightsFlexPanel tab="analyst" />;
         break;
       case 'copilot':
-        panel = <Suspense fallback={<PanelFallback />}><CopilotTab /></Suspense>;
+        panel = <CopilotFlexPanel />;
         break;
       case 'ml-training':
-        panel = (
-          <ErrorBoundary name="Model Training">
-            <Suspense fallback={<PanelFallback label="Loading ML Training…" />}>
-              <ModelTrainingDashboard />
-            </Suspense>
-          </ErrorBoundary>
-        );
+        panel = <MlTrainingFlexPanel />;
         break;
       case 'reconcile':
         panel = <Suspense fallback={<PanelFallback />}><ReconciliationTab /></Suspense>;

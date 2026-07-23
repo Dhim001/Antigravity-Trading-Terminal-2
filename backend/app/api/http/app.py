@@ -398,6 +398,16 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         validation = validation_summary_from_metadata(meta)
     except Exception:
         validation = {"validated_at": None, "walk_forward": None, "pbo": None}
+    data_calendar = None
+    try:
+        from app.services.bots.ml_data_calendar import (
+            load_data_calendar_from_metadata,
+            summarize_calendar_for_ui,
+        )
+
+        data_calendar = summarize_calendar_for_ui(load_data_calendar_from_metadata(meta))
+    except Exception:
+        data_calendar = None
     return {
         "trained": True,
         "trained_at": meta.get("trained_at"),
@@ -414,6 +424,9 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         "validated_at": validation.get("validated_at"),
         "walk_forward": validation.get("walk_forward"),
         "pbo": validation.get("pbo"),
+        "data_calendar": data_calendar,
+        "fit_end_ts": meta.get("fit_end_ts"),
+        "holdout_days": meta.get("holdout_days"),
     }
 
 
@@ -539,7 +552,11 @@ async def ml_train_handler(request: Request) -> JSONResponse:
         "GNN_CROSS_ASSET": _train_gnn,
     }
     if strategy not in trainers:
-        return JSONResponse({"ok": False, "error": f"training not supported for {strategy}"}, status_code=400)
+        from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
+        return JSONResponse(
+            {"ok": False, "error": lab_train_unsupported_error(strategy)},
+            status_code=400,
+        )
 
     from app.services.bots.ml_train_executor import submit_train_job
 
@@ -550,6 +567,14 @@ async def ml_train_handler(request: Request) -> JSONResponse:
         "timeframe": tf,
         "training_window_months": win_months,
     }
+    try:
+        from app.services.bots.ml_data_calendar import calendar_holdout_enabled
+
+        if calendar_holdout_enabled(config):
+            config.setdefault("skip_refit", True)
+            config["ml_calendar_holdout"] = True
+    except Exception:
+        pass
 
     if async_mode:
         from app.services.bots.ml_job_progress import make_progress_path, write_ml_progress
@@ -593,7 +618,7 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                     {"pct": 2, "phase": "fetch", "detail": f"candles ≤{bar_limit} bars"},
                 )
                 candles = await _fetch_training_candles(
-                    state, symbol, tf=tf, months=win_months, limit=bar_limit,
+                    state, symbol, tf=tf, months=win_months, limit=bar_limit, config=cfg,
                 )
                 if len(candles) < 200:
                     finish_ml_job(
@@ -607,6 +632,7 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                 candles = _enrich_training_candles(symbol, candles, strategy, cfg)
                 window_meta = summarize_training_window(
                     candles, win_months, bar_limit=bar_limit, timeframe=tf,
+                    calendar=cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None,
                 )
                 cfg["_training_window"] = window_meta
                 cfg["_progress_path"] = progress_path
@@ -638,7 +664,7 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     try:
         candles = await _fetch_training_candles(
-            state, symbol, tf=tf, months=win_months, limit=bar_limit,
+            state, symbol, tf=tf, months=win_months, limit=bar_limit, config=config,
         )
     except Exception as exc:
         logger.exception("Failed to fetch training candles for %s", symbol)
@@ -655,6 +681,7 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     window_meta = summarize_training_window(
         candles, win_months, bar_limit=bar_limit, timeframe=tf,
+        calendar=config.get("_data_calendar") if isinstance(config.get("_data_calendar"), dict) else None,
     )
     config = {
         **config,
@@ -686,18 +713,26 @@ async def _fetch_training_candles(
     limit: int | None = None,
     *,
     months: int | None = None,
+    config: dict | None = None,
 ) -> list[dict]:
     """Pull historical candles for training from feed, archive, or Massive/Binance REST.
 
     When ``months`` is set (ML Lab Training window), sizes the request and
     time-trims to that calendar window. ``limit`` overrides the bar target
     when provided explicitly.
+
+    With ``ML_CALENDAR_HOLDOUT``, fetches the full Lab window then trims to
+    FIT (excludes embargo + holdout).
     """
     import asyncio
     import time
 
     from app.config import TERMINAL_MODE
     from app.services.bots.candle_source import get_bot_candles
+    from app.services.bots.ml_data_calendar import (
+        calendar_from_config,
+        trim_candles_to_fit,
+    )
     from app.services.bots.ml_training_window import (
         bar_limit_for_training_window,
         parse_training_window_months,
@@ -713,6 +748,11 @@ async def _fetch_training_candles(
     win_months = parse_training_window_months(
         {"training_window_months": months if months is not None else 3}
     )
+    cfg = dict(config or {})
+    cfg.setdefault("timeframe", tf)
+    cfg.setdefault("training_window_months", win_months)
+    calendar = calendar_from_config(cfg, months=win_months, timeframe=tf)
+
     if limit is not None:
         min_bars = max(200, int(limit))
     else:
@@ -777,6 +817,11 @@ async def _fetch_training_candles(
             candles = [dict(c) for c in merge_candle_series(deep, candles)]
 
     candles = trim_candles_to_training_window(candles, win_months)
+    if calendar:
+        candles = trim_candles_to_fit(candles, calendar)
+        # Stash for callers that pass config through (train/validate handlers).
+        if isinstance(config, dict):
+            config["_data_calendar"] = calendar
     if len(candles) > min_bars:
         candles = candles[-min_bars:]
     return candles
@@ -963,6 +1008,13 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             "training_window_months": win_months,
             "validate_max_bars": vmax,
         }
+        try:
+            from app.services.bots.ml_data_calendar import calendar_holdout_enabled
+
+            if calendar_holdout_enabled(config):
+                config["ml_calendar_holdout"] = True
+        except Exception:
+            pass
 
         state: AppState = request.app.state.terminal
         from app.services.bots.ml_train_executor import submit_validate_job
@@ -1012,7 +1064,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                     )
                     # Fetch only what WF will use — not the full Lab train window.
                     candles = await _fetch_training_candles(
-                        state, symbol, tf=tf, months=win_months, limit=vmax,
+                        state, symbol, tf=tf, months=win_months, limit=vmax, config=cfg,
                     )
                     write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
                     update_ml_job_progress(
@@ -1032,6 +1084,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                         return
                     window_meta = summarize_training_window(
                         candles, win_months, bar_limit=vmax, timeframe=tf,
+                        calendar=cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None,
                     )
                     cfg["_training_window"] = window_meta
                     cfg["_progress_path"] = progress_path
@@ -1070,7 +1123,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
 
         try:
             candles = await _fetch_training_candles(
-                state, symbol, tf=tf, months=win_months, limit=vmax,
+                state, symbol, tf=tf, months=win_months, limit=vmax, config=config,
             )
             candles = _enrich_training_candles(symbol, candles, strategy, config)
         except Exception as exc:
@@ -1087,6 +1140,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
 
         window_meta = summarize_training_window(
             candles, win_months, bar_limit=vmax, timeframe=tf,
+            calendar=config.get("_data_calendar") if isinstance(config.get("_data_calendar"), dict) else None,
         )
         config["_training_window"] = window_meta
         for row in candles:
@@ -1138,6 +1192,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
 async def ml_retrain_status_handler(request: Request) -> JSONResponse:
     """GET /api/v1/ml/retrain-status — list models needing retrain."""
     from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+    from app.services.bots.ml_walk_forward_validator import is_ml_strategy
 
     state: AppState = request.app.state.terminal
     bots = []
@@ -1146,17 +1201,28 @@ async def ml_retrain_status_handler(request: Request) -> JSONResponse:
             bots.append({
                 "strategy": bot.get("strategy"),
                 "symbol": bot.get("symbol"),
+                "timeframe": bot.get("timeframe"),
+                "config": bot.get("config") or {},
             })
 
     scheduler = get_retrain_scheduler()
+    # Drop legacy pending rows keyed as MACD_RSI / agents (Lab cannot train those).
+    scheduler.drop_stale_lab_incompatible_pending()
     actions = scheduler.check(bots)
-    pending = scheduler.get_pending()
+    pending_ml = scheduler.get_pending(ml_only=True)
+    pending_all = scheduler.get_pending(ml_only=False)
+    pending_meta = {
+        k: v for k, v in pending_all.items()
+        if not is_ml_strategy(str(v.get("strategy") or ""))
+    }
     history = scheduler.get_retrain_history(20)
     return JSONResponse({
         "ok": True,
         "retrain_actions": actions,
-        # Additive — older UIs ignore these keys.
-        "pending": pending,
+        # Lab Run now — ML/DL/RL only.
+        "pending": pending_ml,
+        # Meta-label queue for technical/agent bots (informational; not Lab-trainable).
+        "pending_meta_label": pending_meta,
         "history": history,
     })
 

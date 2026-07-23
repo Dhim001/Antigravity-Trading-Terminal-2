@@ -5,9 +5,6 @@ import { toast } from 'sonner';
 /**
  * Copies all stylesheets from sourceDoc → targetDoc so detached windows
  * inherit the same CSS as the main app.
- *
- * Audit fix: previously called on every mount via `copyStyles(document, win.document)`.
- * Now only iterates already-loaded sheets (same behaviour, better comment).
  */
 function copyStyles(sourceDoc, targetDoc) {
   Array.from(sourceDoc.styleSheets).forEach((styleSheet) => {
@@ -33,10 +30,6 @@ function copyStyles(sourceDoc, targetDoc) {
 /**
  * Sync both `data-theme` attribute AND `.dark` class from the main document
  * to the detached window's <html> element.
- *
- * Audit fix: previously only synced data-theme; dark mode is driven by
- * the `html.dark` class (see index.css), so detached windows were always
- * light-themed regardless of user preference.
  */
 function syncTheme(sourceHtml, targetHtml) {
   const theme = sourceHtml.getAttribute('data-theme');
@@ -53,57 +46,163 @@ function syncTheme(sourceHtml, targetHtml) {
   }
 }
 
-export default function DetachedPanelPortal({ children, title, onClose }) {
+function detachedRegistry() {
+  if (typeof window === 'undefined') return null;
+  if (!window.__ttDetachedPanels) window.__ttDetachedPanels = {};
+  return window.__ttDetachedPanels;
+}
+
+export const DEFAULT_DETACH_FEATURES =
+  'width=1100,height=800,left=120,top=60,resizable=yes,scrollbars=yes';
+
+function applyWindowChrome(win, title) {
+  try {
+    win.document.title = title || 'Detached Panel';
+    win.document.body.style.margin = '0';
+    win.document.body.style.height = '100%';
+    win.document.body.style.overflow = 'hidden';
+    win.document.documentElement.style.height = '100%';
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Open (or focus) a detached panel window synchronously during a user gesture.
+ * Browsers block window.open from useEffect after a React state update — call
+ * this from the Detach click handler before flipping detachedTabs.
+ *
+ * @returns {Window | null}
+ */
+export function prepareDetachedWindow(
+  panelId,
+  {
+    features = DEFAULT_DETACH_FEATURES,
+    title = 'Detached Panel',
+  } = {},
+) {
+  if (typeof window === 'undefined') return null;
+  const reg = detachedRegistry();
+  const existing = panelId ? reg?.[panelId] : null;
+  if (existing && !existing.closed) {
+    try {
+      existing.focus();
+    } catch {
+      /* ignore */
+    }
+    return existing;
+  }
+
+  const win = window.open('', panelId || '', features);
+  if (!win) return null;
+
+  applyWindowChrome(win, title);
+  if (reg && panelId) reg[panelId] = win;
+  return win;
+}
+
+/** Bring an open detached panel window to the front (if still open). */
+export function focusDetachedPanel(panelId) {
+  if (!panelId || typeof window === 'undefined') return false;
+  const win = detachedRegistry()?.[panelId];
+  if (!win || win.closed) return false;
+  try {
+    win.focus();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {{
+ *   children: React.ReactNode,
+ *   title?: string,
+ *   onClose?: () => void,
+ *   panelId?: string,
+ *   features?: string,
+ * }} props
+ */
+export default function DetachedPanelPortal({
+  children,
+  title,
+  onClose,
+  panelId,
+  features = DEFAULT_DETACH_FEATURES,
+}) {
   const [container, setContainer] = useState(null);
-  // Audit fix: window.open was previously called inside useMemo — a side-effect
-  // inside memo is an anti-pattern (breaks React Concurrent Mode). Moved to useEffect.
   const externalWindowRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined') return undefined;
 
-    const win = window.open('', '', 'width=800,height=600,left=200,top=200');
-    if (!win) {
-      // Popup blocked
-      setTimeout(() => {
-        if (onClose) onClose();
-        toast.error('Popup blocked', {
-          description: 'Please allow popups to open panels in a new window.',
-        });
-      }, 10);
-      return;
+    const reg = detachedRegistry();
+    let win = panelId ? reg?.[panelId] : null;
+    let openedHere = false;
+
+    if (!win || win.closed) {
+      win = window.open('', panelId || '', features);
+      openedHere = true;
+      if (!win) {
+        setTimeout(() => {
+          onCloseRef.current?.();
+          toast.error('Popup blocked', {
+            description: 'Please allow popups to open panels in a new window.',
+          });
+        }, 10);
+        return undefined;
+      }
+      if (reg && panelId) reg[panelId] = win;
     }
 
     externalWindowRef.current = win;
-    win.document.title = title || 'Detached Panel';
+    applyWindowChrome(win, title);
+
+    // Fresh mount root each time (re-attach / re-detach safe).
+    try {
+      win.document.body.innerHTML = '';
+    } catch {
+      /* ignore */
+    }
 
     const el = win.document.createElement('div');
     el.className = 'w-full h-full bg-background text-foreground antialiased overflow-hidden';
+    el.style.height = '100%';
     win.document.body.appendChild(el);
 
-    // Copy styles and initial theme
     copyStyles(document, win.document);
     syncTheme(document.documentElement, win.document.documentElement);
 
     setContainer(el);
 
     const handleBeforeUnload = () => {
-      if (onClose) onClose();
+      onCloseRef.current?.();
     };
     win.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       win.removeEventListener('beforeunload', handleBeforeUnload);
-      win.close();
+      if (panelId) {
+        const r = detachedRegistry();
+        if (r && r[panelId] === win) delete r[panelId];
+      }
+      try {
+        if (!win.closed) win.close();
+      } catch {
+        /* ignore */
+      }
       externalWindowRef.current = null;
+      // openedHere unused except documenting intent — window always owned by portal lifecycle
+      void openedHere;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — window is created once on mount
+  }, []); // window is created / claimed once on mount
 
-  // Sync theme changes (class + data-theme) to the detached window
   useEffect(() => {
     const win = externalWindowRef.current;
-    if (!win) return;
+    if (!win) return undefined;
 
     const observer = new MutationObserver(() => {
       syncTheme(document.documentElement, win.document.documentElement);
@@ -111,12 +210,11 @@ export default function DetachedPanelPortal({ children, title, onClose }) {
 
     observer.observe(document.documentElement, {
       attributes: true,
-      // Audit fix: watch both 'class' (dark mode) and 'data-theme' attribute
       attributeFilter: ['class', 'data-theme'],
     });
 
     return () => observer.disconnect();
-  }, [container]); // re-subscribe once container is ready
+  }, [container]);
 
   if (!container) return null;
   return createPortal(children, container);

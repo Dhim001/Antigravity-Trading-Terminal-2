@@ -129,6 +129,7 @@ def summarize_training_window(
     *,
     bar_limit: int | None = None,
     timeframe: str | None = None,
+    calendar: dict | None = None,
 ) -> dict[str, Any]:
     """Small metadata blob for train/validate responses / UI."""
     months = parse_training_window_months({"training_window_months": months})
@@ -149,7 +150,7 @@ def summarize_training_window(
         tf = normalize_model_timeframe(timeframe)
     except Exception:
         tf = "1m"
-    return {
+    out: dict[str, Any] = {
         "training_window_months": months,
         "timeframe": tf,
         "bars": n,
@@ -158,3 +159,15 @@ def summarize_training_window(
         "from_ts": t0,
         "to_ts": t1,
     }
+    if calendar:
+        try:
+            from app.services.bots.ml_data_calendar import summarize_calendar_for_ui
+
+            ui = summarize_calendar_for_ui(calendar)
+            if ui:
+                out["data_calendar"] = ui
+                out["fit_end_ts"] = calendar.get("fit_end_ts")
+                out["holdout_days"] = calendar.get("holdout_days")
+        except Exception:
+            pass
+    return out

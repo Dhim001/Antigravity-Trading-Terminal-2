@@ -2,6 +2,13 @@
 
 import { useResearchStore } from '../store/useResearchStore';
 import { fetchBacktestRun } from '../api/endpoints';
+import { openStandaloneWindow } from './standalonePanels';
+
+/** Open Lab as a standalone window (Jobs / API-backed; separate store from terminal). */
+export function openBacktestLabStandalone(tab = 'results') {
+  useResearchStore.getState().setBacktestLabTab(tab);
+  return openStandaloneWindow('backtest-lab');
+}
 
 export function openBacktestLabResults() {
   useResearchStore.getState().openBacktestLab('results');

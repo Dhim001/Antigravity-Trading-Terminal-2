@@ -5,8 +5,10 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import {
   BrainCircuit,
   CheckCircle2,
+  ExternalLink,
   FlaskConical,
   Loader2,
+  PanelLeft,
   Play,
   RefreshCw,
   Trash2,
@@ -403,6 +405,9 @@ function DeployReadinessStrip({ status }) {
     : null;
   const pbo = status.pbo && typeof status.pbo === 'object' ? status.pbo : null;
   const validatedAt = status.validated_at || wf?.validated_at || null;
+  const cal = status.data_calendar && typeof status.data_calendar === 'object'
+    ? status.data_calendar
+    : null;
 
   const trainedOk = true;
   const wfOk = Boolean(wf?.ok && validatedAt);
@@ -411,6 +416,7 @@ function DeployReadinessStrip({ status }) {
   const pboPresent = pbo != null && pbo.pbo != null && !pboSkipped;
   const pboOk = pboPresent && pbo.ok === true;
   const pboWarn = pboPresent && pbo.ok === false;
+  const holdoutOk = Boolean(cal?.holdout_days && cal?.fit_end_ts);
 
   const ageLabel = (() => {
     if (!validatedAt) return null;
@@ -472,8 +478,42 @@ function DeployReadinessStrip({ status }) {
                 : 'PBO ≥ 50% — elevated overfitting risk for deploy',
             )
             : chip(false, true, 'PBO', 'No PBO result yet — run Walk-forward + PBO')}
+        {cal && chip(
+          holdoutOk,
+          false,
+          holdoutOk ? `Holdout · ${cal.holdout_days}d` : 'Holdout',
+          holdoutOk
+            ? 'Champion FIT ends before locked holdout — use Algo BT on holdout only'
+            : 'Train with ML_CALENDAR_HOLDOUT=1 to stamp FIT / holdout',
+        )}
       </div>
     </section>
+  );
+}
+
+function DataCalendarStrip({ calendar, trainingWindow }) {
+  const cal = calendar && typeof calendar === 'object' ? calendar : null;
+  if (!cal?.fit_end_ts && !cal?.holdout_days) {
+    const months = Number(trainingWindow) || 3;
+    const holdout = months <= 1 ? 7 : Math.min(30, Math.max(14, Math.round(months * 30 * 0.15)));
+    return (
+      <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+        Calendar (when <span className="font-mono">ML_CALENDAR_HOLDOUT=1</span>): FIT → embargo → HOLDOUT (~{holdout}d).
+        Train/Validate use FIT only; Algo ML BT defaults to holdout.
+      </p>
+    );
+  }
+  const fitDays = cal.fit_days != null ? `${cal.fit_days}d` : '—';
+  const embargo = cal.embargo_bars != null ? `${cal.embargo_bars} bars` : '—';
+  const holdout = cal.holdout_days != null ? `${cal.holdout_days}d` : '—';
+  return (
+    <p className="text-[10px] text-muted-foreground mt-1 leading-snug" title="Locked OOS holdout after FIT">
+      <span className="text-foreground/80">FIT</span> ~{fitDays}
+      {' · '}
+      <span className="text-foreground/80">EMBARGO</span> {embargo}
+      {' · '}
+      <span className="text-foreground/80">HOLDOUT</span> {holdout}
+    </p>
   );
 }
 
@@ -933,7 +973,11 @@ function DatasetBrowser({
   );
 }
 
-export default function ModelTrainingDashboard() {
+export default function ModelTrainingDashboard({
+  detached = false,
+  onDetach,
+  onAttach,
+} = {}) {
   const activeSymbol = useStore((s) => s.activeSymbol);
   const botStrategy = useStore((s) => s.botStrategy);
   const botTimeframe = useStore((s) => s.botTimeframe);
@@ -1093,16 +1137,19 @@ export default function ModelTrainingDashboard() {
   const fetchRetrainQueue = useCallback(async () => {
     try {
       const body = await apiRequest('/api/v1/ml/retrain-status');
-      setRetrainActions(Array.isArray(body?.retrain_actions) ? body.retrain_actions : []);
+      const actions = Array.isArray(body?.retrain_actions) ? body.retrain_actions : [];
+      setRetrainActions(actions.filter((a) => isMlStrategy(a?.strategy)));
       const pendingMap = body?.pending && typeof body.pending === 'object' ? body.pending : {};
       setRetrainPending(
-        Object.entries(pendingMap).map(([key, info]) => ({
-          key,
-          strategy: info?.strategy,
-          symbol: info?.symbol,
-          reasons: Array.isArray(info?.reasons) ? info.reasons : [],
-          requested_at: info?.requested_at,
-        })),
+        Object.entries(pendingMap)
+          .map(([key, info]) => ({
+            key,
+            strategy: info?.strategy,
+            symbol: info?.symbol,
+            reasons: Array.isArray(info?.reasons) ? info.reasons : [],
+            requested_at: info?.requested_at,
+          }))
+          .filter((p) => isMlStrategy(p.strategy)),
       );
       setRetrainHistory(Array.isArray(body?.history) ? body.history : []);
     } catch (err) {
@@ -1614,6 +1661,12 @@ export default function ModelTrainingDashboard() {
 
   const handleRunNow = async (strat, symbol) => {
     if (!strat || !symbol) return;
+    if (!isMlStrategy(strat)) {
+      toast.message(
+        `Lab training not supported for ${strat} — technical/agent bots use meta-label retrain, not Lab warming.`,
+      );
+      return;
+    }
     if (symbol !== activeSymbol) {
       toast.message(`Training ${strat} for ${symbol} (chart symbol is ${activeSymbol || '—'})`);
     }
@@ -1823,6 +1876,32 @@ export default function ModelTrainingDashboard() {
               no {trainingTimeframe} model
             </span>
           )}
+          {(onDetach || onAttach) && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs gap-1 shrink-0"
+              title={
+                detached
+                  ? 'Dock ML Lab back into the trading layout'
+                  : 'Open ML Lab in a separate window (keeps one Lab instance)'
+              }
+              onClick={() => (detached ? onAttach?.() : onDetach?.())}
+            >
+              {detached ? (
+                <>
+                  <PanelLeft size={14} aria-hidden />
+                  Reattach
+                </>
+              ) : (
+                <>
+                  <ExternalLink size={14} aria-hidden />
+                  Detach
+                </>
+              )}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -1888,6 +1967,10 @@ export default function ModelTrainingDashboard() {
               bars · {suggestedNFolds(trainingWindow, strategy)} folds
               (Advanced knobs update with this pick).
             </p>
+            <DataCalendarStrip
+              calendar={status?.data_calendar}
+              trainingWindow={trainingWindow}
+            />
           </div>
           <div className="ml-training__field">
             <Label className="text-xs">Status</Label>

@@ -67,6 +67,7 @@ async def _drain_backtest_progress(ctx: RequestContext, queue: asyncio.Queue) ->
 
 
 def _parse_backtest_request(msg: dict) -> dict:
+    days_explicit = "days" in msg and msg.get("days") is not None
     try:
         days = int(msg.get("days", 7))
     except (TypeError, ValueError):
@@ -104,6 +105,10 @@ def _parse_backtest_request(msg: dict) -> dict:
     sim_mode = msg.get("sim_mode") or config.get("sim_mode")
     if sim_mode:
         config = {**config, "sim_mode": sim_mode}
+
+    # Opt-in to run BT overlapping FIT (Lab warns via meta.in_sample).
+    if msg.get("allow_in_sample_backtest") is not None:
+        config = {**config, "allow_in_sample_backtest": bool(msg.get("allow_in_sample_backtest"))}
 
     sweep = msg.get("sweep")
     sweep_objective = msg.get("sweep_objective") or (sweep or {}).get("sweep_objective") or "total_pnl"
@@ -148,6 +153,7 @@ def _parse_backtest_request(msg: dict) -> dict:
         "strategy": msg.get("strategy"),
         "config": config,
         "days": days,
+        "days_explicit": days_explicit,
         "interval": msg.get("interval"),
         "timeframe": msg.get("timeframe", "1m"),
         "oos_pct": oos_pct,
@@ -258,6 +264,7 @@ async def _execute_backtest(
     auto_deploy_min_oos_pnl: float = 0.0,
     auto_deploy_min_oos_trades: int = 1,
     auto_deploy_skip_existing: bool = True,
+    days_explicit: bool = False,
 ) -> None:
     if not ctx.backtester or not hasattr(ctx.oms, "feed"):
         await send_backtest_result(ctx, {"status": "error", "message": "Backtester not available in current mode"})
@@ -338,6 +345,32 @@ async def _execute_backtest(
                 account_balance = float(balances.get("USDT", {}).get("balance") or 0)
         config = enrich_backtest_risk_config(config, account_balance)
 
+        # P3: ML + calendar holdout → default BT to locked HOLDOUT (not nested 7d ⊂ train).
+        ml_calendar = None
+        holdout_applied = False
+        try:
+            from app.services.bots.ml_data_calendar import (
+                backtest_in_sample,
+                calendar_holdout_enabled,
+                resolve_strategy_data_calendar,
+                trim_candles_to_holdout,
+            )
+            from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+
+            if calendar_holdout_enabled(config) and is_ml_strategy(str(strategy or "")):
+                ml_calendar = resolve_strategy_data_calendar(
+                    str(strategy), str(symbol), timeframe=timeframe, config=config,
+                )
+                allow_is = bool(config.get("allow_in_sample_backtest"))
+                if ml_calendar and not allow_is:
+                    hd = int(ml_calendar.get("holdout_days") or 14)
+                    # Default Algo 7d (or unset) → locked holdout length.
+                    if (not days_explicit) or days <= 7:
+                        days = max(1, min(365, hd))
+                    holdout_applied = True
+        except Exception:
+            ml_calendar = None
+
         enqueue_progress({"pct": 0, "phase": "resolve", "message": "Loading candles…"})
         try:
             candles, meta = await asyncio.to_thread(
@@ -355,6 +388,34 @@ async def _execute_backtest(
         if is_cancelled():
             await _finish("cancelled")
             return
+
+        in_sample = False
+        if ml_calendar and isinstance(meta, dict):
+            try:
+                allow_is = bool(config.get("allow_in_sample_backtest"))
+                if not allow_is and holdout_applied:
+                    candles = trim_candles_to_holdout(candles, ml_calendar)
+                    meta["holdout_backtest"] = True
+                    meta["holdout_days"] = ml_calendar.get("holdout_days")
+                    meta["holdout_start_ts"] = ml_calendar.get("holdout_start_ts")
+                    meta["fit_end_ts"] = ml_calendar.get("fit_end_ts")
+                    meta["days"] = ml_calendar.get("holdout_days") or days
+                from_ts = None
+                to_ts = None
+                if candles:
+                    from_ts = int(candles[0].get("time") or 0) or None
+                    to_ts = int(candles[-1].get("time") or 0) or None
+                in_sample = allow_is or backtest_in_sample(
+                    ml_calendar, from_ts=from_ts, to_ts=to_ts,
+                )
+                meta["in_sample"] = bool(in_sample)
+                meta["data_calendar"] = {
+                    "fit_end_ts": ml_calendar.get("fit_end_ts"),
+                    "holdout_start_ts": ml_calendar.get("holdout_start_ts"),
+                    "holdout_days": ml_calendar.get("holdout_days"),
+                }
+            except Exception:
+                pass
 
         # Long-horizon runs must not silently proceed on a short local archive.
         from app.config import ARCHIVE_RETENTION_1M_DAYS

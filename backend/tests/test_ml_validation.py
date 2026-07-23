@@ -359,7 +359,7 @@ class TestRetrainScheduler:
         ]
         alpha_scores = {"BTCUSDT:ML_SIGNAL_BOOST": 0.7}
 
-        def mock_age(strategy, symbol):
+        def mock_age(strategy, symbol, timeframe=None):
             if symbol == "ETHUSDT":
                 return 48.0  # stale, priority 5
             return 12.0  # not stale, alpha_decay priority 8

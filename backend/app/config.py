@@ -88,6 +88,11 @@ ML_RETRAIN_AUTO_DRAIN = os.environ.get("ML_RETRAIN_AUTO_DRAIN", "true").lower() 
     "1", "true", "yes"
 )
 ML_RETRAIN_DRAIN_INTERVAL_SEC = float(os.environ.get("ML_RETRAIN_DRAIN_INTERVAL_SEC", "45"))
+# Nested FIT → EMBARGO → HOLDOUT for ML Lab train / validate / Algo BT (anti-overfit).
+# Off by default; set ML_CALENDAR_HOLDOUT=1 (e.g. LIVE_MASSIVE) to enable.
+ML_CALENDAR_HOLDOUT = os.environ.get("ML_CALENDAR_HOLDOUT", "").lower() in (
+    "1", "true", "yes"
+)
 # Emit JSON logs on trade/agent paths when true (default off in dev).
 LOG_JSON = os.environ.get("LOG_JSON", "false").lower() in ("1", "true", "yes")
 # Simulated feed — lightweight startup (defer yfinance SBBS until after listen)

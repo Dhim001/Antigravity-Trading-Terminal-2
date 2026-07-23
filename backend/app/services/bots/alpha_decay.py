@@ -347,23 +347,29 @@ class AlphaDecayMonitor:
                     except ImportError:
                         pass
 
-                # Retrain meta-label model (existing behavior, for non-ML strategies)
+                # Retrain meta-label model (technical / agent bots — not Lab train).
                 if ALPHA_DECAY_AUTO_RETRAIN and not ml_retrained:
                     try:
                         import asyncio
-                        from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+                        from app.services.bots.ml_retrain_scheduler import (
+                            META_LABEL_STRATEGY,
+                            get_retrain_scheduler,
+                        )
                         scheduler = get_retrain_scheduler()
                         req = scheduler.request_retrain(
-                            strategy=strategy or "META_LABEL",
+                            strategy=META_LABEL_STRATEGY,
                             symbol=symbol,
-                            reason=f"alpha decay ({'; '.join(decay_reasons[:2])})",
+                            reason=(
+                                f"alpha decay on {strategy or 'bot'}: "
+                                f"{'; '.join(decay_reasons[:2])}"
+                            ),
                             source="alpha_decay",
                             timeframe=bot.get("timeframe") or cfg.get("timeframe"),
                         )
                         if req.get("queued"):
                             retrain_res = await asyncio.to_thread(train_meta_label_model, bot_id)
                             if retrain_res.get("ok"):
-                                scheduler.record_retrain(strategy or "META_LABEL", symbol)
+                                scheduler.record_retrain(META_LABEL_STRATEGY, symbol)
                                 results["retrained_models"].append(bot_id)
                                 await self.bot_manager.log_bot_event(
                                     bot_id,
