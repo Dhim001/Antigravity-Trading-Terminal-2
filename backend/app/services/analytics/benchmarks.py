@@ -55,6 +55,45 @@ def _rebase_pct(series: list[dict]) -> list[dict]:
     ]
 
 
+def _period_to_lookback_days(period: str) -> int:
+    raw = str(period or "3mo").strip().lower()
+    if raw.endswith("mo"):
+        try:
+            return max(30, int(raw[:-2]) * 31)
+        except ValueError:
+            return 90
+    if raw.endswith("y"):
+        try:
+            return max(90, int(raw[:-1]) * 365)
+        except ValueError:
+            return 365
+    if raw.endswith("d"):
+        try:
+            return max(5, int(raw[:-1]))
+        except ValueError:
+            return 90
+    return 90
+
+
+def _fetch_alpaca_daily_closes(symbol: str, *, period: str = "3mo") -> list[dict]:
+    try:
+        from app.services.archive.broker_fetch import fetch_alpaca_tf_candles
+    except Exception:
+        return []
+    # Map portfolio shorthand (BTC) → terminal crypto symbol.
+    terminal = symbol.upper()
+    if terminal == "BTC":
+        terminal = "BTCUSDT"
+    to_ts = int(time.time())
+    from_ts = to_ts - _period_to_lookback_days(period) * 86400
+    bars = fetch_alpaca_tf_candles(terminal, from_ts, to_ts, "1d") or []
+    return [
+        {"time": int(b["time"]), "close": float(b["close"])}
+        for b in bars
+        if b.get("close") and b.get("time")
+    ]
+
+
 def get_benchmark_series(
     symbol: str,
     *,
@@ -62,7 +101,9 @@ def get_benchmark_series(
     feed=None,
 ) -> list[dict]:
     """Return rebased % change series for a benchmark symbol."""
-    cache_key = f"{symbol}:{period}"
+    from app.config import TERMINAL_MODE
+
+    cache_key = f"{symbol}:{period}:{TERMINAL_MODE}"
     cached = _BENCH_CACHE.get(cache_key)
     now = time.time()
     if cached and now - cached[0] < _CACHE_TTL_SEC:
@@ -80,6 +121,9 @@ def get_benchmark_series(
                 for c in candles
                 if c.get("close")
             ]
+
+    if len(closes) < 5 and TERMINAL_MODE == "LIVE_ALPACA":
+        closes = _fetch_alpaca_daily_closes(symbol, period=period)
 
     if len(closes) < 5:
         closes = _fetch_yfinance_closes(yf_sym, period=period)

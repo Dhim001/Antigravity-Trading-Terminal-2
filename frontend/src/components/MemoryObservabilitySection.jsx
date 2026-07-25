@@ -44,7 +44,9 @@ export function useMemoryObservability() {
         setHealth({
           ...(live || {}),
           ...(massive?.massive ? { massive: massive.massive } : {}),
+          ...(massive?.massive_ht_limits ? { massive_ht_limits: massive.massive_ht_limits } : {}),
           ...(alpaca?.alpaca ? { alpaca: alpaca.alpaca } : {}),
+          ...(alpaca?.alpaca_ht_limits ? { alpaca_ht_limits: alpaca.alpaca_ht_limits } : {}),
           ws_clients: live?.ws_clients ?? massive?.ws_clients ?? alpaca?.ws_clients,
         });
       });
@@ -120,14 +122,22 @@ export function MemoryObservabilityBody({ client, health }) {
         {health?.massive?.crypto_lag_sec != null && (
           <div><dt>Crypto lag</dt><dd>{health.massive.crypto_lag_sec}s</dd></div>
         )}
-        {health?.massive?.ht_cache_entries != null && (
-          <div><dt>Server HT cache</dt><dd>{health.massive.ht_cache_entries} entries</dd></div>
+        {health?.alpaca?.crypto_lag_sec != null && (
+          <div><dt>Alpaca crypto lag</dt><dd>{health.alpaca.crypto_lag_sec}s</dd></div>
         )}
-        {health?.massive_ht_limits && (
+        {(health?.massive?.ht_cache_entries != null || health?.alpaca?.ht_cache_entries != null) && (
+          <div>
+            <dt>Server HT cache</dt>
+            <dd>
+              {(health?.alpaca?.ht_cache_entries ?? health?.massive?.ht_cache_entries)} entries
+            </dd>
+          </div>
+        )}
+        {(health?.massive_ht_limits || health?.alpaca_ht_limits) && (
           <div>
             <dt>HT fetch limits</dt>
             <dd className="text-[10px] leading-relaxed">
-              {Object.entries(health.massive_ht_limits)
+              {Object.entries(health.alpaca_ht_limits || health.massive_ht_limits)
                 .map(([tf, lim]) => `${tf}:${lim.chart}/${lim.analysis}`)
                 .join(' · ')}
             </dd>
@@ -150,9 +160,11 @@ export function MemoryObservabilityBody({ client, health }) {
         </span>
       </div>
       <p className="mt-2 text-[11px] text-muted-foreground leading-snug">
-        If heap stays above 70% or the tab crashes, run one profile only (Massive on :5175),
+        If heap stays above 70% or the tab crashes, run one profile only
+        (Massive :5175 / Alpaca :5176),
         use <strong className="font-medium text-foreground/80">Refresh UI</strong>, or
-        {' '}<code className="text-xs">.\scripts\start-massive.ps1 -Restart</code>.
+        {' '}<code className="text-xs">.\scripts\start-alpaca.ps1 -Restart</code>
+        {' '}/ <code className="text-xs">.\scripts\start-massive.ps1 -Restart</code>.
         See <code className="text-xs">docs/MEMORY_16GB.md</code>.
       </p>
     </>

@@ -115,6 +115,9 @@ const TRAINING_WINDOWS = [
   { value: '3', label: '3 months', targetBars1m: 25000 },
   { value: '6', label: '6 months', targetBars1m: 40000 },
   { value: '12', label: '12 months', targetBars1m: 50000 },
+  { value: '18', label: '18 months', targetBars1m: 65000 },
+  { value: '24', label: '24 months', targetBars1m: 80000 },
+  { value: '36', label: '36 months', targetBars1m: 100000 },
 ];
 
 const TRAINING_TIMEFRAMES = [
@@ -133,7 +136,7 @@ function estimateTrainingBars(monthsValue, tfValue) {
   const months = Number(monthsValue) || 3;
   const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
   const secs = tf.secs || 60;
-  const hard = 50_000;
+  const hard = 100_000;
   const ideal = Math.floor(months * 30 * 86400 / secs);
   if (secs > 60) {
     // HTF: honor calendar window up to hard max (do not scale-crush from 1m caps).
@@ -144,24 +147,33 @@ function estimateTrainingBars(monthsValue, tfValue) {
   return Math.max(500, Math.min(ideal, cap1m, hard));
 }
 
-/** Interactive Validate budget — mirrors backend HTF lean + Lab 8k ceiling. */
+/** Interactive Validate budget — mirrors backend HTF lean + Lab ceiling. */
 function estimateValidateBars(monthsValue, tfValue, strategy) {
-  if (strategy === 'RL_PPO_AGENT') return 1200;
+  if (strategy === 'RL_PPO_AGENT') {
+    const months = Number(monthsValue) || 3;
+    // RL WF is heavier per bar — keep interactive, but scale with Lab window.
+    return Math.min(4000, Math.max(1200, months * 400));
+  }
   const trainBars = estimateTrainingBars(monthsValue, tfValue);
   const months = Number(monthsValue) || 3;
   const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
   const secs = tf.secs || 60;
+  const leanCap = months <= 12 ? 12_000 : (months <= 24 ? 18_000 : 24_000);
   if (secs > 60) {
     const ideal = Math.floor(months * 30 * 86400 / secs);
-    return Math.max(500, Math.min(trainBars, Math.max(2_500, Math.floor(ideal / 3)), 12_000, 8_000));
+    return Math.max(500, Math.min(trainBars, Math.max(2_500, Math.floor(ideal / 3)), leanCap));
   }
-  const byMonth = { 1: 2_000, 3: 2_500, 6: 5_000, 12: 8_000 };
-  return Math.max(500, Math.min(byMonth[months] ?? 2_500, trainBars, 8_000));
+  const byMonth = {
+    1: 2_000, 3: 2_500, 6: 5_000, 12: 8_000, 18: 10_000, 24: 12_000, 36: 16_000,
+  };
+  const maxValidate = months <= 12 ? 8_000 : leanCap;
+  return Math.max(500, Math.min(byMonth[months] ?? 2_500, trainBars, maxValidate));
 }
 
 function suggestedNFolds(monthsValue, strategy) {
   if (strategy === 'RL_PPO_AGENT') return 2;
   const months = Number(monthsValue) || 3;
+  if (months >= 24) return 5;
   if (months >= 12) return 4;
   if (months >= 6) return 3;
   return 3;
@@ -170,6 +182,7 @@ function suggestedNFolds(monthsValue, strategy) {
 function suggestedPboSegments(monthsValue, strategy) {
   if (strategy === 'RL_PPO_AGENT') return 4;
   const months = Number(monthsValue) || 3;
+  if (months >= 24) return 8;
   if (months >= 12) return 6;
   if (months >= 6) return 5;
   return 4;
@@ -469,9 +482,11 @@ function normalizeCurveHistory(history, trainHistory, metrics) {
 }
 
 /** Deploy-gate mirror: trained / walk-forward / PBO from model-status enrich. */
-function DeployReadinessStrip({ status }) {
+function DeployReadinessStrip({ status, strategy }) {
   if (!status?.trained) return null;
 
+  const strat = String(strategy || status?.strategy || '').toUpperCase();
+  const isRl = strat === 'RL_PPO_AGENT';
   const wf = status.walk_forward && typeof status.walk_forward === 'object'
     ? status.walk_forward
     : null;
@@ -532,14 +547,20 @@ function DeployReadinessStrip({ status }) {
           wfOk,
           false,
           wfOk
-            ? `Walk-forward${wf?.mean_oos_accuracy != null ? ` · ${fmtMetric(wf.mean_oos_accuracy, 3, 'mean_oos_accuracy')}` : ''}`
+            ? `Walk-forward${
+              wf?.mean_oos_return_pct != null
+                ? ` · ${Number(wf.mean_oos_return_pct) >= 0 ? '+' : ''}${Number(wf.mean_oos_return_pct).toFixed(2)}%`
+                : (wf?.mean_oos_accuracy != null ? ` · ${fmtMetric(wf.mean_oos_accuracy, 3, 'mean_oos_accuracy')}` : '')
+            }`
             : 'Walk-forward',
           wfMissing
-            ? 'Run Walk-forward + PBO before deploy — gate will block without it'
+            ? (isRl
+              ? 'Run Walk-forward (RL episode returns) before deploy — gate will block without it'
+              : 'Run Walk-forward before deploy — gate will block without it')
             : (wf?.recommendation || 'Walk-forward validation passed'),
         )}
         {pboSkipped
-          ? chip(false, true, 'PBO skipped', pbo?.error || 'PBO was skipped for this strategy')
+          ? chip(false, true, 'PBO skipped', pbo?.error || 'PBO skipped for RL/deep interactive validate')
           : pboPresent
             ? chip(
               pboOk,
@@ -549,7 +570,9 @@ function DeployReadinessStrip({ status }) {
                 ? 'PBO under 50% — acceptable overfitting risk'
                 : 'PBO ≥ 50% — elevated overfitting risk for deploy',
             )
-            : chip(false, true, 'PBO', 'No PBO result yet — run Walk-forward + PBO')}
+            : chip(false, true, 'PBO', isRl
+              ? 'RL Lab Validate skips PBO (set force_pbo for overnight CSCV)'
+              : 'No PBO result yet — run Walk-forward + PBO')}
         {cal && chip(
           holdoutOk,
           false,
@@ -567,7 +590,7 @@ function DataCalendarStrip({ calendar, trainingWindow }) {
   const cal = calendar && typeof calendar === 'object' ? calendar : null;
   if (!cal?.fit_end_ts && !cal?.holdout_days) {
     const months = Number(trainingWindow) || 3;
-    const holdout = months <= 1 ? 7 : Math.min(30, Math.max(14, Math.round(months * 30 * 0.15)));
+    const holdout = months <= 1 ? 7 : Math.min(60, Math.max(14, Math.round(months * 30 * 0.15)));
     return (
       <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
         Calendar (when <span className="font-mono">ML_CALENDAR_HOLDOUT=1</span>): FIT → embargo → HOLDOUT (~{holdout}d).
@@ -865,8 +888,8 @@ function validateJobPhases(strategy) {
   if (strategy === 'RL_PPO_AGENT') {
     return [
       { until: 10, label: 'Loading candles for validation…' },
-      { until: 90, label: 'Walk-forward folds (RL fast mode)…' },
-      { until: 100, label: 'Aggregating fold metrics…' },
+      { until: 90, label: 'Walk-forward folds (RL episode returns)…' },
+      { until: 100, label: 'Aggregating fold returns…' },
     ];
   }
   return [
@@ -1123,8 +1146,10 @@ export default function ModelTrainingDashboard({
 
   const meta = getStrategyMeta(strategy);
 
-  const startJobProgress = useCallback((kind, strat, symbol) => {
-    const timeoutMs = mlJobTimeoutMs(strat, kind === 'train' ? 'train' : 'validate');
+  const startJobProgress = useCallback((kind, strat, symbol, months) => {
+    const timeoutMs = mlJobTimeoutMs(strat, kind === 'train' ? 'train' : 'validate', {
+      months,
+    });
     const progress = {
       active: true,
       kind,
@@ -1546,9 +1571,10 @@ export default function ModelTrainingDashboard({
     }
   };
 
-  const pollMlJobUntilDone = useCallback(async (jobId, { strategy: strat, kind = 'train' } = {}) => {
+  const pollMlJobUntilDone = useCallback(async (jobId, { strategy: strat, kind = 'train', months } = {}) => {
     const terminal = new Set(['done', 'error', 'cancelled']);
-    const budgetMs = mlJobPollDeadlineMs(strat || strategy, kind);
+    const winMonths = months ?? trainingWindow;
+    const budgetMs = mlJobPollDeadlineMs(strat || strategy, kind, { months: winMonths });
     const started = Date.now();
     const deadline = started + budgetMs;
     let transientStreak = 0;
@@ -1600,7 +1626,7 @@ export default function ModelTrainingDashboard({
         : mlJobPollIntervalMs(elapsed, budgetMs);
       await new Promise((r) => setTimeout(r, interval));
     }
-  }, [strategy]);
+  }, [strategy, trainingWindow]);
 
   const handleCancelJob = useCallback(async () => {
     const jobId = getMlTrainingSession().jobId;
@@ -1629,8 +1655,8 @@ export default function ModelTrainingDashboard({
     if (fromQueue) setRunNowKey(queueKey);
     setMlValidation(null);
     if (strat !== strategy) setStrategy(strat);
-    const trainTimeoutMs = mlJobTimeoutMs(strat, 'train');
-    const token = startJobProgress('train', strat, symbol);
+    const trainTimeoutMs = mlJobTimeoutMs(strat, 'train', { months: trainingWindow });
+    const token = startJobProgress('train', strat, symbol, trainingWindow);
     const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     localJobWaiterRef.current = true;
@@ -1692,7 +1718,11 @@ export default function ModelTrainingDashboard({
         return;
       }
       setMlJobId(jobId);
-      const job = await pollMlJobUntilDone(jobId, { strategy: strat, kind: 'train' });
+      const job = await pollMlJobUntilDone(jobId, {
+        strategy: strat,
+        kind: 'train',
+        months: trainingWindow,
+      });
       const result = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Training cancelled');
@@ -1755,24 +1785,19 @@ export default function ModelTrainingDashboard({
     const validateMaxBars = parsePositiveInt(
       advanced.validateMaxBars,
       defaults.validateMaxBars,
-      { min: 200, max: 20_000 },
+      { min: 200, max: 24_000 },
     );
     const pboSegments = parsePositiveInt(advanced.pboSegments, defaults.pboSegments, { min: 2, max: 8 });
     const pboMaxCombos = parsePositiveInt(advanced.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 });
-    const totalTimesteps = parsePositiveInt(
-      advanced.totalTimesteps,
-      defaults.totalTimesteps,
-      { min: 256, max: 500_000 },
-    );
     championOosRef.current = status?.walk_forward?.mean_oos_accuracy ?? null;
     setChallengerDismissed(false);
-    const validateTimeoutMs = mlJobTimeoutMs(strategy, 'validate');
-    const token = startJobProgress('validate', strategy, activeSymbol);
+    const validateTimeoutMs = mlJobTimeoutMs(strategy, 'validate', { months: trainingWindow });
+    const token = startJobProgress('validate', strategy, activeSymbol, trainingWindow);
     localJobWaiterRef.current = true;
     try {
       toast.message(
         isRl
-          ? `Running RL walk-forward (fast mode, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
+          ? `Running RL walk-forward (episode returns, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
           : isDeep
             ? `Running walk-forward (fast folds, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
             : `Running walk-forward + PBO… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`,
@@ -1803,7 +1828,22 @@ export default function ModelTrainingDashboard({
             validate_max_bars: validateMaxBars,
             pbo_max_combos: pboMaxCombos,
             ...(isRl
-              ? { total_timesteps: totalTimesteps, n_steps: 512, ppo_epochs: 2, hidden_dim: 64 }
+              ? {
+                  // Cap interactive WF timesteps; full Train still uses Advanced 200k.
+                  total_timesteps: Math.min(
+                    parsePositiveInt(advanced.totalTimesteps, defaults.totalTimesteps, {
+                      min: 512, max: 20_000,
+                    }),
+                    8192,
+                  ),
+                  n_steps: 512,
+                  ppo_epochs: 2,
+                  hidden_dim: parsePositiveInt(advanced.hiddenDim, defaults.hiddenDim, {
+                    min: 32, max: 256,
+                  }),
+                  skip_onnx_export: true,
+                  wf_capacity_parity: false,
+                }
               : {}),
             ...(wfEpochs != null ? { epochs: wfEpochs, wf_epochs: wfEpochs } : {}),
           },
@@ -1824,7 +1864,11 @@ export default function ModelTrainingDashboard({
         return;
       }
       setMlJobId(jobId);
-      const job = await pollMlJobUntilDone(jobId, { strategy, kind: 'validate' });
+      const job = await pollMlJobUntilDone(jobId, {
+        strategy,
+        kind: 'validate',
+        months: trainingWindow,
+      });
       const result = (job.result && typeof job.result === 'object')
         ? job.result
         : { ok: false, error: job.error || 'Validation failed' };
@@ -1856,7 +1900,7 @@ export default function ModelTrainingDashboard({
       const msg = err?.message || String(err) || 'Validation request failed';
       const badJson = /invalid json|internal server error/i.test(msg);
       const friendly = badJson
-        ? 'Validation hit a server error (non-JSON response). Recycle Massive backend and retry — RL walk-forward needs the latest ONNX export fix.'
+        ? 'Validation hit a server error (non-JSON response). Recycle the backend and retry — RL walk-forward needs the latest ONNX export fix.'
         : msg;
       setMlValidation({ ok: false, error: friendly });
       if (!isAbortError(err)) {
@@ -2037,7 +2081,9 @@ export default function ModelTrainingDashboard({
               Train ~{estimateTrainingBars(trainingWindow, trainingTimeframe).toLocaleString()}{' '}
               {trainingTimeframe} bars · Validate ~{estimateValidateBars(trainingWindow, trainingTimeframe, strategy).toLocaleString()}{' '}
               bars · {suggestedNFolds(trainingWindow, strategy)} folds
-              (Advanced knobs update with this pick).
+              · budget ~{formatMlJobBudgetLabel(mlJobTimeoutMs(strategy, 'train', { months: trainingWindow }))}{' '}
+              train / ~{formatMlJobBudgetLabel(mlJobTimeoutMs(strategy, 'validate', { months: trainingWindow }))}{' '}
+              validate (Advanced knobs update with this pick).
             </p>
             <DataCalendarStrip
               calendar={status?.data_calendar}
@@ -2215,7 +2261,7 @@ export default function ModelTrainingDashboard({
           </p>
         )}
         <MetricChips metrics={status?.metrics} />
-        <DeployReadinessStrip status={status} />
+        <DeployReadinessStrip status={status} strategy={strategy} />
         <LossHistoryChart
           history={status?.loss_history}
           trainHistory={status?.train_history}
@@ -2256,7 +2302,9 @@ export default function ModelTrainingDashboard({
             onClick={handleValidate}
           >
             {validating ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
-            Walk-forward + PBO
+            {strategy === 'RL_PPO_AGENT' || DEEP_ML_STRATEGIES.has(strategy)
+              ? 'Walk-forward'
+              : 'Walk-forward + PBO'}
           </Button>
           <Button
             type="button"
@@ -2308,7 +2356,17 @@ export default function ModelTrainingDashboard({
           )}
           {displayValidation.ok && (
             <div className="grid gap-2 sm:grid-cols-3 text-xs">
-              {(displayValidation.mean_accuracy ?? displayValidation.aggregate?.mean_oos_accuracy) != null && (
+              {displayValidation.aggregate?.mean_oos_return_pct != null && (
+                <div>
+                  <span className="text-muted-foreground">Mean OOS return</span>
+                  <p className="num-mono font-medium">
+                    {Number(displayValidation.aggregate.mean_oos_return_pct) >= 0 ? '+' : ''}
+                    {Number(displayValidation.aggregate.mean_oos_return_pct).toFixed(2)}%
+                  </p>
+                </div>
+              )}
+              {(displayValidation.mean_accuracy ?? displayValidation.aggregate?.mean_oos_accuracy) != null
+                && displayValidation.aggregate?.mean_oos_return_pct == null && (
                 <div>
                   <span className="text-muted-foreground">Mean OOS accuracy</span>
                   <p className="num-mono font-medium">
@@ -2324,6 +2382,12 @@ export default function ModelTrainingDashboard({
                   </p>
                 </div>
               )}
+              {displayValidation.pbo?.skipped && (
+                <div>
+                  <span className="text-muted-foreground">PBO</span>
+                  <p className="text-xs text-muted-foreground">Skipped (interactive)</p>
+                </div>
+              )}
               {displayValidation.pbo?.pbo != null && (
                 <div>
                   <span className="text-muted-foreground">PBO</span>
@@ -2333,6 +2397,14 @@ export default function ModelTrainingDashboard({
                   )}
                   >
                     {fmtMetric(displayValidation.pbo.pbo)}
+                  </p>
+                </div>
+              )}
+              {displayValidation.capacity_gap_warning && (
+                <div className="sm:col-span-3">
+                  <span className="text-muted-foreground">Capacity note</span>
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    {displayValidation.capacity_gap_warning}
                   </p>
                 </div>
               )}

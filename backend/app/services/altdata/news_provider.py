@@ -473,15 +473,18 @@ def available_news_sources() -> list[str]:
     # LIVE_ALPACA: prefer Benzinga/Alpaca headlines (parity with Polygon on Massive).
     if ALPACA_API_KEY and ALPACA_SECRET_KEY and TERMINAL_MODE == "LIVE_ALPACA":
         sources.append(SOURCE_ALPACA)
+        if FINNHUB_API_KEY:
+            sources.append(SOURCE_FINNHUB)
+        # Skip Yahoo/Polygon/GNews as primary providers on Alpaca UI.
+        return sources
     if FINNHUB_API_KEY:
         sources.append(SOURCE_FINNHUB)
     sources.append(SOURCE_YFINANCE)
-    if ALPACA_API_KEY and ALPACA_SECRET_KEY and TERMINAL_MODE != "LIVE_ALPACA":
+    if ALPACA_API_KEY and ALPACA_SECRET_KEY:
         sources.append(SOURCE_ALPACA)
-    # Polygon is redundant with Alpaca Benzinga on LIVE_ALPACA and often slow.
-    if MASSIVE_API_KEY and TERMINAL_MODE != "LIVE_ALPACA":
+    if MASSIVE_API_KEY:
         sources.append(SOURCE_POLYGON)
-    if GNEWS_ENABLED and TERMINAL_MODE != "LIVE_ALPACA":
+    if GNEWS_ENABLED:
         sources.append(SOURCE_GNEWS)
     return sources
 
@@ -505,6 +508,8 @@ def fetch_symbol_news(
     sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch headline news from configured providers (deduped by headline)."""
+    from app.config import TERMINAL_MODE
+
     sym = str(symbol or "").upper().strip()
     if not sym:
         return []
@@ -512,7 +517,8 @@ def fetch_symbol_news(
     fetchers = _source_fetchers()
     wanted = [s for s in (sources or available_news_sources()) if s in fetchers]
     if not wanted:
-        wanted = [SOURCE_YFINANCE]
+        # Last resort — never default Yahoo on LIVE_ALPACA.
+        wanted = [SOURCE_ALPACA] if TERMINAL_MODE == "LIVE_ALPACA" and SOURCE_ALPACA in fetchers else [SOURCE_YFINANCE]
 
     batches: dict[str, list[dict[str, Any]]] = {}
     # Parallelize providers — sequential Finnhub+Yahoo+GNews+Polygon was ~9s live.

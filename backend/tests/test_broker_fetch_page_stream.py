@@ -175,16 +175,40 @@ class TestMassivePageStream(unittest.TestCase):
 
     def test_massive_miss_skips_second_massive_fetch(self) -> None:
         """After Massive yields nothing, fallback must not re-call Massive."""
-        with patch.object(bf, "MASSIVE_API_KEY", "test-key"), patch.object(
+        with patch.object(bf, "TERMINAL_MODE", "LIVE_MASSIVE"), patch.object(
+            bf, "MASSIVE_API_KEY", "test-key"
+        ), patch.object(
             bf, "iter_massive_tf_candle_pages", return_value=iter([])
         ), patch.object(bf, "fetch_massive_1m_bars") as massive_1m, patch.object(
             bf, "fetch_binance_1m_bars", return_value=[]
-        ), patch.object(bf, "fetch_alpaca_1m_bars", return_value=[]):
+        ), patch.object(bf, "fetch_alpaca_1m_bars", return_value=[]), patch.object(
+            bf, "fetch_alpaca_tf_candles", return_value=[]
+        ):
             pages = list(
                 bf.iter_broker_tf_candle_pages("AAPL", 1_700_000_000, 1_700_100_000, "1m")
             )
             self.assertEqual(pages, [])
             massive_1m.assert_not_called()
+
+    def test_live_alpaca_uses_alpaca_tf_not_massive(self) -> None:
+        candles = [
+            {"time": 1_700_000_060, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10}
+        ]
+        with patch.object(bf, "TERMINAL_MODE", "LIVE_ALPACA"), patch.object(
+            bf, "MASSIVE_API_KEY", "massive-key"
+        ), patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(
+            bf, "ALPACA_SECRET_KEY", "s"
+        ), patch.object(
+            bf, "fetch_alpaca_tf_candles", return_value=candles
+        ) as alpaca_tf, patch.object(
+            bf, "iter_massive_tf_candle_pages"
+        ) as massive_pages:
+            pages = list(
+                bf.iter_broker_tf_candle_pages("AAPL", 1_700_000_000, 1_700_100_000, "15m")
+            )
+            self.assertEqual(pages, [candles])
+            alpaca_tf.assert_called_once()
+            massive_pages.assert_not_called()
 
 
 if __name__ == "__main__":

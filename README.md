@@ -156,7 +156,7 @@ Set `TERMINAL_MODE` in `.env` to switch backends:
 | Mode | Feed | Symbols | Notes |
 |------|------|---------|-------|
 | `SIMULATED` (default) | SBBS simulator | Equities + crypto | No API keys required |
-| `LIVE_ALPACA` | Equities SIP/IEX + crypto `v1beta3` + options indicative/OPRA | Equities/ETFs + Alpaca US crypto (`*USDT` ↔ `BTC/USD`); OCC options stream separately (not in Watchlist) | **Real Alpaca OMS** (paper/live via `ALPACA_BASE_URL`); WS connect pushes full quote snapshot; `ALPACA_CRYPTO_*` / `ALPACA_OPTION_*` |
+| `LIVE_ALPACA` | Equities SIP/IEX + crypto `v1beta3` + options indicative/OPRA | Equities/ETFs + Alpaca US crypto (`*USDT` ↔ `BTC/USD`); OCC options stream separately (not in Watchlist) | **Real Alpaca OMS**; charts/ML/backtest/bots/archive deep history use **Alpaca REST** (not Massive) even if `MASSIVE_API_KEY` is also set; WS connect quote snapshot; `ALPACA_CRYPTO_*` / `ALPACA_OPTION_*` |
 | `LIVE_BINANCE` | Binance streams | Crypto USDT pairs | Requires API keys |
 | `LIVE_ETORO` | REST poll (`/market-data/instruments/rates`) | Equities + crypto | Bearer **or** API-key pair (never both); demo/real env auto-probe |
 | `LIVE_IB` | IB Gateway / TWS (`ib_async`, 1m `keepUpToDate`) | US equities & ETFs | **Feed-only** by default — orders use simulated OMS; requires Gateway + market data subs |

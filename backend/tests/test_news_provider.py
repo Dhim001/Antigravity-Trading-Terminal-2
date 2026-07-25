@@ -44,7 +44,8 @@ class NewsProviderTests(unittest.TestCase):
 
     @patch("app.services.altdata.news_provider.FINNHUB_API_KEY", "key")
     def test_available_sources_includes_finnhub(self):
-        sources = available_news_sources()
+        with patch("app.config.TERMINAL_MODE", "SIMULATED"):
+            sources = available_news_sources()
         self.assertIn(SOURCE_FINNHUB, sources)
         self.assertIn(SOURCE_YFINANCE, sources)
 

@@ -66,6 +66,7 @@ def _export_policy_onnx(symbol: str, model, *, timeframe: str | None = None) -> 
     from app.services.bots.ml_model_artifacts import export_onnx_single_file
 
     model.eval()
+    tf = timeframe
     return export_onnx_single_file(
         model,
         torch.randn(1, OBS_DIM),
@@ -252,10 +253,11 @@ def train_ppo_agent(
     clip_epsilon = float(cfg.get("clip_epsilon", 0.2))
     ppo_epochs = int(cfg.get("ppo_epochs", 2 if wf_mode else 10))
     n_steps = int(cfg.get("n_steps", 512 if wf_mode else 2048))
+    # Interactive WF clamps steps so Lab Validate finishes; flag capacity gap.
     if wf_mode:
-        ppo_epochs = min(ppo_epochs, 2)
-        n_steps = min(n_steps, 512)
-        total_timesteps = min(total_timesteps, max(n_steps, 2048))
+        ppo_epochs = min(ppo_epochs, 4)
+        n_steps = min(n_steps, 1024)
+        total_timesteps = min(total_timesteps, max(n_steps, 8192))
     hidden_dim = int(cfg.get("hidden_dim", 64 if wf_mode else 256))
     lr = float(cfg.get("learning_rate", 3e-4))
     vf_coef = float(cfg.get("vf_coef", 0.5))
@@ -421,20 +423,7 @@ def train_ppo_agent(
             if mean_ret > best_mean_return:
                 best_mean_return = mean_ret
 
-    # ── Export to ONNX (single-file; invalidate ORT mmap before rewrite) ──
     train_device_meta = device_info(device)
-    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
-    _export_policy_onnx(symbol, model, timeframe=tf)
-
-    # Save environment scaler
-    scaler = {
-        "feat_mean": env._feat_mean.tolist(),
-        "feat_std": env._feat_std.tolist(),
-    }
-    with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
-        json.dump(scaler, fh, indent=2)
-
-    # Metrics
     metrics = {
         "total_timesteps": total_steps,
         "episodes": episode_count,
@@ -450,6 +439,28 @@ def train_ppo_agent(
         {"episode": i + 1, "return_pct": round(r, 4)}
         for i, r in enumerate(episode_returns[-50:])
     ]
+
+    scaler = {
+        "feat_mean": env._feat_mean.tolist(),
+        "feat_std": env._feat_std.tolist(),
+    }
+    # In-memory bundle for WF/PBO OOS — avoids triple-barrier accuracy and
+    # lets folds skip clobbering the live champion ONNX.
+    wf_bundle = {
+        "strategy": "RL_PPO_AGENT",
+        "model": model,
+        "scaler": scaler,
+        "hidden_dim": hidden_dim,
+        "device": str(getattr(device, "type", device)),
+    }
+
+    from app.services.bots.ml_training_window import skip_live_artifact_writes
+
+    skip_persist = bool(
+        skip_live_artifact_writes(cfg)
+        or cfg.get("skip_onnx_export")
+        or cfg.get("skip_persist")
+    )
 
     metadata = {
         "symbol": symbol,
@@ -480,6 +491,27 @@ def train_ppo_agent(
         },
         "train_device": train_device_meta,
     }
+
+    if skip_persist:
+        logger.info(
+            "PPO fold train for %s @ %s skipped live ONNX write (WF/PBO mode; steps=%d)",
+            symbol, tf, total_steps,
+        )
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "timeframe": tf,
+            "_wf_bundle": wf_bundle,
+            **metadata,
+        }
+
+    # ── Export to ONNX (single-file; invalidate ORT mmap before rewrite) ──
+    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
+    _export_policy_onnx(symbol, model, timeframe=tf)
+
+    with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
+        json.dump(scaler, fh, indent=2)
+
     with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 
@@ -503,7 +535,10 @@ def train_ppo_agent(
         "PPO agent trained for %s @ %s (steps=%d, episodes=%d, mean_return=%.2f%%)",
         symbol, tf, total_steps, episode_count, metrics["mean_return_pct"],
     )
-    return {"ok": True, "symbol": symbol, "timeframe": tf, **metadata}
+    out = {"ok": True, "symbol": symbol, "timeframe": tf, **metadata}
+    if wf_mode:
+        out["_wf_bundle"] = wf_bundle
+    return out
 
 
 # ── Model store ───────────────────────────────────────────────────────────

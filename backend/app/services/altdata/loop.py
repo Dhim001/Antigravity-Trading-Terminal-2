@@ -13,12 +13,13 @@ logger = logging.getLogger(__name__)
 def _run_refresh(symbols: list[str] | None) -> dict:
     from app.config import SENTIMENT_ENABLED
 
-    if MASSIVE_API_KEY:
-        from app.services.altdata.massive_provider import refresh_altdata
+    # Mode wins over shared root .env keys (Alpaca UI must not pull Massive corp actions).
+    if TERMINAL_MODE == "LIVE_ALPACA":
+        from app.services.altdata.alpaca_provider import refresh_altdata
 
         result = refresh_altdata(symbols)
-    elif TERMINAL_MODE == "LIVE_ALPACA":
-        from app.services.altdata.alpaca_provider import refresh_altdata
+    elif MASSIVE_API_KEY:
+        from app.services.altdata.massive_provider import refresh_altdata
 
         result = refresh_altdata(symbols)
     else:

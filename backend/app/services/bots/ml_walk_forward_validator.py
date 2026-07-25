@@ -188,11 +188,15 @@ def evaluate_oos_accuracy(
     """Run a trained strategy over OOS candles and compute metrics.
 
     Returns dict with: accuracy, n_signals, buy_count, sell_count, none_count.
+    RL_PPO_AGENT uses episode return (not triple-barrier classification accuracy).
     """
     key = str(strategy_cls or "").upper()
     bundle = (train_result or {}).get("_wf_bundle") if isinstance(train_result, dict) else None
     if isinstance(bundle, dict) and bundle.get("strategy") == "TRANSFORMER_SIGNAL":
         return _evaluate_oos_transformer_torch(test_candles, bundle, config or {})
+
+    if key == "RL_PPO_AGENT":
+        return _evaluate_oos_rl_env(test_candles, train_result, config or {})
 
     # Fast path: batch predict for XGB signal model (avoids per-bar strategy overhead).
     if key == "ML_SIGNAL_BOOST":
@@ -253,6 +257,101 @@ def evaluate_oos_accuracy(
         "none_count": counts.get("NONE", 0),
         "signal_rate": signal_rate,
         "total_bars": tot_bars,
+    }
+
+
+def _rl_return_to_score(return_pct: float) -> float:
+    """Map episode return % onto a 0–1 score (0% → 0.5) for shared WF gates."""
+    # Soft saturating map: ±10% ≈ 0.27 / 0.73, ± return ≈ 0.5.
+    return float(1.0 / (1.0 + math.exp(-float(return_pct) / 5.0)))
+
+
+def _evaluate_oos_rl_env(
+    test_candles: list[dict],
+    train_result: dict | None,
+    config: dict,
+) -> dict[str, Any]:
+    """Score PPO folds with TradingEnv episode return (not triple-barrier labels)."""
+    import torch
+
+    from app.services.bots.rl_trading_env import (
+        ACTION_BUY,
+        ACTION_CLOSE,
+        ACTION_HOLD,
+        ACTION_SELL,
+        TradingEnv,
+    )
+
+    if len(test_candles) < 40:
+        raise ValueError(f"RL OOS needs ≥40 candles, got {len(test_candles)}")
+
+    bundle = (train_result or {}).get("_wf_bundle") if isinstance(train_result, dict) else None
+    model = bundle.get("model") if isinstance(bundle, dict) else None
+    scaler = bundle.get("scaler") if isinstance(bundle, dict) else None
+    if model is None:
+        raise ValueError(
+            "RL OOS requires in-memory fold policy (_wf_bundle). "
+            "Re-run Validate — fold trains must skip live ONNX overwrite."
+        )
+
+    feat_mean = (scaler or {}).get("feat_mean")
+    feat_std = (scaler or {}).get("feat_std")
+    env = TradingEnv(
+        test_candles,
+        config=config,
+        feat_mean=feat_mean,
+        feat_std=feat_std,
+    )
+
+    model.eval()
+    device = next(model.parameters()).device
+    obs = env.reset()
+    done = False
+    action_counts = {
+        ACTION_HOLD: 0,
+        ACTION_BUY: 0,
+        ACTION_SELL: 0,
+        ACTION_CLOSE: 0,
+    }
+    steps = 0
+    while not done:
+        with torch.no_grad():
+            x = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            logits = model(x)
+            action = int(torch.argmax(logits, dim=-1).item())
+        action_counts[action] = action_counts.get(action, 0) + 1
+        obs, _reward, done, _info = env.step(action)
+        steps += 1
+        if steps > len(test_candles) + 5:
+            break
+
+    stats = env.episode_stats()
+    return_pct = float(stats.get("return_pct") or 0.0)
+    trades = int(stats.get("total_trades") or 0)
+    score = _rl_return_to_score(return_pct)
+    tot_bars = len(test_candles)
+    buy_n = int(action_counts.get(ACTION_BUY, 0))
+    sell_n = int(action_counts.get(ACTION_SELL, 0))
+    close_n = int(action_counts.get(ACTION_CLOSE, 0))
+    hold_n = int(action_counts.get(ACTION_HOLD, 0))
+    active = buy_n + sell_n + close_n
+
+    return {
+        "metric_kind": "rl_return",
+        # Compatibility field for existing aggregate / deploy display.
+        "accuracy": round(score, 4),
+        "return_pct": round(return_pct, 4),
+        "final_equity": float(stats.get("final_equity") or 1.0),
+        "n_signals": trades,
+        "n_correct": trades if return_pct > 0 else 0,
+        "buy_count": buy_n,
+        "sell_count": sell_n,
+        "none_count": hold_n,
+        "close_count": close_n,
+        "signal_rate": round(active / tot_bars, 4) if tot_bars > 0 else 0.0,
+        "total_bars": tot_bars,
+        "total_trades": trades,
+        "oos_steps": steps,
     }
 
 
@@ -464,15 +563,28 @@ def walk_forward_ml_train(
     max_holding = max(1, int(cfg.get("triple_barrier_max_bars", 30)))
     purge_bars = max(estimate_purge_bars(cfg), max_holding)
     n = len(candles)
+    tf = str(cfg.get("timeframe") or "1m")
+    try:
+        from app.services.bots.ml_training_window import wf_adaptive_fold_mins
+
+        min_train, min_test = wf_adaptive_fold_mins(n, tf)
+    except Exception:
+        min_train, min_test = 200, 100
     folds = generate_wf_folds(
         n, n_folds=n_folds, mode=mode,
         purge_bars=purge_bars, embargo_pct=embargo_pct,
+        min_train=min_train, min_test=min_test,
     )
 
     if not folds:
         return {
             "ok": False,
-            "error": f"Insufficient data for {n_folds}-fold WF ({n} candles)",
+            "error": (
+                f"Insufficient data for {n_folds}-fold WF ({n} candles; "
+                f"need ≥{min_train + min_test + purge_bars} with "
+                f"min_train={min_train}, min_test={min_test}). "
+                f"Increase Training window or lower timeframe."
+            ),
             "strategy": strategy,
             "symbol": symbol,
         }
@@ -656,7 +768,11 @@ def walk_forward_ml_train(
             progress_path,
             pct=min(90, int(5 + fold_num / n_fold_total * 80)),
             phase=f"fold {fold_num}/{n_fold_total}",
-            detail=f"acc={oos_metrics.get('accuracy')}",
+            detail=(
+                f"ret={oos_metrics.get('return_pct')}%"
+                if oos_metrics.get("metric_kind") == "rl_return"
+                else f"acc={oos_metrics.get('accuracy')}"
+            ),
         )
         prev_test_start = test_start
         prev_test_end = test_end
@@ -682,9 +798,15 @@ def walk_forward_ml_train(
     wf_parity = bool(cfg.get("wf_capacity_parity", True))
     capacity_gap_warning = None
     if not wf_parity:
+        metric_word = (
+            "OOS returns"
+            if str(strategy).upper() == "RL_PPO_AGENT"
+            or (isinstance(aggregate, dict) and aggregate.get("metric_kind") == "rl_return")
+            else "OOS accuracy"
+        )
         capacity_gap_warning = (
             "Walk-forward validation used reduced hyperparams (fast mode). "
-            "OOS accuracy may not reflect production model performance. "
+            f"{metric_word} may not reflect production model performance. "
             "Enable wf_capacity_parity for accurate validation."
         )
 
@@ -709,8 +831,15 @@ def _aggregate_fold_metrics(folds: list[dict]) -> dict:
     """Aggregate OOS metrics across successful folds."""
     accuracies = [f["oos_metrics"]["accuracy"] for f in folds if "oos_metrics" in f]
     n_signals = [f["oos_metrics"]["n_signals"] for f in folds if "oos_metrics" in f]
+    rl_returns = [
+        float(f["oos_metrics"]["return_pct"])
+        for f in folds
+        if isinstance(f.get("oos_metrics"), dict)
+        and f["oos_metrics"].get("metric_kind") == "rl_return"
+        and f["oos_metrics"].get("return_pct") is not None
+    ]
 
-    return {
+    out = {
         "mean_oos_accuracy": round(statistics.mean(accuracies), 4) if accuracies else 0,
         "median_oos_accuracy": round(statistics.median(accuracies), 4) if accuracies else 0,
         "std_oos_accuracy": round(statistics.stdev(accuracies), 4) if len(accuracies) >= 2 else 0,
@@ -719,39 +848,68 @@ def _aggregate_fold_metrics(folds: list[dict]) -> dict:
         "total_oos_signals": sum(n_signals),
         "mean_signals_per_fold": round(statistics.mean(n_signals), 1) if n_signals else 0,
     }
+    if rl_returns:
+        out["metric_kind"] = "rl_return"
+        out["mean_oos_return_pct"] = round(statistics.mean(rl_returns), 4)
+        out["median_oos_return_pct"] = round(statistics.median(rl_returns), 4)
+        out["std_oos_return_pct"] = (
+            round(statistics.stdev(rl_returns), 4) if len(rl_returns) >= 2 else 0.0
+        )
+        out["min_oos_return_pct"] = round(min(rl_returns), 4)
+        out["max_oos_return_pct"] = round(max(rl_returns), 4)
+        out["positive_return_folds"] = sum(1 for r in rl_returns if r > 0)
+    return out
 
 
 def _compute_stability(folds: list[dict]) -> dict:
     """Measure consistency across folds."""
-    accuracies = [f["oos_metrics"]["accuracy"] for f in folds if "oos_metrics" in f]
-    if len(accuracies) < 2:
-        return {"stable": True, "cv": 0.0, "trend": "insufficient_data"}
+    rl_mode = any(
+        isinstance(f.get("oos_metrics"), dict) and f["oos_metrics"].get("metric_kind") == "rl_return"
+        for f in folds
+    )
+    if rl_mode:
+        series = [
+            float(f["oos_metrics"]["return_pct"])
+            for f in folds
+            if isinstance(f.get("oos_metrics"), dict)
+            and f["oos_metrics"].get("return_pct") is not None
+        ]
+    else:
+        series = [f["oos_metrics"]["accuracy"] for f in folds if "oos_metrics" in f]
 
-    mean_acc = statistics.mean(accuracies)
-    std_acc = statistics.stdev(accuracies)
+    if len(series) < 2:
+        return {"stable": True, "cv": 0.0, "trend": "insufficient_data", "metric": "rl_return" if rl_mode else "accuracy"}
+
+    mean_v = statistics.mean(series)
+    std_v = statistics.stdev(series)
     # Avoid float("inf") — JSON serialization rejects non-finite floats.
-    cv = (std_acc / mean_acc) if mean_acc > 1e-12 else (0.0 if std_acc < 1e-12 else 999.0)
+    scale = abs(mean_v) if rl_mode else mean_v
+    cv = (std_v / scale) if abs(scale) > 1e-12 else (0.0 if std_v < 1e-12 else 999.0)
 
     # Check for declining trend (linear regression slope)
-    n = len(accuracies)
+    n = len(series)
     x_mean = (n - 1) / 2.0
-    y_mean = mean_acc
-    num = sum((i - x_mean) * (a - y_mean) for i, a in enumerate(accuracies))
+    y_mean = mean_v
+    num = sum((i - x_mean) * (a - y_mean) for i, a in enumerate(series))
     den = sum((i - x_mean) ** 2 for i in range(n))
     slope = num / den if den > 0 else 0.0
 
-    if slope < -0.02:
+    # RL returns are %-scale; accuracy is 0–1.
+    decline_thr = -0.5 if rl_mode else -0.02
+    improve_thr = 0.5 if rl_mode else 0.02
+    if slope < decline_thr:
         trend = "declining"
-    elif slope > 0.02:
+    elif slope > improve_thr:
         trend = "improving"
     else:
         trend = "stable"
 
     return {
-        "stable": cv < 0.3 and trend != "declining",
+        "stable": cv < (0.8 if rl_mode else 0.3) and trend != "declining",
         "cv": round(float(cv), 4),
         "slope": round(float(slope), 6),
         "trend": trend,
+        "metric": "rl_return" if rl_mode else "accuracy",
     }
 
 
@@ -759,11 +917,44 @@ def _make_recommendation(
     aggregate: dict, stability: dict, n_success: int, n_total: int,
 ) -> str:
     """Generate deployment recommendation based on WF results."""
-    acc = aggregate.get("mean_oos_accuracy", 0)
-    signals = aggregate.get("total_oos_signals", 0)
+    fold_success_rate = n_success / n_total if n_total > 0 else 0
     cv = stability.get("cv", 1.0)
     trend = stability.get("trend", "stable")
-    fold_success_rate = n_success / n_total if n_total > 0 else 0
+
+    if aggregate.get("metric_kind") == "rl_return":
+        ret = float(aggregate.get("mean_oos_return_pct") or 0.0)
+        trades = int(aggregate.get("total_oos_signals") or 0)
+        pos_folds = int(aggregate.get("positive_return_folds") or 0)
+        issues = []
+        if ret < -1.0:
+            issues.append(f"negative mean OOS return ({ret:.2f}%)")
+        if trades < 4:
+            issues.append(f"too few OOS trades ({trades})")
+        if cv > 1.0:
+            issues.append(f"high return variance across folds (CV={cv:.2f})")
+        if trend == "declining":
+            issues.append("declining OOS returns across folds")
+        if fold_success_rate < 0.6:
+            issues.append(f"only {n_success}/{n_total} folds succeeded")
+        if pos_folds == 0 and n_success > 0:
+            issues.append("no fold produced a positive OOS return")
+
+        if not issues:
+            if ret >= 2.0 and pos_folds >= max(1, n_success // 2):
+                return (
+                    "DEPLOY — Positive OOS episode returns with stable walk-forward "
+                    f"(mean {ret:.2f}%)"
+                )
+            return (
+                "DEPLOY_WITH_CAUTION — Modest OOS returns; monitor live paper closely "
+                f"(mean {ret:.2f}%)"
+            )
+        if len(issues) >= 3 or ret < -5.0:
+            return f"REJECT — {'; '.join(issues)}"
+        return f"REVIEW — {'; '.join(issues)}"
+
+    acc = aggregate.get("mean_oos_accuracy", 0)
+    signals = aggregate.get("total_oos_signals", 0)
 
     issues = []
     if acc < 0.42:

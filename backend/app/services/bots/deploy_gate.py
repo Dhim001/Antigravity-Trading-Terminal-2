@@ -550,15 +550,27 @@ def evaluate_deploy_gate(
                         detail=recommendation[:200],
                     ))
                 else:
-                    acc = wf_meta.get("mean_oos_accuracy")
-                    acc_txt = f", mean OOS acc {float(acc):.0%}" if acc is not None else ""
-                    checks.append(_check(
-                        check_id="ml_walk_forward",
-                        level="pass",
-                        ok=True,
-                        message=f"Walk-forward validated{acc_txt}",
-                        detail=recommendation[:200] if recommendation else None,
-                    ))
+                    metric_kind = str(wf_meta.get("metric_kind") or "")
+                    if metric_kind == "rl_return" or wf_meta.get("mean_oos_return_pct") is not None:
+                        ret = wf_meta.get("mean_oos_return_pct")
+                        ret_txt = f", mean OOS return {float(ret):+.2f}%" if ret is not None else ""
+                        checks.append(_check(
+                            check_id="ml_walk_forward",
+                            level="pass",
+                            ok=True,
+                            message=f"Walk-forward validated (RL episode returns{ret_txt})",
+                            detail=recommendation[:200] if recommendation else None,
+                        ))
+                    else:
+                        acc = wf_meta.get("mean_oos_accuracy")
+                        acc_txt = f", mean OOS acc {float(acc):.0%}" if acc is not None else ""
+                        checks.append(_check(
+                            check_id="ml_walk_forward",
+                            level="pass",
+                            ok=True,
+                            message=f"Walk-forward validated{acc_txt}",
+                            detail=recommendation[:200] if recommendation else None,
+                        ))
 
                 # Check 4: PBO from model metadata (same TF-keyed artifact as WF)
                 if meta.get("pbo") is not None:

@@ -7,7 +7,10 @@ import SettingsBootstrap from '../components/SettingsBootstrap';
 import ErrorBoundary from '../components/ErrorBoundary';
 import {
   broadcastStandaloneEvent,
+  broadcastTerminalNav,
   getStandalonePanelDef,
+  openStandaloneWindow,
+  standaloneIdForDockTab,
 } from '../lib/standalonePanels';
 
 /**
@@ -26,6 +29,34 @@ export default function StandaloneShell({ panelId, children }) {
     broadcastStandaloneEvent(def.id, 'opened');
     return () => window.removeEventListener('beforeunload', onUnload);
   }, [def]);
+
+  // Dock / chart links inside a standalone window must reach the main terminal
+  // (this document has no FlexLayout). Also open the target panel window when
+  // that tab itself lives in a detachable standalone page.
+  useEffect(() => {
+    const relayDockTab = (e) => {
+      const id = typeof e.detail === 'string' ? e.detail : e.detail?.tab;
+      if (!id) return;
+      broadcastTerminalNav({ type: 'focus-panel', panelId: id });
+      try {
+        const opener = window.opener;
+        if (opener && !opener.closed) {
+          opener.dispatchEvent(new CustomEvent('dock-tab', { detail: id }));
+          try {
+            opener.focus();
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      const sid = standaloneIdForDockTab(id);
+      if (sid && sid !== def?.id) openStandaloneWindow(sid);
+    };
+    window.addEventListener('dock-tab', relayDockTab);
+    return () => window.removeEventListener('dock-tab', relayDockTab);
+  }, [def?.id]);
 
   const handleReattach = () => {
     if (def) broadcastStandaloneEvent(def.id, 'reattach');

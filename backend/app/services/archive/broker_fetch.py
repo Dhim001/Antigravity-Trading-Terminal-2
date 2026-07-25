@@ -19,7 +19,12 @@ from app.config import (
     SYMBOLS,
     TERMINAL_MODE,
 )
-from app.services.alpaca_data import fallback_to_iex, is_sip_entitlement_error, resolve_equity_data_feed
+from app.services.alpaca_data import (
+    fallback_to_iex,
+    is_sip_entitlement_error,
+    resolve_equity_data_feed,
+    terminal_to_alpaca_crypto,
+)
 from app.services.archive.writer import align_bar_time
 from app.services.massive_bars import (
     aggs_to_candles,
@@ -35,6 +40,15 @@ _SOURCE_MASSIVE = "MASSIVE_REST"
 _SOURCE_BINANCE = "BINANCE_REST"
 _SOURCE_ALPACA = "ALPACA_REST"
 _ALPACA_DATA_REST = "https://data.alpaca.markets"
+_ALPACA_CRYPTO_BARS = f"{_ALPACA_DATA_REST}/v1beta3/crypto/us/bars"
+_ALPACA_TF_WIRE = {
+    "1m": "1Min",
+    "5m": "5Min",
+    "15m": "15Min",
+    "1h": "1Hour",
+    "4h": "4Hour",
+    "1d": "1Day",
+}
 
 
 def _alpaca_headers() -> dict[str, str]:
@@ -59,18 +73,83 @@ def _parse_alpaca_bar_time(value: str | None) -> int:
         return 0
 
 
-def _fetch_alpaca_1m_bars_with_feed(
+def _fetch_alpaca_crypto_bars(
     symbol: str,
     from_ts: int,
     to_ts: int,
-    feed: str,
+    *,
+    wire_tf: str = "1Min",
+    max_pages: int = 40,
 ) -> list[dict]:
+    """Fetch crypto OHLCV from Alpaca US crypto bars (terminal *USDT → BTC/USD)."""
+    wire = terminal_to_alpaca_crypto(symbol)
+    if not wire:
+        return []
+    start = datetime.fromtimestamp(from_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = datetime.fromtimestamp(to_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params: dict[str, Any] = {
+        "symbols": wire,
+        "timeframe": wire_tf,
+        "start": start,
+        "end": end,
+        "limit": 10000,
+        "sort": "asc",
+    }
+    all_bars: list[dict] = []
+    with httpx.Client(timeout=45.0, headers=_alpaca_headers()) as client:
+        pages = 0
+        while pages < max_pages:
+            pages += 1
+            resp = client.get(_ALPACA_CRYPTO_BARS, params=params)
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Alpaca crypto bars %s %s → HTTP %s",
+                    symbol,
+                    wire_tf,
+                    resp.status_code,
+                )
+                break
+            payload = resp.json() or {}
+            sym_bars = (payload.get("bars") or {}).get(wire) or []
+            for bar in sym_bars:
+                t = _parse_alpaca_bar_time(bar.get("t"))
+                if not t or t < from_ts or t > to_ts:
+                    continue
+                if wire_tf == "1Min":
+                    t = align_bar_time(t)
+                all_bars.append({
+                    "time": t,
+                    "open": float(bar.get("o") or 0),
+                    "high": float(bar.get("h") or 0),
+                    "low": float(bar.get("l") or 0),
+                    "close": float(bar.get("c") or 0),
+                    "volume": float(bar.get("v") or 0),
+                })
+            token = payload.get("next_page_token")
+            if not token:
+                break
+            params = {**params, "page_token": token}
+            time.sleep(0.05)
+    return all_bars
+
+
+def _fetch_alpaca_equity_bars(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    *,
+    wire_tf: str = "1Min",
+    feed: str | None = None,
+    max_pages: int = 40,
+) -> list[dict]:
+    """Fetch equity/ETF OHLCV from Alpaca stocks bars."""
+    feed = feed or resolve_equity_data_feed()
     start = datetime.fromtimestamp(from_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = datetime.fromtimestamp(to_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"{_ALPACA_DATA_REST}/v2/stocks/bars"
     params: dict[str, Any] = {
         "symbols": symbol.upper(),
-        "timeframe": "1Min",
+        "timeframe": wire_tf,
         "start": start,
         "end": end,
         "limit": 10000,
@@ -79,8 +158,6 @@ def _fetch_alpaca_1m_bars_with_feed(
         "feed": feed,
     }
     all_bars: list[dict] = []
-    max_pages = 20
-
     with httpx.Client(timeout=45.0, headers=_alpaca_headers()) as client:
         pages = 0
         while pages < max_pages:
@@ -100,6 +177,8 @@ def _fetch_alpaca_1m_bars_with_feed(
                 t = _parse_alpaca_bar_time(bar.get("t"))
                 if not t or t < from_ts or t > to_ts:
                     continue
+                if wire_tf == "1Min":
+                    t = align_bar_time(t)
                 all_bars.append({
                     "time": t,
                     "open": float(bar.get("o") or 0),
@@ -113,7 +192,7 @@ def _fetch_alpaca_1m_bars_with_feed(
                 break
             params = {
                 "symbols": symbol.upper(),
-                "timeframe": "1Min",
+                "timeframe": wire_tf,
                 "start": start,
                 "end": end,
                 "limit": 10000,
@@ -126,12 +205,29 @@ def _fetch_alpaca_1m_bars_with_feed(
     return all_bars
 
 
+def _fetch_alpaca_1m_bars_with_feed(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    feed: str,
+) -> list[dict]:
+    return _fetch_alpaca_equity_bars(
+        symbol, from_ts, to_ts, wire_tf="1Min", feed=feed,
+    )
+
+
 def fetch_alpaca_1m_bars(symbol: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
-    """Fetch 1m equity bars from Alpaca Market Data v2."""
+    """Fetch 1m equity or crypto bars from Alpaca Market Data."""
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         return []
+
     if is_crypto_terminal_symbol(symbol):
-        return []
+        try:
+            all_bars = _fetch_alpaca_crypto_bars(symbol, from_ts, to_ts, wire_tf="1Min")
+        except Exception as exc:
+            logger.warning("Alpaca crypto 1m fetch failed for %s: %s", symbol, exc)
+            return []
+        return _rows_to_db_format(symbol, all_bars, _SOURCE_ALPACA)
 
     feed = resolve_equity_data_feed()
     try:
@@ -144,6 +240,57 @@ def fetch_alpaca_1m_bars(symbol: str, from_ts: int, to_ts: int) -> list[dict[str
         return []
 
     return _rows_to_db_format(symbol, all_bars, _SOURCE_ALPACA)
+
+
+def fetch_alpaca_tf_candles(
+    symbol: str,
+    from_ts: int,
+    to_ts: int,
+    timeframe: str = "1m",
+) -> list[dict[str, Any]]:
+    """Ephemeral OHLCV at the requested TF from Alpaca (equities + crypto)."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY or to_ts <= from_ts:
+        return []
+    try:
+        tf = normalize_timeframe(timeframe)
+    except ValueError:
+        return []
+    if tf == "tick":
+        return []
+    wire_tf = _ALPACA_TF_WIRE.get(tf)
+    if not wire_tf:
+        return []
+
+    try:
+        if is_crypto_terminal_symbol(symbol):
+            bars = _fetch_alpaca_crypto_bars(symbol, from_ts, to_ts, wire_tf=wire_tf)
+        else:
+            feed = resolve_equity_data_feed()
+            try:
+                bars = _fetch_alpaca_equity_bars(
+                    symbol, from_ts, to_ts, wire_tf=wire_tf, feed=feed,
+                )
+            except PermissionError:
+                fallback_to_iex()
+                bars = _fetch_alpaca_equity_bars(
+                    symbol, from_ts, to_ts, wire_tf=wire_tf, feed="iex",
+                )
+    except Exception as exc:
+        logger.warning("Alpaca %s fetch failed for %s: %s", tf, symbol, exc)
+        return []
+
+    return [
+        {
+            "time": int(b["time"]),
+            "open": float(b["open"]),
+            "high": float(b["high"]),
+            "low": float(b["low"]),
+            "close": float(b["close"]),
+            "volume": float(b.get("volume") or 0),
+        }
+        for b in bars or []
+        if b.get("time") is not None
+    ]
 
 
 def _rows_to_db_format(symbol: str, candles: list[dict], source: str) -> list[dict[str, Any]]:
@@ -394,16 +541,32 @@ def fetch_binance_1m_bars(symbol: str, from_ts: int, to_ts: int) -> list[dict[st
 
 
 def resolve_broker_source() -> str:
+    """Pick the history vendor for archive ingest / backtest fill / ML deep REST.
+
+    Terminal mode wins when both Massive and Alpaca keys are present so the
+    Alpaca UI does not silently train/backtest on Polygon history.
+    """
     mode = (TERMINAL_MODE or "SIMULATED").upper()
     if mode == "LIVE_BINANCE":
         return "binance"
-    if MASSIVE_API_KEY:
-        return "massive"
     if mode == "LIVE_ALPACA" and ALPACA_API_KEY and ALPACA_SECRET_KEY:
         return "alpaca"
+    if mode == "LIVE_MASSIVE" and MASSIVE_API_KEY:
+        return "massive"
+    # Non-live / dual-key fallbacks: prefer the vendor matching available keys.
+    if MASSIVE_API_KEY:
+        return "massive"
     if ALPACA_API_KEY and ALPACA_SECRET_KEY:
         return "alpaca"
     return "none"
+
+
+def _prefer_massive_for_mode(source: str) -> bool:
+    """Whether Massive should be tried for this resolved source."""
+    mode = (TERMINAL_MODE or "SIMULATED").upper()
+    if mode == "LIVE_ALPACA":
+        return False
+    return bool(MASSIVE_API_KEY) or source == "massive"
 
 
 def fetch_broker_1m_bars(
@@ -422,9 +585,10 @@ def fetch_broker_1m_bars(
         return []
 
     source = (prefer or resolve_broker_source()).lower()
+    mode = (TERMINAL_MODE or "SIMULATED").upper()
 
     if source == "binance" or (
-        source == "none" and is_crypto_terminal_symbol(symbol) and TERMINAL_MODE == "LIVE_BINANCE"
+        source == "none" and is_crypto_terminal_symbol(symbol) and mode == "LIVE_BINANCE"
     ):
         rows = fetch_binance_1m_bars(symbol, from_ts, to_ts)
         if rows:
@@ -432,24 +596,31 @@ def fetch_broker_1m_bars(
 
     if source == "alpaca" or (
         source == "none"
-        and not is_crypto_terminal_symbol(symbol)
-        and TERMINAL_MODE == "LIVE_ALPACA"
+        and mode == "LIVE_ALPACA"
         and ALPACA_API_KEY
         and ALPACA_SECRET_KEY
     ):
         rows = fetch_alpaca_1m_bars(symbol, from_ts, to_ts)
         if rows:
             return rows
+        # On LIVE_ALPACA stay on Alpaca — do not leak into Massive/Binance.
+        if mode == "LIVE_ALPACA":
+            return []
 
-    if not skip_massive and (MASSIVE_API_KEY or source == "massive"):
+    if not skip_massive and _prefer_massive_for_mode(source):
         rows = fetch_massive_1m_bars(symbol, from_ts, to_ts, symbol_info=symbol_info)
         if rows:
             return rows
 
-    if is_crypto_terminal_symbol(symbol):
+    if mode != "LIVE_ALPACA" and is_crypto_terminal_symbol(symbol):
         return fetch_binance_1m_bars(symbol, from_ts, to_ts)
 
-    if ALPACA_API_KEY and ALPACA_SECRET_KEY and not is_crypto_terminal_symbol(symbol):
+    if (
+        mode != "LIVE_ALPACA"
+        and ALPACA_API_KEY
+        and ALPACA_SECRET_KEY
+        and not is_crypto_terminal_symbol(symbol)
+    ):
         return fetch_alpaca_1m_bars(symbol, from_ts, to_ts)
 
     return []
@@ -465,8 +636,8 @@ def iter_broker_tf_candle_pages(
 ) -> Iterator[list[dict[str, Any]]]:
     """Yield ephemeral OHLCV pages for backtest resolve merge.
 
-    Massive path streams page-by-page. On Massive miss (or no key), yields a
-    single non-Massive fallback batch so Massive is not fetched twice.
+    Mode-aware: LIVE_ALPACA uses Alpaca REST (any TF); LIVE_MASSIVE streams
+    Massive pages. Cross-vendor fallback is disabled on LIVE_ALPACA.
     """
     if to_ts <= from_ts:
         return
@@ -478,8 +649,17 @@ def iter_broker_tf_candle_pages(
     if tf == "tick":
         tf = "1m"
 
+    source = resolve_broker_source()
+    mode = (TERMINAL_MODE or "SIMULATED").upper()
+
+    if source == "alpaca" or mode == "LIVE_ALPACA":
+        batch = fetch_alpaca_tf_candles(symbol, from_ts, to_ts, tf)
+        if batch:
+            yield batch
+        return
+
     massive_tried = False
-    if MASSIVE_API_KEY:
+    if MASSIVE_API_KEY and source in ("massive", "none"):
         massive_tried = True
         any_page = False
         for page in iter_massive_tf_candle_pages(
@@ -512,6 +692,12 @@ def _fetch_broker_tf_candles_fallback(
     skip_massive: bool = False,
 ) -> list[dict[str, Any]]:
     """Non-streaming list fetch for the page iterator (Alpaca/Binance or Massive)."""
+    # Prefer native Alpaca TF when keys are present (HT backtests without Massive).
+    if ALPACA_API_KEY and ALPACA_SECRET_KEY and timeframe != "1m":
+        alpaca = fetch_alpaca_tf_candles(symbol, from_ts, to_ts, timeframe)
+        if alpaca:
+            return alpaca
+
     if timeframe != "1m":
         return []
 
@@ -544,10 +730,9 @@ def fetch_broker_tf_candles(
     symbol_info: dict | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Ephemeral OHLCV for backtests at the requested timeframe.
+    Ephemeral OHLCV for backtests / ML deep history at the requested timeframe.
 
-    Prefers Massive native aggs when configured. For 1m, falls back to the
-    same broker chain as archive ingestion (Massive / Alpaca / Binance).
+    Prefers the mode-matched vendor (Alpaca on LIVE_ALPACA, Massive on LIVE_MASSIVE).
     Prefer ``iter_broker_tf_candle_pages`` when merging into resolve.
     """
     candles: list[dict[str, Any]] = []

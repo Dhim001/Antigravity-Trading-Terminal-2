@@ -9,6 +9,7 @@ import {
 } from '../hooks/useOrderBookDepth';
 import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
+import { useAlpacaHealth } from '../hooks/useAlpacaHealth';
 import { massiveBookBadge } from '../lib/massiveMarket';
 import {
   Select,
@@ -33,6 +34,8 @@ export default function DepthChartWidget() {
   const activeSymbol = useStore((state) => state.activeSymbol);
   const terminalMode = useStore((state) => state.terminalMode);
   const massiveHealth = useMassiveHealth();
+  const alpacaHealth = useAlpacaHealth();
+  const feedHealth = terminalMode === 'LIVE_ALPACA' ? alpacaHealth : massiveHealth;
   const ob = useStore((state) => state.orderBooks[activeSymbol]);
   const [aggMode, setAggMode] = useState('auto');
   const flash = useOrderBookFlash(activeSymbol);
@@ -55,7 +58,7 @@ export default function DepthChartWidget() {
   }, [aggMode, probeMid]);
 
   const depth = useOrderBookDepth(activeSymbol, { maxLevels: DEPTH_LEVELS, aggStep });
-  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, massiveHealth);
+  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, feedHealth);
 
   if (!ob) {
     return (

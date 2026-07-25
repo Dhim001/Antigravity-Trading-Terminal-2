@@ -105,13 +105,31 @@ def _cheap_feed_snapshot(state: AppState) -> dict:
     if TERMINAL_MODE == "LIVE_MASSIVE" and feed is not None and hasattr(feed, "massive_status"):
         try:
             body["massive"] = feed.massive_status
+            ht_cache = getattr(feed, "_ht_cache", None)
+            if isinstance(ht_cache, dict) and isinstance(body.get("massive"), dict):
+                body["massive"]["ht_cache_entries"] = len(ht_cache)
         except Exception:
             body["massive"] = None
+        try:
+            from app.services.massive_ht_limits import massive_ht_limits_summary
+
+            body["massive_ht_limits"] = massive_ht_limits_summary()
+        except Exception:
+            pass
     if TERMINAL_MODE == "LIVE_ALPACA" and feed is not None and hasattr(feed, "alpaca_status"):
         try:
             body["alpaca"] = feed.alpaca_status
+            ht_cache = getattr(feed, "_ht_cache", None)
+            if isinstance(ht_cache, dict) and isinstance(body.get("alpaca"), dict):
+                body["alpaca"]["ht_cache_entries"] = len(ht_cache)
         except Exception:
             body["alpaca"] = None
+        try:
+            from app.services.massive_ht_limits import massive_ht_limits_summary
+
+            body["alpaca_ht_limits"] = massive_ht_limits_summary()
+        except Exception:
+            pass
         try:
             body["ws_broadcast"] = state.manager.broadcast_stats
         except Exception:
@@ -308,6 +326,15 @@ async def _build_health_body(state: AppState) -> dict:
     if TERMINAL_MODE == "LIVE_ALPACA" and feed is not None and hasattr(feed, "alpaca_status"):
         try:
             body["alpaca"] = feed.alpaca_status
+            ht_cache = getattr(feed, "_ht_cache", None)
+            if isinstance(ht_cache, dict):
+                body["alpaca"]["ht_cache_entries"] = len(ht_cache)
+        except Exception:
+            pass
+        try:
+            from app.services.massive_ht_limits import massive_ht_limits_summary
+
+            body["alpaca_ht_limits"] = massive_ht_limits_summary()
         except Exception:
             pass
 
@@ -739,7 +766,10 @@ async def _fetch_training_candles(
     months: int | None = None,
     config: dict | None = None,
 ) -> list[dict]:
-    """Pull historical candles for training from feed, archive, or Massive/Binance REST.
+    """Pull historical candles for training from feed, archive, or broker REST.
+
+    Deep REST follows TERMINAL_MODE: Massive on LIVE_MASSIVE, Alpaca on
+    LIVE_ALPACA (equities + crypto). Binance 1m is a last resort outside Alpaca.
 
     When ``months`` is set (ML Lab Training window), sizes the request and
     time-trims to that calendar window. ``limit`` overrides the bar target
@@ -814,6 +844,20 @@ async def _fetch_training_candles(
                 symbol, from_ts, to_ts, tf, symbol_info=info,
             ) or []
 
+        if TERMINAL_MODE == "LIVE_ALPACA":
+            from app.services.archive.broker_fetch import fetch_alpaca_tf_candles
+
+            return fetch_alpaca_tf_candles(symbol, from_ts, to_ts, tf) or []
+
+        # Other modes: mode-aware broker chain (may include Massive/Alpaca/Binance).
+        from app.services.archive.broker_fetch import fetch_broker_tf_candles
+
+        rows = fetch_broker_tf_candles(
+            symbol, from_ts, to_ts, tf, symbol_info=info,
+        ) or []
+        if rows:
+            return rows
+
         from app.services.massive_symbols import is_crypto_terminal_symbol as _is_crypto
         from app.services.archive.broker_fetch import fetch_binance_1m_bars
 
@@ -868,6 +912,73 @@ def _enrich_training_candles(
     for row in out:
         row.setdefault("_symbol", symbol)
     return out
+
+
+async def _fetch_validate_candles_enough(
+    state,
+    symbol: str,
+    *,
+    strategy: str,
+    tf: str,
+    months: int,
+    limit: int,
+    config: dict,
+    n_folds: int = 5,
+) -> tuple[list[dict], int, int]:
+    """Fetch (+ enrich) candles for WF+PBO, expanding the Lab window if short.
+
+    Equity HT + calendar FIT trim often lands under the legacy 500-bar gate.
+    Climb the months ladder (1→3→6→12) and raise the bar cap before failing.
+    Returns ``(candles, effective_months, effective_limit)``.
+    """
+    from app.services.bots.ml_training_window import (
+        bar_limit_for_training_window,
+        next_training_window_months,
+        validate_fetch_target_candles,
+        validate_min_candles,
+    )
+
+    # Expand until fold-viable depth (not just the hard fail floor).
+    min_needed = validate_fetch_target_candles(tf, n_folds=n_folds)
+    hard_floor = validate_min_candles(tf, n_folds=n_folds)
+    win = int(months)
+    vmax = max(200, int(limit))
+    candles: list[dict] = []
+    cfg = dict(config or {})
+
+    while True:
+        cfg["training_window_months"] = win
+        cfg["validate_max_bars"] = vmax
+        cfg["timeframe"] = tf
+        candles = await _fetch_training_candles(
+            state, symbol, tf=tf, months=win, limit=vmax, config=cfg,
+        )
+        candles = _enrich_training_candles(symbol, candles, strategy, cfg)
+        if isinstance(cfg.get("_data_calendar"), dict):
+            config["_data_calendar"] = cfg["_data_calendar"]
+        if len(candles) >= min_needed:
+            break
+        nxt = next_training_window_months(win)
+        if nxt is None:
+            break
+        win = nxt
+        lean_cap = 8_000 if win <= 12 else (18_000 if win <= 24 else 24_000)
+        vmax = max(
+            vmax,
+            min(
+                bar_limit_for_training_window(win, timeframe=tf, purpose="validate"),
+                lean_cap,
+            ),
+            min_needed,
+        )
+
+    config["training_window_months"] = win
+    config["validate_max_bars"] = vmax
+    # Callers still gate on hard_floor; stash target for diagnostics.
+    config["_validate_fetch_target"] = min_needed
+    config["_validate_hard_floor"] = hard_floor
+    return candles, win, vmax
+
 
 def _train_xgb(symbol, candles, config):
     from app.services.bots.strategies_ml import train_ml_signal_model
@@ -1009,6 +1120,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             bar_limit_for_training_window,
             parse_training_window_months,
             summarize_training_window,
+            validate_min_candles,
         )
 
         win_months = parse_training_window_months(config)
@@ -1016,16 +1128,24 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             config.get("timeframe") or body.get("timeframe")
         )
         bar_limit = bar_limit_for_training_window(win_months, timeframe=tf, purpose="validate")
-        # Honor Lab validate_max_bars. Do NOT inflate past the client value — that
-        # made async Validate block for minutes on deep REST before returning job_id.
+        # Honor Lab validate_max_bars. Cap scales with window so 18–36mo picks
+        # are not crushed to the old interactive 8k ceiling.
+        validate_hard_cap = (
+            8_000 if win_months <= 12
+            else (18_000 if win_months <= 24 else 24_000)
+        )
         try:
             user_vmax = int(config.get("validate_max_bars") or 0)
         except (TypeError, ValueError):
             user_vmax = 0
         if user_vmax > 0:
-            vmax = min(user_vmax, bar_limit, 8_000)
+            vmax = min(user_vmax, bar_limit, validate_hard_cap)
         else:
-            vmax = min(2_500, bar_limit)
+            default_cap = (
+                2_500 if win_months <= 6
+                else (5_000 if win_months <= 12 else validate_hard_cap)
+            )
+            vmax = min(default_cap, bar_limit)
         config = {
             **config,
             "timeframe": tf,
@@ -1086,28 +1206,37 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                     update_ml_job_progress(
                         job_id, {"pct": 2, "phase": "fetch", "detail": f"candles ≤{vmax} bars"},
                     )
-                    # Fetch only what WF will use — not the full Lab train window.
-                    candles = await _fetch_training_candles(
-                        state, symbol, tf=tf, months=win_months, limit=vmax, config=cfg,
+                    candles, used_months, used_vmax = await _fetch_validate_candles_enough(
+                        state,
+                        symbol,
+                        strategy=strategy,
+                        tf=tf,
+                        months=win_months,
+                        limit=vmax,
+                        config=cfg,
+                        n_folds=n_folds,
                     )
                     write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
                     update_ml_job_progress(
                         job_id, {"pct": 4, "phase": "enrich", "detail": "indicators"},
                     )
-                    candles = _enrich_training_candles(symbol, candles, strategy, cfg)
-                    if len(candles) < 500:
+                    min_needed = validate_min_candles(tf, n_folds=n_folds)
+                    if len(candles) < min_needed:
+                        err = (
+                            f"Need >= {min_needed} candles for {tf} validation "
+                            f"(got {len(candles)} after expanding to {used_months}mo). "
+                            f"Increase Training window, lower timeframe, or raise "
+                            f"validate_max_bars (used {used_vmax})."
+                        )
                         finish_ml_job(
                             job_id,
                             "error",
-                            result={
-                                "ok": False,
-                                "error": f"Need >= 500 candles for validation, got {len(candles)}",
-                            },
-                            error=f"Need >= 500 candles for validation, got {len(candles)}",
+                            result={"ok": False, "error": err},
+                            error=err,
                         )
                         return
                     window_meta = summarize_training_window(
-                        candles, win_months, bar_limit=vmax, timeframe=tf,
+                        candles, used_months, bar_limit=used_vmax, timeframe=tf,
                         calendar=cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None,
                     )
                     cfg["_training_window"] = window_meta
@@ -1146,24 +1275,39 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             return _ml_validate_json_response({"ok": True, "job_id": job_id, "async": True})
 
         try:
-            candles = await _fetch_training_candles(
-                state, symbol, tf=tf, months=win_months, limit=vmax, config=config,
+            candles, used_months, used_vmax = await _fetch_validate_candles_enough(
+                state,
+                symbol,
+                strategy=strategy,
+                tf=tf,
+                months=win_months,
+                limit=vmax,
+                config=config,
+                n_folds=n_folds,
             )
-            candles = _enrich_training_candles(symbol, candles, strategy, config)
         except Exception as exc:
             logger.exception("Failed to fetch/enrich candles for validate %s", symbol)
             return _ml_validate_json_response(
                 {"ok": False, "error": f"failed to fetch candles: {exc}"},
             )
 
-        if len(candles) < 500:
+        min_needed = validate_min_candles(tf, n_folds=n_folds)
+        if len(candles) < min_needed:
             return _ml_validate_json_response(
-                {"ok": False, "error": f"Need >= 500 candles for validation, got {len(candles)}"},
+                {
+                    "ok": False,
+                    "error": (
+                        f"Need >= {min_needed} candles for {tf} validation "
+                        f"(got {len(candles)} after expanding to {used_months}mo). "
+                        f"Increase Training window, lower timeframe, or raise "
+                        f"validate_max_bars (used {used_vmax})."
+                    ),
+                },
                 status_code=400,
             )
 
         window_meta = summarize_training_window(
-            candles, win_months, bar_limit=vmax, timeframe=tf,
+            candles, used_months, bar_limit=used_vmax, timeframe=tf,
             calendar=config.get("_data_calendar") if isinstance(config.get("_data_calendar"), dict) else None,
         )
         config["_training_window"] = window_meta

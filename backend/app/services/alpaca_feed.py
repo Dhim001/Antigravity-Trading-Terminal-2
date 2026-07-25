@@ -112,7 +112,7 @@ class AlpacaFeedService(BaseFeedService):
         self._last_quote_apply_ts: Dict[str, float] = {}
         # Last REST/WS trade event timestamp string per terminal symbol (dedupe stale prints).
         self._crypto_last_trade_event_ts: Dict[str, str] = {}
-        self._ht_cache: dict[tuple[str, str], tuple[float, list]] = {}
+        self._ht_cache: dict[tuple, tuple[float, list]] = {}
         self._seed_done = False
         self._seed_expected = 0
         self._status: dict[str, Any] = {
@@ -128,6 +128,11 @@ class AlpacaFeedService(BaseFeedService):
     @property
     def symbols(self) -> List[str]:
         return list(self._symbols.keys())
+
+    @property
+    def seed_done(self) -> bool:
+        """True after REST history seed replaces synthetic startup candles."""
+        return bool(self._seed_done)
 
     @property
     def watchlist_symbols(self) -> List[str]:
@@ -1156,8 +1161,20 @@ class AlpacaFeedService(BaseFeedService):
         if not wire_tf:
             return []
 
-        cap = max(50, min(int(limit or 500), 1500))
-        cache_key = (symbol, tf)
+        # Analysis (bots / ML warm-up) needs deeper series than chart snapshots.
+        try:
+            from app.services.massive_ht_limits import MASSIVE_HT_FETCH_MAX, massive_ht_limit
+
+            default_cap = massive_ht_limit(
+                tf, purpose="analysis" if purpose == "analysis" else "chart",
+            )
+            hard_max = MASSIVE_HT_FETCH_MAX
+        except Exception:
+            default_cap = 2000 if purpose == "analysis" else 500
+            hard_max = 10000
+        cap = max(50, min(int(limit or default_cap), hard_max))
+        # Analysis fetches skip the short chart cache so warm-up sees full depth.
+        cache_key = (symbol, tf, purpose if purpose == "analysis" else "chart")
         now = time.time()
         cached = self._ht_cache.get(cache_key)
         if cached and cached[0] > now and cached[1]:

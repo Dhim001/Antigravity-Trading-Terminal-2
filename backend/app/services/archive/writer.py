@@ -19,9 +19,22 @@ logger = logging.getLogger(__name__)
 
 _writer: "ArchiveWriter | None" = None
 
+# Broker REST history must not be overwritten by live-feed / seed synthetics
+# (LIVE_ALPACA startup fallback candles use stale config prices ~$182 for AAPL).
+_BROKER_REST_SOURCES = frozenset({
+    "ALPACA_REST",
+    "MASSIVE_REST",
+    "BINANCE_REST",
+    "POLYGON_REST",
+})
+
 
 def align_bar_time(t: int) -> int:
     return (int(t) // 60) * 60
+
+
+def is_broker_rest_source(source: str | None) -> bool:
+    return str(source or "").upper() in _BROKER_REST_SOURCES
 
 
 def _bar_row(symbol: str, bar: dict, source: str) -> dict[str, Any]:
@@ -143,6 +156,8 @@ def _upsert_1m_rows(rows: list[dict[str, Any]]) -> int:
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Broker REST always wins; live/seed rows only fill empty slots or
+        # replace other non-broker sources (never clobber ALPACA_REST etc.).
         if is_postgres():
             cursor.executemany(
                 """
@@ -156,6 +171,14 @@ def _upsert_1m_rows(rows: list[dict[str, Any]]) -> int:
                     close = EXCLUDED.close,
                     volume = EXCLUDED.volume,
                     source = EXCLUDED.source
+                WHERE
+                    EXCLUDED.source IN (
+                        'ALPACA_REST', 'MASSIVE_REST', 'BINANCE_REST', 'POLYGON_REST'
+                    )
+                    OR market_bars_1m.source IS NULL
+                    OR market_bars_1m.source NOT IN (
+                        'ALPACA_REST', 'MASSIVE_REST', 'BINANCE_REST', 'POLYGON_REST'
+                    )
                 """,
                 [
                     (
@@ -174,9 +197,24 @@ def _upsert_1m_rows(rows: list[dict[str, Any]]) -> int:
         else:
             cursor.executemany(
                 """
-                INSERT OR REPLACE INTO market_bars_1m
+                INSERT INTO market_bars_1m
                     (symbol, time, open, high, low, close, volume, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (symbol, time) DO UPDATE SET
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    close = excluded.close,
+                    volume = excluded.volume,
+                    source = excluded.source
+                WHERE
+                    excluded.source IN (
+                        'ALPACA_REST', 'MASSIVE_REST', 'BINANCE_REST', 'POLYGON_REST'
+                    )
+                    OR market_bars_1m.source IS NULL
+                    OR market_bars_1m.source NOT IN (
+                        'ALPACA_REST', 'MASSIVE_REST', 'BINANCE_REST', 'POLYGON_REST'
+                    )
                 """,
                 [
                     (

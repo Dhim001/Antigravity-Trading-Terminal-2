@@ -76,7 +76,7 @@ def get_bot_candles(
     """
     Return OHLCV series for bot evaluation at the requested timeframe.
 
-    LIVE_MASSIVE: native HT REST for timeframes > 1m (deep analysis limits).
+    LIVE_MASSIVE / LIVE_ALPACA: native HT REST for timeframes > 1m (deep analysis limits).
     Otherwise: 1m feed buffer + archive, resampled to the bot timeframe.
     """
     min_bars = max(50, int(min_bars if min_bars is not None else BOT_MIN_CANDLES))
@@ -85,7 +85,7 @@ def get_bot_candles(
 
     if (
         key != "1m"
-        and TERMINAL_MODE == "LIVE_MASSIVE"
+        and TERMINAL_MODE in ("LIVE_MASSIVE", "LIVE_ALPACA")
         and feed is not None
         and hasattr(feed, "fetch_ht_candles")
     ):

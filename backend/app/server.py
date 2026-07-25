@@ -65,7 +65,7 @@ from app.services.bots.runtime import (
     runs_bot_engine_inline,
 )
 from app.services.bots.paper_oms import run_paper_oms_tick
-from app.services.bots.massive_scheduler import run_massive_bot_tick
+from app.services.bots.massive_scheduler import run_live_feed_bot_tick, run_massive_bot_tick
 from app.services.bots.execution_mode import execution_mode_label, uses_paper_oms
 from app.services.runtime.shutdown import (
     graceful_shutdown,
@@ -247,6 +247,35 @@ async def live_ib_market_broadcast_loop():
         except Exception as e:
             logging.error("Error in LIVE_IB market broadcast loop: %s", e)
         await asyncio.sleep(IB_BROADCAST_INTERVAL_SEC)
+
+
+async def live_alpaca_bot_tick_loop():
+    """TICK bots + HT BAR_CLOSE on Alpaca broadcast cadence (no paper OMS)."""
+    from app.config import ALPACA_BROADCAST_INTERVAL_SEC, ALLOW_LIVE_BOTS
+
+    if not ALLOW_LIVE_BOTS:
+        logging.info("Alpaca bot tick loop idle (ALLOW_LIVE_BOTS=false).")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    logging.info(
+        "Starting LIVE_ALPACA bot tick loop (interval=%ss)...",
+        ALPACA_BROADCAST_INTERVAL_SEC,
+    )
+    feed = state.feed
+    manager = state.manager
+    bot_manager = state.bot_manager
+    oms = state.oms
+    last_prices: dict[str, float] = {}
+    while True:
+        try:
+            last_prices = await run_live_feed_bot_tick(
+                bot_manager, feed, manager, oms, last_prices=last_prices,
+            )
+        except Exception as e:
+            logging.error("Error in LIVE_ALPACA bot tick loop: %s", e)
+        await asyncio.sleep(max(0.5, float(ALPACA_BROADCAST_INTERVAL_SEC)))
 
 
 async def live_massive_market_broadcast_loop():
@@ -590,6 +619,9 @@ async def main():
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
             elif TERMINAL_MODE == "LIVE_MASSIVE":
                 tasks.append(asyncio.create_task(live_massive_market_broadcast_loop()))
+                tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
+            elif TERMINAL_MODE == "LIVE_ALPACA":
+                tasks.append(asyncio.create_task(live_alpaca_bot_tick_loop()))
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
             else:
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))

@@ -2,7 +2,8 @@
  * Client-side budgets for ML Lab train / validate jobs.
  *
  * Async jobs return immediately; the UI polls `/api/v1/ml/jobs/{id}` until done.
- * These caps must cover GPU-era capacity (larger hidden dims, 100+ epochs, PPO 200k steps).
+ * These caps must cover GPU-era capacity (larger hidden dims, 100+ epochs, PPO 200k steps)
+ * and longer Lab training windows (18–36 months of deep REST + folds).
  * Live inference stays CPU ONNX — only training/validate wall-clock grows.
  */
 
@@ -25,14 +26,30 @@ export const ML_VALIDATE_TIMEOUT_MS = Object.freeze({
   default: 900_000, // 15 min
 });
 
-/** Extra headroom after the nominal budget before the UI abandons polling. */
-export const ML_JOB_POLL_BUFFER_MS = 10 * 60_000; // 10 min
+/** Extra headroom after the nominal budget before the UI soft-budget toast. */
+export const ML_JOB_POLL_BUFFER_MS = 15 * 60_000; // 15 min
 
 /** POST /ml/train|validate submit — returns job_id immediately (fetch is async). */
-export const ML_JOB_SUBMIT_TIMEOUT_MS = 60_000; // 1 min
+export const ML_JOB_SUBMIT_TIMEOUT_MS = 120_000; // 2 min (queue + first ack)
 
 /** Per GET /ml/jobs/{id} attempt — short; failures must not stop the progress bar. */
-export const ML_JOB_STATUS_POLL_TIMEOUT_MS = 20_000;
+export const ML_JOB_STATUS_POLL_TIMEOUT_MS = 30_000;
+
+/**
+ * Scale factor for Lab training_window_months (3mo baseline = 1×).
+ * Longer windows mean deeper REST + more FIT bars → more wall-clock.
+ * @param {number|string|null|undefined} months
+ * @returns {number}
+ */
+export function mlJobWindowScale(months) {
+  const m = Number(months);
+  if (!Number.isFinite(m) || m <= 3) return 1;
+  if (m <= 6) return 1.25;
+  if (m <= 12) return 1.6;
+  if (m <= 18) return 2.0;
+  if (m <= 24) return 2.5;
+  return 3.0; // 36mo
+}
 
 /**
  * True when a single poll HTTP call failed but the job may still be running.
@@ -64,31 +81,40 @@ export class MlJobPollBudgetError extends Error {
 /**
  * @param {string} strategy
  * @param {MlJobKind} [kind]
+ * @param {{ months?: number|string|null }} [opts]
  * @returns {number}
  */
-export function mlJobTimeoutMs(strategy, kind = 'validate') {
+export function mlJobTimeoutMs(strategy, kind = 'validate', opts = {}) {
   const table = kind === 'train' ? ML_TRAIN_TIMEOUT_MS : ML_VALIDATE_TIMEOUT_MS;
   const id = String(strategy || '').toUpperCase();
-  if (id === 'RL_PPO_AGENT') return table.RL_PPO_AGENT;
-  if (DEEP.has(id)) return table.deep;
-  return table.default;
+  let base = table.default;
+  if (id === 'RL_PPO_AGENT') base = table.RL_PPO_AGENT;
+  else if (DEEP.has(id)) base = table.deep;
+  const scale = mlJobWindowScale(opts?.months);
+  // Cap absolute wall-clock so a 36mo deep train doesn't claim multi-day UI.
+  const hardCap = kind === 'train' ? 8 * 3_600_000 : 4 * 3_600_000; // 8h / 4h
+  return Math.min(hardCap, Math.round(base * scale));
 }
 
 /**
- * How long the client may poll a job before giving up.
+ * How long the client may poll a job before the soft-budget toast.
  * @param {string} strategy
  * @param {MlJobKind} [kind]
+ * @param {{ months?: number|string|null }} [opts]
  */
-export function mlJobPollDeadlineMs(strategy, kind = 'validate') {
-  return mlJobTimeoutMs(strategy, kind) + ML_JOB_POLL_BUFFER_MS;
+export function mlJobPollDeadlineMs(strategy, kind = 'validate', opts = {}) {
+  const scale = mlJobWindowScale(opts?.months);
+  const buffer = Math.round(ML_JOB_POLL_BUFFER_MS * Math.max(1, Math.min(scale, 2.5)));
+  return mlJobTimeoutMs(strategy, kind, opts) + buffer;
 }
 
 /**
- * Poll interval — slightly slower for long GPU trains to cut request chatter.
+ * Poll interval — slightly slower for long GPU / long-window jobs to cut chatter.
  * @param {number} elapsedMs
  * @param {number} budgetMs
  */
 export function mlJobPollIntervalMs(elapsedMs, budgetMs) {
+  if (budgetMs >= 5_400_000 && elapsedMs > 180_000) return 8_000;
   if (budgetMs >= 3_600_000 && elapsedMs > 120_000) return 5_000;
   if (elapsedMs > 60_000) return 4_000;
   return 2_500;

@@ -65,7 +65,7 @@ import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from 
 import { useEffectiveRiskHold, botRuntimeActivityHint } from '@/lib/botRiskHold';
 import { getBotOwnedPositionView } from '@/lib/botAttribution';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
-import { isLiveMassiveMode, isPaperExecutionMode } from '@/lib/massiveMarket';
+import { isLiveMassiveMode, isPaperExecutionMode, usesNativeHtCharts } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { buildDeployPayload } from '@/lib/deployGate';
 import DeployGatePanel from '../DeployGatePanel';
@@ -313,6 +313,8 @@ export function AlgoTab({ hideToolbar = false }) {
   const liveBotsBlocked = isLive && !allowLiveBots;
   const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
   const massiveLive = isLiveMassiveMode(terminalMode);
+  const nativeHtLive = usesNativeHtCharts(terminalMode);
+  const alpacaLive = terminalMode === 'LIVE_ALPACA';
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [forceDeploy, setForceDeploy] = useState(false);
@@ -761,20 +763,28 @@ export function AlgoTab({ hideToolbar = false }) {
         <Alert className="algo-tab__banner border-trading-up/30 bg-trading-up/5 xl:col-span-3">
           <Activity aria-hidden />
           <AlertDescription className="text-xs leading-relaxed">
-            <strong>{massiveLive ? 'Paper execution on Massive data' : 'Live bots enabled'}</strong>
+            <strong>
+              {massiveLive
+                ? 'Paper execution on Massive data'
+                : alpacaLive
+                  ? 'Live bots on Alpaca'
+                  : 'Live bots enabled'}
+            </strong>
             {massiveLive
               ? ' — instant fills at live prices (no broker routing). 1m BAR_CLOSE via feed bar hooks; higher timeframes via native REST; TICK bots on price updates.'
-              : ` on ${terminalMode}`}
+              : alpacaLive
+                ? ' — real Alpaca OMS (paper/live URL). 1m BAR_CLOSE via feed hooks; higher TFs via Alpaca REST; TICK bots on price updates.'
+                : ` on ${terminalMode}`}
             {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
-            {!massiveLive && (
+            {!nativeHtLive && (
               <>
                 {' '}Indicator warm-up uses archive when buffer &lt; {botMinCandles} bars.
                 Signals fire on closed {formatBarTimeframeLabel(botTimeframe)} bars — do not resend ambiguous orders.
               </>
             )}
-            {massiveLive && (
+            {nativeHtLive && (
               <>
-                {' '}Indicator warm-up uses Massive REST when the chart buffer is shallow.
+                {' '}Indicator warm-up uses {alpacaLive ? 'Alpaca' : 'Massive'} REST when the chart buffer is shallow.
               </>
             )}
           </AlertDescription>
@@ -1508,8 +1518,8 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                {massiveLive
-                  ? 'Shared with deploy timeframe — backtest uses archive; live Massive bots use native HT REST where available.'
+                {nativeHtLive
+                  ? `Shared with deploy timeframe — backtest uses archive; live ${alpacaLive ? 'Alpaca' : 'Massive'} bots use native HT REST where available.`
                   : 'Shared with deploy timeframe — resampled from archived 1m data.'}
               </span>
             </div>
@@ -1678,8 +1688,8 @@ export function AlgoTab({ hideToolbar = false }) {
                 {isMlStrategy(botStrategy)
                   ? 'With ML_CALENDAR_HOLDOUT=1, ML backtests default to the locked holdout (not nested inside train FIT).'
                   : botTimeframe === '1m'
-                    ? 'Long ranges fill older 1m gaps from Massive/broker REST when local archive is short.'
-                    : 'Higher TF long ranges use Massive native bars (not limited to local 1m retention).'}
+                    ? `Long ranges fill older 1m gaps from ${alpacaLive ? 'Alpaca' : 'Massive/broker'} REST when local archive is short.`
+                    : `Higher TF long ranges use ${alpacaLive ? 'Alpaca' : 'Massive'} native bars (not limited to local 1m retention).`}
               </span>
             </div>
 

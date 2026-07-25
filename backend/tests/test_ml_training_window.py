@@ -16,8 +16,11 @@ from app.services.bots.ml_training_window import (
 def test_parse_training_window_months_buckets():
     assert parse_training_window_months({"training_window_months": 3}) == 3
     assert parse_training_window_months({"training_window_months": "12"}) == 12
+    assert parse_training_window_months({"training_window_months": 24}) == 24
+    assert parse_training_window_months({"training_window_months": 36}) == 36
     assert parse_training_window_months({}) == 3
     assert parse_training_window_months({"training_window_months": 7}) == 6  # nearest
+    assert parse_training_window_months({"training_window_months": 30}) == 24  # nearest (tie → lower)
 
 
 def test_bar_limits_scale_with_window():
@@ -25,17 +28,19 @@ def test_bar_limits_scale_with_window():
     b3 = bar_limit_for_training_window(3, purpose="train")
     b6 = bar_limit_for_training_window(6, purpose="train")
     b12 = bar_limit_for_training_window(12, purpose="train")
-    assert b1 < b3 < b6 <= b12
+    b24 = bar_limit_for_training_window(24, purpose="train")
+    b36 = bar_limit_for_training_window(36, purpose="train")
+    assert b1 < b3 < b6 <= b12 <= b24 <= b36
     assert b1 >= 500
-    assert b12 <= 50_000
+    assert b36 <= 100_000
 
 
 def test_htf_train_honors_calendar_not_1m_scale():
     """6mo · 5m must not be crushed to ~8k (old 1m-cap × scale bug)."""
     b = bar_limit_for_training_window(6, timeframe="5m", purpose="train")
-    # ideal ≈ 6*30*24*12 = 51840, hard max 50000
+    # ideal ≈ 6*30*24*12 = 51840, hard max 100000
     assert b >= 40_000
-    assert b <= 50_000
+    assert b <= 100_000
 
 
 def test_htf_validate_leaner_than_train():
@@ -43,6 +48,50 @@ def test_htf_validate_leaner_than_train():
     validate = bar_limit_for_training_window(6, timeframe="5m", purpose="validate")
     assert validate < train
     assert validate >= 2_500
+
+
+def test_validate_min_candles_ht_lower_than_1m():
+    from app.services.bots.ml_training_window import validate_min_candles
+
+    assert validate_min_candles("1m") >= 500
+    # 295 FIT bars must clear the 1h floor (legacy flat-500 bug).
+    assert validate_min_candles("1h") <= 295
+    assert validate_min_candles("15m") <= 295
+    assert validate_min_candles("5m") <= 400
+
+
+def test_wf_adaptive_fold_mins_lean_on_1h():
+    from app.services.bots.ml_training_window import wf_adaptive_fold_mins
+    from app.services.bots.ml_walk_forward_validator import generate_wf_folds
+
+    min_train, min_test = wf_adaptive_fold_mins(295, "1h")
+    assert min_train < 200
+    assert min_test < 100
+    folds = generate_wf_folds(
+        295, n_folds=5, purge_bars=30, min_train=min_train, min_test=min_test,
+    )
+    assert len(folds) >= 2
+
+
+def test_next_training_window_months():
+    from app.services.bots.ml_training_window import next_training_window_months
+
+    assert next_training_window_months(1) == 3
+    assert next_training_window_months(3) == 6
+    assert next_training_window_months(12) == 18
+    assert next_training_window_months(36) is None
+
+
+def test_validate_fetch_target_exceeds_hard_floor():
+    from app.services.bots.ml_training_window import (
+        validate_fetch_target_candles,
+        validate_min_candles,
+    )
+
+    hard = validate_min_candles("1h", n_folds=3)
+    target = validate_fetch_target_candles("1h", n_folds=3)
+    assert target >= hard
+    assert target >= 800
 
 
 def test_skip_live_artifact_writes():

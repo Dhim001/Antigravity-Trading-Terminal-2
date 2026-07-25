@@ -2,12 +2,13 @@ import React, { useCallback, useEffect, useState, Suspense } from 'react';
 import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/dark.css';
 
-import { lazyImport } from '../lib/lazyImport';
+import { lazyImport, prefetchDockPanels, prefetchLazyImport } from '../lib/lazyImport';
 import { useDetachedPanels } from '../hooks/useDetachedPanels';
 import {
   getStandalonePanelDef,
   subscribeStandaloneEvents,
 } from '../lib/standalonePanels';
+import { focusDetachedPanelForTab } from '../lib/workspaceNav';
 import {
   focusFlexLayoutComponent,
   focusFlexLayoutDockGroup,
@@ -27,6 +28,10 @@ import MlTrainingFlexPanel from './dock/MlTrainingFlexPanel';
 import AlgoFlexPanel from './dock/AlgoFlexPanel';
 import CopilotFlexPanel from './dock/CopilotFlexPanel';
 import InsightsFlexPanel from './dock/InsightsFlexPanel';
+// Light portfolio tabs — eager so the first dock click is not a Suspense blank.
+import PositionsTab from './dock/PositionsPanel';
+import OrdersTab from './dock/OrdersPanel';
+import BalancesTab from './dock/BalancesPanel';
 
 // Lazy load actual inner panels instead of Resizable wrappers
 const WatchlistSidebar = lazyImport(() => import('./WatchlistWidget'), 'watchlist');
@@ -39,11 +44,6 @@ const OrderEntryWidget = lazyImport(() => import('./OrderEntryWidget'), 'order-e
 const OrderBookWidget = lazyImport(() => import('./OrderBookWidget'), 'order-book');
 const DepthChartWidget = lazyImport(() => import('./DepthChartWidget'), 'depth-chart');
 const FootprintPanel = lazyImport(() => import('./chart/FootprintPanel'), 'footprint');
-
-// Dock inner panels
-const PositionsTab = lazyImport(() => import('./dock/PositionsPanel'), 'positions');
-const OrdersTab = lazyImport(() => import('./dock/OrdersPanel'), 'orders');
-const BalancesTab = lazyImport(() => import('./dock/BalancesPanel'), 'balances');
 
 // Automation and Data inner panels
 const ReconciliationTab = lazyImport(() => import('./ReconciliationTab'), 'reconcile');
@@ -75,11 +75,16 @@ function PanelFallback({ label = 'Loading…' }) {
 function wrapPanel(node, component, element) {
   if (!UNMOUNT_WHEN_HIDDEN.has(component)) return element;
   return (
-    <MountWhenVisible node={node}>
+    <MountWhenVisible
+      node={node}
+      placeholderLabel={`Loading ${component}…`}
+      keepAliveMs={60_000}
+    >
       {element}
     </MountWhenVisible>
   );
 }
+
 
 const DEFAULT_LAYOUT = {
   global: {
@@ -239,10 +244,29 @@ export default function WorkspaceGrid({ viewMode }) {
     });
   }, [attach]);
 
+  // Warm dock / trading panel chunks so first tab click is not a blank Suspense.
+  useEffect(() => {
+    prefetchDockPanels();
+  }, []);
+
   const onAction = useCallback((action) => {
     const result = persistOnSelectAction(action, model);
     try {
       if (action?.type === Actions.SELECT_TAB) {
+        // Prefetch as soon as the tab is selected (covers keyboard / dock-tab events).
+        try {
+          const tabId = action.data?.tabNode;
+          const tabNode = tabId ? model.getNodeById(tabId) : null;
+          const comp = tabNode?.getComponent?.();
+          if (comp) {
+            prefetchLazyImport(comp);
+            // Clicking a detached tab should raise its standalone window, not
+            // only show the in-dock placeholder.
+            focusDetachedPanelForTab(comp);
+          }
+        } catch {
+          /* ignore */
+        }
         queueMicrotask(() => {
           const selected = listSelectedComponents(model);
           const left = selected.find((c) => c === 'movers' || c === 'watchlist');
@@ -258,6 +282,21 @@ export default function WorkspaceGrid({ viewMode }) {
     }
     return result;
   }, [model]);
+
+  const onRenderTab = useCallback((node, renderValues) => {
+    const component = node?.getComponent?.();
+    if (!component) return;
+    const content = renderValues.content;
+    renderValues.content = (
+      <span
+        className="inline-flex max-w-full items-center"
+        onMouseEnter={() => prefetchLazyImport(component)}
+        onFocus={() => prefetchLazyImport(component)}
+      >
+        {content}
+      </span>
+    );
+  }, []);
 
   const factory = useCallback((node) => {
     const component = node.getComponent();
@@ -296,13 +335,13 @@ export default function WorkspaceGrid({ viewMode }) {
         );
         break;
       case 'positions':
-        panel = <Suspense fallback={<PanelFallback />}><PositionsTab /></Suspense>;
+        panel = <PositionsTab />;
         break;
       case 'orders':
-        panel = <Suspense fallback={<PanelFallback />}><OrdersTab /></Suspense>;
+        panel = <OrdersTab />;
         break;
       case 'balances':
-        panel = <Suspense fallback={<PanelFallback />}><BalancesTab /></Suspense>;
+        panel = <BalancesTab />;
         break;
       case 'algo':
         panel = <AlgoFlexPanel />;
@@ -347,6 +386,7 @@ export default function WorkspaceGrid({ viewMode }) {
         factory={factory}
         onModelChange={makePersistOnModelChange(model)}
         onAction={onAction}
+        onRenderTab={onRenderTab}
       />
     </div>
   );

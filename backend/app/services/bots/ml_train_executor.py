@@ -258,12 +258,22 @@ def run_validate_job(
             cfg["_pbo_skipped"] = "deep_too_expensive"
 
     if strat_u == "RL_PPO_AGENT":
-        cfg.setdefault("total_timesteps", 2048)
+        # Interactive Validate is intentionally lean vs full Train (200k steps).
+        cfg.setdefault("total_timesteps", 4096)
         cfg.setdefault("n_steps", 512)
         cfg.setdefault("ppo_epochs", 2)
         cfg.setdefault("hidden_dim", 64)
-        cfg.setdefault("validate_max_bars", 1200)
+        # Scale with Lab window when provided; keep responsive for interactive UI.
+        try:
+            user_vmax = int(cfg.get("validate_max_bars") or 0)
+        except (TypeError, ValueError):
+            user_vmax = 0
+        if user_vmax <= 0:
+            cfg["validate_max_bars"] = 2000
         cfg.setdefault("wf_use_gpu", True)
+        cfg["wf_capacity_parity"] = False
+        cfg.setdefault("skip_onnx_export", True)
+        cfg.setdefault("skip_snapshot", True)
         if run_pbo and not bool(cfg.get("force_pbo")):
             run_pbo = False
             cfg["_pbo_skipped"] = "rl_too_expensive"

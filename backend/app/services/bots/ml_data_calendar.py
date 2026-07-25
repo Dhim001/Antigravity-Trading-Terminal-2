@@ -15,7 +15,7 @@ CALENDAR_VERSION = 1
 # Default holdout as a fraction of the Lab training window (clamped below).
 _DEFAULT_HOLDOUT_FRAC = 0.15
 _MIN_HOLDOUT_DAYS = 7
-_MAX_HOLDOUT_DAYS = 30
+_MAX_HOLDOUT_DAYS = 60
 
 
 def calendar_holdout_enabled(config: dict | None = None) -> bool:
@@ -38,7 +38,7 @@ def calendar_holdout_enabled(config: dict | None = None) -> bool:
 
 
 def default_holdout_days(months: int) -> int:
-    """14–30d typical; 1-month Lab window floors at 7d."""
+    """7–60d typical; longer Lab windows keep a larger locked holdout."""
     try:
         m = int(months)
     except (TypeError, ValueError):

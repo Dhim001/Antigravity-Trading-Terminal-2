@@ -112,7 +112,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
     ? ingestShortfall.slice(0, 8).join(', ') + (ingestShortfall.length > 8 ? '…' : '')
     : 'Full coverage';
   const brokerIngestDisabledReason = !brokerAvailable
-    ? 'No broker API — set MASSIVE_API_KEY or Alpaca/Binance credentials'
+    ? 'No broker API — set MASSIVE_API_KEY (Massive UI) or Alpaca keys (Alpaca UI)'
     : null;
 
   const getAvailableAssets = () => {
@@ -751,7 +751,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                       {ingestShortfall.length} symbol(s) have less than {ingestTargetDays} days of 1m archive.
                       {brokerAvailable
                         ? ' Run broker ingest or wait for the hourly ingestion cycle.'
-                        : ' Configure MASSIVE_API_KEY or broker credentials to backfill.'}
+                        : ' Configure broker credentials for this profile (Alpaca keys on LIVE_ALPACA, MASSIVE_API_KEY on LIVE_MASSIVE).'}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -872,7 +872,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
               )}
 
               {systemStats.altdata && (
-                <AdminSection title="Alternative Data" description="Corporate actions and market calendar (Massive/Polygon REST).">
+                <AdminSection title="Alternative Data" description="Corporate actions and market calendar (Alpaca on LIVE_ALPACA; Massive/Polygon on LIVE_MASSIVE).">
                   <div className="flex flex-wrap gap-2">
                     <StatCard
                       label="Corporate events"

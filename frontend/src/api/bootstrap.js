@@ -26,14 +26,15 @@ const DEFAULT_PREFETCH_CAP = 12;
 
 function prefetchSymbolCap() {
   const { terminalMode } = useStore.getState();
-  if (isLiveMassiveMode(terminalMode)) {
+  // Massive + Alpaca: avoid REST/WS burst on connect — active symbol only.
+  if (usesNativeHtCharts(terminalMode)) {
     return 1;
   }
   return DEFAULT_PREFETCH_CAP;
 }
 
 function prefetchStaggerMs() {
-  return isLiveMassiveMode(useStore.getState().terminalMode) ? 100 : 80;
+  return usesNativeHtCharts(useStore.getState().terminalMode) ? 100 : 80;
 }
 
 /**
@@ -130,7 +131,7 @@ export function resubscribeMarketSymbols() {
   }
   const { activeSymbol, symbolsList, terminalMode } = useStore.getState();
   const storeActions = getStoreActions();
-  if (isLiveMassiveMode(terminalMode)) {
+  if (usesNativeHtCharts(terminalMode)) {
     subscribeChartSymbols([activeSymbol].filter(Boolean), storeActions, { interval: '1m' });
     return;
   }

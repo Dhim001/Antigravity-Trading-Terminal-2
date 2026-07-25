@@ -41,9 +41,10 @@ export function isWatchlistColumnVisible(cols, id) {
  * @returns {Array<{ id: string, field: string | null, label: string, col: string, align: 'left' | 'right', title?: string, optional?: boolean }>}
  */
 export function watchlistColumnDefs(terminalMode) {
-  const chgAbs = terminalMode === 'LIVE_MASSIVE' ? 'Chg' : '24h Chg';
-  const chgPct = terminalMode === 'LIVE_MASSIVE' ? 'Chg%' : '24h%';
-  const rolling = terminalMode === 'LIVE_MASSIVE';
+  const sessionChg = terminalMode === 'LIVE_MASSIVE' || terminalMode === 'LIVE_ALPACA';
+  const chgAbs = sessionChg ? 'Chg' : '24h Chg';
+  const chgPct = sessionChg ? 'Chg%' : '24h%';
+  const rolling = sessionChg;
 
   return [
     { id: 'symbol', field: 'symbol', label: 'Symbol', col: 'watchlist-col-symbol', align: 'left' },

@@ -88,6 +88,8 @@ export function massiveWatchlistBadge(symbol, terminalMode, massiveHealth) {
 
 /** Book/depth header badge: NBBO | Synth | null */
 export function massiveBookBadge(symbol, terminalMode, massiveHealth) {
+  // Alpaca L2 is synthetic around last/mid — label depth honestly.
+  if (terminalMode === 'LIVE_ALPACA') return 'Synth';
   if (!isLiveMassiveMode(terminalMode) || !massiveHealth) return null;
   if (!massiveHealth.quotes_enabled) return 'Synth';
   const list = massiveHealth.real_quote_symbol_list;

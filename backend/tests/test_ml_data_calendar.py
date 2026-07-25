@@ -22,7 +22,8 @@ def test_default_holdout_days_clamped():
     assert default_holdout_days(1) == 7
     assert default_holdout_days(3) == 14
     assert default_holdout_days(6) == 27
-    assert default_holdout_days(12) == 30
+    assert default_holdout_days(12) == 54
+    assert default_holdout_days(36) == 60
 
 
 def test_build_calendar_partitions(monkeypatch):

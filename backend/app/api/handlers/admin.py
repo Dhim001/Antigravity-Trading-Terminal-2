@@ -316,7 +316,7 @@ async def admin_archive_ingest(ctx: RequestContext) -> None:
         elif broker == "none":
             message = (
                 "No broker API configured — seed backfill only. "
-                "Set MASSIVE_API_KEY or broker credentials for historical fetch."
+                "On LIVE_ALPACA set Alpaca keys; on LIVE_MASSIVE set MASSIVE_API_KEY."
             )
         else:
             message = (

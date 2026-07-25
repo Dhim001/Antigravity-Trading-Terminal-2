@@ -1273,6 +1273,12 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                       {obsHealth.alpaca.crypto_lag_sec != null && (
                         <div><dt>Crypto lag</dt><dd>{obsHealth.alpaca.crypto_lag_sec}s</dd></div>
                       )}
+                      {obsHealth.alpaca.ht_cache_entries != null && (
+                        <div>
+                          <dt>HT cache</dt>
+                          <dd>{obsHealth.alpaca.ht_cache_entries}</dd>
+                        </div>
+                      )}
                     </>
                   )}
                   {obsHealth?.feed_lag_sec != null && (
@@ -1335,6 +1341,9 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                   <div><dt>Mode (broker)</dt><dd>{isLive ? `Live · ${brokerLabel(terminalMode)}` : 'Sim'}</dd></div>
                   {terminalMode === 'LIVE_MASSIVE' && (
                     <div><dt>Paper bots</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Sim OMS fills' : 'Disabled'}</dd></div>
+                  )}
+                  {terminalMode === 'LIVE_ALPACA' && (
+                    <div><dt>Alpaca OMS</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Paper/live routing' : 'Disabled'}</dd></div>
                   )}
                   <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
                   <div>

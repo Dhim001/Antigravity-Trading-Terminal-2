@@ -16,6 +16,15 @@ def is_live_massive() -> bool:
     return TERMINAL_MODE == "LIVE_MASSIVE"
 
 
+def is_live_alpaca() -> bool:
+    return TERMINAL_MODE == "LIVE_ALPACA"
+
+
+def runs_live_feed_bot_ticks() -> bool:
+    """TICK bots + HT bar-close evaluation on the live feed broadcast cadence."""
+    return TERMINAL_MODE in ("LIVE_MASSIVE", "LIVE_ALPACA")
+
+
 def execution_mode_label() -> str:
     if TERMINAL_MODE == "LIVE_MASSIVE":
         return "paper"

@@ -22,7 +22,8 @@ import { applyLayoutMode } from './settings/layoutModes';
 import MemoryDevBadge from './components/MemoryDevBadge';
 import PwaInstallBanner from './components/PwaInstallBanner';
 import WorkspaceGrid from './components/WorkspaceGrid';
-import { focusWorkspacePanel } from './lib/workspaceNav';
+import { focusDetachedPanelForTab, focusWorkspacePanel } from './lib/workspaceNav';
+import { subscribeTerminalNav } from './lib/standalonePanels';
 
 const SystemControlPanel = lazyImport(() => import('./components/SystemControlPanel'), 'system-control');
 const SettingsPanel = lazyImport(() => import('./components/SettingsPanel'), 'settings');
@@ -176,6 +177,49 @@ export default function App() {
     window.addEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
     return () => window.removeEventListener('terminal:workspace-loaded', onWorkspaceLoaded);
   }, [setViewMode]);
+
+  // Links to a detached dock tab must focus the standalone window, not only the placeholder.
+  useEffect(() => {
+    const onDockTab = (e) => {
+      const id = typeof e.detail === 'string' ? e.detail : e.detail?.tab;
+      if (id) focusDetachedPanelForTab(id);
+    };
+    window.addEventListener('dock-tab', onDockTab);
+    return () => window.removeEventListener('dock-tab', onDockTab);
+  }, []);
+
+  // Detached windows relay focus-panel / set-symbol here (separate JS realm).
+  useEffect(() => {
+    return subscribeTerminalNav((msg) => {
+      if (msg?.type === 'focus-panel' && msg.panelId) {
+        focusWorkspacePanel(msg.panelId);
+        return;
+      }
+      if (msg?.type === 'set-symbol' && msg.symbol) {
+        const sym = String(msg.symbol).toUpperCase();
+        if (sym && sym !== useStore.getState().activeSymbol) {
+          useStore.getState().setActiveSymbol(sym);
+        }
+      }
+    });
+  }, []);
+
+  // Symbol clicks in a detached window write localStorage; sync the chart here.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== 'terminal_active_symbol' || e.newValue == null) return;
+      try {
+        const sym = JSON.parse(e.newValue);
+        if (typeof sym === 'string' && sym && sym !== useStore.getState().activeSymbol) {
+          useStore.getState().setActiveSymbol(sym);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   useEffect(() => {
     const onInsights = () => {

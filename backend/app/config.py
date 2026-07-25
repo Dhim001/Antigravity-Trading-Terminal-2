@@ -590,18 +590,18 @@ MASSIVE_HT_CACHE_MAX_ENTRIES = int(os.environ.get("MASSIVE_HT_CACHE_MAX_ENTRIES"
 
 # Detailed symbol catalog lists
 EQUITY_SYMBOLS = {
-    "AAPL": {"price": 182.50, "volatility": 0.0001, "decimals": 2, "asset": "AAPL", "quote": "USD"},
-    "TSLA": {"price": 178.20, "volatility": 0.0003, "decimals": 2, "asset": "TSLA", "quote": "USD"},
+    "AAPL": {"price": 333.50, "volatility": 0.0001, "decimals": 2, "asset": "AAPL", "quote": "USD"},
+    "TSLA": {"price": 248.00, "volatility": 0.0003, "decimals": 2, "asset": "TSLA", "quote": "USD"},
     "MSFT": {"price": 420.10, "volatility": 0.00008, "decimals": 2, "asset": "MSFT", "quote": "USD"},
-    "NVDA": {"price": 875.12, "volatility": 0.0004, "decimals": 2, "asset": "NVDA", "quote": "USD"},
+    "NVDA": {"price": 175.00, "volatility": 0.0004, "decimals": 2, "asset": "NVDA", "quote": "USD"},
     "AMD": {"price": 160.20, "volatility": 0.0003, "decimals": 2, "asset": "AMD", "quote": "USD"},
     "GOOGL": {"price": 175.40, "volatility": 0.00012, "decimals": 2, "asset": "GOOGL", "quote": "USD"},
     "AMZN": {"price": 180.50, "volatility": 0.00015, "decimals": 2, "asset": "AMZN", "quote": "USD"},
     "NFLX": {"price": 610.80, "volatility": 0.00022, "decimals": 2, "asset": "NFLX", "quote": "USD"},
     "META": {"price": 485.60, "volatility": 0.0002, "decimals": 2, "asset": "META", "quote": "USD"},
     "COIN": {"price": 240.50, "volatility": 0.0005, "decimals": 2, "asset": "COIN", "quote": "USD"},
-    "SPY": {"price": 510.20, "volatility": 0.00006, "decimals": 2, "asset": "SPY", "quote": "USD"},
-    "QQQ": {"price": 435.50, "volatility": 0.00008, "decimals": 2, "asset": "QQQ", "quote": "USD"},
+    "SPY": {"price": 580.00, "volatility": 0.00006, "decimals": 2, "asset": "SPY", "quote": "USD"},
+    "QQQ": {"price": 510.00, "volatility": 0.00008, "decimals": 2, "asset": "QQQ", "quote": "USD"},
     "JPM": {"price": 195.40, "volatility": 0.0001, "decimals": 2, "asset": "JPM", "quote": "USD"},
     "V": {"price": 275.60, "volatility": 0.00007, "decimals": 2, "asset": "V", "quote": "USD"},
     "DIS": {"price": 115.30, "volatility": 0.00014, "decimals": 2, "asset": "DIS", "quote": "USD"}

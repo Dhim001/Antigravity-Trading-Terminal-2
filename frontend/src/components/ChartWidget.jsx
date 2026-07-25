@@ -2181,7 +2181,9 @@ export default function ChartWidget() {
             <span className="text-xs text-muted-foreground">
               {terminalMode === 'LIVE_MASSIVE'
                 ? 'Loading Massive chart history…'
-                : 'Loading chart history…'}
+                : terminalMode === 'LIVE_ALPACA'
+                  ? 'Loading Alpaca chart history…'
+                  : 'Loading chart history…'}
             </span>
           </div>
         )}

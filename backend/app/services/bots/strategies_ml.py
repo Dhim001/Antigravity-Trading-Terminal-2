@@ -99,7 +99,12 @@ def train_ml_signal_model(
     cfg["timeframe"] = tf
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
     wf_parity = bool(cfg.get("wf_capacity_parity", True))
-    min_samples = int(cfg.get("min_train_samples", 80 if wf_mode else 200))
+    # Strategy defaults always inject min_train_samples=200 via merge — that
+    # crushed lean WF folds. Prefer an explicit Lab override, else WF floor.
+    if wf_mode and "min_train_samples" not in raw_cfg:
+        min_samples = int(cfg.get("wf_min_train_samples", 80))
+    else:
+        min_samples = int(cfg.get("min_train_samples", 80 if wf_mode else 200))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))

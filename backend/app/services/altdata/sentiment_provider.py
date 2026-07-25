@@ -51,7 +51,8 @@ def fetch_symbol_sentiment(symbol: str) -> list[dict[str, Any]]:
         _add(fetch_alpaca_news(sym))
         if FINNHUB_API_KEY:
             _add(fetch_finnhub_sentiment(sym))
-        # Skip Polygon/GNews on Alpaca mode — Benzinga via Alpaca is primary; keeps polls snappy.
+        # Skip Polygon/GNews/Yahoo on Alpaca mode — Benzinga via Alpaca is primary.
+        return rows
     else:
         if FINNHUB_API_KEY:
             _add(fetch_finnhub_sentiment(sym))

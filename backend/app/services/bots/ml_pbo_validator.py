@@ -117,17 +117,32 @@ def compute_ml_pbo(
         except Exception:
             continue
 
-        # Evaluate IS accuracy (from training metrics if available)
-        is_acc = result.get("metrics", {}).get("val_accuracy", 0.0)
-        if is_acc == 0.0:
-            is_acc = result.get("metrics", {}).get("accuracy", 0.5)
+        # IS score: classifiers use val_accuracy; RL uses mean episode return.
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        if str(strategy or "").upper() == "RL_PPO_AGENT":
+            from app.services.bots.ml_walk_forward_validator import _rl_return_to_score
 
-        # Evaluate OOS accuracy
+            is_ret = metrics.get("mean_return_pct")
+            if is_ret is None:
+                is_ret = metrics.get("best_mean_return", 0.0)
+            is_acc = _rl_return_to_score(float(is_ret or 0.0))
+        else:
+            is_acc = metrics.get("val_accuracy", 0.0)
+            if is_acc == 0.0:
+                is_acc = metrics.get("accuracy", 0.5)
+
+        # Evaluate OOS (RL path needs fold policy bundle)
         try:
-            oos_result = evaluate_oos_accuracy(strategy, oos_candles, cfg)
+            oos_result = evaluate_oos_accuracy(
+                strategy, oos_candles, cfg, train_result=result,
+            )
             oos_acc = oos_result.get("accuracy", 0.0)
         except Exception:
+            if isinstance(result, dict):
+                result.pop("_wf_bundle", None)
             continue
+        if isinstance(result, dict):
+            result.pop("_wf_bundle", None)
 
         is_accuracies.append(is_acc)
         oos_accuracies.append(oos_acc)

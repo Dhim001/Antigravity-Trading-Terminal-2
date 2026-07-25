@@ -7,6 +7,7 @@ import { AlignLeft } from 'lucide-react';
 import { useOrderBookDepth } from '../hooks/useOrderBookDepth';
 import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
+import { useAlpacaHealth } from '../hooks/useAlpacaHealth';
 import { massiveBookBadge } from '../lib/massiveMarket';
 import { Badge } from '@/components/ui/badge';
 
@@ -36,11 +37,13 @@ export default function OrderBookWidget() {
   const activeSymbol = useStore(state => state.activeSymbol);
   const terminalMode = useStore(state => state.terminalMode);
   const massiveHealth = useMassiveHealth();
+  const alpacaHealth = useAlpacaHealth();
+  const feedHealth = terminalMode === 'LIVE_ALPACA' ? alpacaHealth : massiveHealth;
   const ticker = useStore(state => state.tickerData[activeSymbol]);
   const ob = useStore(state => state.orderBooks[activeSymbol]);
   const flash = useOrderBookFlash(activeSymbol);
   const depth = useOrderBookDepth(activeSymbol);
-  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, massiveHealth);
+  const bookBadge = massiveBookBadge(activeSymbol, terminalMode, feedHealth);
 
   if (!ob || !ob.bids || !ob.asks || !depth) {
     return (

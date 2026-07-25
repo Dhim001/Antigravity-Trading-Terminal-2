@@ -424,18 +424,23 @@ async def _execute_backtest(
                 pass
 
         # Long-horizon runs must not silently proceed on a short local archive.
-        from app.config import ARCHIVE_RETENTION_1M_DAYS
+        from app.config import ARCHIVE_RETENTION_1M_DAYS, TERMINAL_MODE
 
         replayed = float((meta or {}).get("replayed_days") or 0.0)
         bar_count_resolve = len(candles or [])
         if days > int(ARCHIVE_RETENTION_1M_DAYS) and replayed < days * 0.5:
             note = (meta or {}).get("range_note") or (meta or {}).get("resolution_note") or ""
+            key_hint = (
+                "ALPACA_API_KEY / ALPACA_SECRET_KEY"
+                if TERMINAL_MODE == "LIVE_ALPACA"
+                else "MASSIVE_API_KEY"
+            )
             await _finish(
                 "error",
                 message=(
                     f"Not enough history for {days}d {timeframe} backtest "
                     f"(got ≈{replayed:.1f}d, {bar_count_resolve} bars). "
-                    f"Broker REST fill may have failed — check MASSIVE_API_KEY and recycle the backend. "
+                    f"Broker REST fill may have failed — check {key_hint} and recycle the backend. "
                     f"{note}".strip()
                 ),
             )

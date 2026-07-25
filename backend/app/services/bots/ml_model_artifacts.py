@@ -672,9 +672,13 @@ def persist_ml_validation_metadata(
         "n_folds": wf.get("n_folds"),
         "successful_folds": wf.get("successful_folds"),
         "mean_oos_accuracy": agg.get("mean_oos_accuracy"),
+        "mean_oos_return_pct": agg.get("mean_oos_return_pct"),
+        "metric_kind": agg.get("metric_kind"),
         "recommendation": wf.get("recommendation"),
         "validated_at": validated_at,
         "stability": wf.get("stability") if isinstance(wf.get("stability"), dict) else None,
+        "capacity_gap_warning": wf.get("capacity_gap_warning"),
+        "wf_capacity_parity": wf.get("wf_capacity_parity"),
     }
     if meta.get("fit_end_ts"):
         walk_forward["fit_end_ts"] = meta.get("fit_end_ts")
@@ -812,11 +816,14 @@ def validation_summary_from_metadata(meta: dict | None) -> dict[str, Any]:
         walk_forward = {
             "ok": bool(wf_raw.get("ok")),
             "mean_oos_accuracy": wf_raw.get("mean_oos_accuracy"),
+            "mean_oos_return_pct": wf_raw.get("mean_oos_return_pct"),
+            "metric_kind": wf_raw.get("metric_kind"),
             "n_folds": wf_raw.get("n_folds"),
             "successful_folds": wf_raw.get("successful_folds"),
             "recommendation": wf_raw.get("recommendation"),
             "mode": wf_raw.get("mode"),
             "validated_at": validated_at,
+            "capacity_gap_warning": wf_raw.get("capacity_gap_warning"),
         }
 
     pbo_out = None

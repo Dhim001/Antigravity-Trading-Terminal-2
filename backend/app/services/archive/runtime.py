@@ -41,6 +41,25 @@ async def archive_startup_backfill(feed) -> None:
 
     if not ARCHIVE_BACKFILL_ON_STARTUP:
         return
+
+    # LIVE_ALPACA / LIVE_MASSIVE start with synthetic placeholder candles until REST
+    # seed finishes. Archiving those placeholders pollutes 1m history (stale config
+    # prices interleaved with broker bars) and corrupts HT backtests.
+    mode = (TERMINAL_MODE or "").upper()
+    include_feed = True
+    if mode in ("LIVE_ALPACA", "LIVE_MASSIVE"):
+        waited = 0.0
+        while not _feed_seed_ready(feed) and waited < 120.0:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+        # Broker ingestion fills history — never seed archive from feed placeholders.
+        include_feed = False
+        if not _feed_seed_ready(feed):
+            logger.info(
+                "Archive startup backfill: feed seed still in progress; "
+                "parquet-only (broker ingest follows)"
+            )
+
     try:
         result = await asyncio.to_thread(
             run_archive_backfill,
@@ -48,6 +67,7 @@ async def archive_startup_backfill(feed) -> None:
             feed=feed,
             source=_archive_source(),
             skip_existing=True,
+            include_feed=include_feed,
         )
         if result.get("rows_written"):
             logger.info("Archive startup backfill: %s", result)
@@ -115,6 +135,20 @@ async def archive_ingestion_loop(feed) -> None:
             logger.warning("Archive ingestion loop error: %s", exc)
 
 
+def _feed_seed_ready(feed) -> bool:
+    """True when live feeds finished REST seed (or have no seed gate)."""
+    if feed is None:
+        return True
+    if hasattr(feed, "seed_done"):
+        try:
+            return bool(feed.seed_done)
+        except Exception:
+            return True
+    if hasattr(feed, "_seed_done"):
+        return bool(getattr(feed, "_seed_done"))
+    return True
+
+
 async def archive_capture_loop(feed) -> None:
     """Poll feeds for bar closes and upsert the in-progress bar on flush."""
     if not ARCHIVE_ENABLED:
@@ -131,8 +165,26 @@ async def archive_capture_loop(feed) -> None:
         ARCHIVE_FLUSH_INTERVAL,
     )
 
+    # Wait for Alpaca/Massive REST seed so we never persist synthetic startup
+    # candles built from stale SYMBOLS config prices (e.g. AAPL @ 182 vs 333).
+    waited = 0.0
+    while not _feed_seed_ready(feed) and waited < 180.0:
+        await asyncio.sleep(1.0)
+        waited += 1.0
+    if waited and _feed_seed_ready(feed):
+        logger.info("Archive capture resumed after feed seed (waited %.0fs)", waited)
+    elif not _feed_seed_ready(feed):
+        logger.warning(
+            "Archive capture proceeding before feed seed completed (waited %.0fs)",
+            waited,
+        )
+
     while True:
         try:
+            if not _feed_seed_ready(feed):
+                await asyncio.sleep(max(1.0, float(interval)))
+                continue
+
             for symbol in feed.symbols:
                 candles = feed.get_candles(symbol)
                 if not candles:

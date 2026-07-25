@@ -125,9 +125,25 @@ def _fetch_yfinance_daily_closes(yf_symbol: str, lookback_days: int) -> dict[str
 
 
 def fetch_daily_closes(symbol: str, lookback_days: int, *, feed=None) -> tuple[dict[str, float], str]:
-    """Prefer yfinance daily adjusted closes for cross-symbol consistency."""
+    """Prefer Alpaca daily bars on LIVE_ALPACA; else yfinance then archive/feed."""
+    from app.config import TERMINAL_MODE
+
     crypto = is_crypto_symbol(symbol)
     yf_sym = YF_SYMBOL_MAP.get(symbol, symbol)
+
+    if TERMINAL_MODE == "LIVE_ALPACA":
+        try:
+            from app.services.archive.broker_fetch import fetch_alpaca_tf_candles
+
+            to_ts = int(time.time())
+            from_ts = to_ts - int((lookback_days + 15) * 86400)
+            bars = fetch_alpaca_tf_candles(symbol, from_ts, to_ts, "1d") or []
+            if len(bars) >= 10:
+                daily = daily_closes_from_bars(bars, crypto=crypto)
+                if len(daily) >= RISK_CORRELATION_MIN_DAYS:
+                    return daily, "alpaca"
+        except Exception as exc:
+            logger.debug("Alpaca correlation fetch failed for %s: %s", symbol, exc)
 
     daily = _fetch_yfinance_daily_closes(yf_sym, lookback_days)
     if len(daily) >= RISK_CORRELATION_MIN_DAYS:

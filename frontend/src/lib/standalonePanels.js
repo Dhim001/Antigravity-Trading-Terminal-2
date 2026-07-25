@@ -259,6 +259,86 @@ export function subscribeStandaloneEvents(panelId, handler) {
   };
 }
 
+/** Cross-window nav between the trading terminal and detached ?panel= windows. */
+export const TERMINAL_NAV_CHANNEL = 'tt-terminal-nav';
+
+/**
+ * @param {{ type: string, panelId?: string, symbol?: string, [key: string]: unknown }} msg
+ */
+export function broadcastTerminalNav(msg) {
+  if (!msg?.type) return;
+  const payload = { ...msg, at: Date.now() };
+  try {
+    const bc = new BroadcastChannel(TERMINAL_NAV_CHANNEL);
+    bc.postMessage(payload);
+    bc.close();
+  } catch {
+    try {
+      localStorage.setItem(`${TERMINAL_NAV_CHANNEL}:ping`, JSON.stringify(payload));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * @param {(msg: { type: string, panelId?: string, symbol?: string }) => void} handler
+ * @returns {() => void}
+ */
+export function subscribeTerminalNav(handler) {
+  let bc = null;
+  const onMessage = (ev) => {
+    if (ev?.data?.type) handler(ev.data);
+  };
+  const onStorage = (e) => {
+    if (e.key !== `${TERMINAL_NAV_CHANNEL}:ping` || !e.newValue) return;
+    try {
+      handler(JSON.parse(e.newValue));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  try {
+    bc = new BroadcastChannel(TERMINAL_NAV_CHANNEL);
+    bc.onmessage = onMessage;
+  } catch {
+    /* ignore */
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorage);
+  }
+
+  return () => {
+    try {
+      bc?.close();
+    } catch {
+      /* ignore */
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorage);
+    }
+  };
+}
+
+/**
+ * If `tabId` belongs to a standalone panel that is currently detached, focus/open it.
+ * @param {string} tabId
+ * @param {string[] | null | undefined} detachedTabs
+ * @returns {boolean} true when a standalone window was focused/opened
+ */
+export function focusStandaloneForDockTab(tabId, detachedTabs) {
+  const sid = standaloneIdForDockTab(tabId);
+  if (!sid) return false;
+  const def = getStandalonePanelDef(sid);
+  const tabs = def?.dockTabs?.length ? def.dockTabs : [tabId];
+  const detached = Array.isArray(detachedTabs) ? detachedTabs : [];
+  if (!tabs.some((t) => detached.includes(t))) return false;
+  openStandaloneWindow(sid);
+  return true;
+}
+
 /* ── ML Lab backward-compatible aliases ─────────────────────────────────── */
 
 export const ML_LAB_PANEL_QUERY = STANDALONE_PANEL_QUERY;

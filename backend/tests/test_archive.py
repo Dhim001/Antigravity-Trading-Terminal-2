@@ -70,6 +70,32 @@ class TestArchiveWriter(unittest.TestCase):
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["close"], 1.8)
 
+    def test_broker_rest_not_overwritten_by_live_source(self):
+        t = 1718006400
+        _upsert_1m_rows([{
+            "symbol": "AAPL",
+            "time": t,
+            "open": 330,
+            "high": 331,
+            "low": 329,
+            "close": 330.5,
+            "volume": 1000,
+            "source": "ALPACA_REST",
+        }])
+        _upsert_1m_rows([{
+            "symbol": "AAPL",
+            "time": t,
+            "open": 182,
+            "high": 183,
+            "low": 181,
+            "close": 182.5,
+            "volume": 495.78,
+            "source": "LIVE_ALPACA",
+        }])
+        bars = query_1m("AAPL", t, t)
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["close"], 330.5)
+
 
 class TestArchiveRollup(unittest.TestCase):
     @classmethod

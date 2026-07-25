@@ -14,7 +14,10 @@ function estimateTrainingBars(monthsValue, tfValue) {
 }
 
 function estimateValidateBars(monthsValue, tfValue, strategy) {
-  if (strategy === 'RL_PPO_AGENT') return 1200;
+  if (strategy === 'RL_PPO_AGENT') {
+    const months = Number(monthsValue) || 3;
+    return Math.min(4000, Math.max(1200, months * 400));
+  }
   const trainBars = estimateTrainingBars(monthsValue, tfValue);
   const months = Number(monthsValue) || 3;
   const secs = ({ '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 })[tfValue] || 60;
@@ -56,8 +59,9 @@ describe('ML Lab window sync contracts', () => {
     expect(v6).toBeLessThanOrEqual(v12);
   });
 
-  it('RL keeps 1200 validate bars and 2 folds', () => {
-    expect(estimateValidateBars(12, '1m', 'RL_PPO_AGENT')).toBe(1200);
+  it('RL scales validate bars with window and keeps 2 folds', () => {
+    expect(estimateValidateBars(3, '1m', 'RL_PPO_AGENT')).toBe(1200);
+    expect(estimateValidateBars(12, '1m', 'RL_PPO_AGENT')).toBe(4000);
     expect(suggestedNFolds(12, 'RL_PPO_AGENT')).toBe(2);
   });
 

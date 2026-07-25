@@ -80,6 +80,8 @@ class TradingEnv:
         *,
         config: dict | None = None,
         feature_lookback: int = 20,
+        feat_mean=None,
+        feat_std=None,
     ):
         self.candles = candles
         self.config = config or {}
@@ -113,6 +115,10 @@ class TradingEnv:
             self._feat_mean = np.zeros(N_FEATURES)
             self._feat_std = np.ones(N_FEATURES)
 
+        # Optional: lock train-fold scaler for honest OOS eval
+        if feat_mean is not None and feat_std is not None:
+            self.set_feature_scaler(feat_mean, feat_std)
+
         # State variables (set by reset)
         self._step_idx = 0
         self._start_idx = feature_lookback  # skip warm-up bars
@@ -123,6 +129,15 @@ class TradingEnv:
         self._prev_equity = 1.0
         self._total_trades = 0
         self._done = False
+
+    def set_feature_scaler(self, feat_mean, feat_std) -> None:
+        """Apply a frozen train-time feature scaler (WF OOS must not refit)."""
+        mean = np.asarray(feat_mean, dtype=np.float64).reshape(-1)
+        std = np.asarray(feat_std, dtype=np.float64).reshape(-1)
+        if mean.shape[0] != N_FEATURES or std.shape[0] != N_FEATURES:
+            return
+        self._feat_mean = mean
+        self._feat_std = np.where(std < 1e-8, 1.0, std)
 
     @property
     def obs_dim(self) -> int:

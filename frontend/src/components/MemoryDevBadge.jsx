@@ -38,7 +38,7 @@ export default function MemoryDevBadge() {
             ?? h?.alpaca?.crypto_lag_sec
             ?? h?.feed_lag_sec
             ?? null,
-          htCache: h?.massive?.ht_cache_entries ?? null,
+          htCache: h?.massive?.ht_cache_entries ?? h?.alpaca?.ht_cache_entries ?? null,
         });
       });
     };

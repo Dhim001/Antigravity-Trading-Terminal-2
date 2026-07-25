@@ -178,6 +178,21 @@ class ArchiveBrokerSourceTests(unittest.TestCase):
         with patch.object(bf, "TERMINAL_MODE", "LIVE_ALPACA"), patch.object(bf, "MASSIVE_API_KEY", ""), patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(bf, "ALPACA_SECRET_KEY", "s"):
             self.assertEqual(bf.resolve_broker_source(), "alpaca")
 
+    def test_resolve_alpaca_wins_over_massive_key(self):
+        """Alpaca UI must not silently train/backtest on Polygon when both keys exist."""
+        import app.services.archive.broker_fetch as bf
+        with patch.object(bf, "TERMINAL_MODE", "LIVE_ALPACA"), patch.object(
+            bf, "MASSIVE_API_KEY", "massive-key"
+        ), patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(bf, "ALPACA_SECRET_KEY", "s"):
+            self.assertEqual(bf.resolve_broker_source(), "alpaca")
+
+    def test_resolve_massive_when_live_massive(self):
+        import app.services.archive.broker_fetch as bf
+        with patch.object(bf, "TERMINAL_MODE", "LIVE_MASSIVE"), patch.object(
+            bf, "MASSIVE_API_KEY", "massive-key"
+        ), patch.object(bf, "ALPACA_API_KEY", "k"), patch.object(bf, "ALPACA_SECRET_KEY", "s"):
+            self.assertEqual(bf.resolve_broker_source(), "massive")
+
     @patch("app.services.archive.broker_fetch.httpx.Client")
     def test_fetch_alpaca_parses_bars(self, mock_client_cls):
         import app.services.archive.broker_fetch as bf

@@ -19,14 +19,15 @@ from app.services.massive_ht_limits import massive_ht_limit
 def _parse_candle_snapshot_limit(message: dict, interval: str = "1m") -> int | None:
     """Return max bars to send; None means full in-memory buffer (limit=0)."""
     raw = message.get("limit")
+    native_ht = TERMINAL_MODE in ("LIVE_MASSIVE", "LIVE_ALPACA") and interval != "1m"
     if raw is None or raw == "":
-        if TERMINAL_MODE == "LIVE_MASSIVE" and interval != "1m":
+        if native_ht:
             return massive_ht_limit(interval, purpose="chart")
         return MARKET_CANDLE_SNAPSHOT_LIMIT
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
-        if TERMINAL_MODE == "LIVE_MASSIVE" and interval != "1m":
+        if native_ht:
             return massive_ht_limit(interval, purpose="chart")
         return MARKET_CANDLE_SNAPSHOT_LIMIT
     if parsed <= 0:
