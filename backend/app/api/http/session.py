@@ -35,12 +35,24 @@ async def session_handler(request: Request) -> JSONResponse:
 
     llm_coro = asyncio.create_task(_safe_llm_status())
     stats_coro = asyncio.to_thread(get_db_stats)
-    llm, stats = await asyncio.gather(llm_coro, stats_coro, return_exceptions=True)
+    account_coro = asyncio.to_thread(state.oms.get_account_data)
+    history_coro = asyncio.to_thread(state.oms.get_trade_history)
+    llm, stats, account, history = await asyncio.gather(
+        llm_coro,
+        stats_coro,
+        account_coro,
+        history_coro,
+        return_exceptions=True,
+    )
 
     if isinstance(llm, Exception):
         llm = {"available": False, "provider": "off"}
     if isinstance(stats, Exception):
         stats = {}
+    if isinstance(account, Exception):
+        account = {"balances": {}, "positions": {}, "orders": []}
+    if isinstance(history, Exception):
+        history = []
 
     active_job = None
     try:
@@ -69,8 +81,8 @@ async def session_handler(request: Request) -> JSONResponse:
                 "order_capabilities": get_order_capabilities(state.oms),
             },
             "llm": llm,
-            "account": state.oms.get_account_data(),
-            "history": state.oms.get_trade_history(),
+            "account": account,
+            "history": history,
             "bots": state.bot_manager.list_bots_public(),
             "strategies": list_strategy_catalog(),
             "active_backtest_job": active_job,
@@ -85,4 +97,8 @@ async def session_handler(request: Request) -> JSONResponse:
 async def _safe_llm_status() -> dict:
     from app.services.agent.llm.router import get_llm_status
 
-    return await get_llm_status()
+    # Keep session bootstrap snappy — a slow Ollama probe must not stall the UI.
+    try:
+        return await asyncio.wait_for(get_llm_status(), timeout=0.75)
+    except Exception:
+        return {"available": False, "provider": "off"}

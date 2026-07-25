@@ -12,6 +12,7 @@ const PROFILE_PORTS_BY_DEV = {
   5173: { http: '8766', ws: '8765', profile: 'sim' },
   5174: { http: '8776', ws: '8775', profile: 'ib' },
   5175: { http: '8786', ws: '8785', profile: 'massive' },
+  5176: { http: '8796', ws: '8795', profile: 'alpaca' },
 }
 
 function parseEnvFile(filePath) {

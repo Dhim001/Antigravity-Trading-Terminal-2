@@ -7,7 +7,8 @@ import { useStore } from '../store/useStore';
 import { useLiveCandleRevision, getLiveRevision } from '../services/candleRevisions';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
-import { massiveWatchlistBadge } from '../lib/massiveMarket';
+import { useAlpacaHealth } from '../hooks/useAlpacaHealth';
+import { massiveWatchlistBadge, isOptionSymbol } from '../lib/massiveMarket';
 import { getCandles } from '../services/candleBuffer';
 import {
   formatChangeAbs,
@@ -287,6 +288,7 @@ const WatchlistRow = React.memo(function WatchlistRow({
       tabIndex={0}
       role="row"
       aria-selected={isActive}
+      data-symbol={symbol}
       onClick={() => onActivate(symbol)}
       onKeyDown={handleKeyDown}
       className={cn(
@@ -351,6 +353,8 @@ export default function WatchlistWidget() {
   }, [rawWatchlistColumns, updateWorkspace, customPresets]);
 
   const massiveHealth = useMassiveHealth();
+  const alpacaHealth = useAlpacaHealth();
+  const feedHealth = terminalMode === 'LIVE_ALPACA' ? alpacaHealth : massiveHealth;
   const [cat, setCat] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState({ field: 'symbol', dir: 'asc' });
@@ -390,7 +394,8 @@ export default function WatchlistWidget() {
   }, [tickerData]);
 
   const displaySymbols = useMemo(() => {
-    let list = symbolsList;
+    // Defense in depth: OCC options may still be in the feed; keep them off the sidebar.
+    let list = (symbolsList || []).filter((s) => s && !isOptionSymbol(s));
     if (cat !== 'ALL') list = list.filter((s) => getCategory(s) === cat);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -412,23 +417,28 @@ export default function WatchlistWidget() {
     [showSections, displaySymbols],
   );
 
+  const watchlistUniverse = useMemo(
+    () => (symbolsList || []).filter((s) => s && !isOptionSymbol(s)),
+    [symbolsList],
+  );
+
   const counts = useMemo(() => ({
-    ALL: symbolsList.length,
-    CRYPTO: symbolsList.filter(isCrypto).length,
-    EQUITY: symbolsList.filter((s) => !isCrypto(s) && !isETF(s)).length,
-    ETF: symbolsList.filter(isETF).length,
-  }), [symbolsList]);
+    ALL: watchlistUniverse.length,
+    CRYPTO: watchlistUniverse.filter(isCrypto).length,
+    EQUITY: watchlistUniverse.filter((s) => !isCrypto(s) && !isETF(s)).length,
+    ETF: watchlistUniverse.filter(isETF).length,
+  }), [watchlistUniverse]);
 
   const filterSummary = search.trim()
     ? `${displaySymbols.length} match${displaySymbols.length === 1 ? '' : 'es'}`
-    : `${symbolsList.length} symbols`;
+    : `${watchlistUniverse.length} symbols`;
 
   const renderRows = (symbols) => symbols.map((symbol) => (
     <WatchlistRow
       key={symbol}
       symbol={symbol}
       terminalMode={terminalMode}
-      massiveHealth={massiveHealth}
+      massiveHealth={feedHealth}
       visibleCols={visibleCols}
       onActivate={setActiveSymbol}
     />

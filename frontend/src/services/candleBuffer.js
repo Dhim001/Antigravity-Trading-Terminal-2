@@ -598,7 +598,23 @@ export function patchFormingBarFromPrice(symbol, price) {
   if (!barCount(buf)) return false;
 
   const live = Number(price);
+  const currBucket = normalizeBarTime(Date.now() / 1000, DEFAULT_BAR_SECS);
   if (CompactBarSeries.isSeries(buf)) {
+    const last = buf.getLast();
+    const lastBucket = normalizeBarTime(last.time, DEFAULT_BAR_SECS);
+    if (currBucket != null && lastBucket != null && lastBucket < currBucket) {
+      buf.push({
+        time: currBucket,
+        open: live,
+        high: live,
+        low: live,
+        close: live,
+        volume: 0,
+      });
+      while (buf.length > MAX_BARS) buf.shift();
+      touchSymbol(symbol);
+      return true;
+    }
     if (buf.patchLastFromPrice(live)) {
       touchSymbol(symbol);
       return true;
@@ -607,6 +623,20 @@ export function patchFormingBarFromPrice(symbol, price) {
   }
 
   const last = buf[buf.length - 1];
+  const lastBucket = normalizeBarTime(last.time, DEFAULT_BAR_SECS);
+  if (currBucket != null && lastBucket != null && lastBucket < currBucket) {
+    buf.push({
+      time: currBucket,
+      open: live,
+      high: live,
+      low: live,
+      close: live,
+      volume: 0,
+    });
+    if (buf.length > MAX_BARS) buf.shift();
+    touchSymbol(symbol);
+    return true;
+  }
   const updated = {
     ...last,
     close: live,

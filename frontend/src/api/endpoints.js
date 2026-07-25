@@ -78,6 +78,11 @@ export async function fetchMassiveFeedHealth() {
   return apiRequest('/health/massive');
 }
 
+/** GET /health/alpaca — lightweight Alpaca feed ops (no DB/LLM). */
+export async function fetchAlpacaFeedHealth() {
+  return apiRequest('/health/alpaca');
+}
+
 /** GET /api/v1/market/footprint — fetch aggregated footprint volume heatmap */
 export async function fetchFootprint(symbol, from_ts, to_ts, price_step, time_bucket_ms) {
   const query = new URLSearchParams({
@@ -415,7 +420,7 @@ export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
   return body.filter_rejects;
 }
 
-/** GET /api/v1/news/{symbol} — financial headlines (Finnhub, yfinance, Polygon). */
+/** GET /api/v1/news/{symbol} — financial headlines (Finnhub, Alpaca, Polygon, yfinance). */
 export async function fetchSymbolNews(symbol, {
   refresh = true,
   limit = 40,
@@ -431,6 +436,38 @@ export async function fetchSymbolNews(symbol, {
     timeoutMs: 30000,
   });
   if (!body?.ok) throw new Error(body?.error || 'News feed unavailable');
+  return body;
+}
+
+/** GET /api/v1/news/market — Alpaca top movers + Benzinga headlines. */
+export async function fetchMarketNews({
+  limit = 40,
+  top = 10,
+  lookbackHours = 72,
+} = {}) {
+  const qs = new URLSearchParams();
+  qs.set('limit', String(limit));
+  qs.set('top', String(top));
+  qs.set('lookback_hours', String(lookbackHours));
+  const body = await apiRequest(`/api/v1/news/market?${qs}`, {
+    timeoutMs: 30000,
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Market news unavailable');
+  return body;
+}
+
+/** GET /api/v1/market/movers — Alpaca screener gainers/losers + most-actives. */
+export async function fetchMarketMovers({
+  marketType = 'all',
+  top = 10,
+} = {}) {
+  const qs = new URLSearchParams();
+  qs.set('market_type', String(marketType));
+  qs.set('top', String(top));
+  const body = await apiRequest(`/api/v1/market/movers?${qs}`, {
+    timeoutMs: 20000,
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Market movers unavailable');
   return body;
 }
 

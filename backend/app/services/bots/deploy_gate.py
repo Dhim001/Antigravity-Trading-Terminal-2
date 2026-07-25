@@ -235,6 +235,28 @@ def evaluate_deploy_gate(
                 message="Profitable in fewer than 2 vol regimes",
                 detail="Consider regime-conditional optimization or longer history",
             ))
+
+        # Check ML overfitting gap if available in metrics
+        gap = metrics.get("overfitting_gap")
+        if gap is not None and float(gap) > 0.20:
+            checks.append(_check(
+                check_id="ml_overfitting_gap",
+                level="warn",
+                ok=False,
+                message=f"Overfitting gap {float(gap):.1%} — train accuracy significantly exceeds val accuracy",
+                detail="Consider increasing regularization or reducing model capacity",
+            ))
+
+        # Check signal rate
+        sig_rate = metrics.get("signal_rate")
+        if sig_rate is not None and float(sig_rate) < 0.05:
+            checks.append(_check(
+                check_id="ml_signal_rate",
+                level="warn",
+                ok=False,
+                message=f"Low signal rate {float(sig_rate):.1%} — model generates BUY/SELL on < 5% of bars",
+                detail="Model may have learned to predict NONE to avoid loss",
+            ))
     elif scoped.get("sweep") and not scoped.get("walk_forward"):
         checks.append(_check(
             check_id="exploratory_sweep",

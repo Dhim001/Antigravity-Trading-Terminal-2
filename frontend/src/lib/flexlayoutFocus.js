@@ -46,8 +46,9 @@ function findSiblingTabSet(model, component) {
     'order-book': ['order-entry', 'depth-chart', 'footprint'],
     'depth-chart': ['order-entry', 'order-book', 'footprint'],
     footprint: ['order-entry', 'order-book', 'depth-chart'],
-    watchlist: ['chart'],
-    chart: ['watchlist'],
+    watchlist: ['movers', 'chart'],
+    movers: ['watchlist', 'chart'],
+    chart: ['watchlist', 'movers'],
   };
   const preferred = seeds[component] || [];
   for (const seed of preferred) {

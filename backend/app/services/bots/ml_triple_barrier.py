@@ -139,7 +139,63 @@ def label_triple_barrier(
             "exit_price": exit_price,
         })
 
+    # Compute AFML sample uniqueness over label holding spans
+    uniqueness = compute_sample_uniqueness(results, n)
+    for i, res in enumerate(results):
+        res["uniqueness"] = uniqueness[i] if i < len(uniqueness) else 1.0
+
     return results
+
+
+def compute_sample_uniqueness(labels: list[dict], total_bars: int) -> list[float]:
+    """Compute sample uniqueness for triple-barrier labels (AFML Ch. 4).
+
+    Measures average uniqueness of each sample's label holding interval [t0, t1].
+    Overlapping label intervals reduce sample uniqueness.
+    """
+    if not labels or total_bars <= 0:
+        return []
+
+    # Step 1: Compute concurrent label count c_t for each bar t
+    c_t = [0] * total_bars
+    intervals = []
+
+    for item in labels:
+        idx = int(item.get("index", 0))
+        holding = int(item.get("bars_held", 1))
+        t0 = max(0, min(total_bars - 1, idx))
+        t1 = max(t0, min(total_bars - 1, idx + max(1, holding)))
+        intervals.append((t0, t1))
+        for t in range(t0, t1 + 1):
+            c_t[t] += 1
+
+    # Step 2: Average uniqueness u_i = avg_{t in [t0, t1]} (1 / c_t)
+    uniqueness: list[float] = []
+    for t0, t1 in intervals:
+        span_len = t1 - t0 + 1
+        if span_len <= 0:
+            uniqueness.append(1.0)
+            continue
+        u_sum = sum(1.0 / c_t[t] for t in range(t0, t1 + 1) if c_t[t] > 0)
+        u_avg = u_sum / span_len
+        uniqueness.append(round(u_avg, 4))
+
+    return uniqueness
+
+
+def label_contamination_mask(labels: list[dict], cutoff_index: int) -> list[bool]:
+    """Identify labels whose holding interval extends past a cutoff index.
+
+    Returns a boolean list where True indicates the sample's label outcome
+    depends on price path data past ``cutoff_index`` (i.e. contaminated for IS).
+    """
+    mask = []
+    for item in labels:
+        idx = item.get("index", 0)
+        holding = item.get("bars_held", 1)
+        t1 = idx + holding
+        mask.append(t1 > cutoff_index)
+    return mask
 
 
 def label_distribution(labels: list[dict]) -> dict[str, int]:
@@ -152,3 +208,4 @@ def label_distribution(labels: list[dict]) -> dict[str, int]:
         else:
             counts["invalid"] += 1
     return counts
+

@@ -45,6 +45,11 @@ if (typeof window !== 'undefined' && !standalone) {
   startMemoryGuard(() => useStore, () => useResearchStore);
 }
 
+// Dev/E2E: inspect live ticker without digging through React fiber.
+if (typeof window !== 'undefined' && import.meta.env.DEV) {
+  window.__ttGetState = () => useStore.getState();
+}
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>

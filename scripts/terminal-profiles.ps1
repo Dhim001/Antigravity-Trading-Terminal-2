@@ -26,8 +26,28 @@ function Test-BackendPortFree {
     -not (Test-TcpPort -HostName '127.0.0.1' -Port $Port)
 }
 
+function Get-ListeningPidsOnPort {
+    param([int]$Port)
+    $pids = @()
+    try {
+        $pids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            Where-Object { $_ -and $_ -gt 0 })
+    } catch {
+        # Fallback when NetTCPIP module fails to load (common under constrained shells).
+        $lines = netstat -ano | Select-String ":$Port\s+.*LISTENING"
+        foreach ($line in $lines) {
+            if ($line -match '\s+(\d+)\s*$') {
+                $pids += [int]$Matches[1]
+            }
+        }
+        $pids = @($pids | Select-Object -Unique | Where-Object { $_ -and $_ -gt 0 })
+    }
+    return $pids
+}
+
 function Import-FrontendProfileEnv {
-    param([ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey)
+    param([ValidateSet('sim', 'ib', 'massive', 'alpaca')][string]$ProfileKey)
     $path = Join-Path $script:TerminalRoot "frontend\env.profiles\$ProfileKey.env"
     if (-not (Test-Path $path)) {
         throw "Missing frontend profile: $path"
@@ -42,10 +62,8 @@ function Import-FrontendProfileEnv {
 
 function Test-DevPortInUse {
     param([int]$Port)
-    # Prefer Listen state (reliable on Windows); fall back to TCP connect probe.
-    $listen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -ne $listen) {
+    $pids = @(Get-ListeningPidsOnPort -Port $Port)
+    if ($pids.Count -gt 0) {
         return $true
     }
     return Test-TcpPort -HostName '127.0.0.1' -Port $Port
@@ -67,21 +85,25 @@ To start a fresh dev server, stop the other Vite process first, then re-run this
 }
 
 function Get-ProfilePorts {
-    param([ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey)
+    param([ValidateSet('sim', 'ib', 'massive', 'alpaca')][string]$ProfileKey)
     if ($ProfileKey -eq 'sim') {
         return @{ Http = 8766; Ws = 8765; Dev = 5173; Label = 'Simulated' }
     }
     if ($ProfileKey -eq 'ib') {
         return @{ Http = 8776; Ws = 8775; Dev = 5174; Label = 'IB (LIVE_IB)' }
     }
-    return @{ Http = 8786; Ws = 8785; Dev = 5175; Label = 'Massive (LIVE_MASSIVE)' }
+    if ($ProfileKey -eq 'massive') {
+        return @{ Http = 8786; Ws = 8785; Dev = 5175; Label = 'Massive (LIVE_MASSIVE)' }
+    }
+    if ($ProfileKey -eq 'alpaca') {
+        return @{ Http = 8796; Ws = 8795; Dev = 5176; Label = 'Alpaca (LIVE_ALPACA)' }
+    }
+    throw "Unknown profile: $ProfileKey"
 }
 
 function Stop-ListenerOnPort {
     param([int]$Port)
-    $pids = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique |
-        Where-Object { $_ -and $_ -gt 0 })
+    $pids = @(Get-ListeningPidsOnPort -Port $Port)
     foreach ($procId in $pids) {
         try {
             $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
@@ -121,7 +143,7 @@ function Test-BackendHealth {
 
 function Stop-ProfileBackend {
     param(
-        [ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey,
+        [ValidateSet('sim', 'ib', 'massive', 'alpaca')][string]$ProfileKey,
         [int]$GraceSec = 2
     )
     $ports = Get-ProfilePorts -ProfileKey $ProfileKey
@@ -144,7 +166,7 @@ function Stop-ProfileBackend {
 }
 
 function Stop-TerminalProfileListeners {
-    param([ValidateSet('sim', 'ib', 'massive')][string]$ProfileKey)
+    param([ValidateSet('sim', 'ib', 'massive', 'alpaca')][string]$ProfileKey)
     $ports = Get-ProfilePorts -ProfileKey $ProfileKey
     Write-Host "Stopping $($ports.Label) listeners (WS :$($ports.Ws), HTTP :$($ports.Http), UI :$($ports.Dev))..." -ForegroundColor Yellow
     Stop-ProfileBackend -ProfileKey $ProfileKey

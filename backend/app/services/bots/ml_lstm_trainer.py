@@ -337,14 +337,15 @@ def train_lstm_signal_model(
         num_classes=N_CLASSES,
     ).to(device)
 
-    # Class weights for imbalanced labels
+    # Class weights for imbalanced labels with clipping to prevent instability
     class_counts = np.bincount(y_train, minlength=N_CLASSES).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
     class_weights = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
+    class_weights = np.clip(class_weights, 0.5, 5.0)
     weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
     criterion = nn.CrossEntropyLoss(weight=weight_tensor)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5,
     )
@@ -442,18 +443,26 @@ def train_lstm_signal_model(
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    # Step 7: Validation metrics
+    # Step 7: Validation & Training metrics
     model.eval()
     val_logits_chunks: list = []
+    train_logits_chunks: list = []
     with torch.no_grad():
         for vs in range(0, len(X_val_t), batch_size):
             xb = X_val_t[vs:vs + batch_size].to(device, non_blocking=True)
             val_logits_chunks.append(model(xb).detach().cpu())
+        for ts in range(0, len(X_train_t), batch_size):
+            xb = X_train_t[ts:ts + batch_size].to(device, non_blocking=True)
+            train_logits_chunks.append(model(xb).detach().cpu())
+
         val_logits = torch.cat(val_logits_chunks, dim=0) if val_logits_chunks else torch.empty(0, N_CLASSES)
-        val_proba = torch.softmax(val_logits, dim=1).numpy()
         val_preds = val_logits.argmax(dim=1).numpy()
+        train_logits = torch.cat(train_logits_chunks, dim=0) if train_logits_chunks else torch.empty(0, N_CLASSES)
+        train_preds = train_logits.argmax(dim=1).numpy()
 
     val_acc = float((val_preds == y_val).mean())
+    train_acc = float((train_preds == y_train).mean())
+
     per_class_acc = {}
     for cls_idx, cls_name in REVERSE_MAP.items():
         mask = y_val == cls_idx
@@ -466,7 +475,9 @@ def train_lstm_signal_model(
     metrics = {
         "train_samples": int(len(y_train)),
         "val_samples": int(len(y_val)),
+        "train_accuracy": round(train_acc, 4),
         "val_accuracy": round(val_acc, 4),
+        "overfitting_gap": round(max(0.0, train_acc - val_acc), 4),
         "val_loss": round(best_val_loss, 4),
         "epochs_trained": epoch + 1,
         "hidden_dim": hidden_dim,

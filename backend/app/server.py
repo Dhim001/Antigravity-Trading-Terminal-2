@@ -39,6 +39,7 @@ from app.api.outbound import (
     account_update,
     bots_update,
     bot_logs_history,
+    market_update,
     orderbook_update,
     publish_bot_log,
     publish_market_update,
@@ -168,6 +169,8 @@ def _slim_market_payload(data: dict) -> dict:
     """Strip market snapshots for WebSocket market_update (shared shape with sim loop)."""
     slim: dict = {}
     for symbol, md in data.items():
+        if not md:
+            continue
         slim[symbol] = {
             "symbol": symbol,
             "price": md["price"],
@@ -177,7 +180,30 @@ def _slim_market_payload(data: dict) -> dict:
             "low_24h": md["low_24h"],
             "candle": md["candle"],
         }
+        if md.get("asset_class"):
+            slim[symbol]["asset_class"] = md["asset_class"]
     return slim
+
+
+def _feed_watchlist_symbols(feed) -> list[str]:
+    """Public watchlist universe — prefer feed.watchlist_symbols (excludes OCC options)."""
+    custom = getattr(feed, "watchlist_symbols", None)
+    if custom is not None:
+        return list(custom)
+    return list(getattr(feed, "symbols", []) or [])
+
+
+def _feed_market_snapshot(feed) -> dict:
+    """Slim in-memory quotes for late-joining WS clients."""
+    data = {}
+    for symbol in _feed_watchlist_symbols(feed):
+        try:
+            md = feed.get_market_data(symbol)
+        except Exception:
+            continue
+        if md and md.get("price") is not None:
+            data[symbol] = md
+    return _slim_market_payload(data) if data else {}
 
 
 def _market_snapshot_changed(prev: dict | None, cur: dict) -> bool:
@@ -316,6 +342,15 @@ async def _send_ws_bootstrap_payloads(websocket):
     except Exception as exc:
         logging.debug("WS bootstrap payloads skipped: %s", exc)
 
+    # Alpaca (and similar dirty-tick feeds) only broadcast symbols that tick.
+    # Late joiners / weekend equities would otherwise sit at "…" forever.
+    try:
+        snap = _feed_market_snapshot(state.feed)
+        if snap:
+            await manager.send_to(websocket, market_update(snap))
+    except Exception as exc:
+        logging.debug("WS market snapshot skipped: %s", exc)
+
 
 async def websocket_handler(websocket):
     manager = state.manager
@@ -332,7 +367,7 @@ async def websocket_handler(websocket):
         "terminalMode": TERMINAL_MODE,
         "terminalRole": TERMINAL_ROLE,
         "executionMode": execution_mode_label(),
-        "symbols": list(state.feed.symbols),
+        "symbols": _feed_watchlist_symbols(state.feed),
         "allowLiveBots": ALLOW_LIVE_BOTS,
         "allowCustomStrategies": ALLOW_CUSTOM_STRATEGIES,
         "distributed": bool(REDIS_URL),

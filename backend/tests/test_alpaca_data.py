@@ -57,6 +57,23 @@ class AlpacaDataFeedTests(unittest.TestCase):
             )
         )
 
+    def test_crypto_symbol_mapping_roundtrip(self) -> None:
+        self.assertEqual(alpaca_data.terminal_to_alpaca_crypto("BTCUSDT"), "BTC/USD")
+        self.assertEqual(alpaca_data.terminal_to_alpaca_crypto("ETH/USD"), "ETH/USD")
+        self.assertEqual(alpaca_data.alpaca_crypto_to_terminal("BTC/USD"), "BTCUSDT")
+        self.assertEqual(alpaca_data.alpaca_crypto_to_terminal("SOL/USDT"), "SOLUSDT")
+
+    def test_option_symbol_detection(self) -> None:
+        self.assertTrue(alpaca_data.is_option_symbol("AAPL250117C00200000"))
+        self.assertTrue(alpaca_data.is_option_symbol("SPY260320P00500000"))
+        self.assertFalse(alpaca_data.is_option_symbol("AAPL"))
+        self.assertFalse(alpaca_data.is_option_symbol("BTCUSDT"))
+
+    def test_crypto_and_options_urls(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            self.assertIn("crypto/us", alpaca_data.get_crypto_ws_url())
+            self.assertIn("indicative", alpaca_data.get_options_ws_url())
+
 
 if __name__ == "__main__":
     unittest.main()

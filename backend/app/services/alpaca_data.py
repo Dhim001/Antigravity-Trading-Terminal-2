@@ -144,3 +144,149 @@ def fallback_to_iex() -> tuple[AlpacaEquityFeed, str]:
     _resolved_ws_url = ws_url_for_feed("iex")
     logger.warning("Alpaca falling back to IEX equity feed (Basic plan / no SIP entitlement)")
     return _resolved_feed, _resolved_ws_url
+
+
+# ── Crypto + options helpers ───────────────────────────────────────────────
+
+_OCC_RE = __import__("re").compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
+_DEFAULT_CRYPTO_WS = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
+_OPTIONS_WS_BASE = "wss://stream.data.alpaca.markets/v1beta1"
+
+
+def env_flag(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_crypto_ws_url() -> str:
+    return (
+        os.environ.get("ALPACA_CRYPTO_WS_URL", "").strip()
+        or _DEFAULT_CRYPTO_WS
+    )
+
+
+def get_options_ws_url() -> str:
+    feed = os.environ.get("ALPACA_OPTION_FEED", "indicative").strip().lower()
+    if feed not in ("indicative", "opra"):
+        feed = "indicative"
+    explicit = os.environ.get("ALPACA_OPTIONS_WS_URL", "").strip()
+    if explicit:
+        return explicit
+    return f"{_OPTIONS_WS_BASE}/{feed}"
+
+
+def is_option_symbol(symbol: str) -> bool:
+    return bool(_OCC_RE.match((symbol or "").strip().upper()))
+
+
+def terminal_to_alpaca_crypto(symbol: str) -> str:
+    """Map terminal BTCUSDT → Alpaca BTC/USD (US crypto stream)."""
+    s = (symbol or "").strip().upper().replace("-", "/").replace(" ", "")
+    if not s:
+        return ""
+    if "/" in s:
+        base, quote = s.split("/", 1)
+        if quote in ("USDT", "USD"):
+            return f"{base}/USD"
+        return f"{base}/{quote}"
+    if s.endswith("USDT"):
+        return f"{s[:-4]}/USD"
+    if s.endswith("USD"):
+        return f"{s[:-3]}/USD"
+    return f"{s}/USD"
+
+
+def alpaca_crypto_to_terminal(symbol: str) -> str:
+    """Map Alpaca BTC/USD → terminal BTCUSDT."""
+    s = (symbol or "").strip().upper().replace(" ", "")
+    if "/" in s:
+        base, quote = s.split("/", 1)
+        if quote in ("USD", "USDT"):
+            return f"{base}USDT"
+        return f"{base}{quote}"
+    if s.endswith("USD") and not s.endswith("USDT"):
+        return f"{s[:-3]}USDT"
+    return s
+
+
+def option_underlyings_from_env() -> list[str]:
+    raw = os.environ.get("ALPACA_OPTION_UNDERLYINGS", "SPY,QQQ,AAPL")
+    return [p.strip().upper() for p in str(raw).split(",") if p.strip()]
+
+
+def explicit_option_symbols_from_env() -> list[str]:
+    raw = os.environ.get("ALPACA_OPTION_SYMBOLS", "")
+    out = []
+    for p in str(raw).split(","):
+        s = p.strip().upper()
+        if s and is_option_symbol(s):
+            out.append(s)
+    return out
+
+
+def resolve_option_watch_symbols(
+    *,
+    underlyings: list[str] | None = None,
+    limit_per_underlying: int = 2,
+    timeout: float = 12.0,
+) -> list[str]:
+    """Resolve a small liquid OCC watchlist via Alpaca options contracts REST."""
+    explicit = explicit_option_symbols_from_env()
+    if explicit:
+        return explicit[: max(1, limit_per_underlying * 6)]
+
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return []
+
+    from app.config import ALPACA_BASE_URL
+
+    roots = underlyings or option_underlyings_from_env()
+    found: list[str] = []
+    try:
+        with httpx.Client(timeout=timeout, headers=_alpaca_headers()) as client:
+            for root in roots:
+                resp = client.get(
+                    f"{ALPACA_BASE_URL.rstrip('/')}/v2/options/contracts",
+                    params={
+                        "underlying_symbols": root,
+                        "status": "active",
+                        "limit": max(4, limit_per_underlying * 4),
+                    },
+                )
+                if resp.status_code != 200:
+                    logger.debug(
+                        "Alpaca options contracts %s → HTTP %s",
+                        root,
+                        resp.status_code,
+                    )
+                    continue
+                rows = resp.json()
+                if isinstance(rows, dict):
+                    rows = rows.get("option_contracts") or rows.get("contracts") or []
+                if not isinstance(rows, list):
+                    continue
+                # Prefer nearer expiries; keep mix of calls/puts.
+                scored: list[tuple[str, str, str]] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    sym = str(row.get("symbol") or "").upper()
+                    if not is_option_symbol(sym):
+                        continue
+                    exp = str(row.get("expiration_date") or "")
+                    style = str(row.get("type") or row.get("option_type") or "")
+                    scored.append((exp, style, sym))
+                scored.sort(key=lambda t: (t[0], t[1], t[2]))
+                picked = 0
+                for _, _, sym in scored:
+                    if sym in found:
+                        continue
+                    found.append(sym)
+                    picked += 1
+                    if picked >= limit_per_underlying:
+                        break
+    except Exception as exc:
+        logger.warning("Alpaca options watchlist resolve failed: %s", exc)
+    return found

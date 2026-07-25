@@ -1,6 +1,10 @@
 /**
  * Batch WS market_update frames to one store flush per animation frame.
  * Keeps UI live (~60 Hz) while avoiding dozens of separate React commits/sec.
+ *
+ * IMPORTANT: never rely on requestAnimationFrame alone. Hidden Electron windows,
+ * background tabs, and some GPU/fallback paths throttle or pause rAF — if the
+ * scheduled callback never runs, a sticky rafId would drop live ticks forever.
  */
 
 import { useStore } from '../store/useStore';
@@ -13,6 +17,9 @@ const RAF_BATCH_MODES = new Set([
   'SIMULATED',
 ]);
 
+/** Fallback when rAF is paused (hidden window / background tab). */
+const FLUSH_TIMEOUT_MS = 32;
+
 export function shouldBatchMarketUpdates(terminalMode) {
   return RAF_BATCH_MODES.has(terminalMode);
 }
@@ -20,6 +27,8 @@ export function shouldBatchMarketUpdates(terminalMode) {
 /** @type {Record<string, object> | null} */
 let pending = null;
 let rafId = null;
+let timerId = null;
+let flushScheduled = false;
 
 const TICKER_FIELDS = ['price', 'change_24h', 'volume_24h', 'high_24h', 'low_24h'];
 
@@ -38,7 +47,27 @@ function mergeSymbol(target, symbol, info) {
   prev.symbol = symbol;
 }
 
-let lastFlushMs = 0;
+function clearFlushHandles() {
+  if (rafId != null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  if (timerId != null) {
+    clearTimeout(timerId);
+    timerId = null;
+  }
+}
+
+function flushPending(apply) {
+  if (!flushScheduled) return;
+  flushScheduled = false;
+  clearFlushHandles();
+  const batch = pending;
+  pending = null;
+  if (batch && Object.keys(batch).length > 0) {
+    apply(batch);
+  }
+}
 
 export function queueMarketUpdate(data, apply) {
   if (!data || typeof data !== 'object') return;
@@ -54,29 +83,17 @@ export function queueMarketUpdate(data, apply) {
     mergeSymbol(pending, symbol, info);
   }
 
-  if (rafId != null) return;
-  
-  const flush = () => {
-    rafId = null;
-    const now = performance.now();
-    // Previously deferred if called too soon; removed to ensure immediate flush in tests
-    // This also keeps UI responsive by applying the batch each animation frame.
-    lastFlushMs = now;
-    const batch = pending;
-    pending = null;
-    if (batch && Object.keys(batch).length > 0) {
-      apply(batch);
-    }
-  };
+  if (flushScheduled) return;
+  flushScheduled = true;
 
-  rafId = requestAnimationFrame(flush);
+  const run = () => flushPending(apply);
+  rafId = requestAnimationFrame(run);
+  timerId = setTimeout(run, FLUSH_TIMEOUT_MS);
 }
 
 /** @internal */
 export function resetMarketUpdateBatchForTests() {
   pending = null;
-  if (rafId != null) {
-    cancelAnimationFrame(rafId);
-    rafId = null;
-  }
+  flushScheduled = false;
+  clearFlushHandles();
 }

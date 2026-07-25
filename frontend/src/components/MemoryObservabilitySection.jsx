@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchHealthLive, fetchMassiveFeedHealth } from '../api/endpoints';
+import { fetchHealthLive, fetchMassiveFeedHealth, fetchAlpacaFeedHealth } from '../api/endpoints';
 import {
   collectClientMemoryStats,
   memoryPressureLevel,
@@ -38,12 +38,14 @@ export function useMemoryObservability() {
       Promise.all([
         fetchHealthLive().catch(() => null),
         fetchMassiveFeedHealth().catch(() => null),
-      ]).then(([live, massive]) => {
+        fetchAlpacaFeedHealth().catch(() => null),
+      ]).then(([live, massive, alpaca]) => {
         if (cancelled) return;
         setHealth({
           ...(live || {}),
           ...(massive?.massive ? { massive: massive.massive } : {}),
-          ws_clients: live?.ws_clients ?? massive?.ws_clients,
+          ...(alpaca?.alpaca ? { alpaca: alpaca.alpaca } : {}),
+          ws_clients: live?.ws_clients ?? massive?.ws_clients ?? alpaca?.ws_clients,
         });
       });
     };

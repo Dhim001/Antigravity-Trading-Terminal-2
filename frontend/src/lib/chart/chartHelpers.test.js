@@ -2,8 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import { updateLiveSeriesCache } from './chartHelpers';
 
-describe('updateLiveSeriesCache in-place mutation', () => {
-  it('mutates last OHLC tuple without replacing main/volume arrays', () => {
+describe('updateLiveSeriesCache live paint refs', () => {
+  it('replaces last OHLC slot and array refs so ECharts detects changes', () => {
     const bars = [
       { time: 1, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 },
       { time: 2, open: 1.5, high: 2.5, low: 1.4, close: 2.0, volume: 12 },
@@ -22,9 +22,9 @@ describe('updateLiveSeriesCache in-place mutation', () => {
     bars[1] = { time: 2, open: 1.5, high: 3, low: 1.4, close: 2.8, volume: 20 };
     updateLiveSeriesCache(cache, bars, 'candles', active, theme);
 
-    expect(cache.main).toBe(mainRef);
-    expect(cache.volume).toBe(volRef);
-    expect(cache.main[1]).toBe(ohlcRef);
+    expect(cache.main).not.toBe(mainRef);
+    expect(cache.volume).not.toBe(volRef);
+    expect(cache.main[1]).not.toBe(ohlcRef);
     expect(cache.main[1]).toEqual([1.5, 2.8, 1.4, 3]);
     expect(cache.volume[1].value).toBe(20);
   });

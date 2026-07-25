@@ -1,4 +1,4 @@
-"""News/social sentiment ingestion — Finnhub, Polygon, yfinance."""
+"""News/social sentiment ingestion — Finnhub, Alpaca, Polygon, yfinance."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 from app.config import (
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
     FINNHUB_API_KEY,
     GNEWS_ENABLED,
     SENTIMENT_LOOKBACK_HOURS,
@@ -15,6 +17,7 @@ from app.config import (
 from app.services.altdata.finnhub_provider import fetch_finnhub_sentiment
 from app.services.altdata.gnews_provider import fetch_gnews_news
 from app.services.altdata.news_provider import (
+    fetch_alpaca_news,
     fetch_polygon_news,
     fetch_yfinance_news,
 )
@@ -24,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_symbol_sentiment(symbol: str) -> list[dict[str, Any]]:
-    """Fetch fresh sentiment rows for one symbol (Finnhub + Polygon + yfinance)."""
+    """Fetch fresh sentiment rows (Finnhub + Alpaca + Polygon + optional GNews)."""
+    from app.config import TERMINAL_MODE
+
     sym = str(symbol or "").upper().strip()
     if not sym:
         return []
@@ -42,11 +47,19 @@ def fetch_symbol_sentiment(symbol: str) -> list[dict[str, Any]]:
                 seen.add(dedupe)
             rows.append(row)
 
-    if FINNHUB_API_KEY:
-        _add(fetch_finnhub_sentiment(sym))
-    _add(fetch_polygon_news(sym))
-    if GNEWS_ENABLED:
-        _add(fetch_gnews_news(sym))
+    if ALPACA_API_KEY and ALPACA_SECRET_KEY and TERMINAL_MODE == "LIVE_ALPACA":
+        _add(fetch_alpaca_news(sym))
+        if FINNHUB_API_KEY:
+            _add(fetch_finnhub_sentiment(sym))
+        # Skip Polygon/GNews on Alpaca mode — Benzinga via Alpaca is primary; keeps polls snappy.
+    else:
+        if FINNHUB_API_KEY:
+            _add(fetch_finnhub_sentiment(sym))
+        _add(fetch_polygon_news(sym))
+        if ALPACA_API_KEY and ALPACA_SECRET_KEY:
+            _add(fetch_alpaca_news(sym))
+        if GNEWS_ENABLED:
+            _add(fetch_gnews_news(sym))
     if not rows:
         _add(fetch_yfinance_news(sym))
     return rows
@@ -85,4 +98,5 @@ def refresh_sentiment(symbols: list[str] | None = None) -> dict[str, Any]:
         "lookback_hours": SENTIMENT_LOOKBACK_HOURS,
         "fetched_at": time.time(),
         "finnhub_enabled": bool(FINNHUB_API_KEY),
+        "alpaca_news_enabled": bool(ALPACA_API_KEY and ALPACA_SECRET_KEY),
     }

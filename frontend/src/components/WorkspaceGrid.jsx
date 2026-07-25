@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState, Suspense } from 'react';
-import { Layout, Model } from 'flexlayout-react';
+import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/dark.css';
 
 import { lazyImport } from '../lib/lazyImport';
@@ -14,10 +14,13 @@ import {
   toggleFlexLayoutComponent,
 } from '../lib/flexlayoutFocus';
 import {
+  listSelectedComponents,
+  loadSelectedComponents,
   makePersistOnModelChange,
   persistOnSelectAction,
   restoreFlexLayoutSelection,
 } from '../lib/flexlayoutPersist';
+import { useSettingsStore } from '../store/useSettingsStore';
 import ChartContextStrip from './ChartContextStrip';
 import MountWhenVisible from './MountWhenVisible';
 import MlTrainingFlexPanel from './dock/MlTrainingFlexPanel';
@@ -27,6 +30,7 @@ import InsightsFlexPanel from './dock/InsightsFlexPanel';
 
 // Lazy load actual inner panels instead of Resizable wrappers
 const WatchlistSidebar = lazyImport(() => import('./WatchlistWidget'), 'watchlist');
+const MarketMoversSidebar = lazyImport(() => import('./MarketMoversWidget'), 'movers');
 const ChartWidget = lazyImport(() => import('./ChartWidget'), 'chart');
 const MultiChartGrid = lazyImport(() => import('./MultiChartGrid'), 'multi-chart');
 
@@ -92,7 +96,10 @@ const DEFAULT_LAYOUT = {
       {
         type: 'tabset',
         weight: 15,
-        children: [{ type: 'tab', name: 'Watchlist', component: 'watchlist', enableClose: false }],
+        children: [
+          { type: 'tab', name: 'Watchlist', component: 'watchlist', enableClose: false },
+          { type: 'tab', name: 'Movers', component: 'movers', enableClose: false },
+        ],
       },
       {
         type: 'row',
@@ -165,6 +172,15 @@ export default function WorkspaceGrid({ viewMode }) {
     const m = Model.fromJson(DEFAULT_LAYOUT);
     // Restore before first paint so header Refresh UI does not flash Scanner.
     restoreFlexLayoutSelection(m, focusFlexLayoutComponent);
+    // Cold start / empty session: honor saved Watchlist vs Movers preference.
+    const saved = loadSelectedComponents();
+    const hasLeft = saved.includes('watchlist') || saved.includes('movers');
+    if (!hasLeft) {
+      const pref = useSettingsStore.getState().settings?.workspace?.leftPanelTab;
+      if (pref === 'movers' || pref === 'watchlist') {
+        focusFlexLayoutComponent(m, pref);
+      }
+    }
     return m;
   });
 
@@ -181,13 +197,21 @@ export default function WorkspaceGrid({ viewMode }) {
       focusFlexLayoutDockGroup(model, group);
     };
     const onSidebarExpand = () => {
-      focusFlexLayoutComponent(model, 'watchlist');
+      const pref = useSettingsStore.getState().settings?.workspace?.leftPanelTab;
+      focusFlexLayoutComponent(model, pref === 'movers' ? 'movers' : 'watchlist');
     };
     const onSidebarToggle = () => {
-      toggleFlexLayoutComponent(model, 'watchlist', 'chart');
+      const pref = useSettingsStore.getState().settings?.workspace?.leftPanelTab;
+      const left = pref === 'movers' ? 'movers' : 'watchlist';
+      toggleFlexLayoutComponent(model, left, 'chart');
     };
     const onTradingExpand = () => {
       focusFlexLayoutComponent(model, 'order-entry');
+    };
+    const onLeftPanelPref = (e) => {
+      const next = typeof e.detail === 'string' ? e.detail : e.detail?.tab;
+      if (next !== 'watchlist' && next !== 'movers') return;
+      focusFlexLayoutComponent(model, next);
     };
 
     window.addEventListener('dock-tab', onDockTab);
@@ -195,12 +219,14 @@ export default function WorkspaceGrid({ viewMode }) {
     window.addEventListener('sidebar-expand', onSidebarExpand);
     window.addEventListener('sidebar-toggle', onSidebarToggle);
     window.addEventListener('trading-panel-expand', onTradingExpand);
+    window.addEventListener('left-panel-tab', onLeftPanelPref);
     return () => {
       window.removeEventListener('dock-tab', onDockTab);
       window.removeEventListener('dock-group', onDockGroup);
       window.removeEventListener('sidebar-expand', onSidebarExpand);
       window.removeEventListener('sidebar-toggle', onSidebarToggle);
       window.removeEventListener('trading-panel-expand', onTradingExpand);
+      window.removeEventListener('left-panel-tab', onLeftPanelPref);
     };
   }, [model]);
 
@@ -213,12 +239,35 @@ export default function WorkspaceGrid({ viewMode }) {
     });
   }, [attach]);
 
+  const onAction = useCallback((action) => {
+    const result = persistOnSelectAction(action, model);
+    try {
+      if (action?.type === Actions.SELECT_TAB) {
+        queueMicrotask(() => {
+          const selected = listSelectedComponents(model);
+          const left = selected.find((c) => c === 'movers' || c === 'watchlist');
+          if (!left) return;
+          const cur = useSettingsStore.getState().settings?.workspace?.leftPanelTab;
+          if (cur !== left) {
+            useSettingsStore.getState().updateWorkspace({ leftPanelTab: left });
+          }
+        });
+      }
+    } catch {
+      /* ignore preference persist errors */
+    }
+    return result;
+  }, [model]);
+
   const factory = useCallback((node) => {
     const component = node.getComponent();
     let panel;
     switch (component) {
       case 'watchlist':
         panel = <Suspense fallback={<PanelFallback />}><WatchlistSidebar /></Suspense>;
+        break;
+      case 'movers':
+        panel = <Suspense fallback={<PanelFallback />}><MarketMoversSidebar /></Suspense>;
         break;
       case 'chart':
         panel = (
@@ -297,7 +346,7 @@ export default function WorkspaceGrid({ viewMode }) {
         model={model}
         factory={factory}
         onModelChange={makePersistOnModelChange(model)}
-        onAction={(action) => persistOnSelectAction(action, model)}
+        onAction={onAction}
       />
     </div>
   );

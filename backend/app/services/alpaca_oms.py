@@ -4,10 +4,12 @@ import logging
 import uuid
 from typing import Dict, List
 import requests
+import websockets
 from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, SYMBOLS
 from app.api.outbound import publish_bot_log, publish_post_trade_bundle
 from app.services.base_oms import BaseOMSService
 from app.services.sim_oms import SimulatedOMSService
+from app.utils.circuit_breaker import alpaca_breaker
 
 class AlpacaOMSService(BaseOMSService):
     def __init__(self, feed):
@@ -58,7 +60,6 @@ class AlpacaOMSService(BaseOMSService):
             balances = self.get_balances()
             positions = {p["symbol"]: p for p in self.get_positions()}
 
-            from app.utils.circuit_breaker import alpaca_breaker
             account_resp = alpaca_breaker(requests.get)(
                 f"{ALPACA_BASE_URL}/v2/account", headers=self.headers, timeout=5
             )

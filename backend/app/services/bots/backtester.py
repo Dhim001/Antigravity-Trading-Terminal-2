@@ -66,7 +66,15 @@ def _resolve_entry_stop(
         except (TypeError, ValueError):
             dist = 0.0
         if dist <= 0:
-            dist = price * _DEFAULT_STOP_PCT
+            atr_val = data.get("atr") or data.get("ATR_14") or data.get("ATRr_14")
+            try:
+                atr_f = float(atr_val) if atr_val is not None else 0.0
+            except (TypeError, ValueError):
+                atr_f = 0.0
+            if atr_f > 0:
+                dist = atr_f * 1.5
+            else:
+                dist = price * _DEFAULT_STOP_PCT
         stop = price - dist if str(side).upper() == "BUY" else price + dist
 
     if abs(stop - price) <= 0:
@@ -473,6 +481,11 @@ class BacktesterService:
             # ML strategies resolve models via model_symbol / _symbol — mirror WF path.
             if not str(cfg.get("model_symbol") or "").strip():
                 cfg["model_symbol"] = sym_u
+        # Normalize TF for model-dir lookup (SYMBOL__5M etc.). Callers should set
+        # this; default keeps 1m parity with live bots that omit the field.
+        from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
+        cfg["timeframe"] = normalize_model_timeframe(cfg.get("timeframe") or "1m")
         sim_mode = str(cfg.get("sim_mode") or "live_aligned").lower()
         if sim_mode not in _SIM_MODES:
             sim_mode = "live_aligned"

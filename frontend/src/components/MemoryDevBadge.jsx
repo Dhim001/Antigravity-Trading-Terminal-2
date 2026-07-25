@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { fetchHealthLive, fetchMassiveFeedHealth } from '../api/endpoints';
+import { fetchHealthLive, fetchMassiveFeedHealth, fetchAlpacaFeedHealth } from '../api/endpoints';
 import {
   collectClientMemoryStats,
   memoryPressureLevel,
@@ -28,11 +28,16 @@ export default function MemoryDevBadge() {
       Promise.all([
         fetchHealthLive().catch(() => null),
         fetchMassiveFeedHealth().catch(() => null),
-      ]).then(([live, massive]) => {
-        const h = massive?.massive ? massive : live;
+        fetchAlpacaFeedHealth().catch(() => null),
+      ]).then(([live, massive, alpaca]) => {
+        const h = massive?.massive ? massive : (alpaca?.alpaca ? alpaca : live);
         setServer({
           wsClients: h?.ws_clients ?? live?.ws_clients ?? null,
-          cryptoLag: h?.massive?.crypto_lag_sec ?? h?.feed_lag_sec ?? null,
+          cryptoLag:
+            h?.massive?.crypto_lag_sec
+            ?? h?.alpaca?.crypto_lag_sec
+            ?? h?.feed_lag_sec
+            ?? null,
           htCache: h?.massive?.ht_cache_entries ?? null,
         });
       });

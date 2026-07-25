@@ -8,7 +8,8 @@
     "start": "electron .",
     "start:sim": "electron . --profile=sim",
     "start:ib": "electron . --profile=ib",
-    "start:massive": "electron . --profile=massive"
+    "start:massive": "electron . --profile=massive",
+    "start:alpaca": "electron . --profile=alpaca"
   },
   "devDependencies": {
     "electron": "^35.1.2"

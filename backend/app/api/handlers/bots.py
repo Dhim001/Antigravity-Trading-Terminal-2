@@ -345,6 +345,12 @@ async def _execute_backtest(
                 account_balance = float(balances.get("USDT", {}).get("balance") or 0)
         config = enrich_backtest_risk_config(config, account_balance)
 
+        # Candles are resolved at request ``timeframe``; ML/LSTM/ONNX stores key
+        # models as SYMBOL__{TF}. Without this, HT backtests look up 1m and every
+        # bar becomes NONE with reject_reason=ml_model_missing.
+        if timeframe:
+            config = {**config, "timeframe": str(timeframe)}
+
         # P3: ML + calendar holdout → default BT to locked HOLDOUT (not nested 7d ⊂ train).
         ml_calendar = None
         holdout_applied = False

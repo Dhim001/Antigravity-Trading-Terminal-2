@@ -323,3 +323,31 @@ def record_ml_inference_features(
         get_feature_drift_monitor().record_inference(sym, strat, features)
     except Exception as exc:
         logger.debug("record_ml_inference_features failed for %s/%s: %s", strat, sym, exc)
+
+
+def get_drift_summary_for_ui(symbol: str, strategy: str) -> dict[str, Any]:
+    """Return compact drift summary blob for ML Training Dashboard UI."""
+    try:
+        mon = get_feature_drift_monitor()
+        res = mon.check_drift(symbol, strategy)
+        if not res:
+            return {"available": False, "assessment": "unknown"}
+        drifted_count = sum(1 for f in res.get("per_feature", []) if f.get("psi", 0) > PSI_MODERATE)
+        return {
+            "available": True,
+            "overall_psi": res.get("overall_psi", 0.0),
+            "assessment": res.get("assessment", "stable"),
+            "drifted_features_count": drifted_count,
+            "n_live": res.get("n_live", 0),
+            "n_training": res.get("n_training", 0),
+        }
+    except Exception:
+        return {"available": False, "assessment": "unknown"}
+
+
+def should_recommend_retrain(symbol: str, strategy: str) -> bool:
+    """True when drift monitor detects significant drift requiring retrain."""
+    summary = get_drift_summary_for_ui(symbol, strategy)
+    if not summary.get("available"):
+        return False
+    return summary.get("assessment") == "significant_drift" or summary.get("drifted_features_count", 0) >= 3

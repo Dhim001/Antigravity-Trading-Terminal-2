@@ -11,7 +11,7 @@ from starlette.types import ASGIApp
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     """Require X-API-Key when HTTP_API_KEY is configured. /health stays public."""
 
-    PUBLIC_PATHS = frozenset({"/health", "/health/live", "/health/massive"})
+    PUBLIC_PATHS = frozenset({"/health", "/health/live", "/health/massive", "/health/alpaca"})
 
     def __init__(self, app: ASGIApp, api_key: str) -> None:
         super().__init__(app)

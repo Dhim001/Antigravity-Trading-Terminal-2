@@ -47,6 +47,7 @@ import { Action } from './api/protocol';
 import { fetchHealth } from './api/endpoints';
 import IbFeedStatusBanner from './components/IbFeedStatusBanner';
 import MassiveFeedStatusBanner from './components/MassiveFeedStatusBanner';
+import AlpacaFeedStatusBanner from './components/AlpacaFeedStatusBanner';
 import { getStoreActions } from './api/dispatch';
 import { openBacktestLabResults, openBacktestLabStandalone } from './lib/backtestLab';
 import { openStandaloneWindow } from './lib/standalonePanels';
@@ -618,6 +619,7 @@ export default function App() {
           <div className="command-stack">
             {terminalMode === 'LIVE_IB' && <IbFeedStatusBanner />}
             {terminalMode === 'LIVE_MASSIVE' && <MassiveFeedStatusBanner />}
+            {terminalMode === 'LIVE_ALPACA' && <AlpacaFeedStatusBanner />}
             <CommandBar />
           </div>
         </ErrorBoundary>

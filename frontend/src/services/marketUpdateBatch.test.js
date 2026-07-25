@@ -19,15 +19,23 @@ describe('shouldBatchMarketUpdates', () => {
 describe('marketUpdateBatch', () => {
   /** @type {FrameRequestCallback | null} */
   let rafCb = null;
+  /** @type {Function | null} */
+  let timeoutCb = null;
 
   beforeEach(() => {
     resetMarketUpdateBatchForTests();
     rafCb = null;
+    timeoutCb = null;
     vi.stubGlobal('requestAnimationFrame', (cb) => {
       rafCb = cb;
       return 1;
     });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('setTimeout', (cb) => {
+      timeoutCb = cb;
+      return 2;
+    });
+    vi.stubGlobal('clearTimeout', vi.fn());
     useStore.setState({ terminalMode: 'LIVE_MASSIVE' });
   });
 
@@ -50,6 +58,15 @@ describe('marketUpdateBatch', () => {
       BTCUSDT: { price: 1, symbol: 'BTCUSDT' },
       ETHUSDT: { price: 2, symbol: 'ETHUSDT' },
     });
+  });
+
+  it('flushes via timeout when rAF never fires', () => {
+    const apply = vi.fn();
+    queueMarketUpdate({ BTCUSDT: { price: 1 } }, apply);
+    expect(apply).not.toHaveBeenCalled();
+    timeoutCb?.();
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0][0].BTCUSDT.price).toBe(1);
   });
 
   it('reuses symbol entry object when merging ticks in one frame', () => {

@@ -6,6 +6,7 @@ import { useResearchStore } from '../store/useResearchStore';
 /** @type {Record<string, string>} */
 export const WORKSPACE_PANEL_LABELS = {
   watchlist: 'Watchlist',
+  movers: 'Movers',
   chart: 'Chart',
   'order-entry': 'Trade',
   'order-book': 'Book',

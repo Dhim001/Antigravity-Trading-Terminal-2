@@ -509,7 +509,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     set((state) => {
       const tickerData = state.tickerData;
       const priceDirections = state.priceDirections;
-      const massive = isLiveMassiveMode(state.terminalMode);
+      const liveTickPaint = isLiveMassiveMode(state.terminalMode)
+        || state.terminalMode === 'LIVE_ALPACA'
+        || state.terminalMode === 'LIVE_IB';
       let tickerChanged = false;
       let directionChanged = false;
       let orderBooksChanged = false;
@@ -594,15 +596,18 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
           bumpHistoryRevision(symbol);
           candlesTouched = true;
         } else if (hasCandleHistory(symbol)) {
+          let candleApplied = false;
           if (info.candle && applyLiveCandle(symbol, info.candle)) {
             bumpLiveRevision(symbol);
             candlesTouched = true;
+            candleApplied = true;
           }
           if (info.price !== undefined) {
             const priceMoved = prev?.price === undefined || prev.price !== info.price;
-            if (priceMoved) {
+            // Re-apply after candle so a stale wire close cannot freeze the forming bar.
+            if (priceMoved || candleApplied) {
               const keys = applyLivePrice(symbol, info.price);
-              if (massive) {
+              if (liveTickPaint) {
                 emitLivePrice(symbol, info.price);
                 bumpLiveRevision(symbol);
                 candlesTouched = true;

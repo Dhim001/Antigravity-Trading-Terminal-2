@@ -364,7 +364,7 @@ DATA_QUALITY_ENABLED = os.environ.get("DATA_QUALITY_ENABLED", "true").lower() in
 DATA_QUALITY_INTERVAL_SEC = float(os.environ.get("DATA_QUALITY_INTERVAL_SEC", "15"))
 DIAGNOSTICS_INTERVAL_SEC = float(os.environ.get("DIAGNOSTICS_INTERVAL_SEC", "15"))
 DIAGNOSTICS_STATS_CACHE_SEC = float(os.environ.get("DIAGNOSTICS_STATS_CACHE_SEC", "30"))
-ALPACA_BROADCAST_INTERVAL_SEC = float(os.environ.get("ALPACA_BROADCAST_INTERVAL_SEC", "1.5"))
+ALPACA_BROADCAST_INTERVAL_SEC = float(os.environ.get("ALPACA_BROADCAST_INTERVAL_SEC", "0.75"))
 DATA_QUALITY_STALE_WARN_SEC = float(os.environ.get("DATA_QUALITY_STALE_WARN_SEC", "30"))
 DATA_QUALITY_STALE_PAUSE_SEC = float(os.environ.get("DATA_QUALITY_STALE_PAUSE_SEC", "60"))
 DATA_QUALITY_MAX_SPREAD_PCT = float(os.environ.get("DATA_QUALITY_MAX_SPREAD_PCT", "2.0"))
@@ -397,6 +397,9 @@ CRYPTO_DERIVATIVES_ENABLED = os.environ.get("CRYPTO_DERIVATIVES_ENABLED", "true"
 SENTIMENT_ENABLED = os.environ.get("SENTIMENT_ENABLED", "true").lower() in ("1", "true", "yes")
 SENTIMENT_LOOKBACK_HOURS = float(os.environ.get("SENTIMENT_LOOKBACK_HOURS", "24"))
 SENTIMENT_SCORE_THRESHOLD = float(os.environ.get("SENTIMENT_SCORE_THRESHOLD", "0.2"))
+# Hard caps so sentiment_events cannot grow without bound (disk → RAM on query).
+SENTIMENT_MAX_AGE_HOURS = float(os.environ.get("SENTIMENT_MAX_AGE_HOURS", "168"))  # 7d
+SENTIMENT_MAX_EVENTS = int(os.environ.get("SENTIMENT_MAX_EVENTS", "5000"))
 
 # Finnhub.io — company news + news-sentiment (https://finnhub.io/docs/api)
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
@@ -493,6 +496,19 @@ ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.ma
 # WebSocket equity stream — auto-resolved to sip or iex when ALPACA_DATA_FEED=auto (default).
 ALPACA_DATA_URL = os.environ.get("ALPACA_DATA_URL", "wss://stream.data.alpaca.markets/v2/sip")
 ALPACA_DATA_FEED = os.environ.get("ALPACA_DATA_FEED", "auto").strip().lower()  # auto | sip | iex
+ALPACA_CRYPTO_ENABLED = os.environ.get("ALPACA_CRYPTO_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
+ALPACA_CRYPTO_WS_URL = os.environ.get(
+    "ALPACA_CRYPTO_WS_URL",
+    "wss://stream.data.alpaca.markets/v1beta3/crypto/us",
+)
+ALPACA_OPTIONS_ENABLED = os.environ.get("ALPACA_OPTIONS_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
+ALPACA_OPTION_FEED = os.environ.get("ALPACA_OPTION_FEED", "indicative").strip().lower()
+ALPACA_OPTION_UNDERLYINGS = os.environ.get("ALPACA_OPTION_UNDERLYINGS", "SPY,QQQ,AAPL")
+ALPACA_OPTION_SYMBOLS = os.environ.get("ALPACA_OPTION_SYMBOLS", "")
 
 # Binance Credentials & URLs
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
@@ -645,9 +661,32 @@ if _SCANNER_DEPLOY_WATCHLIST_RAW and str(_SCANNER_DEPLOY_WATCHLIST_RAW).strip():
 else:
     SCANNER_DEPLOY_WATCHLIST = list(CRYPTO_SYMBOLS.keys())
 
+# Alpaca US crypto stream (`v1beta3/crypto/us`) — keep watchlist aligned with
+# pairs the feed can actually seed / stream (Binance-only alts show as "…" otherwise).
+ALPACA_US_CRYPTO_BASES = frozenset({
+    "BTC", "ETH", "SOL", "DOGE", "LINK", "AVAX", "LTC", "BCH", "UNI",
+    "DOT", "AAVE", "CRV", "SUSHI", "BAT", "YFI", "MKR", "GRT", "SHIB",
+    "PEPE", "XRP", "ADA", "XTZ",
+})
+
+
+def _alpaca_crypto_symbols(crypto: dict) -> dict:
+    out = {}
+    for sym, info in crypto.items():
+        asset = str((info or {}).get("asset") or "").upper()
+        if not asset:
+            s = str(sym or "").upper()
+            asset = s[:-4] if s.endswith("USDT") else s
+        if asset in ALPACA_US_CRYPTO_BASES:
+            out[sym] = info
+    return out
+
+
 # Supported Trading Symbols & Properties based on mode
 if TERMINAL_MODE == "LIVE_ALPACA":
-    SYMBOLS = EQUITY_SYMBOLS
+    # Equities + Alpaca-tradable crypto (OCC options merge dynamically in the feed).
+    _alpaca_crypto = _alpaca_crypto_symbols(CRYPTO_SYMBOLS) if ALPACA_CRYPTO_ENABLED else {}
+    SYMBOLS = {**EQUITY_SYMBOLS, **_alpaca_crypto} if _alpaca_crypto else dict(EQUITY_SYMBOLS)
 elif TERMINAL_MODE == "LIVE_IB":
     SYMBOLS = EQUITY_SYMBOLS
 elif TERMINAL_MODE == "LIVE_MASSIVE":

@@ -4,10 +4,11 @@
 # Usage:
 #   .\scripts\start-desktop.ps1                    # Sim profile (default)
 #   .\scripts\start-desktop.ps1 -Profile Massive
+#   .\scripts\start-desktop.ps1 -Profile Alpaca
 #   .\scripts\start-desktop.ps1 -Profile Ib -Recycle
 
 param(
-    [ValidateSet('Sim', 'Ib', 'Massive')]
+    [ValidateSet('Sim', 'Ib', 'Massive', 'Alpaca')]
     [string]$Profile = 'Sim',
     [switch]$Restart,
     [switch]$Recycle
@@ -30,6 +31,10 @@ if ($key -eq 'ib') {
 }
 if ($key -eq 'massive') {
     & (Join-Path $here 'preflight-massive.ps1')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if ($key -eq 'alpaca') {
+    & (Join-Path $here 'preflight-alpaca.ps1')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

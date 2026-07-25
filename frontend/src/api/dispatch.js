@@ -8,7 +8,10 @@ import { MessageType } from './protocol';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import { forceMarketSnapshotSave } from '../services/marketSnapshot';
+import { preferLiveAlpacaSymbol } from '../lib/massiveMarket';
 import { queueMarketUpdate } from '../services/marketUpdateBatch';
+
+let alpacaWsSymbolNudgeDone = false;
 
 /**
  * Persist full payload; keep slim stub in Zustand unless Lab is already open
@@ -117,6 +120,20 @@ export function applyServerMessage(type, data, storeActions, meta) {
   switch (type) {
     case MessageType.TERMINAL_CONFIG:
       storeActions.setTerminalConfig(data);
+      if (!alpacaWsSymbolNudgeDone) {
+        const state = useStore.getState();
+        const nudge = preferLiveAlpacaSymbol(
+          state.terminalMode,
+          state.activeSymbol,
+          state.symbolsList,
+        );
+        if (nudge) {
+          alpacaWsSymbolNudgeDone = true;
+          state.setActiveSymbol(nudge);
+        } else if (state.terminalMode === 'LIVE_ALPACA') {
+          alpacaWsSymbolNudgeDone = true;
+        }
+      }
       break;
     case MessageType.HISTORY_UPDATE:
       storeActions.updateHistory(data, meta);
@@ -245,13 +262,17 @@ export function applyServerMessage(type, data, storeActions, meta) {
           const readinessBad = readiness && readiness.ok === false;
           const readinessMsg = readiness?.message
             || (Array.isArray(readiness?.warnings) ? readiness.warnings[0] : null);
+          const rejectHint = Array.isArray(readiness?.warnings)
+            ? readiness.warnings.find((w) => /Top reject reasons/i.test(String(w || '')))
+            : null;
           const openLab = {
             label: 'Open Lab',
             onClick: () => useResearchStore.getState().openBacktestLab('results'),
           };
           if (readinessBad && readinessMsg) {
             toast.warning(`Backtest · 0 actionable trades — ${readinessMsg}`, {
-              duration: 10_000,
+              description: rejectHint || undefined,
+              duration: 12_000,
               action: openLab,
             });
           } else if (results?.sweep) {

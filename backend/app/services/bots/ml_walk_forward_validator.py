@@ -240,6 +240,9 @@ def evaluate_oos_accuracy(
             total += 1
 
     accuracy = correct / total if total > 0 else 0.0
+    tot_bars = len(test_candles)
+    sig_count = counts.get("BUY", 0) + counts.get("SELL", 0)
+    signal_rate = round(sig_count / tot_bars, 4) if tot_bars > 0 else 0.0
 
     return {
         "accuracy": round(accuracy, 4),
@@ -248,7 +251,8 @@ def evaluate_oos_accuracy(
         "buy_count": counts.get("BUY", 0),
         "sell_count": counts.get("SELL", 0),
         "none_count": counts.get("NONE", 0),
-        "total_bars": len(test_candles),
+        "signal_rate": signal_rate,
+        "total_bars": tot_bars,
     }
 
 
@@ -457,7 +461,8 @@ def walk_forward_ml_train(
             "symbol": symbol,
         }
 
-    purge_bars = estimate_purge_bars(cfg)
+    max_holding = max(1, int(cfg.get("triple_barrier_max_bars", 30)))
+    purge_bars = max(estimate_purge_bars(cfg), max_holding)
     n = len(candles)
     folds = generate_wf_folds(
         n, n_folds=n_folds, mode=mode,
@@ -761,7 +766,7 @@ def _make_recommendation(
     fold_success_rate = n_success / n_total if n_total > 0 else 0
 
     issues = []
-    if acc < 0.35:
+    if acc < 0.42:
         issues.append(f"low OOS accuracy ({acc:.1%})")
     if signals < 10:
         issues.append(f"too few OOS signals ({signals})")

@@ -107,6 +107,15 @@ def _cheap_feed_snapshot(state: AppState) -> dict:
             body["massive"] = feed.massive_status
         except Exception:
             body["massive"] = None
+    if TERMINAL_MODE == "LIVE_ALPACA" and feed is not None and hasattr(feed, "alpaca_status"):
+        try:
+            body["alpaca"] = feed.alpaca_status
+        except Exception:
+            body["alpaca"] = None
+        try:
+            body["ws_broadcast"] = state.manager.broadcast_stats
+        except Exception:
+            pass
     if TERMINAL_MODE == "LIVE_IB" and feed is not None and hasattr(feed, "ib_status"):
         try:
             body["ib"] = feed.ib_status
@@ -133,6 +142,15 @@ async def health_massive(request: Request) -> JSONResponse:
     body = _cheap_feed_snapshot(state)
     if "massive" not in body:
         body["massive"] = None
+    return JSONResponse(body)
+
+
+async def health_alpaca(request: Request) -> JSONResponse:
+    """Lightweight Alpaca feed status for UI banners (no DB/LLM)."""
+    state: AppState = request.app.state.terminal
+    body = _cheap_feed_snapshot(state)
+    if "alpaca" not in body:
+        body["alpaca"] = None
     return JSONResponse(body)
 
 
@@ -284,6 +302,12 @@ async def _build_health_body(state: AppState) -> dict:
             from app.services.massive_ht_limits import massive_ht_limits_summary
 
             body["massive_ht_limits"] = massive_ht_limits_summary()
+        except Exception:
+            pass
+
+    if TERMINAL_MODE == "LIVE_ALPACA" and feed is not None and hasattr(feed, "alpaca_status"):
+        try:
+            body["alpaca"] = feed.alpaca_status
         except Exception:
             pass
 
@@ -1651,10 +1675,86 @@ async def get_filter_rejects_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "filter_rejects": data})
 
 
+async def get_market_news_handler(request: Request) -> JSONResponse:
+    """Alpaca top movers + most-actives with Benzinga headlines (LIVE_ALPACA)."""
+    try:
+        limit = int(request.query_params.get("limit", "40"))
+    except (TypeError, ValueError):
+        limit = 40
+    try:
+        top = int(request.query_params.get("top", "10"))
+    except (TypeError, ValueError):
+        top = 10
+    try:
+        lookback_hours = float(request.query_params.get("lookback_hours", "72"))
+    except (TypeError, ValueError):
+        lookback_hours = 72.0
+
+    from app.services.altdata.news_provider import get_market_news_feed
+    import asyncio
+
+    try:
+        feed = await asyncio.to_thread(
+            get_market_news_feed,
+            top=max(1, min(top, 25)),
+            limit=max(1, min(limit, 100)),
+            lookback_hours=lookback_hours,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    return JSONResponse({"ok": True, "news": feed})
+
+
+async def get_market_movers_handler(request: Request) -> JSONResponse:
+    """Alpaca screener movers (stocks/crypto) + most-actives."""
+    market_type = str(request.query_params.get("market_type") or "all").strip().lower()
+    try:
+        top = int(request.query_params.get("top", "10"))
+    except (TypeError, ValueError):
+        top = 10
+
+    from app.services.altdata.alpaca_screener import (
+        fetch_alpaca_market_snapshot,
+        fetch_alpaca_movers,
+        fetch_alpaca_most_actives,
+    )
+    import asyncio
+
+    top_n = max(1, min(top, 50))
+    try:
+        if market_type in ("stocks", "crypto"):
+            movers = await asyncio.to_thread(fetch_alpaca_movers, market_type, top=top_n)
+            actives = (
+                await asyncio.to_thread(fetch_alpaca_most_actives, top=top_n)
+                if market_type == "stocks"
+                else {"most_actives": []}
+            )
+            body = {
+                "market_type": market_type,
+                "movers": movers,
+                "most_actives": actives.get("most_actives") or [],
+            }
+        else:
+            snap = await asyncio.to_thread(fetch_alpaca_market_snapshot, top=top_n)
+            body = {
+                "market_type": "all",
+                "stocks": snap.get("stocks") or {},
+                "crypto": snap.get("crypto") or {},
+                "most_actives": snap.get("most_actives") or [],
+            }
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    return JSONResponse({"ok": True, **body})
+
+
 async def get_symbol_news_handler(request: Request) -> JSONResponse:
     symbol = str(request.path_params.get("symbol") or "").upper().strip()
     if not symbol:
         return JSONResponse({"ok": False, "error": "symbol is required"}, status_code=400)
+    if symbol == "MARKET":
+        return await get_market_news_handler(request)
 
     refresh = str(request.query_params.get("refresh", "true")).lower() in ("1", "true", "yes")
     try:
@@ -2358,6 +2458,7 @@ def create_http_app(state: AppState) -> Starlette:
     starlette_routes = [
         Route("/health/live", health_live, methods=["GET"]),
         Route("/health/massive", health_massive, methods=["GET"]),
+        Route("/health/alpaca", health_alpaca, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
         Route("/api/v1/admin/shutdown", admin_shutdown_handler, methods=["POST"]),
         Route("/api/v1/session", session_handler, methods=["GET"]),
@@ -2374,6 +2475,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
         Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
+        Route("/api/v1/news/market", get_market_news_handler, methods=["GET"]),
+        Route("/api/v1/market/movers", get_market_movers_handler, methods=["GET"]),
         Route("/api/v1/news/{symbol}", get_symbol_news_handler, methods=["GET"]),
         Route("/api/v1/llm/models", list_llm_models, methods=["GET"]),
         Route("/api/v1/llm/ops", llm_ops_status_handler, methods=["GET"]),

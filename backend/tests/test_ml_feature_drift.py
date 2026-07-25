@@ -11,9 +11,9 @@ from app.services.bots.ml_feature_drift import (
 from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
 
 
-def test_record_ml_inference_features_fills_buffer():
+def test_record_ml_inference_features_fills_buffer(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.bots.ml_feature_drift.DRIFT_DATA_DIR", str(tmp_path))
     mon = FeatureDriftMonitor(window_size=50)
-    # Isolate from process singleton by patching get inside helper via direct API.
     vec = [float(i) for i in range(len(SIGNAL_FEATURE_NAMES))]
     for _ in range(5):
         mon.record_inference("ETHUSDT", "LSTM_DIRECTION", vec)

@@ -9,9 +9,12 @@ A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend an
 | Area | Status |
 |------|--------|
 | Simulated market feed (SBBS + yfinance cache) | Done |
-| Live feeds: Alpaca, Binance, eToro, IB, Massive | Done |
-| OMS: market/limit orders, SL/TP, FIFO P&L | Done |
-| 35 symbols (15 equities/ETFs + 20 liquid crypto) | Done |
+| Live feeds: Alpaca (equities + crypto + options), Binance, eToro, IB, Massive | Done |
+| OMS: market/limit orders, SL/TP, FIFO P&L (Alpaca paper/live OMS) | Done |
+| Symbol universes: Sim/Massive 35; Alpaca equities + Alpaca-tradable crypto | Done |
+| Alpaca profile (`start-alpaca.ps1`, ports 8795/8796, UI :5176) | Done |
+| Left rail Watchlist + Movers (Alpaca screener + headlines) | Done |
+| `/health/alpaca`, market movers / market news REST | Done |
 | Charting (ECharts) + overlays + signal badge + footprint | Done |
 | Multi-chart grid + FlexLayout workspace panels | Done |
 | Grouped bottom dock (Portfolio · Intelligence · Automation · Data) | Done |
@@ -38,8 +41,8 @@ A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend an
 | Long-term market bar archive (1m DB + 1h rollup) + query caps | Done |
 | Live algo bot integration (archive warm-up + bar-close hooks) | Done |
 | Docker server/worker split + reconciliation + Parquet export | Done |
-| Electron desktop (`start-desktop.ps1`, Sim / IB / Massive profiles) | Done |
-| Health probe cache + memory-minded archive/footprint limits | Done |
+| Electron desktop (`start-desktop.ps1`, Sim / IB / Massive / Alpaca profiles) | Done |
+| Health probe cache + memory-minded archive/footprint / sentiment caps | Done |
 
 ---
 
@@ -96,7 +99,9 @@ graph TD
 - **Replay mode**: step through historical price action bar-by-bar (play / pause / step / speed)
 - **Signal badge** with rule-based analysis popover (BUY / SELL / NEUTRAL)
 - **Market overview strip** with scrolling tickers
-- **Watchlist** with category filters (Crypto / Equity / ETF), search, and sparklines
+- **Watchlist** with category filters (Crypto / Equity / ETF), search, column presets; Alpaca hides OCC options and unsupported crypto, and hydrates last quotes on WS connect (weekend equities show **Closed**)
+- **Movers** left-rail tab (Alpaca) — gainers / losers / most-actives + linked Benzinga headlines (`GET /api/v1/market/movers`, `GET /api/v1/news/market`)
+- Native **higher-timeframe** candles on Massive and Alpaca (broker REST; not client-only 1m rebucket)
 - Large history payloads are **downsampled** for chart UI; archive reads use purpose-aware query limits (see `docs/MEMORY_16GB.md`)
 
 ### Simulation engine
@@ -151,7 +156,7 @@ Set `TERMINAL_MODE` in `.env` to switch backends:
 | Mode | Feed | Symbols | Notes |
 |------|------|---------|-------|
 | `SIMULATED` (default) | SBBS simulator | Equities + crypto | No API keys required |
-| `LIVE_ALPACA` | Alpaca WebSocket | US equities & ETFs | Paper or live via `ALPACA_BASE_URL` |
+| `LIVE_ALPACA` | Equities SIP/IEX + crypto `v1beta3` + options indicative/OPRA | Equities/ETFs + Alpaca US crypto (`*USDT` ↔ `BTC/USD`); OCC options stream separately (not in Watchlist) | **Real Alpaca OMS** (paper/live via `ALPACA_BASE_URL`); WS connect pushes full quote snapshot; `ALPACA_CRYPTO_*` / `ALPACA_OPTION_*` |
 | `LIVE_BINANCE` | Binance streams | Crypto USDT pairs | Requires API keys |
 | `LIVE_ETORO` | REST poll (`/market-data/instruments/rates`) | Equities + crypto | Bearer **or** API-key pair (never both); demo/real env auto-probe |
 | `LIVE_IB` | IB Gateway / TWS (`ib_async`, 1m `keepUpToDate`) | US equities & ETFs | **Feed-only** by default — orders use simulated OMS; requires Gateway + market data subs |
@@ -177,8 +182,9 @@ Built on **React 19**, **Vite 8**, **Zustand**, **ECharts**, and **shadcn/ui** (
 - **Layout modes (UX overhaul)** — header workspace switcher: **Trade**, **Analyze**, **Automate**, **Portfolio**; each remaps dock, right panel, and default tabs
 - **Grouped dock** — Portfolio · Intelligence · Automation · Data category rails with sub-tabs
 - **Command bar** — merged symbol context, watchlist strip, and portfolio metrics (replaces separate aux + strip rows)
+- **Left rail** — FlexLayout **Watchlist** | **Movers** tabs (preference: Settings → Left panel / `workspace.leftPanelTab`)
 - **Trading panel tabs** — Trade | Book | Depth | Footprint with collapse chevron
-- **Insights Hub** (`⌘I`) — Scanner + Analyst (+ news) in one sheet
+- **Insights Hub** (`⌘I`) — Scanner + Analyst (+ news) in one sheet; Alpaca News can show market movers feed
 - **Trade Copilot** — dock Intelligence tab: chat, tool actions with confirm/cancel, agent event stream (Rules/LLM badges)
 - **ML Training** — dock Intelligence tab: per-symbol train / validate / version management for ML strategies
 - **Automation Studio** — bot ops sheet from dock Automation group
@@ -230,7 +236,8 @@ trading-terminal/
 │   ├── strategies/             # Optional CUSTOM strategy plugins
 │   └── data/                   # Parquet cache + trained model dirs (gitignored)
 ├── desktop/                    # Electron app package
-├── scripts/                    # start-sim / start-ib / start-massive / start-desktop
+├── scripts/                    # start-sim / start-ib / start-massive / start-alpaca / start-desktop
+├── env.profiles/               # sim | ib | massive | alpaca port/DB overrides
 ├── docs/                       # Architecture, memory, agents, roadmap notes
 └── frontend/
     └── src/
@@ -282,21 +289,23 @@ Server listens on **`ws://127.0.0.1:8765`** and **`http://127.0.0.1:8766`** (RES
 
 On Windows you can also run `backend/start.bat`.
 
-### Dual terminal instances (sim + IB side by side)
+### Dual / multi terminal instances (side by side)
 
-Run **simulated** and **IB feed** terminals in parallel without editing repo-root `.env` on each switch. Each instance uses its own ports, SQLite file, and Vite dev server.
+Run **Sim**, **IB**, **Massive**, and **Alpaca** terminals in parallel without editing repo-root `.env` on each switch. Each instance uses its own ports, SQLite file, and Vite dev server.
 
 | Profile | Launcher | UI | Backend WS / HTTP | SQLite |
 |---------|----------|-----|-------------------|--------|
 | Sim | `.\scripts\start-sim.ps1` | http://127.0.0.1:5173 | 8765 / 8766 | `backend/trading-sim.db` |
 | IB | `.\scripts\start-ib.ps1` | http://127.0.0.1:5174 | 8775 / 8776 | `backend/trading-ib.db` |
 | Massive | `.\scripts\start-massive.ps1` | http://127.0.0.1:5175 | 8785 / 8786 | `backend/trading-massive.db` |
+| Alpaca | `.\scripts\start-alpaca.ps1` | http://127.0.0.1:5176 | 8795 / 8796 | `backend/trading-alpaca.db` |
 
 **Desktop window (Electron)** — same UI in a standalone app window without browser tabs:
 
 ```powershell
 .\scripts\start-desktop.ps1                  # Sim (default)
 .\scripts\start-desktop.ps1 -Profile Massive
+.\scripts\start-desktop.ps1 -Profile Alpaca
 ```
 
 Starts backend + Vite if needed, then opens an Electron shell. First run installs `desktop/` dependencies once. See `desktop/README.md`. PWA install in Chrome/Edge remains an alternative.
@@ -305,19 +314,22 @@ Starts backend + Vite if needed, then opens an Electron shell. First run install
 
 The **Massive** instance streams US equities (`AM`/`T`/`Q` on `/stocks`) and crypto 24/7 (`XA`/`XT`/`XQ` on `/crypto`). Set `MASSIVE_API_KEY` in repo-root `.env`. If your plan excludes WebSocket access, the feed automatically falls back to REST polling (`MASSIVE_POLL_FALLBACK=true`). Execution stays simulated (feed-only).
 
+The **Alpaca** instance streams equities (SIP with IEX fallback), crypto (`v1beta3/crypto/us`), and a small options watchlist (indicative/OPRA). Set `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` in repo-root `.env`. Preflight: `.\scripts\preflight-alpaca.ps1`. Use `-Recycle` after backend code changes. **Only one process may hold the SIP equity stream per Alpaca account.** Orders use the real Alpaca OMS (paper URL recommended).
+
 Backend-only or frontend-only:
 
 ```powershell
 .\scripts\start-backend.ps1 -Profile Sim
 .\scripts\start-frontend.ps1 -Profile Ib
+.\scripts\start-backend.ps1 -Profile Alpaca
 ```
 
-Profiles load from `env.profiles/{sim|ib|massive}.env` when `TERMINAL_PROFILE` is set (scripts set this automatically). Repo-root `.env` still loads first for shared secrets; profile keys override.
+Profiles load from `env.profiles/{sim|ib|massive|alpaca}.env` when `TERMINAL_PROFILE` is set (scripts set this automatically). Repo-root `.env` still loads first for shared secrets; profile keys override.
 
 Manual equivalent:
 
 ```powershell
-$env:TERMINAL_PROFILE = "sim"   # or "ib" or "massive"
+$env:TERMINAL_PROFILE = "sim"   # or "ib" / "massive" / "alpaca"
 cd backend
 python main.py
 ```
@@ -387,10 +399,15 @@ Create a `.env` file in the **repo root** (loaded by `backend/app/config.py`):
 # Terminal mode: SIMULATED | LIVE_ALPACA | LIVE_BINANCE | LIVE_ETORO | LIVE_IB | LIVE_MASSIVE
 TERMINAL_MODE=SIMULATED
 
-# Alpaca (LIVE_ALPACA)
+# Alpaca (LIVE_ALPACA) — see env.profiles/alpaca.env for ports / crypto / options
 ALPACA_API_KEY=
 ALPACA_SECRET_KEY=
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
+# ALPACA_DATA_FEED=auto          # auto | sip | iex
+# ALPACA_CRYPTO_ENABLED=true
+# ALPACA_OPTIONS_ENABLED=true
+# ALPACA_OPTION_FEED=indicative  # or opra when entitled
+# ALPACA_OPTION_UNDERLYINGS=SPY,QQQ,AAPL
 
 # Binance (LIVE_BINANCE)
 BINANCE_API_KEY=
@@ -446,7 +463,7 @@ HTTP_HOST=127.0.0.1
 HTTP_PORT=8766
 ```
 
-SQLite database `backend/trading.db` (or profile DBs such as `trading-massive.db`), cached parquet/JSON under `backend/data/`, and trained ML model directories (`*_models/`) are created automatically and are **gitignored**. On **16 GB** machines prefer a single live profile (e.g. Massive only) — see `docs/MEMORY_16GB.md`.
+SQLite database `backend/trading.db` (or profile DBs such as `trading-massive.db` / `trading-alpaca.db`), cached parquet/JSON under `backend/data/`, feature-drift dumps, and trained ML model directories (`*_models/`) are created automatically and are **gitignored**. On **16 GB** machines prefer a single live profile (e.g. Massive or Alpaca only) — see `docs/MEMORY_16GB.md`.
 
 ---
 
@@ -531,6 +548,10 @@ Runs alongside WebSocket on **`http://127.0.0.1:8766`** by default (`HTTP_ENABLE
 |--------|------|-----------|-------------|
 | `GET` | `/health` | — | Full diagnostics (cached ~10s; `?fresh=1` to bypass) |
 | `GET` | `/health/live` | — | Cheap liveness + in-memory feed lag / Massive status |
+| `GET` | `/health/massive` | — | Massive feed ops snapshot (UI banners) |
+| `GET` | `/health/alpaca` | — | Alpaca feed ops (equity/crypto/options, lag, seed) |
+| `GET` | `/api/v1/news/market` | — | Alpaca movers + Benzinga headlines (LIVE_ALPACA) |
+| `GET` | `/api/v1/market/movers` | — | Alpaca screener gainers/losers/most-actives |
 | `GET` | `/api/v1/routes` | — | List all registered WebSocket actions |
 | `GET` | `/api/v1/openapi.json` | — | OpenAPI 3.1 spec (Phase 9) |
 | `GET` | `/api/v1/account` | `get_account` | Account balances and positions |
@@ -685,7 +706,7 @@ Default `docker compose up` runs **monolith** (`TERMINAL_ROLE=all`) — one `bac
 
 **5-year chart scroll** — pan/zoom left loads archived bars with `interval=auto` (1m recent + 1h older); UI path applies query limits + downsampling for responsiveness.
 
-**Health probes** — `GET /health/live` is cheap (in-memory feed lag / Massive status); full `GET /health` is cached (~10s) to avoid SQLite poll storms (`?fresh=1` bypasses).
+**Health probes** — `GET /health/live` is cheap (in-memory feed lag); `GET /health/massive` and `GET /health/alpaca` power feed banners; full `GET /health` is cached (~10s) to avoid SQLite poll storms (`?fresh=1` bypasses).
 
 ### CI & testing
 

@@ -64,7 +64,7 @@ import { BACKTEST_OVERLAY_EVENT, symbolsMatch } from '@/lib/backtestDisplay';
 import { getCandles, getOldestBarTime, toUnixSeconds, candleBufferKey, patchHtFormingBar, patchHtFormingBarFromPrice, applyLivePrice, chartTimeframeSecs, isHigherTimeframe, hasChartReadyHistory, hasCandleHistory, setCandleHistory, setComparePinnedCandleSymbol, CHART_SNAPSHOT_BARS, CHART_READY_MIN_BARS } from '../services/candleBuffer';
 import { fetchCandles } from '../api/endpoints';
 import { getStoreActions } from '../api/dispatch';
-import { isLiveMassiveMode } from '../lib/massiveMarket';
+import { isLiveMassiveMode, usesNativeHtCharts } from '../lib/massiveMarket';
 import { onLivePrice } from '../services/livePriceChannel';
 import { selectAgentInsight } from '../lib/agentInsights';
 import { pickDeployConfig } from '../lib/botConfigDisplay';
@@ -130,7 +130,7 @@ export default function ChartWidget() {
 
   const activeSymbol = useStore(state => state.activeSymbol);
   const terminalMode = useStore(state => state.terminalMode);
-  const useNativeHt = isLiveMassiveMode(terminalMode) && isHigherTimeframe(timeframe);
+  const useNativeHt = usesNativeHtCharts(terminalMode) && isHigherTimeframe(timeframe);
   const chartBufKey = useNativeHt ? candleBufferKey(activeSymbol, timeframe) : activeSymbol;
   const historyRev = useHistoryCandleRevision(chartBufKey);
   const candleRev = useLiveCandleRevision(chartBufKey);
@@ -327,7 +327,7 @@ export default function ChartWidget() {
   }, [activeSymbol, timeframe, active]);
 
 
-  // LIVE_MASSIVE: lazy-fetch native HT history from Massive REST on TF switch
+  // LIVE_MASSIVE / LIVE_ALPACA: lazy-fetch native HT history on TF switch
   useEffect(() => {
     if (!useNativeHt || !activeSymbol) return;
     if (hasChartReadyHistory(activeSymbol, CHART_READY_MIN_BARS, timeframe)) return;
@@ -698,8 +698,9 @@ export default function ChartWidget() {
     // Preserve zoom (% window) before conflation — percents stay valid after merge.
     let zoomStart = null;
     let zoomEnd = null;
-    const layoutChanged = prevConfigRef.current.symbol !== activeSymbol
-      || prevConfigRef.current.timeframe !== timeframe;
+    const symbolChanged = prevConfigRef.current.symbol !== activeSymbol;
+    const tfChanged = prevConfigRef.current.timeframe !== timeframe;
+    const layoutChanged = symbolChanged || tfChanged;
 
     const prelimCategory = buildCategoryAxisData(sourceCandles);
     if (!layoutChanged && chartRef.current) {
@@ -1144,7 +1145,9 @@ export default function ChartWidget() {
     suppressDataZoomEventsRef.current += 1;
     let setOk = false;
     const chart = chartRef.current;
-    if (fullReplace || layoutChanged) {
+    // Avoid clear() on TF-only switches when we already have a dense series —
+    // clear+notMerge causes the chaotic blank flash on Alpaca/Massive HT.
+    if (fullReplace || symbolChanged || (tfChanged && candles.length < CHART_READY_MIN_BARS)) {
       overlayIdsRef.current = new Set();
       try { chart.clear(); } catch (_) {}
     }
@@ -1759,13 +1762,32 @@ export default function ChartWidget() {
 
     const last = bars[bars.length - 1];
     let isNewBar = false;
-    if (last && last.time === aggregatedLive.time) {
-      bars[bars.length - 1] = aggregatedLive;
-    } else if (!last || aggregatedLive.time > last.time) {
+    const lastSec = last ? toUnixSeconds(last.time) : null;
+    const liveSec = toUnixSeconds(aggregatedLive.time);
+    if (last && lastSec != null && liveSec != null && lastSec === liveSec) {
+      // Copy — never alias CompactBarSeries view objects into displayBars.
+      bars[bars.length - 1] = { ...aggregatedLive };
+    } else if (!last || (liveSec != null && (lastSec == null || liveSec > lastSec))) {
       isNewBar = true;
       bars.push({ ...aggregatedLive });
       if (bars.length > displayBarLimit) {
         bars.shift();
+      }
+    } else if (liveSec != null && lastSec != null && liveSec < lastSec) {
+      // History/seed can sit ahead of the live forming bucket (Alpaca fallback
+      // candles vs WS). Drop future bars, then paint the live bucket.
+      while (bars.length && (toUnixSeconds(bars[bars.length - 1].time) ?? 0) > liveSec) {
+        bars.pop();
+      }
+      if (!bars.length) {
+        isNewBar = true;
+        bars.push({ ...aggregatedLive });
+      } else if (toUnixSeconds(bars[bars.length - 1].time) === liveSec) {
+        bars[bars.length - 1] = { ...aggregatedLive };
+      } else {
+        isNewBar = true;
+        bars.push({ ...aggregatedLive });
+        if (bars.length > displayBarLimit) bars.shift();
       }
     } else {
       return;
@@ -1851,8 +1873,9 @@ export default function ChartWidget() {
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
       }
 
-      // Merge by series id only — never replaceMerge (drops indicator series not in patch)
-      chart.setOption(patch, { lazyUpdate: true });
+      // Merge by series id only — never replaceMerge (drops indicator series not in patch).
+      // lazyUpdate:false so forming-bar paints flush immediately (Alpaca tick coalescing).
+      chart.setOption(patch, { lazyUpdate: false });
       if (isNewBar && suppressDataZoomEventsRef.current > 0) {
         requestAnimationFrame(() => {
           suppressDataZoomEventsRef.current = Math.max(0, suppressDataZoomEventsRef.current - 1);

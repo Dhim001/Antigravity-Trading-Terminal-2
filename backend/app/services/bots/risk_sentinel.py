@@ -306,4 +306,34 @@ class RiskSentinel:
                                     )
                                 )
 
+        # 4. ML Model Feature Drift & Performance Monitoring
+        try:
+            from app.services.bots.ml_feature_drift import should_recommend_retrain
+            from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+
+            for bot_id, bot in list(bot_manager.active_bots.items()):
+                if bot.get("status") != "RUNNING":
+                    continue
+                sym = str(bot.get("symbol") or "").upper()
+                strat = str(bot.get("strategy") or "").upper()
+                if is_ml_strategy(strat) and sym:
+                    if should_recommend_retrain(sym, strat):
+                        drift_msg = (
+                            f"Risk Sentinel: Significant feature drift detected for ML bot {sym} ({strat}). "
+                            f"Live market features have drifted from training baseline. Retrain recommended."
+                        )
+                        logger.warning(drift_msg)
+                        await bot_manager.log_bot_event(bot_id, "WARN", drift_msg)
+                        await emit_notification(
+                            NotificationEvent(
+                                event_type=ntypes.RISK_SENTINEL,
+                                title="ML Model Feature Drift Alert",
+                                body=drift_msg,
+                                severity="warning",
+                                payload={"bot_id": bot_id, "symbol": sym, "strategy": strat},
+                            )
+                        )
+        except Exception as exc:
+            logger.debug("Sentinel ML drift check failed: %s", exc)
+
         return results

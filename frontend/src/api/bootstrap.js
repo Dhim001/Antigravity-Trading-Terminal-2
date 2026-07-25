@@ -12,10 +12,15 @@ import {
   fetchHealth,
   fetchSession,
 } from './endpoints';
-import { isLiveMassiveMode } from '../lib/massiveMarket';
+import {
+  isLiveMassiveMode,
+  preferLiveAlpacaSymbol,
+  usesNativeHtCharts,
+} from '../lib/massiveMarket';
 
 let lastBootstrapAt = 0;
 let bootstrapInFlight = null;
+let alpacaSymbolNudgeDone = false;
 const LIGHT_BOOTSTRAP_COOLDOWN_MS = 45000;
 const DEFAULT_PREFETCH_CAP = 12;
 
@@ -66,8 +71,10 @@ export async function runBootstrap(opts = {}) {
         ? [fetchHealth(storeActions)]
         : [fetchSession(storeActions)];
 
-    const massive = isLiveMassiveMode(useStore.getState().terminalMode);
-    const chartTf = massive && isHigherTimeframe(timeframe) ? timeframe : '1m';
+    const nativeHt =
+      usesNativeHtCharts(useStore.getState().terminalMode)
+      && isHigherTimeframe(timeframe);
+    const chartTf = nativeHt ? timeframe : '1m';
 
     if (!skipCandles && !hasChartReadyHistory(symbol, undefined, chartTf)) {
       tasks.push(fetchCandles(symbol, storeActions, {
@@ -86,8 +93,25 @@ export async function runBootstrap(opts = {}) {
       console.warn('[bootstrap] All HTTP snapshot requests failed — waiting for WebSocket.');
     }
 
-    if (!skipCandles && massive && useStore.getState().connectionStatus === 'connected') {
-      subscribeChartSymbols([symbol], storeActions, { interval: '1m' });
+    const mode = useStore.getState().terminalMode;
+    // Weekend / after-hours: equities look dead on Alpaca — land on BTC once.
+    if (!alpacaSymbolNudgeDone) {
+      const state = useStore.getState();
+      const nudge = preferLiveAlpacaSymbol(mode, state.activeSymbol, state.symbolsList);
+      if (nudge) {
+        alpacaSymbolNudgeDone = true;
+        state.setActiveSymbol(nudge);
+      } else if (mode === 'LIVE_ALPACA') {
+        alpacaSymbolNudgeDone = true;
+      }
+    }
+    const chartSymbol = useStore.getState().activeSymbol || symbol;
+    if (
+      !skipCandles
+      && usesNativeHtCharts(mode)
+      && useStore.getState().connectionStatus === 'connected'
+    ) {
+      subscribeChartSymbols([chartSymbol], storeActions, { interval: '1m' });
     }
 
     return { succeeded, total: tasks.length };

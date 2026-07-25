@@ -8,10 +8,12 @@ const http = require('http');
 const path = require('path');
 
 // GPU: full disableHardwareAcceleration() often opens a blank window on Windows.
-// Default to normal GPU with sandbox disabled; opt into SwiftShader via env if needed.
+// Prefer software ANGLE by default on win32; set TERMINAL_ELECTRON_SOFTWARE_GPU=0
+// to force native GPU if your machine is stable with it.
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-gpu-sandbox');
-  if (process.env.TERMINAL_ELECTRON_SOFTWARE_GPU === '1') {
+  const softGpu = process.env.TERMINAL_ELECTRON_SOFTWARE_GPU;
+  if (softGpu !== '0' && softGpu !== 'false') {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch('use-angle', 'swiftshader');
   }
@@ -21,6 +23,7 @@ const PROFILES = {
   sim: { dev: 5173, label: 'Simulated' },
   ib: { dev: 5174, label: 'IB' },
   massive: { dev: 5175, label: 'Massive' },
+  alpaca: { dev: 5176, label: 'Alpaca' },
 };
 
 function parseProfile() {
@@ -74,7 +77,7 @@ const profileKey = parseProfile();
 const profile = PROFILES[profileKey];
 const appUrl = profileUrl(profileKey);
 
-// Allow sim + ib + massive desktop windows in parallel.
+// Allow sim + ib + massive + alpaca desktop windows in parallel.
 app.setPath('userData', path.join(app.getPath('appData'), 'AntigravityTerminal', profileKey));
 
 let mainWindow = null;

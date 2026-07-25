@@ -22,7 +22,7 @@ class TestExportOnnxSingleFile(unittest.TestCase):
                 with open(path, "wb") as f:
                     f.write(b"onnx-bytes")
 
-            with patch("torch.onnx.export", side_effect=fake_export):
+            with patch("torch.onnx.export", side_effect=fake_export), patch.dict("sys.modules", {"onnx": MagicMock()}):
                 out = export_onnx_single_file(
                     MagicMock(),
                     MagicMock(),

@@ -62,7 +62,8 @@ export function isChartDisposed(chart) {
 
 export function isChartHistoryReady(barCount, historyRev, gateForced, terminalMode, useNativeHt = false) {
   if (barCount <= 0) return false;
-  if (terminalMode === 'LIVE_MASSIVE' && useNativeHt) {
+  const nativeBroker = terminalMode === 'LIVE_MASSIVE' || terminalMode === 'LIVE_ALPACA';
+  if (nativeBroker && useNativeHt) {
     if (barCount >= CHART_READY_MIN_BARS) return true;
     if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
     return false;
@@ -71,6 +72,12 @@ export function isChartHistoryReady(barCount, historyRev, gateForced, terminalMo
     if (barCount >= MASSIVE_CHART_MIN_BARS) return true;
     if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
     return false;
+  }
+  if (terminalMode === 'LIVE_ALPACA') {
+    // Prefer denser 1m history once Alpaca seed lands; soft-fail via gate.
+    if (barCount >= MASSIVE_CHART_MIN_BARS) return true;
+    if (gateForced && barCount >= CHART_HISTORY_MIN_BARS) return true;
+    return historyRev > 0 && barCount >= CHART_HISTORY_MIN_BARS;
   }
   if (gateForced) return true;
   if (barCount >= CHART_HISTORY_CACHED_BARS) return true;
@@ -400,32 +407,25 @@ export function updateLiveSeriesCache(cache, bars, chartType, active, indicatorT
 
   const idx = barCount - 1;
   const bar = bars[idx];
-  // Mutate in place — avoid slice() clones on every live paint (~4×/s).
+  // Always assign a new last slot + new array ref. ECharts skips redraw when the
+  // series `data` reference is unchanged and only inner OHLC cells were mutated.
   if (chartType === 'line') {
-    cache.main[idx] = bar.close;
+    const next = cache.main.slice();
+    next[idx] = bar.close;
+    cache.main = next;
   } else {
-    const prev = cache.main[idx];
-    if (Array.isArray(prev) && prev.length === 4) {
-      prev[0] = bar.open;
-      prev[1] = bar.close;
-      prev[2] = bar.low;
-      prev[3] = bar.high;
-    } else {
-      cache.main[idx] = [bar.open, bar.close, bar.low, bar.high];
-    }
+    const next = cache.main.slice();
+    next[idx] = [bar.open, bar.close, bar.low, bar.high];
+    cache.main = next;
   }
   if (active.volume) {
     if (!cache.volume) {
       cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
     } else {
-      const prevVol = cache.volume[idx];
       const nextVol = volumeSeriesEntry(bar, indicatorTheme);
-      if (prevVol && typeof prevVol === 'object') {
-        prevVol.value = nextVol.value;
-        prevVol.itemStyle = nextVol.itemStyle;
-      } else {
-        cache.volume[idx] = nextVol;
-      }
+      const next = cache.volume.slice();
+      next[idx] = nextVol;
+      cache.volume = next;
     }
   }
 }

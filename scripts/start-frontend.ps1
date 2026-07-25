@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Sim', 'Ib', 'Massive')]
+    [ValidateSet('Sim', 'Ib', 'Massive', 'Alpaca')]
     [string]$Profile
 )
 

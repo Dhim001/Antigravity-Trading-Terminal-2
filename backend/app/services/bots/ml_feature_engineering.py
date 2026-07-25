@@ -16,7 +16,7 @@ import numpy as np
 
 # ── Feature schema ────────────────────────────────────────────────────────
 
-SIGNAL_FEATURE_VERSION = 1
+SIGNAL_FEATURE_VERSION = 2
 
 SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     # Price action (4)
@@ -33,9 +33,10 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     "macd_hist",
     "stoch_k",
     "adx",
-    # Volume (2)
+    # Volume (3)
     "volume_ratio",
     "obv_slope",
+    "volume_momentum",
     # Trend (3)
     "ema_cross_9_21",
     "price_vs_vwap",
@@ -50,20 +51,18 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     "hour_cos",
     "dow_sin",
     "dow_cos",
-    # Candle shape (4)
+    # Candle shape (5)
     "high_low_range",
     "body_ratio",
     "upper_shadow",
     "lower_shadow",
+    "spread_ratio",
     # Rolling z-scores (2)
     "close_z_20",
     "volume_z_20",
     # Pattern (2)
     "consecutive_up",
     "consecutive_down",
-    # Composite (2)
-    "is_buy_bias",
-    "momentum_alignment",
 )
 
 
@@ -177,6 +176,7 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
 
     # OBV slope (approximate: direction-weighted volume over last 5 bars)
     obv_slope = 0.0
+    volume_momentum = 0.0
     if len(prev_closes) >= 5 and len(prev_volumes) >= 5:
         obv_changes = []
         all_c = prev_closes[-5:] + [close]
@@ -185,6 +185,8 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
             direction = 1.0 if all_c[i] > all_c[i - 1] else -1.0 if all_c[i] < all_c[i - 1] else 0.0
             obv_changes.append(direction * all_v[i])
         obv_slope = sum(obv_changes) / (max(1.0, sum(abs(v) for v in obv_changes)) or 1.0)
+        v5_avg = sum(prev_volumes[-5:]) / 5.0
+        volume_momentum = (volume - v5_avg) / v5_avg if v5_avg > 0 else 0.0
 
     # ── Trend ─────────────────────────────────────────────────────────
     ema_9 = _safe_float(df_row.get("EMA_9"))
@@ -217,6 +219,7 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
     # ── Candle shape ──────────────────────────────────────────────────
     hl_range = high - low
     high_low_range = hl_range / close if close > 0 else 0.0
+    spread_ratio = hl_range / open_ if open_ > 0 else 0.0
 
     body = abs(close - open_)
     body_ratio = body / hl_range if hl_range > 0 else 0.0
@@ -267,28 +270,6 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         consecutive_up = max(0.0, float(count)) / 10.0   # normalize
         consecutive_down = max(0.0, float(-count)) / 10.0
 
-    # ── Composite ─────────────────────────────────────────────────────
-    # Buy bias: positive when momentum + trend + mean-reversion align bullishly
-    rsi_raw = _safe_float(df_row.get("RSI_14"), 50.0)
-    is_buy_bias = 1.0 if (rsi_raw < 50 and ema_cross_9_21 > 0) else (
-        -1.0 if (rsi_raw > 50 and ema_cross_9_21 < 0) else 0.0
-    )
-
-    # Momentum alignment: how many momentum indicators agree on direction
-    bullish_count = sum([
-        1.0 if macd_hist_raw > 0 else 0.0,
-        1.0 if rsi_raw < 40 else 0.0,  # oversold = reversal buy potential
-        1.0 if stoch_k < 0.3 else 0.0,
-        1.0 if supertrend_dir > 0 else 0.0,
-    ])
-    bearish_count = sum([
-        1.0 if macd_hist_raw < 0 else 0.0,
-        1.0 if rsi_raw > 60 else 0.0,
-        1.0 if stoch_k > 0.7 else 0.0,
-        1.0 if supertrend_dir < 0 else 0.0,
-    ])
-    momentum_alignment = (bullish_count - bearish_count) / 4.0  # [-1, +1]
-
     return {
         "returns_1": returns_1,
         "returns_5": returns_5,
@@ -303,6 +284,7 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         "adx": adx_val,
         "volume_ratio": volume_ratio,
         "obv_slope": obv_slope,
+        "volume_momentum": volume_momentum,
         "ema_cross_9_21": ema_cross_9_21,
         "price_vs_vwap": price_vs_vwap,
         "supertrend_dir": supertrend_dir,
@@ -318,12 +300,11 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         "body_ratio": body_ratio,
         "upper_shadow": upper_shadow,
         "lower_shadow": lower_shadow,
+        "spread_ratio": spread_ratio,
         "close_z_20": close_z_20,
         "volume_z_20": volume_z_20,
         "consecutive_up": consecutive_up,
         "consecutive_down": consecutive_down,
-        "is_buy_bias": is_buy_bias,
-        "momentum_alignment": momentum_alignment,
     }
 
 

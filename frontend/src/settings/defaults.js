@@ -76,6 +76,7 @@ import { normalizeWatchlistColumnPresets } from './watchlistColumnPresets';
  * @property {{ change_abs?: boolean, change_24h?: boolean, volume_24h?: boolean, avg_volume?: boolean }} watchlistColumns
  * @property {boolean} watchlistSections Group symbols by asset class on All tab
  * @property {string | null} watchlistColumnPresetId Active column preset id (or custom)
+ * @property {'watchlist' | 'movers'} leftPanelTab Preferred left-rail tab (Watchlist vs Movers)
  */
 
 /**
@@ -163,6 +164,7 @@ export const DEFAULT_TERMINAL_SETTINGS = {
     watchlistColumns: { ...DEFAULT_WATCHLIST_COLUMNS },
     watchlistSections: true,
     watchlistColumnPresetId: 'full',
+    leftPanelTab: 'watchlist',
   },
   watchlistColumnPresets: [],
   workspacePresets: [],
@@ -331,6 +333,7 @@ export function migrateSettings(raw) {
       watchlistColumnPresetId: typeof input.workspace?.watchlistColumnPresetId === 'string'
         ? input.workspace.watchlistColumnPresetId
         : base.workspace.watchlistColumnPresetId,
+      leftPanelTab: input.workspace?.leftPanelTab === 'movers' ? 'movers' : 'watchlist',
       zenMode: Boolean(input.workspace?.zenMode),
       rightPanelCollapsed: Boolean(input.workspace?.rightPanelCollapsed),
       dockCollapsed: Boolean(input.workspace?.dockCollapsed),

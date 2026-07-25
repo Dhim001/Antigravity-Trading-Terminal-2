@@ -1,4 +1,4 @@
-"""Financial news feed — Finnhub, Polygon/Massive, yfinance, Google News (free tiers)."""
+"""Financial news feed — Finnhub, Polygon/Massive, Alpaca, yfinance, Google News."""
 
 from __future__ import annotations
 
@@ -6,12 +6,15 @@ import hashlib
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import httpx
 
 from app.config import (
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
     FINNHUB_API_KEY,
     GNEWS_ENABLED,
     MASSIVE_API_KEY,
@@ -32,11 +35,13 @@ logger = logging.getLogger(__name__)
 SOURCE_FINNHUB = "finnhub_news"
 SOURCE_YFINANCE = "yfinance_news"
 SOURCE_POLYGON = "news"
+SOURCE_ALPACA = "alpaca_news"
 
 HEADLINE_SOURCES: frozenset[str] = frozenset({
     SOURCE_FINNHUB,
     SOURCE_YFINANCE,
     SOURCE_POLYGON,
+    SOURCE_ALPACA,
     SOURCE_GNEWS,
 })
 
@@ -44,8 +49,33 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_FINNHUB: "Finnhub",
     SOURCE_YFINANCE: "Yahoo Finance",
     SOURCE_POLYGON: "Polygon",
+    SOURCE_ALPACA: "Alpaca",
     SOURCE_GNEWS: "Google News",
 }
+
+_ALPACA_NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
+
+# Single-entry TTL cache for market movers+headlines (bounded RAM).
+_MARKET_NEWS_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
+_MARKET_NEWS_CACHE_TTL_SEC = 45.0
+_MARKET_NEWS_CACHE_MAX_KEYS = 4
+
+
+def terminal_to_alpaca_news_symbol(symbol: str) -> str:
+    """Map terminal symbol → Alpaca/Benzinga news ticker (AAPL, BTCUSD)."""
+    s = str(symbol or "").strip().upper().replace("-", "").replace("/", "").replace(" ", "")
+    if not s:
+        return ""
+    if is_crypto_terminal_symbol(s) or s.endswith("USDT") or s.endswith("USD"):
+        if s.endswith("USDT"):
+            return f"{s[:-4]}USD"
+        if s.endswith("USD") and not s.endswith("USDT"):
+            return s
+        info = SYMBOLS.get(s) or {}
+        asset = str(info.get("asset") or "").upper()
+        if asset and asset not in ("USD", "USDT"):
+            return f"{asset}USD"
+    return s
 
 
 def _event_id(source: str, symbol: str, published: str, headline: str) -> str:
@@ -137,6 +167,8 @@ def _extract_url(source: str, raw: dict[str, Any]) -> str | None:
         return _yfinance_url_from_block(raw)
     if source == SOURCE_POLYGON:
         return str(raw.get("article_url") or raw.get("amp_url") or raw.get("url") or "").strip() or None
+    if source == SOURCE_ALPACA:
+        return str(raw.get("url") or "").strip() or None
     if source == SOURCE_GNEWS:
         return str(raw.get("url") or "").strip() or None
     return str(raw.get("url") or raw.get("link") or "").strip() or None
@@ -149,6 +181,8 @@ def _extract_summary(source: str, raw: dict[str, Any], headline: str) -> str | N
         text = str(raw.get("summary") or "").strip()
     elif source == SOURCE_POLYGON:
         text = str(raw.get("description") or raw.get("summary") or "").strip()
+    elif source == SOURCE_ALPACA:
+        text = str(raw.get("summary") or "").strip()
     elif source == SOURCE_GNEWS:
         text = str(raw.get("description") or "").strip()
     else:
@@ -163,9 +197,14 @@ def normalize_news_row(row: dict[str, Any]) -> dict[str, Any]:
     source = str(row.get("source") or "")
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     headline = str(row.get("headline") or "").strip()
+    related = row.get("related_symbols")
+    if not isinstance(related, list):
+        related = raw.get("symbols") if isinstance(raw.get("symbols"), list) else []
+    related_syms = [str(s).strip().upper() for s in related if str(s).strip()]
     return {
         "id": row.get("id"),
         "symbol": str(row.get("symbol") or "").upper(),
+        "related_symbols": related_syms,
         "headline": headline,
         "summary": _extract_summary(source, raw, headline),
         "url": _extract_url(source, raw),
@@ -258,13 +297,191 @@ def fetch_polygon_news(symbol: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _alpaca_news_headers() -> dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY or "",
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY or "",
+    }
+
+
+def _rows_from_alpaca_news_payload(
+    items: list[Any],
+    *,
+    default_symbol: str,
+    prefer_article_symbols: bool = False,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("headline") or item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        text = f"{title}. {summary}".strip() if summary else title
+        if not text:
+            continue
+        published = _parse_published(
+            item.get("created_at") or item.get("updated_at") or item.get("published_at")
+        )
+        art_syms = [
+            str(s).strip().upper()
+            for s in (item.get("symbols") or [])
+            if str(s).strip()
+        ]
+        if prefer_article_symbols and art_syms:
+            sym = art_syms[0]
+        else:
+            sym = str(default_symbol or "MARKET").upper()
+        art_id = item.get("id")
+        if art_id is not None:
+            eid = f"{SOURCE_ALPACA}:{sym}:{art_id}"
+        else:
+            eid = _event_id(SOURCE_ALPACA, sym, published, title)
+        score = score_text_sentiment(text)
+        rows.append({
+            "id": eid,
+            "symbol": sym,
+            "source": SOURCE_ALPACA,
+            "score": score,
+            "mention_count": 1,
+            "headline": title[:500],
+            "published_at": published,
+            "raw": item,
+            "related_symbols": art_syms,
+        })
+    return rows
+
+
+def fetch_alpaca_news(symbol: str) -> list[dict[str, Any]]:
+    """Alpaca/Benzinga news REST — same shape as Polygon for sentiment + News tab."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return []
+    ticker = terminal_to_alpaca_news_symbol(symbol)
+    if not ticker:
+        return []
+
+    lookback_h = max(1.0, float(SENTIMENT_LOOKBACK_HOURS or 24))
+    start = (datetime.now(timezone.utc) - timedelta(hours=lookback_h)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    params = {
+        "symbols": ticker,
+        "limit": 30,
+        "sort": "desc",
+        "start": start,
+        "include_content": "false",
+    }
+    try:
+        with httpx.Client(timeout=20.0, headers=_alpaca_news_headers()) as client:
+            resp = client.get(_ALPACA_NEWS_URL, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.debug("Alpaca news fetch failed for %s (%s): %s", symbol, ticker, exc)
+        return []
+
+    items = data.get("news") if isinstance(data, dict) else []
+    return _rows_from_alpaca_news_payload(items or [], default_symbol=symbol)
+
+
+def fetch_alpaca_news_for_tickers(
+    tickers: list[str],
+    *,
+    limit: int = 30,
+    lookback_hours: float | None = None,
+) -> list[dict[str, Any]]:
+    """Batch Alpaca news for comma-joined tickers (movers / market headlines)."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return []
+    cleaned = []
+    seen: set[str] = set()
+    for t in tickers or []:
+        s = str(t or "").strip().upper()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        cleaned.append(s)
+    if not cleaned:
+        return []
+
+    lookback_h = max(1.0, float(lookback_hours if lookback_hours is not None else SENTIMENT_LOOKBACK_HOURS or 24))
+    start = (datetime.now(timezone.utc) - timedelta(hours=lookback_h)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    params = {
+        "symbols": ",".join(cleaned[:40]),
+        "limit": max(1, min(int(limit), 50)),
+        "sort": "desc",
+        "start": start,
+        "include_content": "false",
+    }
+    try:
+        with httpx.Client(timeout=25.0, headers=_alpaca_news_headers()) as client:
+            resp = client.get(_ALPACA_NEWS_URL, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.debug("Alpaca batch news fetch failed: %s", exc)
+        return []
+
+    items = data.get("news") if isinstance(data, dict) else []
+    return _rows_from_alpaca_news_payload(
+        items or [],
+        default_symbol="MARKET",
+        prefer_article_symbols=True,
+    )
+
+
+def fetch_alpaca_top_headlines(
+    *,
+    limit: int = 20,
+    lookback_hours: float | None = None,
+) -> list[dict[str, Any]]:
+    """Global Alpaca/Benzinga top headlines (no symbol filter)."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return []
+    lookback_h = max(1.0, float(lookback_hours if lookback_hours is not None else SENTIMENT_LOOKBACK_HOURS or 24))
+    start = (datetime.now(timezone.utc) - timedelta(hours=lookback_h)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    params = {
+        "limit": max(1, min(int(limit), 50)),
+        "sort": "desc",
+        "start": start,
+        "include_content": "false",
+    }
+    try:
+        with httpx.Client(timeout=20.0, headers=_alpaca_news_headers()) as client:
+            resp = client.get(_ALPACA_NEWS_URL, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.debug("Alpaca top headlines fetch failed: %s", exc)
+        return []
+
+    items = data.get("news") if isinstance(data, dict) else []
+    return _rows_from_alpaca_news_payload(
+        items or [],
+        default_symbol="MARKET",
+        prefer_article_symbols=True,
+    )
+
+
 def available_news_sources() -> list[str]:
-    sources: list[str] = [SOURCE_YFINANCE]
+    from app.config import TERMINAL_MODE
+
+    sources: list[str] = []
+    # LIVE_ALPACA: prefer Benzinga/Alpaca headlines (parity with Polygon on Massive).
+    if ALPACA_API_KEY and ALPACA_SECRET_KEY and TERMINAL_MODE == "LIVE_ALPACA":
+        sources.append(SOURCE_ALPACA)
     if FINNHUB_API_KEY:
-        sources.insert(0, SOURCE_FINNHUB)
-    if MASSIVE_API_KEY:
+        sources.append(SOURCE_FINNHUB)
+    sources.append(SOURCE_YFINANCE)
+    if ALPACA_API_KEY and ALPACA_SECRET_KEY and TERMINAL_MODE != "LIVE_ALPACA":
+        sources.append(SOURCE_ALPACA)
+    # Polygon is redundant with Alpaca Benzinga on LIVE_ALPACA and often slow.
+    if MASSIVE_API_KEY and TERMINAL_MODE != "LIVE_ALPACA":
         sources.append(SOURCE_POLYGON)
-    if GNEWS_ENABLED:
+    if GNEWS_ENABLED and TERMINAL_MODE != "LIVE_ALPACA":
         sources.append(SOURCE_GNEWS)
     return sources
 
@@ -273,6 +490,7 @@ def _source_fetchers() -> dict[str, Callable[[str], list[dict[str, Any]]]]:
     fetchers: dict[str, Callable[[str], list[dict[str, Any]]]] = {
         SOURCE_YFINANCE: fetch_yfinance_news,
         SOURCE_POLYGON: fetch_polygon_news,
+        SOURCE_ALPACA: fetch_alpaca_news,
     }
     if FINNHUB_API_KEY:
         fetchers[SOURCE_FINNHUB] = fetch_finnhub_company_news
@@ -286,7 +504,7 @@ def fetch_symbol_news(
     *,
     sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch headline news from configured free providers (deduped by headline)."""
+    """Fetch headline news from configured providers (deduped by headline)."""
     sym = str(symbol or "").upper().strip()
     if not sym:
         return []
@@ -296,16 +514,24 @@ def fetch_symbol_news(
     if not wanted:
         wanted = [SOURCE_YFINANCE]
 
+    batches: dict[str, list[dict[str, Any]]] = {}
+    # Parallelize providers — sequential Finnhub+Yahoo+GNews+Polygon was ~9s live.
+    workers = max(1, min(4, len(wanted)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fetchers[source], sym): source for source in wanted}
+        for fut in as_completed(futures):
+            source = futures[fut]
+            try:
+                batches[source] = fut.result() or []
+            except Exception as exc:
+                logger.warning("News fetch error (%s) for %s: %s", source, sym, exc)
+                batches[source] = []
+
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-
+    # Merge in preferred source order so Alpaca wins duplicates on LIVE_ALPACA.
     for source in wanted:
-        try:
-            batch = fetchers[source](sym)
-        except Exception as exc:
-            logger.warning("News fetch error (%s) for %s: %s", source, sym, exc)
-            batch = []
-        for row in batch:
+        for row in batches.get(source) or []:
             if str(row.get("source") or "") not in HEADLINE_SOURCES:
                 continue
             headline = str(row.get("headline") or "").lower().strip()
@@ -384,3 +610,127 @@ def get_symbol_news_feed(
         "fetched_at": time.time(),
         "refresh": refresh,
     }
+
+
+def get_market_news_feed(
+    *,
+    top: int = 10,
+    limit: int = 40,
+    lookback_hours: float | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Top movers + most-actives snapshot with Alpaca/Benzinga headlines.
+
+    Combines screener gainers/losers with news for those tickers plus global
+    top headlines — Alpaca's market-mover / headline surface for LIVE_ALPACA.
+
+    Result is TTL-cached as a single in-memory payload (bounded RAM).
+    """
+    from app.services.altdata.alpaca_screener import (
+        collect_mover_news_tickers,
+        fetch_alpaca_market_snapshot,
+    )
+
+    lookback = float(lookback_hours if lookback_hours is not None else SENTIMENT_LOOKBACK_HOURS)
+    limit = max(1, min(int(limit), 100))
+    top_n = max(1, min(int(top), 25))
+    cache_key = (top_n, limit, round(lookback, 2), bool(persist))
+    cached = _MARKET_NEWS_CACHE.get(cache_key)
+    if cached and (time.time() - float(cached[0])) < _MARKET_NEWS_CACHE_TTL_SEC:
+        return cached[1]
+
+    snapshot = fetch_alpaca_market_snapshot(top=top_n)
+    mover_tickers = collect_mover_news_tickers(snapshot, limit=16)
+
+    mover_rows: list[dict[str, Any]] = []
+    top_rows: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_movers = pool.submit(
+            fetch_alpaca_news_for_tickers,
+            mover_tickers,
+            limit=min(40, limit),
+            lookback_hours=lookback,
+        )
+        fut_top = pool.submit(
+            fetch_alpaca_top_headlines,
+            limit=min(25, limit),
+            lookback_hours=lookback,
+        )
+        try:
+            mover_rows = fut_movers.result() or []
+        except Exception as exc:
+            logger.warning("Market mover news fetch failed: %s", exc)
+        try:
+            top_rows = fut_top.result() or []
+        except Exception as exc:
+            logger.warning("Market top headlines fetch failed: %s", exc)
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Prefer mover-linked headlines, then global top headlines.
+    for row in mover_rows + top_rows:
+        headline = str(row.get("headline") or "").lower().strip()
+        if headline and headline in seen:
+            continue
+        if headline:
+            seen.add(headline)
+        rows.append(row)
+
+    mover_set = {str(s).upper() for s in mover_tickers}
+
+    def _market_rank(row: dict[str, Any]) -> tuple:
+        related = {
+            str(s).strip().upper()
+            for s in (row.get("related_symbols") or [])
+            if str(s).strip()
+        }
+        has_mover = 1 if (related & mover_set) else 0
+        has_symbol = 1 if related else 0
+        return (has_mover, has_symbol, _published_sort_key(row.get("published_at")))
+
+    rows.sort(key=_market_rank, reverse=True)
+
+    if persist and rows and SENTIMENT_ENABLED:
+        # Persist only symbol-tagged articles (skip pure MARKET politics with no tickers).
+        persistable = [
+            r for r in rows
+            if str(r.get("symbol") or "").upper() not in ("", "MARKET")
+            or (r.get("related_symbols") or [])
+        ]
+        if persistable:
+            try:
+                upsert_sentiment_events(persistable[:80])
+            except Exception as exc:
+                logger.warning("Market news persist failed: %s", exc)
+
+    items = [normalize_news_row(r) for r in rows[:limit]]
+    scores = [float(i["score"]) for i in items if i.get("score") is not None]
+    aggregate = {
+        "aggregate_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "mention_count": len(scores),
+        "sources": sorted({i["source"] for i in items}),
+        "sample_headlines": [i["headline"][:120] for i in items[:3] if i.get("headline")],
+    }
+
+    sources_avail = available_news_sources()
+    feed = {
+        "symbol": "MARKET",
+        "scope": "market",
+        "items": items,
+        "aggregate": aggregate,
+        "movers": {
+            "stocks": snapshot.get("stocks") or {},
+            "crypto": snapshot.get("crypto") or {},
+            "most_actives": snapshot.get("most_actives") or [],
+        },
+        "mover_news_symbols": mover_tickers,
+        "sources_available": sources_avail,
+        "lookback_hours": lookback,
+        "fetched_at": time.time(),
+        "refresh": True,
+    }
+    _MARKET_NEWS_CACHE[cache_key] = (time.time(), feed)
+    while len(_MARKET_NEWS_CACHE) > _MARKET_NEWS_CACHE_MAX_KEYS:
+        oldest_key = min(_MARKET_NEWS_CACHE.items(), key=lambda kv: kv[1][0])[0]
+        _MARKET_NEWS_CACHE.pop(oldest_key, None)
+    return feed

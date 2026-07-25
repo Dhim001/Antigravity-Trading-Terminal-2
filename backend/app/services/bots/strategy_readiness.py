@@ -113,6 +113,20 @@ def build_strategy_readiness(
         if top_rejects:
             top = ", ".join(f"{r} ({n})" for r, n in top_rejects[:3])
             warnings.append(f"Top reject reasons: {top}")
+            # Promote the most common ML miss into the primary message so the
+            # UI toast is actionable (schema/TF mismatch vs empty Lab model).
+            top_reason = str(top_rejects[0][0] or "")
+            if top_reason == "ml_model_missing":
+                warnings[0] = (
+                    f"No trained model for this symbol/timeframe "
+                    f"({bars_evaluated} bars evaluated). "
+                    f"Train in ML Lab at the same TF, or match bot timeframe to the model."
+                )
+            elif top_reason == "ml_confidence":
+                warnings[0] = (
+                    f"Model fired only below min_confidence "
+                    f"({bars_evaluated} bars). Lower min_confidence or retrain."
+                )
     elif int(trade_count or 0) == 0 and directional > 0:
         status = "signals_blocked" if status == "ok" else status
         warnings.append(

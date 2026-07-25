@@ -9,7 +9,7 @@ from app.services.bots.indicators import MIN_WARMUP_BARS
 
 DEFAULT_EMBARGO_PCT = 1.0
 MIN_TEST_BARS = 50
-MIN_TRAIN_BARS = 50
+MIN_TRAIN_BARS = 100
 
 
 def estimate_purge_bars(config: dict | None, *, timeframe: str = "1m") -> int:

@@ -9,6 +9,7 @@ From the repo root:
 ```powershell
 .\scripts\start-desktop.ps1                  # Sim (default)
 .\scripts\start-desktop.ps1 -Profile Massive
+.\scripts\start-desktop.ps1 -Profile Alpaca
 .\scripts\start-desktop.ps1 -Profile Ib
 ```
 
@@ -35,6 +36,7 @@ npm run start:sim
 | sim | 5173 | `npm run start:sim` |
 | ib | 5174 | `npm run start:ib` |
 | massive | 5175 | `npm run start:massive` |
+| alpaca | 5176 | `npm run start:alpaca` |
 
 ## Troubleshooting
 

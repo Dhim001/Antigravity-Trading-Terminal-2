@@ -164,6 +164,7 @@ def train_ml_signal_model(
         rows.append({
             "vector": vector,
             "label": label_info["label"],  # 1 (BUY), -1 (SELL), 0 (NONE)
+            "uniqueness": float(label_info.get("uniqueness", 1.0)),
         })
 
     n = len(rows)
@@ -181,6 +182,7 @@ def train_ml_signal_model(
 
     X = np.vstack([r["vector"] for r in rows])
     y = np.array([label_map[r["label"]] for r in rows], dtype=np.int32)
+    sample_weights = np.array([r["uniqueness"] for r in rows], dtype=np.float64)
 
     # Step 4: Time-ordered train/val split (no shuffling — prevents leakage)
     split_idx = max(1, int(n * (1.0 - val_fraction)))
@@ -188,6 +190,7 @@ def train_ml_signal_model(
         split_idx = n - 1
     X_train, X_val = X[:split_idx], X[split_idx:]
     y_train, y_val = y[:split_idx], y[split_idx:]
+    w_train = sample_weights[:split_idx]
 
     n_classes = len(np.unique(y_train))
     if n_classes < 2:
@@ -211,28 +214,42 @@ def train_ml_signal_model(
     if ml_cancel_requested(progress_path):
         return cancelled_train_result(symbol, "ML_SIGNAL_BOOST")
 
+    # Regularization defaults to prevent overfitting on noisy financial bars
+    l2_reg = max(0.1, gbm_l2_reg) if gbm_l2_reg > 0 else 0.1
+    min_leaf = max(5, int(len(y_train) // 50))
+
     model = HistGBC(
         max_depth=gbm_max_depth,
         max_iter=max(20, max_iter),
         learning_rate=gbm_lr,
-        l2_regularization=gbm_l2_reg,
-        min_samples_leaf=max(2, min_samples // 20),
+        l2_regularization=l2_reg,
+        min_samples_leaf=min_leaf,
         random_state=42,
         class_weight="balanced",
     )
-    model.fit(X_train, y_train)
+    try:
+        model.fit(X_train, y_train, sample_weight=w_train)
+    except TypeError:
+        model.fit(X_train, y_train)
 
-    # Step 6: Validation metrics
+    # Step 6: Validation & Training metrics
+    y_pred_train = model.predict(X_train)
+    train_acc = round(float(accuracy_score(y_train, y_pred_train)), 4)
+
     metrics: dict[str, Any] = {
         "train_samples": int(len(y_train)),
         "val_samples": int(len(y_val)),
+        "train_accuracy": train_acc,
     }
 
     if len(y_val) >= 3 and len(np.unique(y_val)) >= 2:
         y_pred_val = model.predict(X_val)
         proba_val = model.predict_proba(X_val)
 
-        metrics["val_accuracy"] = round(float(accuracy_score(y_val, y_pred_val)), 4)
+        val_acc = round(float(accuracy_score(y_val, y_pred_val)), 4)
+        metrics["val_accuracy"] = val_acc
+        metrics["overfitting_gap"] = round(max(0.0, train_acc - val_acc), 4)
+
         try:
             metrics["val_log_loss"] = round(float(log_loss_fn(y_val, proba_val)), 4)
         except ValueError:
@@ -250,7 +267,10 @@ def train_ml_signal_model(
     if not skip_refit:
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "ML_SIGNAL_BOOST")
-        model.fit(X, y)
+        try:
+            model.fit(X, y, sample_weight=sample_weights)
+        except TypeError:
+            model.fit(X, y)
         metrics["fit_samples"] = int(n)
     else:
         metrics["fit_samples"] = int(len(y_train))

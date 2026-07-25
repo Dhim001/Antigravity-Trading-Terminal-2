@@ -66,11 +66,11 @@ def _parse_chart_interval(message: dict) -> str:
 
 
 async def _resolve_candles(feed, symbol: str, interval: str, limit: int | None) -> list:
-    """1m from in-memory feed; LIVE_MASSIVE HT from Massive REST proxy (non-blocking)."""
+    """1m from in-memory feed; Massive/Alpaca HT from broker REST (non-blocking)."""
     if (
-        TERMINAL_MODE == "LIVE_MASSIVE"
-        and interval != "1m"
+        interval != "1m"
         and hasattr(feed, "fetch_ht_candles")
+        and TERMINAL_MODE in ("LIVE_MASSIVE", "LIVE_ALPACA")
     ):
         return await asyncio.to_thread(feed.fetch_ht_candles, symbol, interval, limit=limit)
     return feed.get_candles(symbol) or []

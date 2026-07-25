@@ -187,20 +187,14 @@ function patchLastDisplayBucket(displayBars, raw, intervalSecs) {
 }
 
 function patchMiniMainSlot(mainData, idx, bar, chartType) {
-  if (!mainData || idx < 0 || idx >= mainData.length || !bar) return;
+  if (!mainData || idx < 0 || idx >= mainData.length || !bar) return mainData;
+  const next = mainData.slice();
   if (chartType === 'line') {
-    mainData[idx] = bar.close;
-    return;
-  }
-  const prev = mainData[idx];
-  if (Array.isArray(prev) && prev.length === 4) {
-    prev[0] = bar.open;
-    prev[1] = bar.close;
-    prev[2] = bar.low;
-    prev[3] = bar.high;
+    next[idx] = bar.close;
   } else {
-    mainData[idx] = [bar.open, bar.close, bar.low, bar.high];
+    next[idx] = [bar.open, bar.close, bar.low, bar.high];
   }
+  return next;
 }
 
 function padMiniIndicatorValues(data) {
@@ -550,13 +544,14 @@ export default function MiniChartWidget({
       configureChart();
       return;
     }
-    patchMiniMainSlot(main, idx, last, chartType);
+    const nextMain = patchMiniMainSlot(main, idx, last, chartType);
+    mainDataRef.current = nextMain;
 
     const mainId = chartType === 'line' ? 'main' : 'candles';
     try {
       chart.setOption({
-        series: [{ id: mainId, data: main }],
-      }, { lazyUpdate: true });
+        series: [{ id: mainId, data: nextMain }],
+      }, { lazyUpdate: false });
     } catch (err) {
       console.warn('[MiniChartWidget] live update failed:', err);
     }

@@ -297,7 +297,108 @@ def upsert_sentiment_events(rows: list[dict[str, Any]]) -> int:
             for r in rows
         ]
         cursor.executemany(sql, params)
-        return len(params)
+        written = len(params)
+
+    # Keep table bounded after writes (Movers UI can refresh every 60s).
+    try:
+        prune_sentiment_events_throttled()
+    except Exception:
+        pass
+    return written
+
+
+_last_sentiment_prune_ts = 0.0
+_SENTIMENT_PRUNE_EVERY_SEC = 300.0
+
+
+def prune_sentiment_events_throttled(
+    *,
+    min_interval_sec: float = _SENTIMENT_PRUNE_EVERY_SEC,
+) -> dict[str, int | float | bool]:
+    """Prune at most once per interval so 60s Movers polls don't hammer DELETE."""
+    global _last_sentiment_prune_ts
+    now = time.time()
+    if now - _last_sentiment_prune_ts < max(30.0, float(min_interval_sec)):
+        return {"skipped": True, "remaining": -1}
+    _last_sentiment_prune_ts = now
+    return prune_sentiment_events()
+
+
+def prune_sentiment_events(
+    *,
+    max_age_hours: float | None = None,
+    max_rows: int | None = None,
+) -> dict[str, int]:
+    """Drop stale / excess sentiment_events so storage cannot grow unbounded."""
+    from app.config import SENTIMENT_LOOKBACK_HOURS, SENTIMENT_MAX_AGE_HOURS, SENTIMENT_MAX_EVENTS
+
+    age_h = float(
+        max_age_hours
+        if max_age_hours is not None
+        else max(float(SENTIMENT_MAX_AGE_HOURS), float(SENTIMENT_LOOKBACK_HOURS) * 2)
+    )
+    cap = int(max_rows if max_rows is not None else SENTIMENT_MAX_EVENTS)
+    cap = max(100, min(cap, 50_000))
+    cutoff = time.time() - max(3600.0, age_h * 3600.0)
+
+    deleted_age = 0
+    deleted_cap = 0
+    remaining = 0
+    with db_session() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM sentiment_events WHERE updated_at < ?", (cutoff,))
+            deleted_age = int(cursor.rowcount or 0)
+        except Exception:
+            deleted_age = 0
+
+        try:
+            cursor.execute("SELECT COUNT(*) FROM sentiment_events")
+            row = cursor.fetchone()
+            remaining = int((row[0] if not isinstance(row, dict) else next(iter(row.values()))) or 0)
+        except Exception:
+            remaining = 0
+
+        if remaining > cap:
+            overflow = remaining - cap
+            try:
+                # Keep newest rows by updated_at; delete the oldest overflow.
+                if is_postgres():
+                    cursor.execute(
+                        """
+                        DELETE FROM sentiment_events
+                        WHERE id IN (
+                          SELECT id FROM sentiment_events
+                          ORDER BY updated_at ASC, id ASC
+                          LIMIT ?
+                        )
+                        """,
+                        (overflow,),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        DELETE FROM sentiment_events
+                        WHERE id IN (
+                          SELECT id FROM sentiment_events
+                          ORDER BY updated_at ASC, id ASC
+                          LIMIT ?
+                        )
+                        """,
+                        (overflow,),
+                    )
+                deleted_cap = int(cursor.rowcount or 0)
+                remaining = max(0, remaining - deleted_cap)
+            except Exception:
+                deleted_cap = 0
+
+    return {
+        "deleted_age": deleted_age,
+        "deleted_cap": deleted_cap,
+        "remaining": remaining,
+        "max_age_hours": age_h,
+        "max_rows": cap,
+    }
 
 
 def get_sentiment_events(

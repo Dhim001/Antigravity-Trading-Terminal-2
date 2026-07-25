@@ -163,7 +163,7 @@ def train_transformer_model(
     lookback = int(cfg.get("lookback", 90))
     d_model = int(cfg.get("d_model", 128))
     nhead = int(cfg.get("nhead", 4))
-    n_layers = int(cfg.get("num_layers", 6))
+    n_layers = int(cfg.get("num_layers", 4))
     lr = float(cfg.get("learning_rate", 0.0005))
     if bool(cfg.get("_wf_mode")) and "min_train_samples" not in raw_cfg:
         min_samples = int(cfg.get("wf_min_train_samples", 150))
@@ -238,13 +238,11 @@ def train_transformer_model(
     model = _build_transformer(N_FEATURES, d_model, nhead, n_layers, lookback).to(device)
     class_counts = np.bincount(y_tr, minlength=N_CLASSES).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
-    weights = torch.tensor(
-        (1.0 / class_counts) * class_counts.sum() / N_CLASSES,
-        dtype=torch.float32,
-        device=device,
-    )
-    criterion = nn.CrossEntropyLoss(weight=weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    w_arr = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
+    w_arr = np.clip(w_arr, 0.5, 5.0)
+    weights = torch.tensor(w_arr, dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     X_t = cpu_tensor(X_tr, dtype=torch.float32)
     y_t = cpu_tensor(y_tr, dtype=torch.long)
@@ -308,12 +306,21 @@ def train_transformer_model(
         model.load_state_dict(best_state)
     model.eval()
     pred_chunks: list = []
+    tr_pred_chunks: list = []
     with torch.no_grad():
         for vs in range(0, len(X_v), batch_size):
             xb = X_v[vs:vs + batch_size].to(device, non_blocking=True)
             pred_chunks.append(model(xb).argmax(1).detach().cpu())
+        for ts in range(0, len(X_t), batch_size):
+            xb = X_t[ts:ts + batch_size].to(device, non_blocking=True)
+            tr_pred_chunks.append(model(xb).argmax(1).detach().cpu())
+
         va_pred = torch.cat(pred_chunks, dim=0).numpy() if pred_chunks else np.array([], dtype=np.int64)
-    acc = float((va_pred == y_va).mean()) if len(y_va) else 0.0
+        tr_pred = torch.cat(tr_pred_chunks, dim=0).numpy() if tr_pred_chunks else np.array([], dtype=np.int64)
+
+    val_acc = float((va_pred == y_va).mean()) if len(y_va) > 0 else 0.0
+    train_acc = float((tr_pred == y_tr).mean()) if len(y_tr) > 0 else 0.0
+    gap = round(max(0.0, train_acc - val_acc), 4)
 
     # ONNX export — skip during walk-forward folds (export hangs the job at
     # epoch N/N and blocks job-status polls). OOS uses in-memory ``_wf_bundle``.
@@ -332,7 +339,10 @@ def train_transformer_model(
             "reverse_map": {str(k): v for k, v in REVERSE_MAP.items()},
             "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "metrics": {
-                "val_accuracy": round(acc, 4), "val_loss": round(best_val, 4),
+                "train_accuracy": round(train_acc, 4),
+                "val_accuracy": round(val_acc, 4),
+                "overfitting_gap": gap,
+                "val_loss": round(best_val, 4),
                 "train_samples": int(len(y_tr)), "val_samples": int(len(y_va)),
                 "train_device": train_device_meta.get("device"),
             },
@@ -384,7 +394,10 @@ def train_transformer_model(
         "reverse_map": {str(k): v for k, v in REVERSE_MAP.items()},
         "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "metrics": {
-            "val_accuracy": round(acc, 4), "val_loss": round(best_val, 4),
+            "train_accuracy": round(train_acc, 4),
+            "val_accuracy": round(val_acc, 4),
+            "overfitting_gap": gap,
+            "val_loss": round(best_val, 4),
             "train_samples": int(len(y_tr)), "val_samples": int(len(y_va)),
             "train_device": train_device_meta.get("device"),
         },

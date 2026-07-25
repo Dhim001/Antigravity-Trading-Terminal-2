@@ -81,6 +81,10 @@ backend/data/*.parquet
 backend/data/*.json
 backend/data/archive_wal/
 backend/data/meta_label_models/
+backend/data/feature_drift/
+
+# Sentiment / news caches written at runtime (keep schema code; ignore local dumps)
+backend/data/sentiment/
 
 # Trained ML / DL / RL artifacts (ONNX, joblib, scalers, version snapshots)
 backend/data/ml_signal_models/

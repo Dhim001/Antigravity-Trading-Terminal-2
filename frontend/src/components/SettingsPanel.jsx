@@ -810,6 +810,26 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
               </SettingsAccordionSection>
 
               <SettingsAccordionSection
+                value="left-panel"
+                title="Left panel"
+                hint="Default left-rail tab: your watchlist or Alpaca gainers/losers/actives with leading headlines."
+              >
+                <ToggleGroup
+                  type="single"
+                  value={settings.workspace?.leftPanelTab === 'movers' ? 'movers' : 'watchlist'}
+                  onValueChange={(v) => {
+                    if (v !== 'watchlist' && v !== 'movers') return;
+                    updateWorkspace({ leftPanelTab: v });
+                    window.dispatchEvent(new CustomEvent('left-panel-tab', { detail: v }));
+                  }}
+                  className="w-full"
+                >
+                  <ToggleGroupItem value="watchlist" className="flex-1 text-xs">Watchlist</ToggleGroupItem>
+                  <ToggleGroupItem value="movers" className="flex-1 text-xs">Movers</ToggleGroupItem>
+                </ToggleGroup>
+              </SettingsAccordionSection>
+
+              <SettingsAccordionSection
                 value="watchlist-columns"
                 title="Watchlist columns"
                 hint="Presets, optional columns, and asset-class sections on the All tab."
@@ -1224,6 +1244,34 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                             /{obsHealth.massive.ht_cache_max_entries ?? '—'}
                           </dd>
                         </div>
+                      )}
+                    </>
+                  )}
+                  {obsHealth?.alpaca && (
+                    <>
+                      <div><dt>Alpaca feed</dt><dd>{obsHealth.alpaca.connected ? 'yes' : 'no'}</dd></div>
+                      <div><dt>Stocks mode</dt><dd>{obsHealth.alpaca.stocks_mode ?? '—'}</dd></div>
+                      <div><dt>Crypto mode</dt><dd>{obsHealth.alpaca.crypto_mode ?? '—'}</dd></div>
+                      {obsHealth.alpaca.poll_fallback && (
+                        <div><dt>Alpaca path</dt><dd className="text-trading-warn">REST poll fallback</dd></div>
+                      )}
+                      {obsHealth.alpaca.last_error && (
+                        <div><dt>Alpaca error</dt><dd className="text-trading-warn">{obsHealth.alpaca.last_error}</dd></div>
+                      )}
+                      {obsHealth.alpaca.seeded_symbols != null && (
+                        <div>
+                          <dt>Seeded</dt>
+                          <dd>
+                            {obsHealth.alpaca.seeded_symbols}/
+                            {(obsHealth.alpaca.equity_symbols ?? 0) + (obsHealth.alpaca.crypto_symbols ?? 0)}
+                          </dd>
+                        </div>
+                      )}
+                      {obsHealth.alpaca.stocks_lag_sec != null && (
+                        <div><dt>Stocks lag</dt><dd>{obsHealth.alpaca.stocks_lag_sec}s</dd></div>
+                      )}
+                      {obsHealth.alpaca.crypto_lag_sec != null && (
+                        <div><dt>Crypto lag</dt><dd>{obsHealth.alpaca.crypto_lag_sec}s</dd></div>
                       )}
                     </>
                   )}

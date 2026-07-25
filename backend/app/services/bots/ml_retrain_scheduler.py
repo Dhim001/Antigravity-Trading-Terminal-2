@@ -383,6 +383,17 @@ class MlRetrainScheduler:
                 reason = "alpha_decay"
                 priority = 8
 
+            # Feature drift exceeded
+            elif bool(bot.get("check_drift", True)):
+                try:
+                    from app.services.bots.ml_feature_drift import should_recommend_retrain
+
+                    if should_recommend_retrain(symbol, strategy):
+                        reason = "feature_drift"
+                        priority = 9
+                except Exception:
+                    pass
+
             if reason:
                 actions.append({
                     "strategy": strategy,
