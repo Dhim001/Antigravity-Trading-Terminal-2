@@ -169,3 +169,98 @@ class AlphaDecayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(res["decaying_bots"]), 1)
         self.assertIn("bot-1", res["retrained_models"])
         mock_retrain.assert_called_once_with("bot-1")
+
+    @patch("app.services.bots.alpha_decay.get_connection")
+    @patch("app.services.bots.alpha_decay.get_backtest_expectations")
+    @patch("app.services.bots.alpha_decay.emit_notification", new_callable=AsyncMock)
+    @patch("app.services.bots.alpha_decay.get_bot_candles", return_value=[])
+    @patch("app.services.bots.alpha_decay.ALPHA_DECAY_AUTO_PAUSE", True)
+    @patch("app.services.bots.alpha_decay.ALPHA_DECAY_AUTO_RETRAIN", False)
+    async def test_ml_model_check_uses_bot_timeframe(
+        self, _candles, mock_emit, mock_expectations, mock_db,
+    ):
+        """HTF RL models live under SYMBOL__5M — age check must pass timeframe."""
+        self.bot_manager.active_bots = {
+            "bot-rl": {
+                "id": "bot-rl",
+                "symbol": "BTCUSDT",
+                "timeframe": "5m",
+                "strategy": "RL_PPO_AGENT",
+                "status": "RUNNING",
+                "config": {},
+                "signal_history": deque(maxlen=20),
+            }
+        }
+        mock_expectations.return_value = (55.0, 1.5)
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn.cursor.return_value = mock_cursor
+        mock_db.return_value = mock_conn
+
+        with patch(
+            "app.services.bots.ml_retrain_scheduler.get_model_age_hours",
+            return_value=2.0,
+        ) as mock_age, patch(
+            "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+            return_value={"metrics": {}},
+        ):
+            res = await self.monitor.evaluate()
+
+        mock_age.assert_called()
+        # Last (or any) call must include timeframe=5m
+        self.assertTrue(
+            any(
+                call.kwargs.get("timeframe") == "5m"
+                or (len(call.args) >= 3 and call.args[2] == "5m")
+                for call in mock_age.call_args_list
+            ),
+            f"expected timeframe=5m in calls: {mock_age.call_args_list}",
+        )
+        self.assertEqual(res["decaying_bots"], [])
+        self.assertEqual(res["paused_bots"], [])
+        self.bot_manager.pause_bot.assert_not_awaited()
+        mock_emit.assert_not_called()
+
+    @patch("app.services.bots.alpha_decay.get_connection")
+    @patch("app.services.bots.alpha_decay.get_backtest_expectations")
+    @patch("app.services.bots.alpha_decay.emit_notification", new_callable=AsyncMock)
+    @patch("app.services.bots.alpha_decay.get_bot_candles", return_value=[])
+    @patch("app.services.bots.alpha_decay.ALPHA_DECAY_AUTO_PAUSE", True)
+    @patch("app.services.bots.alpha_decay.ALPHA_DECAY_AUTO_RETRAIN", False)
+    async def test_ml_model_missing_at_bot_timeframe_pauses(
+        self, _candles, mock_emit, mock_expectations, mock_db,
+    ):
+        self.bot_manager.active_bots = {
+            "bot-rl": {
+                "id": "bot-rl",
+                "symbol": "BTCUSDT",
+                "timeframe": "5m",
+                "strategy": "RL_PPO_AGENT",
+                "status": "RUNNING",
+                "config": {},
+                "signal_history": deque(maxlen=20),
+            }
+        }
+        mock_expectations.return_value = (55.0, 1.5)
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn.cursor.return_value = mock_cursor
+        mock_db.return_value = mock_conn
+
+        with patch(
+            "app.services.bots.ml_retrain_scheduler.get_model_age_hours",
+            return_value=None,
+        ), patch(
+            "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+            return_value=None,
+        ):
+            res = await self.monitor.evaluate()
+
+        self.assertEqual(len(res["decaying_bots"]), 1)
+        self.assertIn("bot-rl", res["paused_bots"])
+        reason = res["decaying_bots"][0]["reasons"][0]
+        self.assertIn("BTCUSDT @ 5m", reason)
+        self.assertIn("RL_PPO_AGENT", reason)
+

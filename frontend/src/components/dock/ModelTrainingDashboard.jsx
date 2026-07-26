@@ -81,6 +81,8 @@ function defaultAdvancedKnobs(strategy, kind = 'validate') {
     // Lab Train previously defaulted PPO to 2048 — that made models look weak.
     totalTimesteps: train ? 200_000 : 2048,
     epochs,
+    // Stop when val loss plateaus — budget epochs is a ceiling, not a requirement.
+    earlyStopPatience: 10,
     hiddenDim: train ? (isRl ? 256 : 128) : (isRl ? 64 : 64),
     gbmMaxIter: train ? 300 : 40,
     gbmMaxDepth: train ? 6 : 4,
@@ -200,6 +202,7 @@ function syncAdvancedForWindow(prev, strategy, monthsValue, tfValue) {
     pboSegments: String(suggestedPboSegments(monthsValue, strategy)),
     // Keep user architecture / epochs if they already edited them this session.
     epochs: prev?.epochs ?? base.epochs,
+    earlyStopPatience: prev?.earlyStopPatience ?? base.earlyStopPatience,
     hiddenDim: prev?.hiddenDim ?? base.hiddenDim,
     totalTimesteps: prev?.totalTimesteps ?? base.totalTimesteps,
     gbmMaxIter: prev?.gbmMaxIter ?? base.gbmMaxIter,
@@ -244,6 +247,9 @@ const METRIC_LABELS = {
   sharpe: 'Sharpe',
   pbo: 'PBO',
   mean_oos_accuracy: 'Mean OOS acc',
+  epochs_trained: 'Epochs trained',
+  epochs_budget: 'Epoch budget',
+  early_stop_patience: 'Early-stop patience',
 };
 
 const INT_METRIC_KEYS = new Set([
@@ -256,6 +262,9 @@ const INT_METRIC_KEYS = new Set([
   'train_samples',
   'val_samples',
   'n_samples',
+  'epochs_trained',
+  'epochs_budget',
+  'early_stop_patience',
 ]);
 
 const PCT_METRIC_KEYS = new Set([
@@ -308,6 +317,8 @@ function pickMetricEntries(metrics) {
     'accuracy',
     'auc_roc',
     'val_loss',
+    'epochs_trained',
+    'epochs_budget',
     'sharpe',
     'pbo',
   ];
@@ -345,7 +356,19 @@ function MetricChips({ metrics }) {
     <div className="ml-training__metrics-block">
       <div className="ml-training__metrics-head flex items-center justify-between">
         <h4 className="ml-training__section-title">Latest model metrics</h4>
-        {risk && (
+        <div className="flex items-center gap-2">
+          {metrics?.early_stopped && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-semibold num-mono bg-amber-500/15 text-amber-600 border border-amber-500/30"
+              title={metrics.early_stop_reason || 'Validation loss stopped improving'}
+            >
+              Early stop
+              {metrics.epochs_trained != null && metrics.epochs_budget != null
+                ? ` ${metrics.epochs_trained}/${metrics.epochs_budget}`
+                : ''}
+            </span>
+          )}
+          {risk && (
           <span
             className={cn(
               'px-2 py-0.5 rounded text-[10px] font-semibold num-mono flex items-center gap-1',
@@ -357,7 +380,8 @@ function MetricChips({ metrics }) {
           >
             Overfit risk: {risk} {gap != null ? `(${(gap * 100).toFixed(1)}% gap)` : ''}
           </span>
-        )}
+          )}
+        </div>
       </div>
 
       {trainAcc != null && valAcc != null && (
@@ -1688,6 +1712,9 @@ export default function ModelTrainingDashboard({
             ...(DEEP_ML_STRATEGIES.has(strat)
               ? {
                   epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
+                  early_stop_patience: parsePositiveInt(
+                    knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
+                  ),
                   hidden_dim: parsePositiveInt(
                     knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
                   ),
@@ -1735,7 +1762,14 @@ export default function ModelTrainingDashboard({
             + (tw.span_days != null ? ` (~${tw.span_days}d)` : '')
             + (tw.training_window_months != null ? ` / ${tw.training_window_months}mo` : '')
           : '';
-        toast.success(`Training complete for ${strat} / ${symbol}${twNote}`);
+        const m = result.metrics && typeof result.metrics === 'object' ? result.metrics : {};
+        const early = result.early_stopped || m.early_stopped;
+        const epNote = early
+          ? ` · early stop ${m.epochs_trained ?? result.epochs_trained ?? '?'}`
+            + `/${m.epochs_budget ?? advanced?.epochs ?? '?'}`
+            + ' (val plateau)'
+          : '';
+        toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}`);
         // Drop from retrain audit immediately (backend also clears via record_retrain).
         setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
         setRetrainActions((prev) => prev.filter((a) => (
@@ -2190,6 +2224,21 @@ export default function ModelTrainingDashboard({
                   className="h-7 text-xs"
                   value={advanced.epochs}
                   onChange={(e) => setAdvanced((a) => ({ ...a, epochs: e.target.value }))}
+                />
+              </label>
+            )}
+            {DEEP_ML_STRATEGIES.has(strategy) && (
+              <label className="ml-training__advanced-field">
+                <span title="Stop after this many epochs with no better validation loss">
+                  early-stop patience
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={100}
+                  className="h-7 text-xs"
+                  value={advanced.earlyStopPatience}
+                  onChange={(e) => setAdvanced((a) => ({ ...a, earlyStopPatience: e.target.value }))}
                 />
               </label>
             )}

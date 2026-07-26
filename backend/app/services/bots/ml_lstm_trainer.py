@@ -369,7 +369,15 @@ def train_lstm_signal_model(
     best_val_loss = float("inf")
     best_state = None
     patience_counter = 0
-    max_patience = 10
+    from app.services.bots.ml_early_stop import early_stop_patience, mark_early_stop
+
+    max_patience = early_stop_patience(cfg)
+    early_stop_meta: dict = {
+        "early_stopped": False,
+        "epochs_trained": 0,
+        "epochs_budget": int(epochs),
+        "early_stop_patience": max_patience,
+    }
     loss_history: list[dict] = []
 
     def _batched_val_loss() -> float:
@@ -425,6 +433,7 @@ def train_lstm_signal_model(
             phase="epoch",
             detail=f"{epoch + 1}/{epochs} · val_loss={val_loss:.4f}",
         )
+        early_stop_meta["epochs_trained"] = epoch + 1
 
         scheduler.step(val_loss)
 
@@ -436,7 +445,13 @@ def train_lstm_signal_model(
         else:
             patience_counter += 1
             if patience_counter >= max_patience:
-                logger.info("Early stopping at epoch %d", epoch + 1)
+                early_stop_meta.update(mark_early_stop(
+                    epoch_1based=epoch + 1,
+                    epochs_budget=epochs,
+                    patience=max_patience,
+                    progress_path=progress_path,
+                    strategy="LSTM_DIRECTION",
+                ))
                 break
 
     # Load best weights
@@ -479,12 +494,13 @@ def train_lstm_signal_model(
         "val_accuracy": round(val_acc, 4),
         "overfitting_gap": round(max(0.0, train_acc - val_acc), 4),
         "val_loss": round(best_val_loss, 4),
-        "epochs_trained": epoch + 1,
+        "epochs_trained": int(early_stop_meta.get("epochs_trained") or (epoch + 1)),
         "hidden_dim": hidden_dim,
         "num_layers": num_layers,
         "lookback": lookback,
         "batch_size": batch_size,
         "train_device": train_device_meta.get("device"),
+        **early_stop_meta,
         **per_class_acc,
     }
 

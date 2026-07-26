@@ -250,6 +250,7 @@ def train_tcn_model(
     patience = 0
     loss_history: list[dict] = []
 
+    from app.services.bots.ml_early_stop import early_stop_patience, mark_early_stop
     from app.services.bots.ml_job_progress import (
         cancelled_train_result,
         ml_cancel_requested,
@@ -257,6 +258,13 @@ def train_tcn_model(
         write_ml_progress,
     )
 
+    max_patience = early_stop_patience(cfg)
+    early_stop_meta: dict = {
+        "early_stopped": False,
+        "epochs_trained": 0,
+        "epochs_budget": int(epochs),
+        "early_stop_patience": max_patience,
+    }
     progress_path = progress_path_from_config(cfg)
     for epoch in range(epochs):
         if ml_cancel_requested(progress_path):
@@ -302,6 +310,7 @@ def train_tcn_model(
             phase="epoch",
             detail=f"{epoch + 1}/{epochs}",
         )
+        early_stop_meta["epochs_trained"] = epoch + 1
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -309,7 +318,14 @@ def train_tcn_model(
             patience = 0
         else:
             patience += 1
-            if patience >= 10:
+            if patience >= max_patience:
+                early_stop_meta.update(mark_early_stop(
+                    epoch_1based=epoch + 1,
+                    epochs_budget=epochs,
+                    patience=max_patience,
+                    progress_path=progress_path,
+                    strategy="TCN_MULTI_HORIZON",
+                ))
                 break
 
     if best_state:
@@ -331,8 +347,9 @@ def train_tcn_model(
         "train_samples": int(len(y_train)),
         "val_samples": int(len(y_val)),
         "val_mse": round(best_val_loss, 6),
-        "epochs_trained": epoch + 1,
+        "epochs_trained": int(early_stop_meta.get("epochs_trained") or (epoch + 1)),
         "train_device": train_device_meta.get("device"),
+        **early_stop_meta,
     }
     for h, name in enumerate(horizon_names):
         correct = ((val_pred[:, h] > 0) == (y_val[:, h] > 0)).mean()

@@ -116,6 +116,9 @@ class AlphaDecayMonitor:
             timeframe = bot.get("timeframe", "1m")
             strategy = bot.get("strategy")
             decay_reasons: list[str] = []
+            # Always defined so retrain remediation can pass TF even if the
+            # ML model-age block was skipped (ImportError / non-ML decay only).
+            model_tf = timeframe or (cfg.get("timeframe") if isinstance(cfg, dict) else None) or "1m"
 
             # 1. Fetch backtest expectations
             bt_win_rate, bt_sharpe = get_backtest_expectations(symbol, strategy)
@@ -247,20 +250,26 @@ class AlphaDecayMonitor:
                     ml_check_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
 
                 if is_ml_strategy(strategy) or is_ensemble_strategy(strategy):
-                    model_age = get_model_age_hours(ml_check_id, symbol)
+                    model_tf = timeframe or cfg.get("timeframe") or "1m"
+                    model_age = get_model_age_hours(
+                        ml_check_id, symbol, timeframe=model_tf,
+                    )
                     max_age = float(cfg.get("ml_max_model_age_hours", 168))
                     if model_age is not None and model_age > max_age:
                         decay_reasons.append(
                             f"ML Model Stale: {ml_check_id} is {model_age:.0f}h old "
-                            f"(max {max_age:.0f}h)"
+                            f"(max {max_age:.0f}h) @ {model_tf}"
                         )
                     elif model_age is None:
                         decay_reasons.append(
-                            f"ML Model Missing: No trained {ml_check_id} model for this symbol"
+                            f"ML Model Missing: No trained {ml_check_id} model for "
+                            f"{symbol} @ {model_tf}"
                         )
 
                     # --- Metric 7: OOS Accuracy Drift ---
-                    model_meta = get_model_metadata(ml_check_id, symbol)
+                    model_meta = get_model_metadata(
+                        ml_check_id, symbol, timeframe=model_tf,
+                    )
                     if model_meta:
                         wf_accuracy = model_meta.get("metrics", {}).get("val_accuracy")
                         if wf_accuracy is not None and len(rows) >= ALPHA_DECAY_MIN_TRADES:
@@ -319,7 +328,12 @@ class AlphaDecayMonitor:
                             retrain_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
                         if _is_ml(strategy) or _is_ens(strategy):
                             scheduler = get_retrain_scheduler()
-                            should, reason = scheduler.should_retrain(retrain_id, symbol, alpha_score=0.8)
+                            should, reason = scheduler.should_retrain(
+                                retrain_id,
+                                symbol,
+                                alpha_score=0.8,
+                                timeframe=model_tf,
+                            )
                             if should:
                                 req = scheduler.request_retrain(
                                     strategy=retrain_id,

@@ -409,7 +409,14 @@ class MlRetrainScheduler:
         actions.sort(key=lambda a: -a["priority"])
         return actions
 
-    def should_retrain(self, strategy: str, symbol: str, alpha_score: float = 0.0) -> tuple[bool, str]:
+    def should_retrain(
+        self,
+        strategy: str,
+        symbol: str,
+        alpha_score: float = 0.0,
+        *,
+        timeframe: str | None = None,
+    ) -> tuple[bool, str]:
         """Quick check for a single bot.
 
         Returns (should_retrain, reason).
@@ -419,7 +426,7 @@ class MlRetrainScheduler:
         if self._is_on_cooldown(strategy, symbol):
             return False, "cooldown"
 
-        age = get_model_age_hours(strategy, symbol)
+        age = get_model_age_hours(strategy, symbol, timeframe=timeframe)
         if age is None:
             return True, "no_model"
         if age > self.max_age_hours:

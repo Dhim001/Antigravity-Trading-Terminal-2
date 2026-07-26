@@ -194,7 +194,19 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
         except Exception:
             logger.exception("Failed to stamp data_calendar on %s/%s", strat, symbol)
 
-    write_ml_progress(progress_path, pct=100, phase="done", detail="complete")
+    done_detail = "complete"
+    if isinstance(result, dict):
+        m = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        if result.get("early_stopped") or m.get("early_stopped"):
+            done_detail = (
+                m.get("early_stop_reason")
+                or result.get("early_stop_reason")
+                or (
+                    f"early stop @ {m.get('epochs_trained') or result.get('epochs_trained')}"
+                    f"/{m.get('epochs_budget') or '?'}"
+                )
+            )
+    write_ml_progress(progress_path, pct=100, phase="done", detail=str(done_detail)[:160])
     return result
 
 
@@ -476,7 +488,20 @@ def _finalize_job(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
         return out
 
     if out.get("ok"):
-        update_ml_job_progress(job_id, {"pct": 100, "phase": "done", "detail": "complete"})
+        done_detail = "complete"
+        m = out.get("metrics") if isinstance(out.get("metrics"), dict) else {}
+        if out.get("early_stopped") or m.get("early_stopped"):
+            done_detail = (
+                m.get("early_stop_reason")
+                or out.get("early_stop_reason")
+                or (
+                    f"early stop @ {m.get('epochs_trained') or out.get('epochs_trained')}"
+                    f"/{m.get('epochs_budget') or '?'}"
+                )
+            )
+        update_ml_job_progress(
+            job_id, {"pct": 100, "phase": "done", "detail": str(done_detail)[:160]},
+        )
         finish_ml_job(job_id, "done", result=out)
     else:
         update_ml_job_progress(job_id, {"pct": 100, "phase": "error", "detail": str(out.get("error") or "failed")})

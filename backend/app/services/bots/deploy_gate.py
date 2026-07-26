@@ -390,11 +390,16 @@ def evaluate_deploy_gate(
         from app.services.bots.ml_retrain_scheduler import get_model_age_hours, get_model_metadata
 
         if is_ensemble_strategy(deploy_strategy) and symbol:
+            from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+
             cfg = run_config or {}
             ml_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
             rl_id = str(cfg.get("rl_strategy") or "RL_PPO_AGENT").upper()
             ta_id = str(cfg.get("ta_strategy") or "MACD_RSI").upper()
             skip_val = bool(cfg.get("ml_skip_validation_gate"))
+            deploy_tf = normalize_model_timeframe(
+                run_timeframe or cfg.get("timeframe")
+            )
 
             checks.append(_check(
                 check_id="ensemble_components",
@@ -404,13 +409,13 @@ def evaluate_deploy_gate(
             ))
 
             for leg_id, label in ((ml_id, "ML"), (rl_id, "RL")):
-                age = get_model_age_hours(leg_id, symbol)
+                age = get_model_age_hours(leg_id, symbol, timeframe=deploy_tf)
                 if age is None:
                     checks.append(_check(
                         check_id=f"ensemble_{label.lower()}_model",
                         level="block",
                         ok=False,
-                        message=f"No trained {leg_id} model for {symbol} ({label} leg)",
+                        message=f"No trained {leg_id} model for {symbol} @ {deploy_tf} ({label} leg)",
                         detail="Train component models in Model Training before deploying the ensemble.",
                     ))
                 else:
@@ -418,11 +423,11 @@ def evaluate_deploy_gate(
                         check_id=f"ensemble_{label.lower()}_model",
                         level="pass",
                         ok=True,
-                        message=f"{leg_id} model exists ({label} leg, {age:.0f}h old)",
+                        message=f"{leg_id} model exists ({label} leg, {age:.0f}h old @ {deploy_tf})",
                     ))
 
             # Walk-forward / PBO gates apply to the ML classification leg
-            ml_meta = get_model_metadata(ml_id, symbol) or {}
+            ml_meta = get_model_metadata(ml_id, symbol, timeframe=deploy_tf) or {}
             wf_meta = ml_meta.get("walk_forward") if isinstance(ml_meta.get("walk_forward"), dict) else {}
             validated_at = ml_meta.get("validated_at") or wf_meta.get("validated_at")
             wf_ok = bool(wf_meta.get("ok"))

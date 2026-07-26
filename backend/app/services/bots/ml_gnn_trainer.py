@@ -418,6 +418,7 @@ def train_gnn_model(
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
+    from app.services.bots.ml_early_stop import early_stop_patience, mark_early_stop
     from app.services.bots.ml_job_progress import (
         cancelled_train_result,
         ml_cancel_requested,
@@ -425,6 +426,13 @@ def train_gnn_model(
         write_ml_progress,
     )
 
+    max_patience = early_stop_patience(cfg)
+    early_stop_meta: dict = {
+        "early_stopped": False,
+        "epochs_trained": 0,
+        "epochs_budget": int(epochs),
+        "early_stop_patience": max_patience,
+    }
     progress_path = progress_path_from_config(cfg)
     for ep in range(epochs):
         if ml_cancel_requested(progress_path):
@@ -472,13 +480,21 @@ def train_gnn_model(
             phase="epoch",
             detail=f"{ep + 1}/{epochs}",
         )
+        early_stop_meta["epochs_trained"] = ep + 1
         if vl < best_val:
             best_val = vl
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             pat = 0
         else:
             pat += 1
-            if pat >= 10:
+            if pat >= max_patience:
+                early_stop_meta.update(mark_early_stop(
+                    epoch_1based=ep + 1,
+                    epochs_budget=epochs,
+                    patience=max_patience,
+                    progress_path=progress_path,
+                    strategy="GNN_CROSS_ASSET",
+                ))
                 break
 
     if best_state:
@@ -531,6 +547,7 @@ def train_gnn_model(
             "train_samples": int(len(y_tr)),
             "val_samples": int(len(y_va)),
             "train_device": train_device_meta.get("device"),
+            **early_stop_meta,
         },
         "config": {
             "hidden_dim": hidden,
@@ -538,10 +555,14 @@ def train_gnn_model(
             "min_corr": min_corr,
             "basket_id": basket,
             "timeframe": tf,
+            "epochs": int(epochs),
+            "early_stop_patience": max_patience,
             "train_device": train_device_meta,
         },
         "train_device": train_device_meta,
         "loss_history": loss_history,
+        "early_stopped": bool(early_stop_meta.get("early_stopped")),
+        "epochs_trained": int(early_stop_meta.get("epochs_trained") or len(loss_history)),
     }
     with open(_metadata_path(basket, tf), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
