@@ -1,7 +1,7 @@
 /**
- * 2D heatmap — two most-varied sweep params vs objective metric.
+ * 2D heatmap — selectable axes among swept params vs objective metric.
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 const OBJECTIVE_LABELS = {
@@ -17,7 +17,7 @@ function metricValue(row, objective) {
   return row?.total_pnl ?? summary.total_pnl;
 }
 
-function findTopSweepAxes(results, paramDefs) {
+function listSweepAxes(results, paramDefs) {
   const counts = new Map();
   for (const row of results ?? []) {
     const cfg = row?.config ?? {};
@@ -30,24 +30,15 @@ function findTopSweepAxes(results, paramDefs) {
   const ranked = [...counts.entries()]
     .filter(([, vals]) => vals.size > 1)
     .sort((a, b) => b[1].size - a[1].size);
-  if (ranked.length < 2) return null;
-  const [xKey, xVals] = ranked[0];
-  const [yKey, yVals] = ranked[1];
   const labelFor = (key) => paramDefs.find((d) => d.key === key)?.label ?? key;
-  return {
-    xKey,
-    yKey,
-    xLabel: labelFor(xKey),
-    yLabel: labelFor(yKey),
-    xValues: [...xVals].map((v) => JSON.parse(v)).sort((a, b) => {
+  return ranked.map(([key, vals]) => ({
+    key,
+    label: labelFor(key),
+    values: [...vals].map((v) => JSON.parse(v)).sort((a, b) => {
       if (typeof a === 'number' && typeof b === 'number') return a - b;
       return String(a).localeCompare(String(b));
     }),
-    yValues: [...yVals].map((v) => JSON.parse(v)).sort((a, b) => {
-      if (typeof a === 'number' && typeof b === 'number') return a - b;
-      return String(a).localeCompare(String(b));
-    }),
-  };
+  }));
 }
 
 function cellTone(value, min, max) {
@@ -60,41 +51,60 @@ function cellTone(value, min, max) {
 }
 
 export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 'total_pnl' }) {
-  const axes = useMemo(
-    () => findTopSweepAxes(sweep?.results, paramDefs),
+  const allAxes = useMemo(
+    () => listSweepAxes(sweep?.results, paramDefs),
     [sweep?.results, paramDefs],
   );
+
+  const [xKey, setXKey] = useState(null);
+  const [yKey, setYKey] = useState(null);
+  const [zFilterKey, setZFilterKey] = useState('');
+  const [zFilterVal, setZFilterVal] = useState('');
+
+  const resolvedX = xKey || allAxes[0]?.key;
+  const resolvedY = yKey || allAxes[1]?.key || allAxes[0]?.key;
+  const xAxis = allAxes.find((a) => a.key === resolvedX) || allAxes[0];
+  const yAxis = allAxes.find((a) => a.key === resolvedY) || allAxes[1] || allAxes[0];
+  const zAxis = zFilterKey ? allAxes.find((a) => a.key === zFilterKey) : null;
 
   const hasResults = (sweep?.results?.length ?? 0) > 0;
 
   const grid = useMemo(() => {
-    if (!axes) return null;
-    const { xKey, yKey, xValues, yValues } = axes;
+    if (!xAxis || !yAxis || xAxis.key === yAxis.key) return null;
     const cells = new Map();
     let min = Infinity;
     let max = -Infinity;
     for (const row of sweep?.results ?? []) {
       if (row.error) continue;
       const cfg = row.config ?? {};
+      if (zAxis && zFilterVal !== '' && String(cfg[zAxis.key]) !== String(zFilterVal)) {
+        continue;
+      }
       const val = metricValue(row, objective);
       if (val == null) continue;
-      const num = Number(val);
-      if (!Number.isNaN(num)) {
-        min = Math.min(min, num);
-        max = Math.max(max, num);
+      const xv = cfg[xAxis.key];
+      const yv = cfg[yAxis.key];
+      if (xv == null || yv == null) continue;
+      const key = `${xv}|${yv}`;
+      const prev = cells.get(key);
+      if (!prev || Number(val) > Number(prev.val)) {
+        cells.set(key, { val: Number(val), row });
       }
-      cells.set(`${cfg[xKey]}|${cfg[yKey]}`, { row, val: num });
+      min = Math.min(min, Number(val));
+      max = Math.max(max, Number(val));
     }
-    if (!Number.isFinite(min)) {
-      min = 0;
-      max = 0;
-    }
-    return { cells, min, max, xValues, yValues };
-  }, [axes, sweep?.results, objective]);
+    return {
+      xValues: xAxis.values,
+      yValues: yAxis.values,
+      cells,
+      min: Number.isFinite(min) ? min : 0,
+      max: Number.isFinite(max) ? max : 0,
+    };
+  }, [sweep?.results, objective, xAxis, yAxis, zAxis, zFilterVal]);
 
   if (!hasResults) return null;
 
-  if (!axes || !grid) {
+  if (!allAxes || allAxes.length < 2 || !grid) {
     return (
       <section className="algo-backtest-heatmap mt-3">
         <p className="algo-backtest-table-scroll__caption m-0 text-xs text-muted-foreground">
@@ -108,14 +118,77 @@ export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 't
 
   return (
     <section className="algo-backtest-heatmap mt-3">
-      <p className="algo-backtest-table-scroll__caption m-0 mb-2">
-        Heatmap — {axes.yLabel} × {axes.xLabel} ({metricLabel})
-      </p>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <p className="algo-backtest-table-scroll__caption m-0 text-xs">
+          Heatmap — {yAxis.label} × {xAxis.label} ({metricLabel})
+        </p>
+        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+          X
+          <select
+            className="h-6 text-[10px] bg-background border rounded px-1"
+            value={resolvedX}
+            onChange={(e) => setXKey(e.target.value)}
+          >
+            {allAxes.map((a) => (
+              <option key={a.key} value={a.key}>{a.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+          Y
+          <select
+            className="h-6 text-[10px] bg-background border rounded px-1"
+            value={resolvedY}
+            onChange={(e) => setYKey(e.target.value)}
+          >
+            {allAxes.map((a) => (
+              <option key={a.key} value={a.key}>{a.label}</option>
+            ))}
+          </select>
+        </label>
+        {allAxes.length >= 3 && (
+          <>
+            <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+              Slice
+              <select
+                className="h-6 text-[10px] bg-background border rounded px-1"
+                value={zFilterKey}
+                onChange={(e) => {
+                  setZFilterKey(e.target.value);
+                  setZFilterVal('');
+                }}
+              >
+                <option value="">(none)</option>
+                {allAxes
+                  .filter((a) => a.key !== resolvedX && a.key !== resolvedY)
+                  .map((a) => (
+                    <option key={a.key} value={a.key}>{a.label}</option>
+                  ))}
+              </select>
+            </label>
+            {zAxis && (
+              <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                =
+                <select
+                  className="h-6 text-[10px] bg-background border rounded px-1"
+                  value={zFilterVal}
+                  onChange={(e) => setZFilterVal(e.target.value)}
+                >
+                  <option value="">all</option>
+                  {zAxis.values.map((v) => (
+                    <option key={String(v)} value={String(v)}>{String(v)}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </>
+        )}
+      </div>
       <div className="algo-backtest-table-scroll overflow-x-auto">
         <table className="terminal-table algo-backtest-table m-0 text-xs">
           <thead>
             <tr>
-              <th className="text-left">{axes.yLabel} ↓ / {axes.xLabel} →</th>
+              <th className="text-left">{yAxis.label} ↓ / {xAxis.label} →</th>
               {grid.xValues.map((xv) => (
                 <th key={String(xv)} className="text-center num-mono">{String(xv)}</th>
               ))}
@@ -128,6 +201,9 @@ export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 't
                 {grid.xValues.map((xv) => {
                   const cell = grid.cells.get(`${xv}|${yv}`);
                   const val = cell?.val;
+                  const tip = cell?.row
+                    ? `${cell.row.label || ''} · ${JSON.stringify(cell.row.config || {})}`
+                    : '';
                   return (
                     <td
                       key={`${xv}-${yv}`}
@@ -135,7 +211,7 @@ export default function OptimizerHeatmap({ sweep, paramDefs = [], objective = 't
                         'text-center num-mono whitespace-nowrap px-1',
                         cellTone(val, grid.min, grid.max),
                       )}
-                      title={cell?.row?.label}
+                      title={tip}
                     >
                       {val == null || Number.isNaN(val)
                         ? '—'

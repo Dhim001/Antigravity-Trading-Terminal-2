@@ -233,6 +233,8 @@ export default function MlOptimizerPanel(props) {
   const [modelStatus, setModelStatus] = useState(null);
   const [pinEnabled, setPinEnabled] = useState(true);
   const [pinnedVersion, setPinnedVersion] = useState('');
+  // Default ON for ML — include training knobs (lr, depth, epochs) in backtest sweep.
+  const [includeTrainHyperparams, setIncludeTrainHyperparams] = useState(true);
 
   const fetchStatus = useCallback(async () => {
     if (!symbol || !strategy) {
@@ -283,6 +285,28 @@ export default function MlOptimizerPanel(props) {
             <p className="text-xs text-muted-foreground mt-1">
               {getMlSubtypeSweepHint(strategy)}
             </p>
+            <label className="flex items-center gap-2 text-xs mt-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeTrainHyperparams}
+                onChange={(e) => setIncludeTrainHyperparams(e.target.checked)}
+              />
+              Include training hyperparams in sweep
+              <span className="text-[10px] text-muted-foreground">
+                (lr, depth, epochs, lookback…)
+              </span>
+            </label>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Prefer Optuna Auto-Tune for expensive train knobs —{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={openModelTrainingDock}
+              >
+                Model Training → Auto-Tune
+              </button>
+              .
+            </p>
             <p className="text-xs text-muted-foreground mt-1">
               <span className="algo-backtest-sweep__chip">{symbol}</span>
               <span className="algo-backtest-sweep__chip">{strategy}</span>
@@ -309,6 +333,7 @@ export default function MlOptimizerPanel(props) {
         {...props}
         panelTitle="Hyperparameter sweep"
         objectiveOptions={ML_OBJECTIVES}
+        includeTrainHyperparams={includeTrainHyperparams}
         footerSlot={<MlValidationFooter results={results} strategy={strategy} />}
         getDeployExtras={getDeployExtras}
         deploySlot={(

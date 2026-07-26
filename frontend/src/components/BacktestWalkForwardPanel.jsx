@@ -23,6 +23,20 @@ function Metric({ label, value, tone }) {
 function FoldSummary({ fold }) {
   const is = fold.in_sample ?? {};
   const oos = fold.out_of_sample ?? {};
+  const hpDrift = fold.hyperparam_drift ?? fold.param_stability;
+  const stabilityLabel = (() => {
+    if (hpDrift == null) return null;
+    if (typeof hpDrift === 'string') return hpDrift;
+    if (typeof hpDrift === 'number') {
+      if (hpDrift >= 0.75) return 'Stable';
+      if (hpDrift >= 0.4) return 'Drift';
+      return 'Unstable';
+    }
+    if (typeof hpDrift === 'object') {
+      return hpDrift.label || hpDrift.status || null;
+    }
+    return null;
+  })();
   const isSummary = is.summary ?? {};
   const oosSummary = oos.summary ?? {};
 
@@ -45,6 +59,24 @@ function FoldSummary({ fold }) {
         {oosSummary.sharpe_ratio != null ? Number(oosSummary.sharpe_ratio).toFixed(2) : '—'}
       </td>
       <td className="num-mono text-right">{oos.trade_count ?? oosSummary.total_trades ?? '—'}</td>
+      <td className="text-center text-[10px]">
+        {stabilityLabel ? (
+          <span
+            className={cn(
+              'px-1 rounded border',
+              stabilityLabel === 'Stable' && 'border-emerald-500/40 text-emerald-400',
+              stabilityLabel === 'Drift' && 'border-amber-500/40 text-amber-400',
+              stabilityLabel === 'Unstable' && 'border-rose-500/40 text-rose-400',
+              !['Stable', 'Drift', 'Unstable'].includes(stabilityLabel) && 'border-border text-muted-foreground',
+            )}
+            title="Parameter stability across fold hyperparams"
+          >
+            {stabilityLabel}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
     </tr>
   );
 }
@@ -245,6 +277,7 @@ export default function BacktestWalkForwardPanel({
                 <th className="text-right">OOS PnL</th>
                 <th className="text-right">OOS Sharpe</th>
                 <th className="text-right">OOS Trades</th>
+                <th className="text-center">Param Stability</th>
               </tr>
             </thead>
             <tbody>

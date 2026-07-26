@@ -8,6 +8,7 @@ from app.db.connection import db_session
 
 KEY_EQUITY_PEAK = "equity_peak"
 KEY_KILL_SWITCH_TRIPPED_AT = "kill_switch_tripped_at"
+KEY_KILL_SWITCH_TRIP_DRAWDOWN_PCT = "kill_switch_trip_drawdown_pct"
 
 
 def _get_float(key: str) -> float | None:
@@ -63,13 +64,27 @@ def get_kill_switch_tripped_at() -> float | None:
     return ts
 
 
-def trip_kill_switch(at: float | None = None) -> None:
+def trip_kill_switch(
+    at: float | None = None,
+    *,
+    drawdown_pct: float | None = None,
+) -> None:
     _set_float(KEY_KILL_SWITCH_TRIPPED_AT, at if at is not None else time.time())
+    if drawdown_pct is not None:
+        _set_float(KEY_KILL_SWITCH_TRIP_DRAWDOWN_PCT, float(drawdown_pct))
+
+
+def get_kill_switch_trip_drawdown_pct() -> float | None:
+    val = _get_float(KEY_KILL_SWITCH_TRIP_DRAWDOWN_PCT)
+    if val is None or val < 0:
+        return None
+    return val
 
 
 def reset_kill_switch(*, current_equity: float | None = None) -> None:
     """Clear kill-switch latch; optionally re-base peak equity."""
     _delete_key(KEY_KILL_SWITCH_TRIPPED_AT)
+    _delete_key(KEY_KILL_SWITCH_TRIP_DRAWDOWN_PCT)
     if current_equity is not None and current_equity > 0:
         set_equity_peak(current_equity)
 

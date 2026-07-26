@@ -421,11 +421,25 @@ class AlphaDecayMonitor:
                                 "reasons": decay_reasons,
                                 "auto_paused": ALPHA_DECAY_AUTO_PAUSE,
                                 "auto_retrained": ALPHA_DECAY_AUTO_RETRAIN,
+                                "suggestion": (
+                                    "Consider running a hyperparameter sweep before retrain — "
+                                    "the model may need architectural / hyperparam changes."
+                                ),
                             },
                         )
                     )
                 except Exception as exc:
                     logger.error("Failed to emit alpha decay notification for bot %s: %s", bot_id, exc)
+
+                try:
+                    await self.bot_manager.log_bot_event(
+                        bot_id,
+                        "INFO",
+                        "Alpha Decay: Consider running hyperparameter sweep before retrain — "
+                        "model may need architectural changes.",
+                    )
+                except Exception:
+                    pass
 
                 # Narrate to copilot
                 try:

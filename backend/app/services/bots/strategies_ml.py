@@ -108,7 +108,12 @@ def train_ml_signal_model(
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))
-    max_iter = int(cfg.get("max_iter", 40 if (wf_mode and not wf_parity) else 150))
+    # UI / Optuna use gbm_max_iter; older callers use max_iter — prefer explicit gbm_*.
+    _iter_default = 40 if (wf_mode and not wf_parity) else 150
+    if "gbm_max_iter" in cfg:
+        max_iter = int(cfg.get("gbm_max_iter", _iter_default))
+    else:
+        max_iter = int(cfg.get("max_iter", _iter_default))
     # skip_refit: keep train-split weights (no full-series refit into val).
     # Default True for WF folds and when ML calendar holdout is on (Lab champion).
     _cal_skip = False
@@ -562,6 +567,22 @@ class MlSignalModelStore:
 
 
 _signal_model_store = MlSignalModelStore()
+
+
+def train_ml_signal_model_with_config(
+    symbol: str,
+    candles: list[dict],
+    hyperparams: dict | None = None,
+    *,
+    config: dict | None = None,
+) -> dict[str, Any]:
+    """Train GBM with an explicit hyperparam dict (used by Optuna auto-tune).
+
+    Merges ``hyperparams`` over ``config`` so sweep trials can override defaults
+    without mutating strategy defaults permanently.
+    """
+    merged = {**(config or {}), **(hyperparams or {})}
+    return train_ml_signal_model(symbol, candles, config=merged)
 
 
 def get_ml_signal_store() -> MlSignalModelStore:

@@ -45,6 +45,7 @@ def get_risk_config(*, oms=None) -> dict[str, Any]:
             "max_drawdown_pct": drawdown.get("max_drawdown_pct", RISK_MAX_DRAWDOWN_PCT),
             "tripped": drawdown.get("kill_switch_tripped", False),
             "tripped_at": drawdown.get("kill_switch_tripped_at"),
+            "trip_drawdown_pct": drawdown.get("kill_switch_trip_drawdown_pct"),
             "current_drawdown_pct": drawdown.get("current_drawdown_pct"),
         },
         "time_controls": time_controls_status(),

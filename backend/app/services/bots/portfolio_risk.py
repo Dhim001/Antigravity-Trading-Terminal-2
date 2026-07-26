@@ -17,6 +17,11 @@ class PortfolioSnapshot:
     gross_exposure: float
     group_exposure: dict[str, float]
     symbol_exposure: dict[str, float]
+    # False when the OMS returned an empty/failed account payload — callers must
+    # not treat the synthetic $1 floor as a real drawdown vs peak.
+    equity_reliable: bool = True
+    # Cash balance from OMS balances (not broker equity − gross).
+    cash_balance: float = 0.0
 
 
 def symbol_correlation_group(symbol: str) -> str:
@@ -94,12 +99,37 @@ def build_portfolio_snapshot(oms) -> PortfolioSnapshot:
         group_exposure[grp] = group_exposure.get(grp, 0.0) + exp
 
     gross = sum(symbol_exposure.values())
-    equity = cash + gross
+    margin = account.get("margin") or {}
+    broker_equity = float(margin.get("equity") or 0)
+    derived_equity = cash + gross
+
+    # Prefer broker-reported equity (Alpaca / margin OMS) when present — cash+gross
+    # can collapse to ~0 on a transient empty REST response while the stored peak
+    # remains $100k, which falsely trips the drawdown kill switch.
+    if broker_equity > 0:
+        equity = broker_equity
+    else:
+        equity = derived_equity
+
+    has_balances = bool(balances)
+    has_margin = bool(margin)
+    equity_reliable = bool(
+        has_balances or has_margin or gross > 0 or cash > 0 or broker_equity > 0
+    )
+    if not equity_reliable:
+        # Keep a positive floor for exposure math, but mark unreliable so the
+        # risk monitor skips peak updates and kill-switch evaluation.
+        account_equity = 1.0
+    else:
+        account_equity = max(equity, cash, 1.0)
+
     return PortfolioSnapshot(
-        account_equity=max(equity, cash, 1.0),
+        account_equity=account_equity,
         gross_exposure=gross,
         group_exposure=group_exposure,
         symbol_exposure=symbol_exposure,
+        equity_reliable=equity_reliable,
+        cash_balance=float(cash),
     )
 
 

@@ -18,6 +18,7 @@ import {
   Loader2, RefreshCw, ShieldAlert, Sigma, TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 import { useAnalytics, fetchBenchmarks } from '@/hooks/useAnalytics';
 import { invokeHttpAction, sendAction } from '@/api/transport';
 import { Action } from '@/api/protocol';
@@ -210,11 +211,28 @@ export default function PortfolioDashboard({ open = false, onOpenChange, standal
   const resetKillSwitch = useCallback(async () => {
     try {
       await invokeHttpAction(Action.ADMIN_RESET_RISK_KILL_SWITCH, {});
-    } catch {
-      await sendAction(Action.ADMIN_RESET_RISK_KILL_SWITCH, {});
+    } catch (httpErr) {
+      try {
+        const ws = await sendAction(Action.ADMIN_RESET_RISK_KILL_SWITCH, {});
+        if (!ws?.ok) {
+          toast.error(httpErr?.message || ws?.error || 'Failed to reset kill switch');
+          return;
+        }
+        // WS send is fire-and-forget; ORDER_RESULT clears the alert. Do not
+        // race a risk refresh before the reset has been applied server-side.
+        return;
+      } catch (wsErr) {
+        toast.error(wsErr?.message || httpErr?.message || 'Failed to reset kill switch');
+        return;
+      }
     }
-    refresh();
-  }, [refresh]);
+    // Prefer a fast risk-only refresh; full dashboard analytics often times out.
+    try {
+      await invokeHttpAction(Action.ANALYTICS_GET, { report: 'risk', period, source }, { timeoutMs: 15_000 });
+    } catch {
+      /* kill_switch_reset handler already cleared the alert */
+    }
+  }, [period, source]);
 
   const equity = data?.equity;
   const stats = equity?.stats;
@@ -619,19 +637,30 @@ export default function PortfolioDashboard({ open = false, onOpenChange, standal
   const topBots = data?.bot_rankings?.top || [];
   const bottomBots = data?.bot_rankings?.bottom || [];
 
+  // SheetTitle/Description are Radix Dialog primitives and must sit under <Sheet>.
+  // Standalone mode has no Dialog root — use plain heading elements instead.
+  const HeaderRoot = standalone ? 'div' : SheetHeader;
+  const TitleRoot = standalone ? 'h2' : SheetTitle;
+  const DescriptionRoot = standalone ? 'p' : SheetDescription;
+
   const dashboardBody = (
     <>
-        <SheetHeader className="terminal-sheet__header portfolio-dashboard__header shrink-0">
+        <HeaderRoot
+          className={cn(
+            'terminal-sheet__header portfolio-dashboard__header shrink-0',
+            standalone && 'flex flex-col gap-0.5 p-4',
+          )}
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex min-w-0 flex-col gap-1">
-              <SheetTitle className="portfolio-dashboard__title">
+              <TitleRoot className="portfolio-dashboard__title">
                 <LayoutDashboard aria-hidden />
                 Portfolio Dashboard
                 {loading && <Loader2 className="animate-spin text-muted-foreground" aria-hidden />}
-              </SheetTitle>
-              <SheetDescription className="portfolio-dashboard__description">
+              </TitleRoot>
+              <DescriptionRoot className="portfolio-dashboard__description">
                 Equity curve, allocation, correlation, bot rankings, and risk analytics
-              </SheetDescription>
+              </DescriptionRoot>
             </div>
             <div className="portfolio-dashboard__toolbar flex flex-wrap items-center gap-2">
               <ToggleGroup type="single" size="sm" value={period} onValueChange={(v) => v && setPeriod(v)}>
@@ -654,7 +683,7 @@ export default function PortfolioDashboard({ open = false, onOpenChange, standal
               </Button>
             </div>
           </div>
-        </SheetHeader>
+        </HeaderRoot>
 
         <div className="portfolio-dashboard__body terminal-sheet__body">
           {error && (
@@ -670,13 +699,19 @@ export default function PortfolioDashboard({ open = false, onOpenChange, standal
             </Alert>
           )}
 
-          {risk?.kill_switch_tripped && (
+          {risk?.kill_switch_enabled && risk?.kill_switch_tripped && (
             <Alert variant="destructive" className="portfolio-dashboard__alert shrink-0">
               <ShieldAlert />
               <AlertTitle>Drawdown kill switch tripped</AlertTitle>
               <AlertDescription className="flex flex-wrap items-center gap-2">
-                Drawdown {fmtPct(risk.current_drawdown_pct)} exceeded the {fmtPct(risk.max_drawdown_pct)} limit.
+                Drawdown {fmtPct(risk.kill_switch_trip_drawdown_pct ?? risk.current_drawdown_pct)} exceeded the {fmtPct(risk.max_drawdown_pct)} limit.
                 All bots were stopped.
+                {risk.kill_switch_trip_drawdown_pct != null
+                  && (risk.current_drawdown_pct ?? 0) + 0.05 < (risk.kill_switch_trip_drawdown_pct ?? 0) && (
+                  <span className="text-muted-foreground">
+                    (Current drawdown is now {fmtPct(risk.current_drawdown_pct)}.)
+                  </span>
+                )}
                 <Button variant="link" size="sm" className="h-auto p-0" onClick={resetKillSwitch}>
                   Reset kill switch
                 </Button>

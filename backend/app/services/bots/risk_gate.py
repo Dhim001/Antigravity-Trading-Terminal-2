@@ -14,6 +14,7 @@ from app.config import (
     BOT_MAX_DRAWDOWN_PCT,
     BOT_MAX_PER_SYMBOL,
     MAX_ORDER_VALUE,
+    RISK_KILL_SWITCH_ENABLED,
 )
 from app.services.bots.portfolio_risk import (
     PortfolioSnapshot,
@@ -200,6 +201,8 @@ class RiskGate:
         self._portfolio_cache_at: float = 0.0
 
     def _kill_switch_block(self) -> RiskDecision | None:
+        if not RISK_KILL_SWITCH_ENABLED:
+            return None
         if risk_state_store.is_kill_switch_tripped():
             return RiskDecision(
                 False,

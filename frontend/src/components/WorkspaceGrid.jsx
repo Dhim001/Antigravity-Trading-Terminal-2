@@ -64,6 +64,13 @@ const UNMOUNT_WHEN_HIDDEN = new Set([
   'footprint',
 ]);
 
+/** Algo / ML remount wipes local form + result state; keep warm longer than lighter tabs. */
+const KEEP_ALIVE_MS_BY_COMPONENT = {
+  algo: 15 * 60_000,
+  'ml-training': 15 * 60_000,
+};
+const DEFAULT_KEEP_ALIVE_MS = 5 * 60_000;
+
 function PanelFallback({ label = 'Loading…' }) {
   return (
     <div className="flex min-h-[120px] flex-1 items-center justify-center text-xs text-muted-foreground">
@@ -78,7 +85,7 @@ function wrapPanel(node, component, element) {
     <MountWhenVisible
       node={node}
       placeholderLabel={`Loading ${component}…`}
-      keepAliveMs={60_000}
+      keepAliveMs={KEEP_ALIVE_MS_BY_COMPONENT[component] ?? DEFAULT_KEEP_ALIVE_MS}
     >
       {element}
     </MountWhenVisible>

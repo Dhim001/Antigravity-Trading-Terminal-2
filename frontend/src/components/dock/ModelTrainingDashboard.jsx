@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import FeatureImportanceChart from '@/components/FeatureImportanceChart';
+import MlAutoTunePanel from '@/components/MlAutoTunePanel';
 import { useStore } from '@/store/useStore';
 import { apiRequest, isAbortError } from '@/api/client';
 import { getStrategyMeta, isDeepMlStrategy, isMlStrategy, ML_STRATEGY_IDS } from '@/config/strategies';
@@ -1673,7 +1674,7 @@ export default function ModelTrainingDashboard({
     }
   }, [cancellingJob]);
 
-  const runTrainJob = async (strat, symbol, { fromQueue = false } = {}) => {
+  const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null } = {}) => {
     if (training || validating || busyElsewhere || !symbol || !strat) return;
     const queueKey = `${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`;
     if (fromQueue) setRunNowKey(queueKey);
@@ -1683,6 +1684,7 @@ export default function ModelTrainingDashboard({
     const token = startJobProgress('train', strat, symbol, trainingWindow);
     const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
+    const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
     localJobWaiterRef.current = true;
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
@@ -1730,6 +1732,7 @@ export default function ModelTrainingDashboard({
                   gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
                 }
               : {}),
+            ...hp,
           },
         },
         // Candle fetch for long Lab windows; train itself is async + polled.
@@ -2519,6 +2522,22 @@ export default function ModelTrainingDashboard({
           )}
         </section>
       )}
+
+      <MlAutoTunePanel
+        symbol={activeSymbol}
+        strategy={strategy}
+        timeframe={trainingTimeframe}
+        trainingWindow={trainingWindow}
+        disabled={training || validating || busyElsewhere}
+        onApplyAndRetrain={(hp) => {
+          if (!activeSymbol) {
+            toast.error('No active symbol');
+            return;
+          }
+          toast.message('Applying best hyperparams and starting retrain…');
+          runTrainJob(strategy, activeSymbol, { hyperparams: hp });
+        }}
+      />
 
       <section className="ml-training__card">
         <div className="ml-training__card-head">

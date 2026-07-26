@@ -147,6 +147,12 @@ export const FIELD_META = {
     hint: 'Pin a trained snapshot, or leave Latest to always use the activated model.',
   },
   model_artifact: { label: 'Model artifact', group: 'ml_model', kind: 'text', readOnly: true, hint: 'Pinned filename (.onnx / .joblib) for this deploy.' },
+  gbm_max_depth: { label: 'GBM max depth', group: 'ml_model', kind: 'integer', hint: 'Tree depth for ML_SIGNAL_BOOST.' },
+  gbm_learning_rate: { label: 'GBM learning rate', group: 'ml_model', kind: 'decimal', hint: 'GBM step size.' },
+  gbm_max_iter: { label: 'GBM max iter', group: 'ml_model', kind: 'integer', hint: 'Boosting rounds / iterations.' },
+  gbm_l2_reg: { label: 'GBM L2 reg', group: 'ml_model', kind: 'decimal', hint: 'L2 regularization on leaf values.' },
+  epochs: { label: 'Epochs', group: 'ml_model', kind: 'integer', hint: 'Training epochs for deep models.' },
+  early_stop_patience: { label: 'Early-stop patience', group: 'ml_model', kind: 'integer', hint: 'Stop after N flat validation epochs.' },
   ta_strategy: { label: 'TA leg', group: 'ml_model', kind: 'text', hint: 'Technical strategy id for the ensemble TA vote (e.g. MACD_RSI).' },
   ml_strategy: { label: 'ML leg', group: 'ml_model', kind: 'text', hint: 'ML strategy id for the ensemble ML vote (e.g. ML_SIGNAL_BOOST). Train this in Model Training.' },
   rl_strategy: { label: 'RL leg', group: 'ml_model', kind: 'text', hint: 'RL strategy id for the ensemble RL vote (default RL_PPO_AGENT).' },
@@ -300,6 +306,12 @@ const SWEEP_DEFAULT_PLACEHOLDERS = {
   num_layers: '1, 2, 3',
   learning_rate: '0.0005, 0.001',
   batch_size: '32, 64',
+  epochs: '30, 60, 90',
+  early_stop_patience: '5, 10, 15',
+  gbm_max_depth: '3, 5, 7',
+  gbm_learning_rate: '0.05, 0.08, 0.12',
+  gbm_max_iter: '100, 200, 300',
+  gbm_l2_reg: '0, 1, 2',
   gamma: '0.95, 0.99',
   clip_epsilon: '0.1, 0.2',
   triple_barrier_atr_mult: '1.5, 2, 2.5',
@@ -332,12 +344,33 @@ const AGENT_SWEEP_ORDERED = [
 
 const ML_SWEEP_ORDERED = [
   'lookback', 'min_confidence', 'min_return', 'hidden_dim', 'num_layers',
-  'learning_rate', 'batch_size', 'd_model', 'nhead', 'latent_dim',
+  'learning_rate', 'batch_size', 'epochs', 'early_stop_patience', 'd_model', 'nhead', 'latent_dim',
+  'gbm_max_depth', 'gbm_learning_rate', 'gbm_max_iter', 'gbm_l2_reg',
   'anomaly_threshold', 'suppress_threshold', 'n_heads', 'min_corr',
   'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'val_fraction', 'min_train_samples',
   'gamma', 'gae_lambda', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'ent_coef', 'vf_coef',
   ...SHARED_RISK_SWEEP_KEYS,
 ];
+
+/** Training-time hyperparams (Optuna / Auto-Tune) vs live trading knobs. */
+export const ML_TRAINING_SWEEP_KEYS = new Set([
+  'lookback', 'hidden_dim', 'num_layers', 'learning_rate', 'batch_size', 'epochs',
+  'early_stop_patience', 'd_model', 'nhead', 'n_heads', 'latent_dim',
+  'gbm_max_depth', 'gbm_learning_rate', 'gbm_max_iter', 'gbm_l2_reg',
+  'val_fraction', 'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'min_train_samples',
+  'gamma', 'gae_lambda', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'ent_coef', 'vf_coef',
+  'total_timesteps',
+]);
+
+export function isTrainingSweepKey(key) {
+  return ML_TRAINING_SWEEP_KEYS.has(String(key || ''));
+}
+
+export function filterSweepFields(paramDefs, { includeTrainHyperparams = true } = {}) {
+  const list = Array.isArray(paramDefs) ? paramDefs : [];
+  if (includeTrainHyperparams) return list;
+  return list.filter((d) => !isTrainingSweepKey(d?.key));
+}
 
 function sweepPlaceholderFor(strategy, key, meta) {
   if (key === 'min_confidence') {
@@ -374,6 +407,7 @@ function buildSweepFieldList(strategy, config, orderedKeys, extraKeys = []) {
       key,
       label: meta.label,
       kind: meta.kind,
+      group: meta.group || inferGroup(key),
       placeholder: sweepPlaceholderFor(strat, key, meta),
       hint: meta.hint,
     });
@@ -385,6 +419,7 @@ function buildSweepFieldList(strategy, config, orderedKeys, extraKeys = []) {
       key,
       label: meta.label,
       kind: meta.kind,
+      group: meta.group || inferGroup(key),
       placeholder: sweepPlaceholderFor(strat, key, meta),
       hint: meta.hint,
     });

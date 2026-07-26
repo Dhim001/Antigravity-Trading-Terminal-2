@@ -31,6 +31,8 @@ class DrawdownSnapshot:
     kill_switch_enabled: bool
     kill_switch_tripped: bool
     kill_switch_tripped_at: float | None
+    equity_reliable: bool = True
+    kill_switch_trip_drawdown_pct: float | None = None
 
 
 # Number of consecutive risk-monitor ticks a drawdown must persist before the
@@ -44,6 +46,25 @@ def compute_drawdown(oms) -> DrawdownSnapshot:
     snapshot = build_portfolio_snapshot(oms)
     total_equity = max(float(snapshot.account_equity), 0.0)
     gross = float(snapshot.gross_exposure)
+    reliable = bool(getattr(snapshot, "equity_reliable", True))
+
+    # Unreliable equity (empty OMS / failed broker fetch): do not ratchet peak
+    # or invent a drawdown against a prior high-water mark.
+    if not reliable:
+        peak = store.get_equity_peak() or total_equity or 0.0
+        cash_bal = float(getattr(snapshot, "cash_balance", 0.0) or 0.0)
+        return DrawdownSnapshot(
+            account_equity=round(total_equity, 2),
+            cash_equity=round(cash_bal, 2),
+            equity_peak=round(float(peak or 0.0), 2),
+            current_drawdown_pct=0.0,
+            max_drawdown_pct=RISK_MAX_DRAWDOWN_PCT,
+            kill_switch_enabled=RISK_KILL_SWITCH_ENABLED,
+            kill_switch_tripped=store.is_kill_switch_tripped(),
+            kill_switch_tripped_at=store.get_kill_switch_tripped_at(),
+            equity_reliable=False,
+            kill_switch_trip_drawdown_pct=store.get_kill_switch_trip_drawdown_pct(),
+        )
 
     # --- Peak tracking ---
     # Only ratchet the peak upward when the portfolio is flat (no open
@@ -69,15 +90,18 @@ def compute_drawdown(oms) -> DrawdownSnapshot:
     dd_pct = ((peak - total_equity) / peak * 100.0) if peak > 0 else 0.0
     dd_pct = max(dd_pct, 0.0)
 
+    cash_bal = float(getattr(snapshot, "cash_balance", 0.0) or 0.0)
     return DrawdownSnapshot(
         account_equity=round(total_equity, 2),
-        cash_equity=round(total_equity - gross, 2),
+        cash_equity=round(cash_bal, 2),
         equity_peak=round(peak, 2),
         current_drawdown_pct=round(dd_pct, 2),
         max_drawdown_pct=RISK_MAX_DRAWDOWN_PCT,
         kill_switch_enabled=RISK_KILL_SWITCH_ENABLED,
         kill_switch_tripped=store.is_kill_switch_tripped(),
         kill_switch_tripped_at=store.get_kill_switch_tripped_at(),
+        equity_reliable=True,
+        kill_switch_trip_drawdown_pct=store.get_kill_switch_trip_drawdown_pct(),
     )
 
 
@@ -91,6 +115,8 @@ def drawdown_to_dict(snapshot: DrawdownSnapshot) -> dict:
         "kill_switch_enabled": snapshot.kill_switch_enabled,
         "kill_switch_tripped": snapshot.kill_switch_tripped,
         "kill_switch_tripped_at": snapshot.kill_switch_tripped_at,
+        "equity_reliable": snapshot.equity_reliable,
+        "kill_switch_trip_drawdown_pct": snapshot.kill_switch_trip_drawdown_pct,
     }
 
 
@@ -100,6 +126,7 @@ class RiskMonitor:
         self._sentinel = RiskSentinel(agent_event_bus=agent_event_bus)
 
     async def evaluate(self, oms, bot_manager) -> DrawdownSnapshot:
+        global _breach_counter
         snapshot = compute_drawdown(oms)
 
         try:
@@ -135,12 +162,28 @@ class RiskMonitor:
                 logger.error("Dynamic correlation refresh failed: %s", exc)
 
         if not RISK_KILL_SWITCH_ENABLED:
+            # Disabled profiles must not keep a stale latch blocking entries.
+            if store.is_kill_switch_tripped():
+                store.reset_kill_switch(
+                    current_equity=snapshot.account_equity
+                    if snapshot.equity_reliable and snapshot.account_equity > 1
+                    else None
+                )
+                snapshot.kill_switch_tripped = False
+                snapshot.kill_switch_tripped_at = None
+                snapshot.kill_switch_trip_drawdown_pct = None
+            return snapshot
+
+        if not snapshot.equity_reliable:
+            logger.warning(
+                "Skipping drawdown kill-switch evaluation — account equity unreliable "
+                "(empty/failed OMS snapshot)."
+            )
+            _breach_counter = 0
             return snapshot
 
         if store.is_kill_switch_tripped():
             return snapshot
-
-        global _breach_counter
 
         if snapshot.current_drawdown_pct >= RISK_MAX_DRAWDOWN_PCT:
             _breach_counter += 1
@@ -156,7 +199,7 @@ class RiskMonitor:
             )
             if _breach_counter >= _BREACH_CONFIRM_TICKS:
                 _breach_counter = 0
-                store.trip_kill_switch()
+                store.trip_kill_switch(drawdown_pct=snapshot.current_drawdown_pct)
                 stopped = await bot_manager.stop_all_bots()
                 reason = (
                     f"Drawdown kill switch: equity ${snapshot.account_equity:,.2f} is "
@@ -203,6 +246,7 @@ class RiskMonitor:
                     )
                 snapshot.kill_switch_tripped = True
                 snapshot.kill_switch_tripped_at = store.get_kill_switch_tripped_at()
+                snapshot.kill_switch_trip_drawdown_pct = snapshot.current_drawdown_pct
         else:
             # Drawdown recovered below limit — reset confirmation counter.
             if _breach_counter > 0:

@@ -116,4 +116,106 @@ def pareto_frontier(
         ),
         reverse=True,
     )
-    return ranked[:max_points]
+    out = ranked[:max_points]
+    # Annotate crowding distance for UI ranking
+    distances = crowding_distance(out, objs)
+    for i, row in enumerate(out):
+        row = dict(row)
+        row["crowding_distance"] = distances[i] if i < len(distances) else 0.0
+        out[i] = row
+    return out
+
+
+def crowding_distance(
+    frontier: list[dict],
+    objectives: list[tuple[str, bool]] | None = None,
+) -> list[float]:
+    """NSGA-II style crowding distance for Pareto frontier rows."""
+    objs = objectives or [
+        ("total_pnl", True),
+        ("max_drawdown", False),
+        ("trade_count", True),
+    ]
+    n = len(frontier)
+    if n == 0:
+        return []
+    if n <= 2:
+        return [float("inf")] * n
+    dist = [0.0] * n
+    for metric, _maximize in objs:
+        order = sorted(
+            range(n),
+            key=lambda i: _extract_metric(frontier[i], metric) if _extract_metric(frontier[i], metric) is not None else 0.0,
+        )
+        dist[order[0]] = float("inf")
+        dist[order[-1]] = float("inf")
+        vals = [_extract_metric(frontier[i], metric) for i in order]
+        lo = next((v for v in vals if v is not None), 0.0)
+        hi = next((v for v in reversed(vals) if v is not None), 0.0)
+        span = (hi - lo) if hi != lo else 1.0
+        for k in range(1, n - 1):
+            prev_v = vals[k - 1]
+            next_v = vals[k + 1]
+            if prev_v is None or next_v is None:
+                continue
+            if dist[order[k]] != float("inf"):
+                dist[order[k]] += (next_v - prev_v) / span
+    return dist
+
+
+def run_nsga2_selection(
+    rows: list[dict],
+    *,
+    objectives: list[tuple[str, bool]] | None = None,
+    population: int = 16,
+) -> list[dict]:
+    """Rank rows by non-domination + crowding (NSGA-II selection flavor).
+
+    Used when ``multi_objective_sampler=nsga2`` is set on a sweep — filters
+    the evaluated population down to a diverse Pareto-aware elite set.
+    """
+    objs = objectives or [
+        ("total_pnl", True),
+        ("max_drawdown", False),
+        ("sharpe_ratio", True),
+    ]
+    eligible = [r for r in rows if not r.get("error")]
+    if not eligible:
+        return []
+
+    def _front(pool: list[dict]) -> list[dict]:
+        """Non-dominated subset preserving object identity (no copies)."""
+        out: list[dict] = []
+        for row in pool:
+            dominated = False
+            for other in pool:
+                if other is row:
+                    continue
+                if _dominates(other, row, objs):
+                    dominated = True
+                    break
+            if not dominated:
+                out.append(row)
+        return out
+
+    # Rank 0 = current Pareto, then peel layers
+    remaining = list(eligible)
+    ranked: list[dict] = []
+    guard = 0
+    while remaining and len(ranked) < population and guard < len(eligible) + 2:
+        guard += 1
+        layer = _front(remaining)
+        if not layer:
+            break
+        cds = crowding_distance(layer, objs)
+        order = sorted(range(len(layer)), key=lambda i: cds[i], reverse=True)
+        for i in order:
+            if len(ranked) >= population:
+                break
+            row = dict(layer[i])
+            row["nsga_rank"] = len(ranked)
+            row["crowding_distance"] = cds[i]
+            ranked.append(row)
+        layer_ids = {id(r) for r in layer}
+        remaining = [r for r in remaining if id(r) not in layer_ids]
+    return ranked

@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAppliedDeployConfig,
   confidenceRangeForStrategy,
+  filterSweepFields,
   getEditableConfigFields,
   getSweepEligibleFields,
+  isTrainingSweepKey,
   pickDeployConfig,
 } from './botConfigDisplay';
 
@@ -15,6 +17,14 @@ describe('getSweepEligibleFields', () => {
     expect(keys).toContain('rsi_length');
     expect(keys).toContain('macd_slow');
     expect(keys).not.toContain('lookback');
+  });
+
+  it('filterSweepFields can hide training hyperparams', () => {
+    const all = getSweepEligibleFields('ML_SIGNAL_BOOST', {});
+    expect(all.some((f) => isTrainingSweepKey(f.key) || f.key === 'gbm_max_depth')).toBe(true);
+    const tradingOnly = filterSweepFields(all, { includeTrainHyperparams: false });
+    expect(tradingOnly.every((f) => !isTrainingSweepKey(f.key))).toBe(true);
+    expect(tradingOnly.some((f) => f.key === 'min_confidence' || f.key === 'trailing_stop_percent')).toBe(true);
   });
 
   it('hides TA indicators for ML strategies', () => {

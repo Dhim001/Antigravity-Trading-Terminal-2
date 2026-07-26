@@ -21,7 +21,7 @@ import { useResearchStore } from '../store/useResearchStore';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
 import { withLlmModel } from '../api/endpoints';
-import { getSweepEligibleFields, buildAppliedDeployConfig } from '../lib/botConfigDisplay';
+import { getSweepEligibleFields, buildAppliedDeployConfig, filterSweepFields, isTrainingSweepKey } from '../lib/botConfigDisplay';
 import { DEFAULT_SWEEP_OBJECTIVE, defaultSweepEnabled, getDefaultMinTrades, getDefaultObjective, isExploratorySweep } from '../lib/optimizerDefaults';
 import { defaultPortfolioSymbols } from '../lib/portfolioBacktest';
 import { exportSweepCsv } from '../lib/backtestExport';
@@ -37,6 +37,7 @@ import {
   getBacktestClientTimeoutMs,
 } from '../lib/backtestTimeouts';
 import { toast } from 'sonner';
+import { apiRequest } from '@/api/client';
 
 const OBJECTIVE_OPTIONS = [
   { value: 'calmar_ratio', label: 'Calmar ratio (default)' },
@@ -218,6 +219,7 @@ export default function TaOptimizerPanel({
   footerSlot = null,
   deploySlot = null,
   getDeployExtras = null,
+  includeTrainHyperparams = false,
 }) {
   const backtestRunning = useResearchStore((s) => s.backtestRunning);
   const botConfig = useStore((s) => s.botConfig);
@@ -228,15 +230,17 @@ export default function TaOptimizerPanel({
   const setBotStrategy = useStore((s) => s.setBotStrategy);
   const setPendingDeploy = useResearchStore((s) => s.setPendingDeploy);
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
+  const selectedBotId = useStore((s) => s.selectedBotId);
+  const activeBots = useStore((s) => s.activeBots);
 
   const paramDefs = useMemo(
-    () => getSweepEligibleFields(strategy, botConfig),
-    [strategy, botConfig],
+    () => filterSweepFields(getSweepEligibleFields(strategy, botConfig), { includeTrainHyperparams }),
+    [strategy, botConfig, includeTrainHyperparams],
   );
 
   const [enabled, setEnabled] = useState(() => defaultEnabledKeys(strategy, paramDefs));
   const [valuesByKey, setValuesByKey] = useState(() =>
-    defaultValuesForFields(getSweepEligibleFields(strategy, botConfig), botConfig),
+    defaultValuesForFields(paramDefs, botConfig),
   );
   const [maxCombos, setMaxCombos] = useState(24);
   const [sweepMode, setSweepMode] = useState('grid');
@@ -265,6 +269,30 @@ export default function TaOptimizerPanel({
     setObjective(getDefaultObjective(strategy));
     setMinTrades(getDefaultMinTrades(strategy));
   }, [strategy, paramDefs, botConfig]);
+
+  // When training-hyperparam visibility toggles, merge defaults for newly visible keys
+  // without wiping user edits on already-visible axes.
+  const prevIncludeTrainRef = useRef(includeTrainHyperparams);
+  useEffect(() => {
+    if (prevIncludeTrainRef.current === includeTrainHyperparams) return;
+    prevIncludeTrainRef.current = includeTrainHyperparams;
+    const defaults = defaultSweepEnabled(strategy, paramDefs);
+    setEnabled((prev) => {
+      const next = { ...prev };
+      for (const def of paramDefs) {
+        if (next[def.key] === undefined) next[def.key] = Boolean(defaults[def.key]);
+        else if (includeTrainHyperparams && isTrainingSweepKey(def.key) && defaults[def.key]) {
+          // Prefer strategy defaults when revealing training axes
+          next[def.key] = true;
+        }
+      }
+      return next;
+    });
+    setValuesByKey((prev) => {
+      const seeded = defaultValuesForFields(paramDefs, botConfig);
+      return { ...seeded, ...prev };
+    });
+  }, [includeTrainHyperparams, paramDefs, strategy, botConfig]);
 
   // Seed newly appeared param keys without clobbering user edits.
   useEffect(() => {
@@ -498,6 +526,49 @@ export default function TaOptimizerPanel({
     );
   };
 
+  const applyBestToBot = async () => {
+    const cfg = results?.walk_forward?.best_config
+      ?? results?.sweep?.stable_config
+      ?? results?.sweep?.best_config;
+    const runId = results?.optimization_run_id || results?.sweep?.optimization_run_id;
+    const botId = selectedBotId
+      || (Array.isArray(activeBots)
+        ? activeBots.find((b) => String(b.symbol || '').toUpperCase() === String(symbol || '').toUpperCase())?.id
+        : null);
+    if (!botId) {
+      toast.error('Select a bot (matching symbol) before applying');
+      return;
+    }
+    if (!runId && !cfg) {
+      toast.error('No optimization run to apply — run a sweep first');
+      return;
+    }
+    try {
+      if (runId) {
+        const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/apply-optimized-config`, {
+          method: 'POST',
+          body: {
+            optimization_run_id: runId,
+            config_source: 'best',
+            require_paused: true,
+          },
+          timeoutMs: 30_000,
+        });
+        if (!body?.ok) {
+          toast.error(body?.error || 'Apply to bot failed');
+          return;
+        }
+        toast.success(`Applied optimized config to bot ${String(botId).slice(0, 8)}…`);
+        return;
+      }
+      // Fallback: patch via WS config update when run wasn't persisted
+      sendAction(Action.BOT_UPDATE_CONFIG, { bot_id: botId, config: cfg });
+      toast.success('Applied best config via bot update');
+    } catch (err) {
+      toast.error(err?.message || 'Apply to bot failed');
+    }
+  };
+
   const handleExportCsv = () => {
     const res = exportSweepCsv({
       results,
@@ -513,6 +584,29 @@ export default function TaOptimizerPanel({
     ?? results?.sweep?.best_config;
   const sweepStability = results?.sweep?.stability;
   const bayesianMeta = results?.sweep?.bayesian;
+  const importance = bayesianMeta?.hyperparameter_importance
+    || bayesianMeta?.importance_ranking
+    || results?.sweep?.importance_ranking;
+  const optHealth = (() => {
+    if (!bayesianMeta) return null;
+    if (bayesianMeta.converged || (bayesianMeta.early_stopped && bayesianMeta.best_value != null)) {
+      return { label: 'Converged', tone: 'ok' };
+    }
+    if (bayesianMeta.early_stopped && bayesianMeta.stopped_reason) {
+      return { label: 'Budget exhausted', tone: 'warn' };
+    }
+    if (!bayesianMeta.early_stopped) {
+      return { label: 'Still exploring', tone: 'warn' };
+    }
+    return { label: 'Complete', tone: 'muted' };
+  })();
+  const convergencePoints = (results?.sweep?.results || [])
+    .filter((r) => r?.trial != null && !r.error)
+    .map((r) => ({
+      trial: r.trial,
+      score: r.total_pnl ?? r.summary?.sharpe_ratio ?? r.summary?.calmar_ratio,
+    }))
+    .filter((p) => p.score != null);
   const isChartAgent = (strategy || '').toUpperCase() === 'CHART_AGENT';
 
   return (
@@ -616,6 +710,7 @@ export default function TaOptimizerPanel({
             <ToggleGroupItem value="grid" className="text-xs" title="Full grid, capped at 24 runs">Grid</ToggleGroupItem>
             <ToggleGroupItem value="random" className="text-xs" title="Random search, up to 200 trials">Random</ToggleGroupItem>
             <ToggleGroupItem value="lhs" className="text-xs" title="Latin hypercube sampling, up to 200 trials">LHS</ToggleGroupItem>
+            <ToggleGroupItem value="sobol" className="text-xs" title="Sobol quasi-random coverage, up to 200 trials">Sobol</ToggleGroupItem>
             <ToggleGroupItem value="bayesian" className="text-xs" title="Optuna TPE — adaptive search, up to 200 trials">Bayesian</ToggleGroupItem>
           </ToggleGroup>
         </div>
@@ -720,34 +815,59 @@ export default function TaOptimizerPanel({
           <span>Values</span>
         </div>
         <div className="algo-backtest-sweep__grid">
-        {paramDefs.map((def) => (
-          <div
-            key={def.key}
-            className={cn(
-              'algo-backtest-sweep__row',
-              enabled[def.key] && 'algo-backtest-sweep__row--active',
-            )}
-          >
-            <Checkbox
-              id={`sweep-${def.key}`}
-              checked={Boolean(enabled[def.key])}
-              onCheckedChange={(c) => toggleParamEnabled(def.key, c === true, def)}
-            />
-            <Label
-              htmlFor={`sweep-${def.key}`}
-              className="algo-backtest-sweep__row-label"
-            >
-              {def.label}
-            </Label>
-            <Input
-              className="algo-backtest-sweep__row-input h-8 text-xs num-mono"
-              placeholder={def.placeholder}
-              value={valuesByKey[def.key] ?? ''}
-              disabled={!enabled[def.key]}
-              onChange={(e) => setValuesByKey((prev) => ({ ...prev, [def.key]: e.target.value }))}
-            />
-          </div>
-        ))}
+        {paramDefs.map((def, idx) => {
+          const prev = paramDefs[idx - 1];
+          const showTrainHeader = includeTrainHyperparams
+            && isTrainingSweepKey(def.key)
+            && (!prev || !isTrainingSweepKey(prev.key));
+          const showTradeHeader = includeTrainHyperparams
+            && !isTrainingSweepKey(def.key)
+            && (!prev || isTrainingSweepKey(prev.key))
+            && idx > 0;
+          return (
+            <div key={def.key} className="contents">
+              {showTrainHeader && (
+                <p className="col-span-full text-[10px] uppercase tracking-wide text-muted-foreground mt-1 mb-0.5">
+                  ML training hyperparams
+                </p>
+              )}
+              {showTradeHeader && (
+                <p className="col-span-full text-[10px] uppercase tracking-wide text-muted-foreground mt-2 mb-0.5">
+                  Trading / risk params
+                </p>
+              )}
+              <div
+                className={cn(
+                  'algo-backtest-sweep__row',
+                  enabled[def.key] && 'algo-backtest-sweep__row--active',
+                  isTrainingSweepKey(def.key) && 'algo-backtest-sweep__row--train',
+                )}
+              >
+                <Checkbox
+                  id={`sweep-${def.key}`}
+                  checked={Boolean(enabled[def.key])}
+                  onCheckedChange={(c) => toggleParamEnabled(def.key, c === true, def)}
+                />
+                <Label
+                  htmlFor={`sweep-${def.key}`}
+                  className="algo-backtest-sweep__row-label"
+                >
+                  {def.label}
+                  {isTrainingSweepKey(def.key) && (
+                    <span className="ml-1 text-[9px] text-muted-foreground">train</span>
+                  )}
+                </Label>
+                <Input
+                  className="algo-backtest-sweep__row-input h-8 text-xs num-mono"
+                  placeholder={def.placeholder}
+                  value={valuesByKey[def.key] ?? ''}
+                  disabled={!enabled[def.key]}
+                  onChange={(e) => setValuesByKey((prev) => ({ ...prev, [def.key]: e.target.value }))}
+                />
+              </div>
+            </div>
+          );
+        })}
         {enabled.trailing_stop_percent && enabled.stop_loss_percent && (
           <Alert className="border-trading-warn/40 bg-trading-warn/10 py-1.5">
             <AlertDescription className="text-xs leading-snug text-trading-warn">
@@ -933,12 +1053,33 @@ export default function TaOptimizerPanel({
           </Button>
           <Button
             type="button"
+            variant="secondary"
+            size="sm"
+            onClick={applyBestToBot}
+            title="Push best params to the selected live bot (must be paused)"
+          >
+            Apply Best to Bot
+          </Button>
+          <Button
+            type="button"
             variant="outline"
             size="sm"
             onClick={deployOptimized}
           >
             Deploy optimized
           </Button>
+          {optHealth && (
+            <span
+              className={cn(
+                'text-[10px] px-1.5 py-0.5 rounded border ml-auto',
+                optHealth.tone === 'ok' && 'border-emerald-500/40 text-emerald-400',
+                optHealth.tone === 'warn' && 'border-amber-500/40 text-amber-400',
+                optHealth.tone === 'muted' && 'border-border text-muted-foreground',
+              )}
+            >
+              Optimization Health: {optHealth.label}
+            </span>
+          )}
         </div>
       )}
 
@@ -970,8 +1111,53 @@ export default function TaOptimizerPanel({
               <AlertDescription className="text-xs">
                 Bayesian search ({bayesianMeta.sampler}): {bayesianMeta.trials_completed}/{bayesianMeta.trials_budget} trials
                 {bayesianMeta.early_stopped ? ' — stopped early (plateau)' : ''}
+                {bayesianMeta.pruner ? ` · pruner ${bayesianMeta.pruner}` : ''}
+                {bayesianMeta.warm_started_trials
+                  ? ` · warm-start ${bayesianMeta.warm_started_trials}`
+                  : ''}
               </AlertDescription>
             </Alert>
+          )}
+
+          {convergencePoints.length >= 2 && (
+            <div className="mb-2">
+              <p className="text-[10px] uppercase text-muted-foreground mb-1">Bayesian convergence</p>
+              <svg viewBox="0 0 220 40" className="w-full max-w-[240px] h-10 text-emerald-400/90">
+                <polyline
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  points={(() => {
+                    const vals = convergencePoints.map((p) => Number(p.score));
+                    const min = Math.min(...vals);
+                    const max = Math.max(...vals);
+                    const span = max - min || 1;
+                    return vals.map((v, i) => {
+                      const x = (i / (vals.length - 1)) * 216 + 2;
+                      const y = 36 - ((v - min) / span) * 32;
+                      return `${x},${y}`;
+                    }).join(' ');
+                  })()}
+                />
+              </svg>
+            </div>
+          )}
+
+          {importance && Object.keys(importance).length > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] uppercase text-muted-foreground mb-1">Hyperparameter importance</p>
+              <ul className="space-y-0.5">
+                {Object.entries(importance)
+                  .sort((a, b) => Number(b[1]) - Number(a[1]))
+                  .slice(0, 6)
+                  .map(([k, v]) => (
+                    <li key={k} className="text-[10px] num-mono flex gap-2">
+                      <span className="w-36 truncate text-muted-foreground">{k}</span>
+                      <span>{Number(v).toFixed(3)}</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
           )}
 
           {sweepStability?.recommendation === 'centroid' && (

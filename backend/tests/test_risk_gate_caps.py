@@ -252,6 +252,9 @@ class RiskGateBacktestModeTests(unittest.TestCase):
             "symbol": "BNBUSDT",
         }
         with patch(
+            "app.services.bots.risk_gate.RISK_KILL_SWITCH_ENABLED",
+            True,
+        ), patch(
             "app.services.bots.risk_gate.risk_state_store.is_kill_switch_tripped",
             return_value=True,
         ):

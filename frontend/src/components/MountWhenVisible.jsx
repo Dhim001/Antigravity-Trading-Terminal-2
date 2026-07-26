@@ -4,10 +4,22 @@
  *
  * Heavy panels (Algo, ML Training, etc.) reclaim React trees / ECharts /
  * pollers after ``keepAliveMs``. Zustand holds durable state across remounts.
+ *
+ * FlexLayout calls ``tabNode.setVisible(true)`` during the parent Tab render
+ * *before* this component paints. Visibility listeners defer setState via
+ * microtask (to avoid updating during FlexLayout render), so we must also
+ * read ``node.isVisible()`` live on each render — otherwise a selected tab
+ * can briefly (or until interaction) show ``Loading {component}…`` after
+ * keep-alive expired.
  */
 import { useEffect, useRef, useState } from 'react';
 
 const DEFAULT_KEEP_ALIVE_MS = 60_000;
+
+/** Pure gate used by render — exported for unit tests. */
+export function shouldRenderPanelChildren({ nodeVisible, visible, keptWarm }) {
+  return Boolean(nodeVisible || visible || keptWarm);
+}
 
 function PanelPlaceholder({ label = 'Loading…' }) {
   return (
@@ -27,6 +39,8 @@ export default function MountWhenVisible({
   const [visible, setVisible] = useState(() => Boolean(node?.isVisible?.()));
   const [keptWarm, setKeptWarm] = useState(() => Boolean(node?.isVisible?.()));
   const hideTimerRef = useRef(null);
+  const nodeRef = useRef(node);
+  nodeRef.current = node;
 
   useEffect(() => {
     if (!node?.setEventListener) return undefined;
@@ -51,12 +65,25 @@ export default function MountWhenVisible({
           clearHideTimer();
           const ms = Math.max(0, Number(keepAliveMs) || 0);
           if (ms === 0) {
+            // Re-check: tab may have been re-selected before this microtask ran.
+            if (nodeRef.current?.isVisible?.()) {
+              setVisible(true);
+              setKeptWarm(true);
+              return;
+            }
             setKeptWarm(false);
             return;
           }
           hideTimerRef.current = window.setTimeout(() => {
             hideTimerRef.current = null;
-            if (!cancelled) setKeptWarm(false);
+            if (cancelled) return;
+            // Do not unmount if the tab is selected again (event may be deferred).
+            if (nodeRef.current?.isVisible?.()) {
+              setVisible(true);
+              setKeptWarm(true);
+              return;
+            }
+            setKeptWarm(false);
           }, ms);
         }
       });
@@ -79,7 +106,9 @@ export default function MountWhenVisible({
     };
   }, [node, keepAliveMs]);
 
-  if (visible || keptWarm) return children;
+  // Live FlexLayout flag beats deferred React state (avoids Loading flash / stuck placeholder).
+  const nodeVisible = Boolean(node?.isVisible?.());
+  if (shouldRenderPanelChildren({ nodeVisible, visible, keptWarm })) return children;
 
   if (fallback != null) return fallback;
   return <PanelPlaceholder label={placeholderLabel} />;

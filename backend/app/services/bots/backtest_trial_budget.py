@@ -30,7 +30,7 @@ def resolve_max_trials(sweep: dict | None, sweep_mode: str) -> int:
 
     legacy_cap = (
         MAX_SWEEP_COMBOS_EXTENDED
-        if mode in ("random", "lhs", "bayesian")
+        if mode in ("random", "lhs", "bayesian", "sobol")
         else MAX_SWEEP_COMBOS
     )
     env_cap = BACKTEST_SWEEP_MAX_TRIALS if mode != "grid" else BACKTEST_SWEEP_MAX_GRID

@@ -2,7 +2,13 @@
  * Alpha decay monitor — half-life + rolling Sharpe from ml_metrics.alpha_decay.
  */
 import { StatCard } from '@/components/StatCard';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { openModelTrainingDock } from '@/lib/workspaceNav';
+import { Wand2 } from 'lucide-react';
+
+const DEFAULT_SWEEP_SUGGESTION =
+  'Consider running a hyperparameter sweep before retrain — the model may need architectural / hyperparam changes.';
 
 function fmtDays(v) {
   if (v == null || Number.isNaN(Number(v))) return '—';
@@ -38,13 +44,22 @@ function RollingSharpeSpark({ values }) {
   );
 }
 
-export default function AlphaDecayMonitor({ alphaDecay, compact = false, className }) {
+export default function AlphaDecayMonitor({
+  alphaDecay,
+  compact = false,
+  className,
+  suggestion,
+  showSweepCta = true,
+}) {
   if (!alphaDecay || (alphaDecay.half_life_days == null && !alphaDecay.rolling_sharpe?.length)) {
     return null;
   }
 
   const stale = alphaDecay.half_life_days != null && Number(alphaDecay.half_life_days) < 7;
   const rolling = alphaDecay.rolling_sharpe || [];
+  const tip = suggestion
+    || alphaDecay.suggestion
+    || (stale ? DEFAULT_SWEEP_SUGGESTION : null);
 
   return (
     <section className={cn('alpha-decay', compact && 'alpha-decay--compact', className)}>
@@ -71,6 +86,23 @@ export default function AlphaDecayMonitor({ alphaDecay, compact = false, classNa
         <p className="text-[0.65rem] text-amber-400/90 mt-1.5">
           Short half-life — edge may be fading; consider retraining.
         </p>
+      )}
+      {tip && (
+        <div className="mt-1.5 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 space-y-1">
+          <p className="text-[0.65rem] text-amber-200/90 leading-snug">{tip}</p>
+          {showSweepCta && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 text-[0.6rem] gap-1 border-amber-500/40"
+              onClick={() => openModelTrainingDock()}
+            >
+              <Wand2 size={11} aria-hidden />
+              Open Auto-Tune
+            </Button>
+          )}
+        </div>
       )}
     </section>
   );

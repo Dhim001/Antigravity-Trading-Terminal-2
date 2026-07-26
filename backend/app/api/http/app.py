@@ -1791,6 +1791,292 @@ async def get_optimization_run_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "run": run})
 
 
+async def ml_hyperparam_sweep_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/hyperparam-sweep — Optuna auto-tune for ML training knobs."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+
+    from app.services.bots.ml_hyperparam_sweep import SWEEPABLE_ML_STRATEGIES
+
+    if strategy not in SWEEPABLE_ML_STRATEGIES:
+        return JSONResponse(
+            {"ok": False, "error": f"Hyperparam sweep not supported for {strategy}"},
+            status_code=400,
+        )
+
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import (
+        bar_limit_for_training_window,
+        parse_training_window_months,
+        summarize_training_window,
+    )
+
+    win_months = parse_training_window_months(config)
+    tf = normalize_model_timeframe(config.get("timeframe") or body.get("timeframe"))
+    bar_limit = bar_limit_for_training_window(win_months, timeframe=tf, purpose="train")
+
+    config = {
+        **config,
+        "timeframe": tf,
+        "training_window_months": win_months,
+        "max_trials": int(body.get("max_trials") or config.get("max_trials") or 20),
+        "time_budget_sec": float(body.get("time_budget_sec") or config.get("time_budget_sec") or 600),
+        "patience": int(body.get("patience") or config.get("patience") or 8),
+        "multi_fidelity": bool(body.get("multi_fidelity", config.get("multi_fidelity", True))),
+        "skip_persist": True,  # screen + promote control persist; default skip until promote
+    }
+    if isinstance(body.get("custom_search_space"), dict):
+        config["custom_search_space"] = body["custom_search_space"]
+
+    state: AppState = request.app.state.terminal
+    event_bus = getattr(state, "event_bus", None)
+
+    from app.services.bots.ml_job_progress import make_progress_path, write_ml_progress
+    from app.services.bots.ml_job_store import (
+        create_ml_job,
+        finish_ml_job,
+        mark_ml_job_running,
+        update_ml_job_progress,
+    )
+    from app.services.bots.ml_train_executor import submit_hyperparam_sweep_job
+
+    if not await _reserve_ml_async_slot():
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "async ML queue full — wait for an in-flight job or raise ML_ASYNC_MAX_INFLIGHT",
+                "retry": True,
+            },
+            status_code=429,
+        )
+
+    progress_path = make_progress_path(f"hsweep_{symbol}")
+    job_id = create_ml_job(
+        kind="hyperparam_sweep",
+        strategy=strategy,
+        symbol=symbol,
+        progress_path=progress_path,
+    )
+    write_ml_progress(progress_path, pct=1, phase="queued", detail="hyperparam sweep")
+    update_ml_job_progress(job_id, {"pct": 1, "phase": "queued", "detail": "hyperparam sweep"})
+
+    async def _bg_sweep() -> None:
+        cfg = dict(config)
+        try:
+            mark_ml_job_running(job_id)
+            write_ml_progress(progress_path, pct=2, phase="fetch", detail=f"candles ≤{bar_limit}")
+            candles = await _fetch_training_candles(
+                state, symbol, tf=tf, months=win_months, limit=bar_limit, config=cfg,
+            )
+            if len(candles) < 120:
+                finish_ml_job(
+                    job_id,
+                    "error",
+                    result={"ok": False, "error": f"insufficient candles ({len(candles)})"},
+                    error=f"insufficient candles ({len(candles)})",
+                )
+                return
+            candles = _enrich_training_candles(symbol, candles, strategy, cfg)
+            cfg["_training_window"] = summarize_training_window(
+                candles, win_months, bar_limit=bar_limit, timeframe=tf,
+            )
+            cfg["_progress_path"] = progress_path
+            await submit_hyperparam_sweep_job(
+                strategy, symbol, candles, cfg,
+                job_id=job_id, event_bus=event_bus,
+            )
+        except Exception as exc:
+            logger.exception("Async hyperparam sweep %s failed", job_id)
+            finish_ml_job(
+                job_id,
+                "error",
+                result={"ok": False, "error": str(exc)},
+                error=str(exc),
+            )
+        finally:
+            await _release_ml_async_slot()
+
+    asyncio.create_task(_bg_sweep())
+    return JSONResponse({"ok": True, "job_id": job_id, "async": True})
+
+
+async def ml_hyperparam_sweep_status_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/hyperparam-sweep/{job_id} — alias of ml job status."""
+    job_id = request.path_params.get("job_id")
+    if not job_id:
+        return JSONResponse({"ok": False, "error": "job_id required"}, status_code=400)
+    from app.services.bots.ml_job_store import get_ml_job
+
+    job = get_ml_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "job not found"}, status_code=404)
+    return JSONResponse({"ok": True, "job": job})
+
+
+async def apply_optimized_config_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/bots/{bot_id}/apply-optimized-config."""
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id required"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "JSON body must be an object"}, status_code=400)
+
+    run_id = body.get("optimization_run_id") or body.get("run_id")
+    source = str(body.get("config_source") or "best").lower()
+    overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+    require_paused = bool(body.get("require_paused", True))
+
+    from app.services.bots.optimization_store import (
+        get_best_config,
+        get_optimization_run,
+        link_optimization_to_bot,
+    )
+
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "optimization_run_id required"}, status_code=400)
+
+    run = get_optimization_run(str(run_id))
+    if not run:
+        return JSONResponse({"ok": False, "error": "Optimization run not found"}, status_code=404)
+
+    if source == "manual":
+        cfg = dict(overrides)
+    else:
+        cfg = get_best_config(str(run_id), source=source) or {}
+        cfg = {**cfg, **overrides}
+
+    if not cfg:
+        return JSONResponse({"ok": False, "error": "No config to apply"}, status_code=400)
+
+    # Strip internal / sweep-only keys
+    strip_keys = {
+        "sim_mode", "live_parity", "sweep_mode", "max_combos", "max_trials",
+        "time_budget_sec", "walk_forward", "_wf_mode", "wf_mode",
+    }
+    patch = {k: v for k, v in cfg.items() if k not in strip_keys and not str(k).startswith("_")}
+
+    state: AppState = request.app.state.terminal
+    detail_before = None
+    try:
+        detail_before = state.bot_manager.get_bot_detail(str(bot_id))
+    except Exception:
+        pass
+    bot = (detail_before or {}).get("bot") if isinstance(detail_before, dict) else None
+    if not isinstance(bot, dict):
+        return JSONResponse({"ok": False, "error": "Bot not found"}, status_code=404)
+
+    status = str(bot.get("status") or "").upper()
+    # When require_paused: only allow explicitly idle/paused-like states.
+    # RUNNING and ERROR are both "active" bots and must not hot-receive config.
+    allowed_when_paused = {"PAUSED", "STOPPED", "IDLE", "CREATED", ""}
+    if require_paused and status not in allowed_when_paused:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"Bot status is {status or 'unknown'} — pause the bot before applying "
+                    "optimized config (or set require_paused=false)"
+                ),
+                "bot_status": status,
+            },
+            status_code=409,
+        )
+
+    prior = dict(bot.get("config") or {}) if isinstance(bot.get("config"), dict) else {}
+    config_diff = {
+        k: {"from": prior.get(k), "to": patch[k]}
+        for k in patch
+        if prior.get(k) != patch[k]
+    }
+
+    deploy_gate_result = {
+        "ok": True,
+        "skipped": True,
+        "note": "Deploy gate skipped for config hot-apply — run Backtest Lab deploy for full gate.",
+    }
+    # Soft gate: if caller provides backtest results, evaluate them
+    if isinstance(body.get("backtest_results"), dict):
+        try:
+            from app.services.bots.deploy_gate import evaluate_deploy_gate
+
+            deploy_gate_result = evaluate_deploy_gate(
+                body.get("backtest_results"),
+                symbol=bot.get("symbol") or run.get("symbol"),
+                run_config={**prior, **patch},
+            )
+            if deploy_gate_result.get("blocking"):
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": deploy_gate_result.get("block_reason") or "Deploy gate blocked apply",
+                        "deploy_gate_result": deploy_gate_result,
+                        "config_diff": config_diff,
+                    },
+                    status_code=400,
+                )
+        except Exception as exc:
+            deploy_gate_result = {"ok": True, "skipped": True, "note": str(exc)}
+
+    try:
+        detail = await state.bot_manager.update_bot_config(str(bot_id), patch)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.exception("apply-optimized-config failed for %s", bot_id)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    link_optimization_to_bot(str(run_id), str(bot_id), config_source=source)
+    updated_bot = detail.get("bot") if isinstance(detail, dict) else detail
+    return JSONResponse({
+        "ok": True,
+        "applied": True,
+        "bot_id": bot_id,
+        "optimization_run_id": run_id,
+        "config_source": source,
+        "config_diff": config_diff,
+        "deploy_gate_result": deploy_gate_result,
+        "bot": updated_bot,
+        "detail": detail,
+    })
+
+
+async def param_importance_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/optimization/param-importance/{run_id}."""
+    run_id = request.path_params.get("run_id")
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id required"}, status_code=400)
+    from app.services.bots.optimization_store import get_optimization_run, get_param_importance
+
+    run = get_optimization_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "Optimization run not found"}, status_code=404)
+    importance = get_param_importance(run_id)
+    return JSONResponse({
+        "ok": True,
+        "run_id": run_id,
+        "importance": importance,
+        "importance_ranking": importance,
+        "symbol": run.get("symbol"),
+        "strategy": run.get("strategy"),
+    })
+
+
 async def get_bot_calibration_handler(request: Request) -> JSONResponse:
     bot_id = request.query_params.get("bot_id") or None
     symbol = request.query_params.get("symbol") or None
@@ -2611,6 +2897,8 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/model-status", ml_model_status, methods=["GET"]),
         Route("/api/v1/ml/train", ml_train_handler, methods=["POST"]),
         Route("/api/v1/ml/validate", ml_validate_handler, methods=["POST"]),
+        Route("/api/v1/ml/hyperparam-sweep", ml_hyperparam_sweep_handler, methods=["POST"]),
+        Route("/api/v1/ml/hyperparam-sweep/{job_id}", ml_hyperparam_sweep_status_handler, methods=["GET"]),
         Route("/api/v1/ml/retrain-status", ml_retrain_status_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs", ml_list_jobs_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs/{job_id}", ml_get_job_handler, methods=["GET"]),
@@ -2634,9 +2922,11 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/jobs/{job_id}", get_backtest_job_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations", list_optimization_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations/{run_id}", get_optimization_run_handler, methods=["GET"]),
+        Route("/api/v1/optimization/param-importance/{run_id}", param_importance_handler, methods=["GET"]),
         Route("/api/v1/backtest/meta-label-walk-forward", meta_label_walk_forward_handler, methods=["POST"]),
         Route("/api/v1/bots/calibration", get_bot_calibration_handler, methods=["GET"]),
         Route("/api/v1/bots/calibration/apply", apply_calibration_suggestions_handler, methods=["POST"]),
+        Route("/api/v1/bots/{bot_id}/apply-optimized-config", apply_optimized_config_handler, methods=["POST"]),
         Route("/api/v1/bots/{bot_id}/strategy-suggest", strategy_suggest_handler, methods=["POST"]),
         Route("/api/v1/bots/{bot_id}/meta-label/status", meta_label_status_handler, methods=["GET"]),
         Route("/api/v1/bots/{bot_id}/meta-label/retrain", meta_label_retrain_handler, methods=["POST"]),

@@ -106,10 +106,14 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
     if (data?.report === 'dashboard') {
       return { analyticsReport: data, analyticsLoading: false };
     }
-    return {
-      analyticsReport: { ...(state.analyticsReport || {}), ...data },
-      analyticsLoading: false,
-    };
+    // Partial reports (risk, equity, …) merge into the existing dashboard
+    // snapshot — do not demote report identity to the partial kind.
+    const prev = state.analyticsReport || {};
+    const next = { ...prev, ...data };
+    if (prev.report === 'dashboard' && data?.report && data.report !== 'dashboard') {
+      next.report = 'dashboard';
+    }
+    return { analyticsReport: next, analyticsLoading: false };
   }),
   setAnalyticsLoading: (loading) => set({ analyticsLoading: loading }),
 

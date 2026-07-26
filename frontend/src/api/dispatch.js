@@ -158,6 +158,25 @@ export function applyServerMessage(type, data, storeActions, meta) {
       ) {
         break;
       }
+      if (data?.kill_switch_reset) {
+        // Clear stale portfolio alert immediately — full dashboard analytics
+        // often times out and would leave kill_switch_tripped stuck in the UI.
+        const report = useResearchStore.getState().analyticsReport;
+        if (report?.risk) {
+          useResearchStore.getState().setAnalyticsReport({
+            ...report,
+            risk: {
+              ...report.risk,
+              kill_switch_tripped: false,
+              kill_switch_tripped_at: null,
+              kill_switch_trip_drawdown_pct: null,
+              ...(data.equity_peak != null ? { equity_peak: data.equity_peak } : {}),
+            },
+          });
+        }
+        toast.success(data.message || 'Kill switch reset');
+        break;
+      }
       storeActions.setOrderResult(data);
       // Toast here so Positions quick-trade works even when Order Entry is unmounted.
       if (data?.status === 'success') {

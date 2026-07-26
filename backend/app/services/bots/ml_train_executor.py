@@ -732,3 +732,166 @@ async def submit_validate_job(
         except Exception:
             logger.exception("Parent model cache invalidate failed after validate %s/%s", strategy, symbol)
     return out
+
+
+def run_hyperparam_sweep_job(
+    strategy: str,
+    symbol: str,
+    candles: list,
+    config: dict | None,
+) -> dict[str, Any]:
+    """Picklable worker entry for Optuna ML hyperparameter sweeps."""
+    from app.services.bots.ml_hyperparam_sweep import run_ml_hyperparam_sweep
+    from app.services.bots.ml_job_progress import (
+        ml_cancel_requested,
+        progress_path_from_config,
+        write_ml_progress,
+    )
+
+    cfg = dict(config or {})
+    progress_path = progress_path_from_config(cfg)
+    if ml_cancel_requested(progress_path):
+        return {"ok": False, "cancelled": True, "error": "cancelled"}
+
+    write_ml_progress(progress_path, pct=2, phase="hyperparam_start", detail=str(strategy))
+
+    def _progress(payload: dict) -> None:
+        write_ml_progress(
+            progress_path,
+            pct=int(payload.get("pct") or 0),
+            phase=str(payload.get("phase") or "hyperparam_trial"),
+            detail=str(payload.get("detail") or "")[:160],
+        )
+
+    def _cancel() -> bool:
+        return ml_cancel_requested(progress_path)
+
+    result = run_ml_hyperparam_sweep(
+        strategy,
+        symbol,
+        candles,
+        config=cfg,
+        max_trials=int(cfg.get("max_trials") or 20),
+        time_budget_sec=float(cfg.get("time_budget_sec") or 600),
+        patience=int(cfg.get("patience") or 8),
+        multi_fidelity=bool(cfg.get("multi_fidelity", True)),
+        screen_fraction=float(cfg.get("screen_fraction") or 0.4),
+        promote_top_k=int(cfg.get("promote_top_k") or 3),
+        custom_search_space=cfg.get("custom_search_space")
+        if isinstance(cfg.get("custom_search_space"), dict)
+        else None,
+        progress_cb=_progress,
+        cancel_cb=_cancel,
+        train_fn=lambda sym, bars, config=None: run_train_job(
+            str(strategy).upper(), sym, bars, config,
+        ),
+        objective_kind=str(cfg.get("objective_kind") or "purged_cv"),
+        cv_folds_screen=int(cfg.get("cv_folds_screen") or 2),
+        cv_folds_full=int(cfg.get("cv_folds_full") or 3),
+    )
+    if isinstance(result, dict) and result.get("ok"):
+        write_ml_progress(
+            progress_path,
+            pct=100,
+            phase="done",
+            detail=f"best={result.get('best_score')} · {result.get('trials_completed')} trials",
+        )
+        # Persist as optimization run for apply-config / retrain feedback
+        try:
+            from app.services.bots.optimization_store import save_optimization_run
+
+            run_id = save_optimization_run(
+                symbol=symbol,
+                strategy=str(strategy).upper(),
+                objective="ml_val_score",
+                request={
+                    "kind": "ml_hyperparam_sweep",
+                    "max_trials": cfg.get("max_trials"),
+                    "time_budget_sec": cfg.get("time_budget_sec"),
+                    "timeframe": cfg.get("timeframe"),
+                    "importance_ranking": result.get("importance_ranking"),
+                    "convergence": result.get("convergence"),
+                },
+                results=result.get("trial_history") or [],
+                best_config=result.get("best_hyperparams") or {},
+            )
+            result["optimization_run_id"] = run_id
+        except Exception:
+            logger.exception("Failed to persist hyperparam sweep run")
+    else:
+        write_ml_progress(
+            progress_path,
+            pct=100,
+            phase="error",
+            detail=str((result or {}).get("error") or "sweep failed")[:160],
+        )
+    return result if isinstance(result, dict) else {"ok": False, "error": "invalid sweep result"}
+
+
+async def submit_hyperparam_sweep_job(
+    strategy: str,
+    symbol: str,
+    candles: list,
+    config: dict | None,
+    *,
+    job_id: str | None = None,
+    event_bus: Any = None,
+) -> dict[str, Any]:
+    """Run hyperparam sweep in process/thread pool with progress polling."""
+    from app.services.bots.ml_job_progress import cleanup_ml_progress, write_ml_progress
+
+    jid, cfg, progress_path = _prepare_job_config(
+        "hyperparam_sweep", strategy, symbol, config, job_id=job_id,
+    )
+    from app.services.bots.ml_job_store import is_ml_job_cancelled
+
+    if is_ml_job_cancelled(jid):
+        cleanup_ml_progress(progress_path)
+        return _finalize_job(jid, {"ok": False, "cancelled": True, "error": "cancelled"})
+
+    write_ml_progress(
+        progress_path,
+        pct=0,
+        phase="dispatch",
+        detail=f"hyperparam · {len(candles or [])} bars",
+    )
+
+    stop = asyncio.Event()
+    poll_task = asyncio.create_task(
+        _poll_progress_loop(jid, progress_path, stop, event_bus=event_bus),
+    )
+    out: dict[str, Any] = {"ok": False, "error": "hyperparam sweep did not complete"}
+    try:
+        result = await _run_in_pool(
+            run_hyperparam_sweep_job,
+            strategy,
+            symbol,
+            candles,
+            cfg,
+            job_id=jid,
+            strategy=strategy,
+        )
+        out = _finalize_job(
+            jid,
+            _with_training_window(cfg, result if isinstance(result, dict) else {"ok": False}),
+        )
+    except asyncio.CancelledError:
+        from app.services.bots.ml_job_store import finish_ml_job, request_ml_job_cancel
+        request_ml_job_cancel(jid)
+        finish_ml_job(jid, "cancelled", error="cancelled")
+        raise
+    except Exception as exc:
+        from app.services.bots.ml_job_store import finish_ml_job
+        logger.exception("ML hyperparam sweep job %s failed", jid)
+        finish_ml_job(jid, "error", error=str(exc))
+        out = {"ok": False, "error": str(exc), "job_id": jid}
+        raise
+    finally:
+        stop.set()
+        try:
+            await poll_task
+        except Exception:
+            pass
+        cleanup_ml_progress(progress_path)
+
+    return out

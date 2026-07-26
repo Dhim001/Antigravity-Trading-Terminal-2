@@ -377,6 +377,16 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE optimization_runs ADD COLUMN walk_forward_json TEXT")
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS optimization_bot_links (
+            run_id TEXT NOT NULL,
+            bot_id TEXT NOT NULL,
+            applied_at TEXT NOT NULL,
+            config_source TEXT,
+            PRIMARY KEY (run_id, bot_id)
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_insights (
             insight_id TEXT PRIMARY KEY,
             symbol TEXT NOT NULL,

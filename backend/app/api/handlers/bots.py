@@ -1389,7 +1389,7 @@ async def _execute_backtest(
             try:
                 from app.services.bots.optimization_store import save_optimization_run
 
-                save_optimization_run(
+                opt_run_id = save_optimization_run(
                     symbol=symbol,
                     strategy=strategy,
                     objective=sweep_objective,
@@ -1397,10 +1397,22 @@ async def _execute_backtest(
                         **request_payload,
                         "sweep_objective": sweep_objective,
                         "min_trades": min_trades,
+                        "importance_ranking": (
+                            (best_result.get("sweep") or {}).get("bayesian") or {}
+                        ).get("hyperparameter_importance"),
+                        "hyperparameter_importance": (
+                            (best_result.get("sweep") or {}).get("bayesian") or {}
+                        ).get("hyperparameter_importance"),
+                        "bayesian_meta": (best_result.get("sweep") or {}).get("bayesian"),
                     },
                     results=best_result["sweep"].get("results") or sweep_rows,
                     best_config=best_config,
                 )
+                if isinstance(best_result, dict):
+                    best_result["optimization_run_id"] = opt_run_id
+                    if isinstance(best_result.get("sweep"), dict):
+                        best_result["sweep"]["optimization_run_id"] = opt_run_id
+
             except Exception:
                 logger.exception(
                     "save_optimization_run failed for %s/%s (parameter sweep)",

@@ -39,11 +39,13 @@ class RiskStateStoreTests(unittest.TestCase):
         self.assertEqual(store.get_equity_peak(), 12_000)
 
     def test_kill_switch_trip_and_reset(self):
-        store.trip_kill_switch(12345.0)
+        store.trip_kill_switch(12345.0, drawdown_pct=22.5)
         self.assertTrue(store.is_kill_switch_tripped())
         self.assertEqual(store.get_kill_switch_tripped_at(), 12345.0)
+        self.assertEqual(store.get_kill_switch_trip_drawdown_pct(), 22.5)
         store.reset_kill_switch(current_equity=9_500)
         self.assertFalse(store.is_kill_switch_tripped())
+        self.assertIsNone(store.get_kill_switch_trip_drawdown_pct())
         self.assertEqual(store.get_equity_peak(), 9_500)
 
 
@@ -231,6 +233,108 @@ class RiskMonitorTests(unittest.IsolatedAsyncioTestCase):
         # Drawdown should be 0% — we're at a new high
         self.assertEqual(snap_after.current_drawdown_pct, 0.0)
         self.assertFalse(snap_after.kill_switch_tripped)
+
+
+class UnreliableEquityKillSwitchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        db_conn.DB_PATH = os.path.join(self._tmpdir, "risk_unreliable.db")
+        db_conn._pool = None
+        init_db()
+        store.reset_kill_switch(current_equity=100_000)
+        risk_monitor_mod._breach_counter = 0
+
+    def _make_bot_manager(self):
+        bm = MagicMock()
+        bm.stop_all_bots = AsyncMock(return_value=2)
+        bm.broadcast_cb = None
+        bm.list_bots_public = MagicMock(return_value=[])
+        bm.flatten_weekend_non_crypto_positions = AsyncMock(return_value=0)
+        bm.close_stale_positions = AsyncMock(return_value=0)
+        return bm
+
+    @patch("app.services.bots.risk_monitor.RISK_MAX_DRAWDOWN_PCT", 15.0)
+    @patch("app.services.bots.risk_monitor.RISK_KILL_SWITCH_ENABLED", True)
+    @patch("app.services.bots.risk_monitor.RISK_WEEKEND_FLATTEN_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.RISK_POSITION_DURATION_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.RISK_DYNAMIC_CORRELATION_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.build_portfolio_snapshot")
+    async def test_unreliable_equity_does_not_trip(self, mock_snapshot):
+        """Empty/failed OMS snapshots must not trip against a stored peak."""
+        from app.services.bots.portfolio_risk import PortfolioSnapshot
+
+        mock_snapshot.return_value = PortfolioSnapshot(
+            account_equity=1.0,
+            gross_exposure=0,
+            group_exposure={},
+            symbol_exposure={},
+            equity_reliable=False,
+        )
+        bot_manager = self._make_bot_manager()
+        monitor = RiskMonitor()
+
+        for _ in range(5):
+            result = await monitor.evaluate(_FakeOms(1), bot_manager)
+            self.assertEqual(result.current_drawdown_pct, 0.0)
+            self.assertFalse(result.kill_switch_tripped)
+        bot_manager.stop_all_bots.assert_not_awaited()
+        self.assertFalse(store.is_kill_switch_tripped())
+        self.assertEqual(store.get_equity_peak(), 100_000)
+
+    @patch("app.services.bots.risk_monitor.RISK_KILL_SWITCH_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.RISK_WEEKEND_FLATTEN_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.RISK_POSITION_DURATION_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.RISK_DYNAMIC_CORRELATION_ENABLED", False)
+    @patch("app.services.bots.risk_monitor.build_portfolio_snapshot")
+    async def test_disabled_kill_switch_clears_stale_latch(self, mock_snapshot):
+        from app.services.bots.portfolio_risk import PortfolioSnapshot
+
+        store.trip_kill_switch(drawdown_pct=40.0)
+        mock_snapshot.return_value = PortfolioSnapshot(
+            account_equity=100_000,
+            gross_exposure=0,
+            group_exposure={},
+            symbol_exposure={},
+            equity_reliable=True,
+        )
+        result = await RiskMonitor().evaluate(_FakeOms(100_000), self._make_bot_manager())
+        self.assertFalse(result.kill_switch_tripped)
+        self.assertFalse(store.is_kill_switch_tripped())
+
+
+class BrokerEquitySnapshotTests(unittest.TestCase):
+    def test_prefers_broker_equity_over_empty_cash(self):
+        from app.services.bots.portfolio_risk import build_portfolio_snapshot
+
+        class _Oms:
+            def get_account_data(self):
+                return {
+                    "balances": {"USD": {"balance": 0}},
+                    "positions": {},
+                    "margin": {"equity": 100_000.0, "buying_power": 100_000.0},
+                }
+
+        with patch(
+            "app.services.bots.portfolio_risk.list_bot_exposures",
+            return_value=[],
+        ):
+            snap = build_portfolio_snapshot(_Oms())
+        self.assertTrue(snap.equity_reliable)
+        self.assertEqual(snap.account_equity, 100_000.0)
+
+    def test_empty_account_marked_unreliable(self):
+        from app.services.bots.portfolio_risk import build_portfolio_snapshot
+
+        class _Oms:
+            def get_account_data(self):
+                return {"balances": {}, "positions": {}, "orders": []}
+
+        with patch(
+            "app.services.bots.portfolio_risk.list_bot_exposures",
+            return_value=[],
+        ):
+            snap = build_portfolio_snapshot(_Oms())
+        self.assertFalse(snap.equity_reliable)
 
 
 if __name__ == "__main__":

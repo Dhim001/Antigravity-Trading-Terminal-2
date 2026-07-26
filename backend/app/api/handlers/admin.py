@@ -177,14 +177,19 @@ async def admin_reset_risk_kill_switch(ctx: RequestContext) -> None:
     import app.services.bots.risk_monitor as _rm
 
     snap = build_portfolio_snapshot(ctx.oms)
-    reset_kill_switch(current_equity=snap.account_equity)
+    equity = snap.account_equity if snap.equity_reliable else None
+    reset_kill_switch(current_equity=equity if equity and equity > 1 else None)
     _rm._breach_counter = 0  # clear confirmation counter
+    peak = equity if equity and equity > 1 else None
     await send_order_result(ctx, {
         "status": "success",
         "message": (
-            f"Drawdown kill switch reset. Peak equity re-based to "
-            f"${snap.account_equity:,.2f}."
-        ),
+            f"Drawdown kill switch reset."
+            + (f" Peak equity re-based to ${peak:,.2f}." if peak else "")
+        ).strip(),
+        "kill_switch_reset": True,
+        "kill_switch_tripped": False,
+        "equity_peak": peak,
     })
 
 

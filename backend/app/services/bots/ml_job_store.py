@@ -51,7 +51,9 @@ def create_ml_job(
     job_id: str | None = None,
 ) -> str:
     """Register a new job; returns job_id."""
-    kind_n = "validate" if str(kind).lower() == "validate" else "train"
+    kind_n = str(kind or "train").lower()
+    if kind_n not in ("train", "validate", "hyperparam_sweep"):
+        kind_n = "train"
     jid = str(job_id) if job_id else str(uuid.uuid4())
     with _lock:
         if jid in _jobs:

@@ -8,7 +8,7 @@ from itertools import product
 from typing import Any
 
 MAX_SWEEP_COMBOS = 24
-MAX_SWEEP_COMBOS_EXTENDED = 100
+MAX_SWEEP_COMBOS_EXTENDED = 200
 
 SWEEP_PARAM_KEYS = (
     "trailing_stop_percent",
@@ -25,6 +25,8 @@ SWEEP_RESERVED_KEYS = frozenset({
     "sweep_objective", "min_trades", "objective",
     "sweep_mode", "sweep_seed",
     "bayesian_patience", "bayesian_startup_trials",
+    "bayesian_warm_start_run_id", "bayesian_pruner",
+    "multi_objective_sampler", "nsga_population",
     # Tier 5 performance
     "time_budget_sec", "max_trials",
     # Tier 3 WF validation — never swept as strategy params
@@ -35,7 +37,7 @@ SWEEP_RESERVED_KEYS = frozenset({
     "optimize_regime", "portfolio_sweep",
 })
 
-SWEEP_MODES = frozenset({"grid", "random", "lhs", "bayesian"})
+SWEEP_MODES = frozenset({"grid", "random", "lhs", "bayesian", "sobol"})
 
 
 def _coerce_sweep_values(values: list) -> list[Any]:
@@ -87,6 +89,23 @@ def _lhs_unit_samples(n_samples: int, n_dims: int, rng: random.Random) -> list[l
     return samples
 
 
+def _sobol_unit_samples(n_samples: int, n_dims: int, seed: int | None = None) -> list[list[float]]:
+    """Sobol quasi-random unit hypercube samples (scipy), falls back to LHS."""
+    if n_dims <= 0 or n_samples <= 0:
+        return []
+    try:
+        from scipy.stats.qmc import Sobol
+
+        engine = Sobol(d=n_dims, scramble=True, seed=seed)
+        # Sobol prefers power-of-2 sample counts; take next power then truncate
+        m = max(1, int(n_samples - 1).bit_length())
+        raw = engine.random_base2(m)
+        return [list(map(float, row)) for row in raw[:n_samples]]
+    except Exception:
+        rng = random.Random(seed)
+        return _lhs_unit_samples(n_samples, n_dims, rng)
+
+
 def _combo_from_unit_point(base: dict, axes: list[tuple[str, list[Any]]], unit: list[float]) -> dict:
     cfg = copy.deepcopy(base)
     for (key, vals), u in zip(axes, unit):
@@ -111,7 +130,7 @@ def estimate_sweep_combos(sweep: dict | None) -> dict[str, Any]:
         full_grid *= len(vals)
 
     max_combos = _max_combos_for_mode(sweep, sweep_mode)
-    if sweep_mode == "bayesian":
+    if sweep_mode in ("bayesian", "sobol", "random", "lhs"):
         estimated = max_combos
         return {
             "estimated": estimated,
@@ -166,8 +185,12 @@ def expand_sweep_grid(base_config: dict, sweep: dict | None) -> list[dict]:
         else:
             combos = rng.sample(full_combos, max_combos)
     else:
+        # lhs or sobol — map unit hypercube → discrete axis indices
         n_samples = min(max_combos, max(len(full_combos), 1))
-        unit_samples = _lhs_unit_samples(n_samples, len(axes), rng)
+        if sweep_mode == "sobol":
+            unit_samples = _sobol_unit_samples(n_samples, len(axes), seed)
+        else:
+            unit_samples = _lhs_unit_samples(n_samples, len(axes), rng)
         combos = []
         seen: set[tuple] = set()
         for unit in unit_samples:
