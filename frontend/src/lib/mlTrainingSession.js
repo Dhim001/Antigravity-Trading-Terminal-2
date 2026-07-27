@@ -3,6 +3,7 @@
  * In-flight train/validate HTTP work continues; UI rehydrates from this session.
  */
 import { isAbortError } from '@/api/client';
+import { useResearchStore } from '@/store/useResearchStore';
 
 const statusCache = new Map();
 const listeners = new Set();
@@ -178,7 +179,25 @@ export function applyMlJobProgressMessage(data) {
   if (!data || typeof data !== 'object') return session;
   const jobId = data.job_id || data.jobId;
   if (!jobId || !session.jobId || jobId !== session.jobId) return session;
-  return setMlServerProgress(data);
+  const status = String(data.status || '').toLowerCase();
+  const wasTraining = Boolean(session.training);
+  const kind = String(data.kind || '').toLowerCase();
+  const strat = session.strategy;
+  const sym = session.symbol;
+  const next = setMlServerProgress(data);
+  if (status === 'done' && (wasTraining || kind === 'train') && strat && sym) {
+    invalidateMatchingMlBacktests(strat, sym);
+  }
+  return next;
+}
+
+/** Clear matching Algo/Lab backtest results after train / activate. */
+export function invalidateMatchingMlBacktests(strategy, symbol) {
+  try {
+    useResearchStore.getState().invalidateMlBacktests?.({ strategy, symbol });
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Prefer cached status over transient fetch errors / aborts. */

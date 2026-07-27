@@ -696,8 +696,26 @@ export default function MlAutoTunePanel({
       toast.error('No best hyperparams to apply');
       return;
     }
-    onApplyAndRetrain(hp, result);
-  }, [result, onApplyAndRetrain]);
+    if (disabled) {
+      toast.message('Wait for the current ML job to finish before applying hyperparams');
+      return;
+    }
+    // Only forward search-space knobs — never trial bookkeeping (skip_persist, etc.).
+    const allowed = new Set(Object.keys(DEFAULT_HP[strategy] || DEFAULT_HP.LSTM_DIRECTION || {}));
+    // Shared deep-ML extras Optuna may tune beyond the DEFAULT_HP snapshot.
+    ['early_stop_patience', 'd_model', 'n_heads', 'dropout'].forEach((k) => allowed.add(k));
+    const clean = {};
+    for (const [k, v] of Object.entries(hp)) {
+      if (!allowed.has(k)) continue;
+      if (v == null || typeof v === 'object') continue;
+      clean[k] = v;
+    }
+    if (!Object.keys(clean).length) {
+      toast.error('Best hyperparams were empty after sanitizing — re-run auto-tune');
+      return;
+    }
+    onApplyAndRetrain(clean, result);
+  }, [result, onApplyAndRetrain, disabled, strategy]);
 
   return (
     <section className="ml-training__card" aria-label="Auto-tune hyperparameters">
@@ -765,7 +783,7 @@ export default function MlAutoTunePanel({
           size="sm"
           variant="outline"
           className="h-8"
-          disabled={!result?.best_hyperparams || running || !onApplyAndRetrain}
+          disabled={!result?.best_hyperparams || running || disabled || !onApplyAndRetrain}
           onClick={applyRetrain}
         >
           Apply & Retrain

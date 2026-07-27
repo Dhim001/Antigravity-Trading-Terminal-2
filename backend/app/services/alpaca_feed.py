@@ -112,6 +112,9 @@ class AlpacaFeedService(BaseFeedService):
         self._last_quote_apply_ts: Dict[str, float] = {}
         # Last REST/WS trade event timestamp string per terminal symbol (dedupe stale prints).
         self._crypto_last_trade_event_ts: Dict[str, str] = {}
+        # Minute open times sealed by official Alpaca bars/updatedBars — do not
+        # let provisional trade/quote patches rewrite them.
+        self._sealed_bar_ts: Dict[str, int] = {}
         self._ht_cache: dict[tuple, tuple[float, list]] = {}
         self._seed_done = False
         self._seed_expected = 0
@@ -496,46 +499,58 @@ class AlpacaFeedService(BaseFeedService):
         symbol: str,
         price: float,
         *,
-        bid: float | None = None,
-        ask: float | None = None,
+        from_quote: bool = False,
+        volume: float = 0.0,
     ) -> None:
-        """Roll/update the forming 1m bar from a live trade/quote (Massive/IB parity).
+        """Update the in-progress 1m candle between official Alpaca ``bars`` messages.
 
-        When quote mids sit still (common on Alpaca crypto), still expand high/low
-        from bid/ask so the chart wick moves and the UI does not look dead.
+        Alpaca guidance (docs + Stock Minute Bars):
+        - Closed candles come from ``bars`` / ``updatedBars`` (trade aggregates).
+        - Trades/quotes only keep the *forming* minute alive for chart liveliness.
+        - A new minute opens flat (O=H=L=C) — never invent an opening wick from bid/ask.
+        - Quotes update last/close from mid only (may extend H/L to keep OHLC valid);
+          never use bid/ask independently. Trades add volume.
         """
         buf = self.candles.get(symbol)
         if not buf:
             return
         decimals = int(self._symbols[symbol].get("decimals", 2) or 2)
         live = round(float(price), decimals)
-        hi_extra = ask if ask is not None else live
-        lo_extra = bid if bid is not None else live
-        try:
-            hi_extra = round(float(hi_extra), decimals)
-            lo_extra = round(float(lo_extra), decimals)
-        except (TypeError, ValueError):
-            hi_extra = live
-            lo_extra = live
         last = dict(buf[-1])
         curr_bucket = int(time.time() // 60) * 60
         bar_time = int(last.get("time") or 0)
         if bar_time < curr_bucket:
+            # New forming minute — flat candle until price moves.
             buf.append(
                 {
                     "time": curr_bucket,
                     "open": live,
-                    "high": max(live, hi_extra),
-                    "low": min(live, lo_extra),
+                    "high": live,
+                    "low": live,
                     "close": live,
-                    "volume": 0.0,
+                    "volume": 0.0 if from_quote else round(max(0.0, float(volume or 0)), 8),
                 }
             )
             self._bar_close.notify(symbol)
+        elif self._sealed_bar_ts.get(symbol) == bar_time:
+            # Official Alpaca aggregate already sealed this minute — wait for roll.
+            return
+        elif from_quote:
+            # Quote mid: last price only. Extend H/L so close never sits outside the range
+            # (invalid OHLC breaks charts/indicators). Do not use bid/ask spread.
+            last["close"] = live
+            last["high"] = round(max(float(last.get("high", live)), live), decimals)
+            last["low"] = round(min(float(last.get("low", live)), live), decimals)
+            buf[-1] = last
         else:
             last["close"] = live
-            last["high"] = round(max(float(last.get("high", live)), live, hi_extra), decimals)
-            last["low"] = round(min(float(last.get("low", live)), live, lo_extra), decimals)
+            last["high"] = round(max(float(last.get("high", live)), live), decimals)
+            last["low"] = round(min(float(last.get("low", live)), live), decimals)
+            if volume:
+                try:
+                    last["volume"] = round(float(last.get("volume") or 0) + float(volume), 8)
+                except (TypeError, ValueError):
+                    pass
             buf[-1] = last
         if len(buf) > _MAX_CANDLES:
             self.candles[symbol] = buf[-_MAX_CANDLES:]
@@ -543,28 +558,21 @@ class AlpacaFeedService(BaseFeedService):
             self.candles[symbol] = buf
 
     def _live_candle_snapshot(self, symbol: str) -> dict:
-        """Wire candle close tracks live price between official Alpaca minute bars."""
+        """Forming candle for WS market_update — mirrors buffer; no bid/ask wicks."""
         buf = self.candles.get(symbol)
         if not buf:
             return {}
+        last = dict(buf[-1])
+        bar_time = int(last.get("time") or 0)
+        # Sealed official bars are frozen until the next minute rolls.
+        if self._sealed_bar_ts.get(symbol) == bar_time:
+            return last
         price = float(self._symbols[symbol]["price"])
         decimals = int(self._symbols[symbol].get("decimals", 2) or 2)
         live = round(price, decimals)
-        last = dict(buf[-1])
-        bid = self._symbols[symbol].get("bid")
-        ask = self._symbols[symbol].get("ask")
-        hi = live
-        lo = live
-        try:
-            if ask is not None:
-                hi = max(hi, round(float(ask), decimals))
-            if bid is not None:
-                lo = min(lo, round(float(bid), decimals))
-        except (TypeError, ValueError):
-            pass
         last["close"] = live
-        last["high"] = round(max(float(last.get("high", live)), hi), decimals)
-        last["low"] = round(min(float(last.get("low", live)), lo), decimals)
+        last["high"] = round(max(float(last.get("high", live)), live), decimals)
+        last["low"] = round(min(float(last.get("low", live)), live), decimals)
         return last
 
     def _apply_trade(
@@ -606,14 +614,14 @@ class AlpacaFeedService(BaseFeedService):
                 buf0 = self.candles.get(symbol) or []
                 if buf0:
                     b0 = buf0[-1]
-                    prev_bar = (b0.get("high"), b0.get("low"), b0.get("close"))
+                    prev_bar = (b0.get("high"), b0.get("low"), b0.get("close"), b0.get("time"))
                 self._symbols[symbol]["price"] = px
-                self._patch_forming_candle(symbol, px, bid=bid, ask=ask)
+                self._patch_forming_candle(symbol, px, from_quote=True)
                 next_bar = prev_bar
                 buf1 = self.candles.get(symbol) or []
                 if buf1:
                     b1 = buf1[-1]
-                    next_bar = (b1.get("high"), b1.get("low"), b1.get("close"))
+                    next_bar = (b1.get("high"), b1.get("low"), b1.get("close"), b1.get("time"))
                 if prev != px or prev_bar != next_bar:
                     self._pending_updates.add(symbol)
                 return
@@ -625,10 +633,20 @@ class AlpacaFeedService(BaseFeedService):
             record_tick(symbol, px, volume=float(size or 0))
         except Exception:
             pass
-        self._patch_forming_candle(symbol, px, bid=bid, ask=ask)
+        self._patch_forming_candle(
+            symbol,
+            px,
+            from_quote=from_quote,
+            volume=0.0 if from_quote else float(size or 0),
+        )
         self._queue_market_broadcast(symbol)
 
-    def _apply_bar(self, symbol: str, msg: dict) -> None:
+    def _apply_bar(self, symbol: str, msg: dict, *, updated: bool = False) -> None:
+        """Apply official Alpaca minute bar (``b``) or late revision (``u`` / updatedBars).
+
+        Official aggregates are source of truth for closed minutes. ``updated``
+        revisions replace the same ``t`` and must not re-fire bar-close hooks.
+        """
         if symbol not in self._symbols:
             return
         t_str = msg.get("t")
@@ -639,21 +657,31 @@ class AlpacaFeedService(BaseFeedService):
         # Floor to minute bucket so chart comparisons stay stable.
         t_epoch = int(t_epoch // 60) * 60
         active_candles = self.candles[symbol]
+        try:
+            open_px = float(msg.get("o"))
+            high_px = float(msg.get("h"))
+            low_px = float(msg.get("l"))
+            close_px = float(msg.get("c"))
+        except (TypeError, ValueError):
+            return
         new_candle = {
             "time": t_epoch,
-            "open": msg.get("o"),
-            "high": msg.get("h"),
-            "low": msg.get("l"),
-            "close": msg.get("c"),
-            "volume": round(float(msg.get("v", 0) or 0), 2),
+            "open": open_px,
+            "high": high_px,
+            "low": low_px,
+            "close": close_px,
+            "volume": round(float(msg.get("v", 0) or 0), 8),
         }
         if active_candles and int(active_candles[-1]["time"]) == t_epoch:
+            # Replace provisional forming / first emit for this minute.
             active_candles[-1] = new_candle
         elif not active_candles or int(active_candles[-1]["time"]) < t_epoch:
             active_candles.append(new_candle)
             if len(active_candles) > _MAX_CANDLES:
                 self.candles[symbol] = active_candles[-_MAX_CANDLES:]
-            self._bar_close.notify(symbol)
+            # First closed-bar append only — not late updatedBars revisions.
+            if not updated:
+                self._bar_close.notify(symbol)
         else:
             # Late/out-of-order closed bar — replace matching time, never append
             # behind a newer forming minute (that freezes the wrong last bar).
@@ -671,14 +699,14 @@ class AlpacaFeedService(BaseFeedService):
                 active_candles.insert(0, new_candle)
             if len(active_candles) > _MAX_CANDLES:
                 self.candles[symbol] = active_candles[-_MAX_CANDLES:]
+            self._sealed_bar_ts[symbol] = t_epoch
             self._queue_market_broadcast(symbol)
             return
-        close = new_candle.get("close")
-        if close is not None:
-            try:
-                self._symbols[symbol]["price"] = float(close)
-            except (TypeError, ValueError):
-                pass
+        self._sealed_bar_ts[symbol] = t_epoch
+        try:
+            self._symbols[symbol]["price"] = float(close_px)
+        except (TypeError, ValueError):
+            pass
         self._queue_market_broadcast(symbol)
 
     async def _auth_json_stream(self, ws) -> tuple[bool, dict]:
@@ -729,6 +757,7 @@ class AlpacaFeedService(BaseFeedService):
                     sub_msg = {
                         "action": "subscribe",
                         "bars": equity_syms,
+                        "updatedBars": equity_syms,
                         "trades": equity_syms,
                         "quotes": equity_syms,
                     }
@@ -772,7 +801,11 @@ class AlpacaFeedService(BaseFeedService):
                                 except (TypeError, ValueError):
                                     pass
                             elif stream_type == "b":
-                                self._apply_bar(symbol, m)
+                                self._apply_bar(symbol, m, updated=False)
+                                self._status["equity"]["last_tick_ts"] = time.time()
+                            elif stream_type == "u":
+                                # Late-trade revision of a prior minute (updatedBars).
+                                self._apply_bar(symbol, m, updated=True)
                                 self._status["equity"]["last_tick_ts"] = time.time()
                         await self._yield_loop(spun)
             except asyncio.CancelledError:
@@ -817,6 +850,7 @@ class AlpacaFeedService(BaseFeedService):
                     sub_msg = {
                         "action": "subscribe",
                         "bars": wire_syms,
+                        "updatedBars": wire_syms,
                         "trades": wire_syms,
                         "quotes": wire_syms,
                     }
@@ -829,6 +863,7 @@ class AlpacaFeedService(BaseFeedService):
                     self._status["crypto"]["ws_trades"] = 0
                     self._status["crypto"]["ws_quotes"] = 0
                     self._status["crypto"]["ws_bars"] = 0
+                    self._status["crypto"]["ws_updated_bars"] = 0
                     spun = [0]
                     async for msg_str in ws:
                         if not self.active:
@@ -893,7 +928,13 @@ class AlpacaFeedService(BaseFeedService):
                                 self._status["crypto"]["ws_bars"] = int(
                                     self._status["crypto"].get("ws_bars") or 0
                                 ) + 1
-                                self._apply_bar(symbol, m)
+                                self._apply_bar(symbol, m, updated=False)
+                                self._status["crypto"]["last_tick_ts"] = time.time()
+                            elif stream_type == "u":
+                                self._status["crypto"]["ws_updated_bars"] = int(
+                                    self._status["crypto"].get("ws_updated_bars") or 0
+                                ) + 1
+                                self._apply_bar(symbol, m, updated=True)
                                 self._status["crypto"]["last_tick_ts"] = time.time()
                         await self._yield_loop(spun, every=8)
             except asyncio.CancelledError:

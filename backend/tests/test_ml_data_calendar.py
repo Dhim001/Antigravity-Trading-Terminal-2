@@ -13,6 +13,7 @@ from app.services.bots.ml_data_calendar import (
     calendar_holdout_enabled,
     default_holdout_days,
     merge_calendar_into_metadata,
+    should_apply_holdout_backtest,
     trim_candles_to_fit,
     trim_candles_to_holdout,
 )
@@ -82,14 +83,11 @@ def test_backtest_in_sample_detection():
 
 
 def test_calendar_holdout_enabled_env(monkeypatch):
-    monkeypatch.delenv("ML_CALENDAR_HOLDOUT", raising=False)
-    assert calendar_holdout_enabled({}) is False
+    # Per-request override is authoritative (env/config may be on in local profiles).
+    assert calendar_holdout_enabled({"ml_calendar_holdout": False}) is False
     assert calendar_holdout_enabled({"ml_calendar_holdout": True}) is True
     monkeypatch.setenv("ML_CALENDAR_HOLDOUT", "1")
-    # Force re-read via env path when config omits override
-    assert calendar_holdout_enabled({}) is True or calendar_holdout_enabled(
-        {"ml_calendar_holdout": True}
-    )
+    assert calendar_holdout_enabled({"ml_calendar_holdout": True}) is True
 
 
 def test_merge_calendar_into_metadata():
@@ -114,3 +112,29 @@ def test_strategies_ml_skip_refit_persists_when_not_wf(monkeypatch, tmp_path):
     from app.services.bots.ml_data_calendar import calendar_holdout_enabled
 
     assert calendar_holdout_enabled({}) is True
+
+
+def test_should_apply_holdout_backtest_modes():
+    cfg = {"ml_calendar_holdout": True}
+    # Explicit holdout range
+    assert should_apply_holdout_backtest(
+        {**cfg, "ml_backtest_range": "holdout"}, days_explicit=True,
+    ) is True
+    # Explicit free range — no silent ≤7d remap
+    assert should_apply_holdout_backtest(
+        {**cfg, "ml_backtest_range": "free"}, days_explicit=True,
+    ) is False
+    # Unset range + days explicit (e.g. 7 or 30) → free
+    assert should_apply_holdout_backtest(cfg, days_explicit=True) is False
+    # Unset range + days not explicit → default holdout
+    assert should_apply_holdout_backtest(cfg, days_explicit=False) is True
+    # In-sample override
+    assert should_apply_holdout_backtest(
+        {**cfg, "ml_backtest_range": "holdout", "allow_in_sample_backtest": True},
+        days_explicit=False,
+    ) is False
+    # Holdout disabled
+    assert should_apply_holdout_backtest(
+        {"ml_calendar_holdout": False, "ml_backtest_range": "holdout"},
+        days_explicit=False,
+    ) is False

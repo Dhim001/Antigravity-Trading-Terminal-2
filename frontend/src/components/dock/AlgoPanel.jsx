@@ -71,6 +71,16 @@ import { buildDeployPayload } from '@/lib/deployGate';
 import DeployGatePanel from '../DeployGatePanel';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
+import { getCachedModelStatus } from '@/lib/mlTrainingSession';
+import {
+  ML_BACKTEST_RANGE_HOLDOUT,
+  ML_FREE_RANGE_DAYS,
+  TA_BACKTEST_RANGE_DAYS,
+  coerceBacktestDaysForStrategy,
+  mlBacktestRangeHint,
+  resolveHoldoutDaysFromStatus,
+  resolveMlBacktestDaysPayload,
+} from '@/lib/mlBacktestRange';
 
 function statusBadgeVariant(status) {
   if (status === 'RUNNING') return 'buy';
@@ -382,8 +392,28 @@ export function AlgoTab({ hideToolbar = false }) {
     : undefined;
   const portfolioSymbolCount = portfolioList?.length ?? 0;
 
+  const mlStrategySelected = isMlStrategy(botStrategy);
+  const mlHoldoutDays = useMemo(() => {
+    if (!mlStrategySelected) return 14;
+    const status = getCachedModelStatus(activeSymbol, botStrategy, botTimeframe || '1m');
+    return resolveHoldoutDaysFromStatus(status, botConfig);
+  }, [mlStrategySelected, activeSymbol, botStrategy, botTimeframe, botConfig]);
+
+  useEffect(() => {
+    const next = coerceBacktestDaysForStrategy(backtestDays, { isMl: mlStrategySelected });
+    if (next !== String(backtestDays)) {
+      setBacktestDaysLocal(next);
+      setStoreBacktestDays(next);
+    }
+  }, [mlStrategySelected, botStrategy]); // eslint-disable-line react-hooks/exhaustive-deps -- coerce on strategy class change only
+
+  const resolvedBtDays = useMemo(
+    () => resolveMlBacktestDaysPayload(backtestDays, mlHoldoutDays, { isMl: mlStrategySelected }),
+    [backtestDays, mlHoldoutDays, mlStrategySelected],
+  );
+
   const runEstimate = useMemo(() => formatRunEstimate({
-    days: parseInt(backtestDays, 10) || 7,
+    days: resolvedBtDays.days,
     portfolioSymbols: portfolioList,
     portfolioSymbolCount,
     reasoning: backtestReasoning,
@@ -391,11 +421,11 @@ export function AlgoTab({ hideToolbar = false }) {
     walkForward: false,
     strategy: botStrategy,
     deferred: portfolioSymbolCount >= 2
-      || parseInt(backtestDays, 10) >= 30
+      || resolvedBtDays.days >= 30
       || backtestReasoning
       || (botStrategy === 'CHART_AGENT' && metaLabelWalkForward),
   }), [
-    backtestDays, portfolioList, portfolioSymbolCount, backtestReasoning,
+    resolvedBtDays.days, portfolioList, portfolioSymbolCount, backtestReasoning,
     botStrategy, metaLabelWalkForward,
   ]);
 
@@ -405,8 +435,9 @@ export function AlgoTab({ hideToolbar = false }) {
   );
 
   const setBacktestDays = (days) => {
-    setBacktestDaysLocal(days);
-    setStoreBacktestDays(days);
+    const next = coerceBacktestDaysForStrategy(days, { isMl: mlStrategySelected });
+    setBacktestDaysLocal(next);
+    setStoreBacktestDays(next);
   };
   const setBacktestOos = (oos) => {
     setBacktestOosLocal(oos);
@@ -447,7 +478,11 @@ export function AlgoTab({ hideToolbar = false }) {
   };
 
   const buildBacktestRequest = useCallback((patch = {}) => {
-    const days = parseInt(backtestDays, 10) || 7;
+    const { days, ml_backtest_range: rangeMode } = resolveMlBacktestDaysPayload(
+      backtestDays,
+      mlHoldoutDays,
+      { isMl: isMlStrategy(botStrategy) },
+    );
     const isTick = botExecutionMode === 'TICK';
     const list = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
       ? portfolioSymbols
@@ -465,6 +500,7 @@ export function AlgoTab({ hideToolbar = false }) {
         ...(botStrategy === 'CHART_AGENT' && metaLabelWalkForward
           ? { meta_label_walk_forward: true }
           : {}),
+        ...(rangeMode ? { ml_backtest_range: rangeMode } : {}),
       },
       days: patch.days != null ? patch.days : days,
       timeframe: isTick ? 'tick' : botTimeframe,
@@ -478,14 +514,18 @@ export function AlgoTab({ hideToolbar = false }) {
       ...patch,
     };
   }, [
-    backtestDays, botExecutionMode, portfolioBacktest, portfolioSymbols, botStrategy,
+    backtestDays, mlHoldoutDays, botExecutionMode, portfolioBacktest, portfolioSymbols, botStrategy,
     activeSymbol, botConfig, backtestSimMode, backtestLiveParity, backtestRiskBaseMode,
     cashTotal, selectedBotId, metaLabelWalkForward, botTimeframe, backtestOos, backtestReasoning,
   ]);
 
   const handleRetryBacktest = async (request) => {
     clearBacktestLastError();
-    if (request?.days) setBacktestDays(String(request.days));
+    if (request?.config?.ml_backtest_range === 'holdout') {
+      setBacktestDays(ML_BACKTEST_RANGE_HOLDOUT);
+    } else if (request?.days) {
+      setBacktestDays(String(request.days));
+    }
     if (request?.reasoning === false) setBacktestReasoning(false);
     if (request?.portfolio_symbols === undefined && portfolioBacktest) {
       setPortfolioBacktest(false);
@@ -523,12 +563,12 @@ export function AlgoTab({ hideToolbar = false }) {
       return;
     }
 
-    const days = parseInt(backtestDays, 10) || 7;
+    const { days } = resolvedBtDays;
     const isTick = botExecutionMode === 'TICK';
     const snapshot = backtestFingerprint({
       symbol: activeSymbol,
       strategy: botStrategy,
-      days: String(days),
+      days: String(backtestDays),
       timeframe: isTick ? 'tick' : botTimeframe,
       config: botConfig,
       simMode: backtestSimMode,
@@ -603,7 +643,7 @@ export function AlgoTab({ hideToolbar = false }) {
       return;
     }
 
-    const days = parseInt(backtestDays, 10) || 7;
+    const days = backtestDays;
     const payload = buildDeployPayload({
       strategy: botStrategy,
       symbol: activeSymbol,
@@ -1497,6 +1537,7 @@ export function AlgoTab({ hideToolbar = false }) {
               days={backtestDays}
               timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
               config={botConfig}
+              simMode={backtestSimMode}
               onRerun={handleRunBacktest}
               className="algo-backtest-stale-banner py-2 mb-2"
             />
@@ -1680,17 +1721,43 @@ export function AlgoTab({ hideToolbar = false }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper">
-                  <SelectItem value="7" className="text-xs">7 days (local buffer + archive)</SelectItem>
-                  <SelectItem value="14" className="text-xs">14 days (typical ML holdout)</SelectItem>
-                  <SelectItem value="30" className="text-xs">30 days</SelectItem>
-                  <SelectItem value="90" className="text-xs">90 days</SelectItem>
-                  <SelectItem value="180" className="text-xs">180 days (broker REST if needed)</SelectItem>
-                  <SelectItem value="365" className="text-xs">365 days (broker REST if needed)</SelectItem>
+                  {mlStrategySelected ? (
+                    <>
+                      <SelectItem value={ML_BACKTEST_RANGE_HOLDOUT} className="text-xs">
+                        {`Locked holdout (${mlHoldoutDays}d from train calendar)`}
+                      </SelectItem>
+                      {ML_FREE_RANGE_DAYS.map((d) => (
+                        <SelectItem key={d} value={d} className="text-xs">
+                          {d === '14'
+                            ? '14 days (free window)'
+                            : d === '180' || d === '365'
+                              ? `${d} days (broker REST if needed)`
+                              : `${d} days`}
+                        </SelectItem>
+                      ))}
+                    </>
+                  ) : (
+                    TA_BACKTEST_RANGE_DAYS.map((d) => (
+                      <SelectItem key={d} value={d} className="text-xs">
+                        {d === '7'
+                          ? '7 days (local buffer + archive)'
+                          : d === '14'
+                            ? '14 days'
+                            : d === '180' || d === '365'
+                              ? `${d} days (broker REST if needed)`
+                              : `${d} days`}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                {isMlStrategy(botStrategy)
-                  ? 'With ML_CALENDAR_HOLDOUT=1, ML backtests default to the locked holdout (not nested inside train FIT).'
+                {mlStrategySelected
+                  ? (mlBacktestRangeHint({
+                    isMl: true,
+                    backtestDays,
+                    holdoutDays: mlHoldoutDays,
+                  }) || 'ML holdout-aware range')
                   : botTimeframe === '1m'
                     ? `Long ranges fill older 1m gaps from ${alpacaLive ? 'Alpaca' : 'Massive/broker'} REST when local archive is short.`
                     : `Higher TF long ranges use ${alpacaLive ? 'Alpaca' : 'Massive'} native bars (not limited to local 1m retention).`}
@@ -1838,7 +1905,7 @@ export function AlgoTab({ hideToolbar = false }) {
             symbol={activeSymbol}
             strategy={botStrategy}
             timeframe={botExecutionMode === 'TICK' ? 'tick' : botTimeframe}
-            days={parseInt(backtestDays, 10) || 7}
+            days={backtestDays}
             config={botConfig}
             backtestConfig={backtestLastRequest?.config}
             snapshot={backtestSnapshot}

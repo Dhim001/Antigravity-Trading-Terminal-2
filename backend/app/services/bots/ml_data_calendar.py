@@ -18,6 +18,31 @@ _MIN_HOLDOUT_DAYS = 7
 _MAX_HOLDOUT_DAYS = 60
 
 
+def should_apply_holdout_backtest(
+    config: dict | None,
+    *,
+    days_explicit: bool,
+) -> bool:
+    """Whether Algo ML backtest should trim to the locked HOLDOUT window.
+
+    - ``ml_backtest_range == "holdout"`` → always (when calendar holdout enabled)
+    - ``ml_backtest_range == "free"`` → never (explicit free window)
+    - unset range + days not explicit → default holdout path
+    - unset range + days explicit → free window (no silent ≤7d remap)
+    """
+    cfg = config if isinstance(config, dict) else {}
+    if not calendar_holdout_enabled(cfg):
+        return False
+    if bool(cfg.get("allow_in_sample_backtest")):
+        return False
+    mode = str(cfg.get("ml_backtest_range") or "").strip().lower()
+    if mode == "holdout":
+        return True
+    if mode == "free":
+        return False
+    return not days_explicit
+
+
 def calendar_holdout_enabled(config: dict | None = None) -> bool:
     """True when nested FIT/EMBARGO/HOLDOUT is active.
 

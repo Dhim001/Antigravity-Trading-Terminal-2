@@ -682,7 +682,11 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                     )
                     return
                 write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
-                candles = _enrich_training_candles(symbol, candles, strategy, cfg)
+                # Keep indicator enrichment off the event loop — LSTM sequence
+                # prep already stresses the process; sync enrich starved HTTP polls.
+                candles = await asyncio.to_thread(
+                    _enrich_training_candles, symbol, candles, strategy, cfg,
+                )
                 window_meta = summarize_training_window(
                     candles, win_months, bar_limit=bar_limit, timeframe=tf,
                     calendar=cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None,

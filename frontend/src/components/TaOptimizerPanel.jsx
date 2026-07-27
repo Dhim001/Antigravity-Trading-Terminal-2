@@ -38,6 +38,8 @@ import {
 } from '../lib/backtestTimeouts';
 import { toast } from 'sonner';
 import { apiRequest } from '@/api/client';
+import { isMlStrategy } from '@/config/strategies';
+import { isHoldoutBacktestDays } from '@/lib/mlBacktestRange';
 
 const OBJECTIVE_OPTIONS = [
   { value: 'calmar_ratio', label: 'Calmar ratio (default)' },
@@ -223,6 +225,7 @@ export default function TaOptimizerPanel({
 }) {
   const backtestRunning = useResearchStore((s) => s.backtestRunning);
   const botConfig = useStore((s) => s.botConfig);
+  const storeBacktestDays = useResearchStore((s) => s.backtestDays);
   const optimizerPreset = useResearchStore((s) => s.optimizerPreset);
   const clearOptimizerPreset = useResearchStore((s) => s.clearOptimizerPreset);
   const replaceBotConfig = useStore((s) => s.replaceBotConfig);
@@ -463,7 +466,14 @@ export default function TaOptimizerPanel({
     const { ok, error } = await sendAction(Action.RUN_BACKTEST_SWEEP, withLlmModel({
       symbol,
       strategy,
-      config: botConfig,
+      config: {
+        ...botConfig,
+        ...(isMlStrategy(strategy)
+          ? {
+            ml_backtest_range: isHoldoutBacktestDays(storeBacktestDays) ? 'holdout' : 'free',
+          }
+          : {}),
+      },
       days: parseInt(days, 10) || 7,
       timeframe,
       oos_pct: oosPct || undefined,

@@ -208,6 +208,32 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
   clearOptimizerPreset: () => set({ optimizerPreset: null }),
   clearBacktestOverlay: () => set({ backtestOverlay: null }),
 
+  /**
+   * Clear in-memory ML backtest results when a matching model is retrained / activated.
+   * Leaves backtestRuns history intact.
+   */
+  invalidateMlBacktests: ({ strategy, symbol } = {}) => {
+    const strat = String(strategy || '').toUpperCase();
+    const sym = String(symbol || '').toUpperCase();
+    if (!strat || !sym) return false;
+    const state = get();
+    const meta = state.backtestResults?.meta || {};
+    const resultStrat = String(meta.strategy || state.backtestResults?.strategy || '').toUpperCase();
+    const resultSym = String(meta.symbol || state.backtestResults?.symbol || '').toUpperCase();
+    if (!state.backtestResults) return false;
+    if (resultStrat && resultStrat !== strat) return false;
+    if (resultSym && resultSym !== sym) return false;
+    // If meta lacked identity, only clear when both were empty (avoid wiping TA).
+    if (!resultStrat && !resultSym) return false;
+    set({
+      backtestResults: null,
+      backtestSnapshot: null,
+      backtestOverlay: null,
+      backtestProgress: null,
+    });
+    return true;
+  },
+
   setAgentInsight: (symbol, insight) => set((state) => {
     const sym = String(symbol || insight?.symbol || '').toUpperCase();
     const key = agentInsightKey(sym, insight?.timeframe || '1m');

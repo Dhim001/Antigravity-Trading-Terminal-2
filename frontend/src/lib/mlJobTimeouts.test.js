@@ -46,11 +46,13 @@ describe('mlJobTimeouts', () => {
     expect(formatMlJobBudgetLabel(120 * 60_000)).toBe('2 h');
   });
 
-  it('treats per-request job poll timeouts as transient', () => {
+  it('treats per-request job poll timeouts and server overload as transient', () => {
     expect(isTransientMlPollError(new Error(
       'Request timed out after 60000ms: /api/v1/ml/jobs/abc',
     ))).toBe(true);
-    expect(isTransientMlPollError(new Error('HTTP 500'))).toBe(false);
+    expect(isTransientMlPollError(new Error('HTTP 500'))).toBe(true);
+    expect(isTransientMlPollError(new Error('HTTP 429'))).toBe(true);
+    expect(isTransientMlPollError(new Error('HTTP 404'))).toBe(false);
     const budget = new MlJobPollBudgetError('budget', { jobId: 'x', budgetMs: 1 });
     expect(budget.code).toBe('ML_JOB_POLL_BUDGET');
   });

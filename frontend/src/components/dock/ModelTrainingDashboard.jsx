@@ -47,6 +47,7 @@ import {
   setMlValidation,
   subscribeMlTrainingSession,
   appendMlPollLog,
+  invalidateMatchingMlBacktests,
 } from '@/lib/mlTrainingSession';
 import {
   formatMlJobBudgetLabel,
@@ -1472,6 +1473,9 @@ export default function ModelTrainingDashboard({
         if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
         if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
           if (job.kind === 'validate' && job.result) setMlValidation(job.result);
+          if (job.status === 'done' && job.kind === 'train') {
+            invalidateMatchingMlBacktests(job.strategy || mlSession.strategy, job.symbol || mlSession.symbol);
+          }
           finishMlJob(mlSession.jobToken, {
             validation: job.kind === 'validate' ? job.result : undefined,
             error: job.status === 'error' ? (job.error || 'failed') : null,
@@ -1528,6 +1532,7 @@ export default function ModelTrainingDashboard({
         setChallengerDismissed(true);
         championOosRef.current = null;
         setMlValidation(null);
+        invalidateMatchingMlBacktests(strategy, activeSymbol);
         toast.success(
           `Activated ${body.activated_version_id || pin} as current for ${strategy} / ${activeSymbol}`,
         );
@@ -1686,6 +1691,7 @@ export default function ModelTrainingDashboard({
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
     localJobWaiterRef.current = true;
+    let trainUiCompleted = false;
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
@@ -1753,6 +1759,7 @@ export default function ModelTrainingDashboard({
         kind: 'train',
         months: trainingWindow,
       });
+      trainUiCompleted = true;
       const result = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Training cancelled');
@@ -1773,6 +1780,7 @@ export default function ModelTrainingDashboard({
             + ' (val plateau)'
           : '';
         toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}`);
+        invalidateMatchingMlBacktests(strat, symbol);
         // Drop from retrain audit immediately (backend also clears via record_retrain).
         setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
         setRetrainActions((prev) => prev.filter((a) => (
@@ -1783,11 +1791,30 @@ export default function ModelTrainingDashboard({
       }
     } catch (err) {
       if (!isAbortError(err)) {
-        toast.error(err.message || 'Training request failed');
+        const jid = getMlTrainingSession().jobId;
+        if (jid) {
+          toast.error(
+            `${err.message || 'Training UI interrupted'} — server job ${String(jid).slice(0, 8)} may still be running. Keep this panel open or re-check model status.`,
+          );
+        } else {
+          toast.error(err.message || 'Training request failed');
+        }
       }
     } finally {
       localJobWaiterRef.current = false;
-      finishJobProgress(token);
+      const sess = getMlTrainingSession();
+      if (trainUiCompleted || !sess.jobId || sess.jobToken !== token) {
+        finishJobProgress(token);
+      } else {
+        // Poll/submit interrupted after job_id was assigned — keep session so
+        // the background job poller can finish instead of looking "stopped".
+        appendMlPollLog({
+          status: 'running',
+          phase: 'waiting',
+          detail: 'UI wait interrupted — server job still tracked',
+          note: 'ui_interrupt',
+        });
+      }
       if (fromQueue) setRunNowKey(null);
       // Always refresh enriched status — never cache thin train payloads as status.
       await refreshAll();

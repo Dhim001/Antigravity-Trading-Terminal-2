@@ -351,7 +351,8 @@ async def _execute_backtest(
         if timeframe:
             config = {**config, "timeframe": str(timeframe)}
 
-        # P3: ML + calendar holdout → default BT to locked HOLDOUT (not nested 7d ⊂ train).
+        # P3: ML + calendar holdout → locked HOLDOUT when requested / default path.
+        # No silent remap of explicit free ranges (e.g. 7d / 30d).
         ml_calendar = None
         holdout_applied = False
         try:
@@ -359,6 +360,7 @@ async def _execute_backtest(
                 backtest_in_sample,
                 calendar_holdout_enabled,
                 resolve_strategy_data_calendar,
+                should_apply_holdout_backtest,
                 trim_candles_to_holdout,
             )
             from app.services.bots.ml_walk_forward_validator import is_ml_strategy
@@ -367,13 +369,14 @@ async def _execute_backtest(
                 ml_calendar = resolve_strategy_data_calendar(
                     str(strategy), str(symbol), timeframe=timeframe, config=config,
                 )
-                allow_is = bool(config.get("allow_in_sample_backtest"))
-                if ml_calendar and not allow_is:
+                if ml_calendar and should_apply_holdout_backtest(
+                    config, days_explicit=days_explicit,
+                ):
                     hd = int(ml_calendar.get("holdout_days") or 14)
-                    # Default Algo 7d (or unset) → locked holdout length.
-                    if (not days_explicit) or days <= 7:
-                        days = max(1, min(365, hd))
+                    days = max(1, min(365, hd))
                     holdout_applied = True
+                    if isinstance(config, dict):
+                        config = {**config, "ml_backtest_range": "holdout"}
         except Exception:
             ml_calendar = None
 
@@ -420,6 +423,10 @@ async def _execute_backtest(
                     "holdout_start_ts": ml_calendar.get("holdout_start_ts"),
                     "holdout_days": ml_calendar.get("holdout_days"),
                 }
+                meta["ml_backtest_range"] = (
+                    "holdout" if holdout_applied
+                    else str((config or {}).get("ml_backtest_range") or "free")
+                )
             except Exception:
                 pass
 

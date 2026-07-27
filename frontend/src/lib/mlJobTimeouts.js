@@ -58,7 +58,10 @@ export function mlJobWindowScale(months) {
 export function isTransientMlPollError(err) {
   if (isAbortError(err)) return true;
   const msg = String(err?.message || err || '');
-  return /timed out|failed to fetch|network|load failed|econnreset|econnrefused/i.test(msg);
+  // During LSTM sequence build / CUDA train the event loop can starve; treat
+  // gateway and overload responses as retryable so the UI does not abandon
+  // a still-running server job.
+  return /timed out|failed to fetch|network|load failed|econnreset|econnrefused|http 429|http 502|http 503|http 504|http 500|too many requests|server busy|invalid json from \/api\/v1\/ml\/jobs/i.test(msg);
 }
 
 /**

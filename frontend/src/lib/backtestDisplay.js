@@ -132,6 +132,8 @@ export function fmtBacktestRange(meta) {
   return `${from.toLocaleDateString(undefined, opts)} → ${to.toLocaleDateString(undefined, opts)}`;
 }
 
+const ML_FINGERPRINT_KEYS = ['model_version', 'model_artifact', 'model_symbol'];
+
 export function backtestFingerprint({
   symbol,
   strategy,
@@ -152,10 +154,30 @@ export function backtestFingerprint({
     min_confidence: config.min_confidence,
     direction_mode: normalizeDirectionMode(config.direction_mode),
     sim_mode: String(simMode ?? config.sim_mode ?? 'live_aligned').toLowerCase(),
+    // ML identity — retrain / pin must invalidate Lab metrics.
+    model_version: config.model_version ?? null,
+    model_artifact: config.model_artifact ?? null,
+    model_symbol: config.model_symbol ?? null,
   });
 }
 
 export function isBacktestStale(snapshot, current) {
   if (!snapshot || !current) return false;
   return snapshot !== current;
+}
+
+/** Distinguish model-pin drift from general config drift for banner copy. */
+export function backtestStaleReason(snapshot, current) {
+  if (!isBacktestStale(snapshot, current)) return null;
+  try {
+    const a = JSON.parse(snapshot);
+    const b = JSON.parse(current);
+    const changed = Object.keys({ ...a, ...b }).filter((k) => a[k] !== b[k]);
+    if (!changed.length) return 'config';
+    if (changed.every((k) => ML_FINGERPRINT_KEYS.includes(k))) return 'model';
+    if (changed.some((k) => ML_FINGERPRINT_KEYS.includes(k))) return 'model';
+    return 'config';
+  } catch {
+    return 'config';
+  }
 }

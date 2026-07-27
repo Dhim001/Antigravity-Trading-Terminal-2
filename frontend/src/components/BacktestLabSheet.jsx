@@ -12,9 +12,15 @@ import { Button } from '@/components/ui/button';
 import BacktestProgressBar from './BacktestProgressBar';
 import ErrorBoundary from './ErrorBoundary';
 import { lazyImport } from '../lib/lazyImport';
-import { getStrategyCategory } from '../config/strategies';
+import { getStrategyCategory, isMlStrategy } from '../config/strategies';
 import { openBacktestLabStandalone } from '../lib/backtestLab';
 import { toast } from 'sonner';
+import {
+  isHoldoutBacktestDays,
+  resolveHoldoutDaysFromStatus,
+  resolveMlBacktestDaysPayload,
+} from '@/lib/mlBacktestRange';
+import { getCachedModelStatus } from '@/lib/mlTrainingSession';
 
 const BacktestResultsPanel = lazyImport(() => import('./BacktestResultsPanel'), 'backtest-results');
 const BacktestSweepPanel = lazyImport(() => import('./BacktestSweepPanel'), 'backtest-sweep');
@@ -94,6 +100,24 @@ function BacktestLabSheetInner() {
   const strategy = backtestResults?.meta?.strategy ?? botStrategy;
   const timeframe = backtestResults?.meta?.timeframe ?? botTimeframe;
   const advisorBotId = selectedBotId ?? backtestResults?.meta?.bot_id ?? null;
+
+  // Fingerprint / Select sentinel must stay as store selection (e.g. "holdout"),
+  // not meta.days (numeric holdout length) — otherwise Lab always looks stale.
+  const fingerprintDays = backtestDays;
+  const optimizerDays = useMemo(() => {
+    if (!isMlStrategy(strategy)) {
+      const n = parseInt(String(days), 10);
+      return Number.isFinite(n) && n > 0 ? String(n) : '7';
+    }
+    const status = getCachedModelStatus(symbol, strategy, timeframe || '1m');
+    const holdoutDays = resolveHoldoutDaysFromStatus(status, {});
+    const resolved = resolveMlBacktestDaysPayload(
+      isHoldoutBacktestDays(backtestDays) ? backtestDays : String(days ?? backtestDays),
+      holdoutDays,
+      { isMl: true },
+    );
+    return String(resolved.days);
+  }, [strategy, symbol, timeframe, days, backtestDays]);
 
   const strategyCategory = useMemo(
     () => getStrategyCategory(strategy),
@@ -255,7 +279,7 @@ function BacktestLabSheetInner() {
                       symbol={symbol}
                       strategy={strategy}
                       strategyCategory={strategyCategory}
-                      days={days != null ? String(days) : backtestDays}
+                      days={optimizerDays}
                       timeframe={timeframe}
                       oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
                       results={backtestResults}
@@ -279,7 +303,7 @@ function BacktestLabSheetInner() {
                         variant="full"
                         results={backtestResults}
                         strategyCategory={strategyCategory}
-                        backtestDays={days != null ? String(days) : '7'}
+                        backtestDays={fingerprintDays}
                         backtestTimeframe={timeframe}
                         symbol={symbol}
                         strategy={strategy}

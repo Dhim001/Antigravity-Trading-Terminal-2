@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   appendMlPollLog,
+  applyMlJobProgressMessage,
   beginMlJob,
   clearMlPollLog,
   finishMlJob,
@@ -8,9 +9,11 @@ import {
   getMlTrainingSession,
   resolveModelStatusFetch,
   setCachedModelStatus,
+  setMlJobId,
   setMlServerProgress,
   statusCacheKey,
 } from './mlTrainingSession';
+import { useResearchStore } from '@/store/useResearchStore';
 
 describe('mlTrainingSession', () => {
   beforeEach(() => {
@@ -105,5 +108,32 @@ describe('mlTrainingSession', () => {
     expect(log[2].note).toBe('poll_err');
     clearMlPollLog();
     expect(getMlTrainingSession().pollLog).toEqual([]);
+  });
+
+  it('invalidates matching backtest results when train job completes via WS', () => {
+    useResearchStore.setState({
+      backtestResults: {
+        run_id: 'r1',
+        meta: { symbol: 'BTCUSDT', strategy: 'LSTM_DIRECTION' },
+      },
+      backtestSnapshot: '{}',
+      backtestOverlay: { trades: [] },
+    });
+    beginMlJob({
+      kind: 'train',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'BTCUSDT',
+      jobId: 'job-1',
+      jobProgress: { active: true, kind: 'train', label: 'Retraining' },
+    });
+    setMlJobId('job-1');
+    applyMlJobProgressMessage({
+      job_id: 'job-1',
+      status: 'done',
+      kind: 'train',
+      pct: 100,
+      phase: 'done',
+    });
+    expect(useResearchStore.getState().backtestResults).toBeNull();
   });
 });

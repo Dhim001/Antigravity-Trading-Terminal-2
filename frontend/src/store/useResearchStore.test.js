@@ -51,3 +51,40 @@ describe('useResearchStore openBacktestLab', () => {
     });
   });
 });
+
+describe('invalidateMlBacktests', () => {
+  beforeEach(() => {
+    useResearchStore.setState({
+      backtestResults: {
+        run_id: 'ml-1',
+        total_pnl: 10,
+        meta: { symbol: 'ETHUSDT', strategy: 'LSTM_DIRECTION' },
+      },
+      backtestSnapshot: '{"x":1}',
+      backtestOverlay: { trades: [] },
+      backtestRuns: [{ run_id: 'ml-1' }],
+    });
+  });
+
+  it('clears matching ML results but keeps run history', () => {
+    const cleared = useResearchStore.getState().invalidateMlBacktests({
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+    });
+    expect(cleared).toBe(true);
+    const s = useResearchStore.getState();
+    expect(s.backtestResults).toBeNull();
+    expect(s.backtestSnapshot).toBeNull();
+    expect(s.backtestOverlay).toBeNull();
+    expect(s.backtestRuns).toHaveLength(1);
+  });
+
+  it('does not clear unrelated symbol/strategy', () => {
+    const cleared = useResearchStore.getState().invalidateMlBacktests({
+      strategy: 'ML_SIGNAL_BOOST',
+      symbol: 'BTCUSDT',
+    });
+    expect(cleared).toBe(false);
+    expect(useResearchStore.getState().backtestResults?.run_id).toBe('ml-1');
+  });
+});
