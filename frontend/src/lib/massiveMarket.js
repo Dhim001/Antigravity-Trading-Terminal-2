@@ -30,9 +30,14 @@ export function usesNativeHtCharts(terminalMode) {
   return terminalMode === 'LIVE_MASSIVE' || terminalMode === 'LIVE_ALPACA';
 }
 
-/** Paper ledger (Sim or Massive) — no broker reconcile workflow. */
+/**
+ * Paper ledger (Sim, Massive, or Alpaca with ALPACA_OMS_ENABLED=false).
+ * Prefer session `executionMode` — LIVE_ALPACA is paper only when the backend
+ * reports paper/simulated (not merely because terminalMode is LIVE_ALPACA).
+ */
 export function isPaperExecutionMode(terminalMode, executionMode) {
   if (executionMode === 'paper' || executionMode === 'simulated') return true;
+  if (executionMode === 'broker') return false;
   return terminalMode === 'SIMULATED' || terminalMode === 'LIVE_MASSIVE';
 }
 

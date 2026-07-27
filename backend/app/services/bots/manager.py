@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from app.db.async_bridge import run_db
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
-from app.services.bots.execution_mode import is_live_massive, uses_paper_oms
+from app.services.bots.execution_mode import runs_live_feed_bot_ticks, uses_paper_oms
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
 from app.observability.metrics import inc
@@ -629,7 +629,7 @@ class BotManagerService:
             symbol,
             ohlcv_1m,
             feed=feed,
-            timeframes=None if not is_live_massive() else {"1m"},
+            timeframes=None if not runs_live_feed_bot_ticks() else {"1m"},
         )
 
         timeframes = {
@@ -646,8 +646,8 @@ class BotManagerService:
         for timeframe in sorted(timeframes):
             if feed is not None:
                 ohlcv = get_bot_candles(symbol, feed, timeframe=timeframe)
-            elif is_live_massive():
-                # Massive HT/1m must come from feed REST/WS — never resample a 1m tail.
+            elif runs_live_feed_bot_ticks():
+                # Live HT/1m must come from feed REST/WS — never resample a 1m tail.
                 continue
             elif ohlcv_1m:
                 ohlcv = candles_for_timeframe(ohlcv_1m, timeframe)
@@ -665,8 +665,8 @@ class BotManagerService:
         feed,
         timeframes: set[str] | None = None,
     ) -> None:
-        """LIVE_MASSIVE: evaluate HT BAR_CLOSE bots from native REST/cache only."""
-        if not is_live_massive() or not ALLOW_LIVE_BOTS or feed is None:
+        """LIVE_MASSIVE / LIVE_ALPACA: evaluate HT BAR_CLOSE bots from native REST/cache."""
+        if not runs_live_feed_bot_ticks() or not ALLOW_LIVE_BOTS or feed is None:
             return
         if not self.active_bots:
             return

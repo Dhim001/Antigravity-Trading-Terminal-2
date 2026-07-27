@@ -50,6 +50,7 @@ import {
   BellRing,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isPaperExecutionMode } from '@/lib/massiveMarket';
 import {
   Select,
   SelectContent,
@@ -234,9 +235,11 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
   const apiStatus = useStore((s) => s.apiStatus);
   const isLive = useStore((s) => s.isLive);
   const terminalMode = useStore((s) => s.terminalMode);
+  const executionMode = useStore((s) => s.executionMode);
   const terminalRole = useStore((s) => s.terminalRole);
   const distributed = useStore((s) => s.distributed);
   const allowLiveBots = useStore((s) => s.allowLiveBots);
+  const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
   const allowCustomStrategies = useStore((s) => s.allowCustomStrategies);
   const archiveParquetEnabled = useStore((s) => s.archiveParquetEnabled);
   const isOperator = useIsOperator();
@@ -1343,7 +1346,16 @@ export default function SettingsPanel({ open, onOpenChange, onOpenAdmin }) {
                     <div><dt>Paper bots</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Sim OMS fills' : 'Disabled'}</dd></div>
                   )}
                   {terminalMode === 'LIVE_ALPACA' && (
-                    <div><dt>Alpaca OMS</dt><dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>{allowLiveBots ? 'Paper/live routing' : 'Disabled'}</dd></div>
+                    <div>
+                      <dt>Order routing</dt>
+                      <dd className={allowLiveBots ? 'text-trading-up' : 'text-muted-foreground'}>
+                        {!allowLiveBots
+                          ? 'Bots disabled'
+                          : paperExecution
+                            ? 'Sim OMS fills (ALPACA_OMS_ENABLED=false)'
+                            : 'Alpaca broker OMS'}
+                      </dd>
+                    </div>
                   )}
                   <div><dt>Role</dt><dd>{terminalRole ?? '—'}</dd></div>
                   <div>

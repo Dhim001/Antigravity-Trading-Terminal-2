@@ -43,10 +43,19 @@ class MlJobStoreTests(unittest.TestCase):
         job = get_ml_job(job_id)
         self.assertEqual(job["status"], "queued")
         mark_ml_job_running(job_id)
-        update_ml_job_progress(job_id, {"pct": 40, "phase": "fit", "detail": "epoch 2"})
+        update_ml_job_progress(job_id, {
+            "pct": 40,
+            "phase": "fit",
+            "detail": "epoch 2",
+            "best_score": 0.61,
+            "metrics": {"accuracy": 0.55},
+            "warning": None,
+        })
         job = get_ml_job(job_id)
         self.assertEqual(job["status"], "running")
         self.assertEqual(job["progress"]["pct"], 40)
+        self.assertEqual(job["progress"]["best_score"], 0.61)
+        self.assertEqual(job["progress"]["metrics"]["accuracy"], 0.55)
         finish_ml_job(job_id, "done", result={"ok": True})
         job = get_ml_job(job_id)
         self.assertEqual(job["status"], "done")
@@ -107,6 +116,31 @@ class MlJobProgressTests(unittest.TestCase):
         finally:
             cleanup_ml_progress(path)
             self.assertFalse(os.path.isfile(path))
+
+    def test_write_progress_extra_snapshot_fields(self):
+        path = make_progress_path("prog_extra")
+        try:
+            write_ml_progress(
+                path,
+                pct=42,
+                phase="hyperparam_trial",
+                detail="trial 3/12",
+                extra={
+                    "pct": 99,  # reserved — ignored
+                    "best_score": 0.72,
+                    "last_score": 0.70,
+                    "metrics": {"f1": 0.66},
+                    "warning": "trial failed",
+                    "level": "warn",
+                },
+            )
+            data = read_ml_progress(path)
+            self.assertEqual(data["pct"], 42)
+            self.assertEqual(data["best_score"], 0.72)
+            self.assertEqual(data["metrics"]["f1"], 0.66)
+            self.assertEqual(data["warning"], "trial failed")
+        finally:
+            cleanup_ml_progress(path)
 
 
 class MlTrainExecutorJobWiringTests(unittest.TestCase):

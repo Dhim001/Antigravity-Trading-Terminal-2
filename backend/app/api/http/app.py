@@ -24,6 +24,7 @@ from app.api.state import AppState
 from app.config import (
     ALLOW_CUSTOM_STRATEGIES,
     ALLOW_LIVE_BOTS,
+    ALPACA_OMS_ENABLED,
     ARCHIVE_BACKEND,
     ARCHIVE_PARQUET_ENABLED,
     ARCHIVE_TICKS_ENABLED,
@@ -208,6 +209,7 @@ async def _build_health_body(state: AppState) -> dict:
         "terminal_mode": TERMINAL_MODE,
         "terminal_role": TERMINAL_ROLE,
         "execution_mode": execution_mode_label(),
+        "alpaca_oms_enabled": ALPACA_OMS_ENABLED if TERMINAL_MODE == "LIVE_ALPACA" else None,
         "ws_clients": len(state.manager.connected_clients),
         "websocket": f"ws://{WS_HOST}:{WS_PORT}",
         "http": f"http://{HTTP_HOST}:{HTTP_PORT}",

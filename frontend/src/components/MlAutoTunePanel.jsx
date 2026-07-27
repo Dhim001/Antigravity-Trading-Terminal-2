@@ -1,7 +1,8 @@
 /**
  * ML training hyperparameter auto-tune (Optuna) — Model Training Lab.
+ * Progress UI matches Train / Walk-forward (bar + optional poll log).
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiRequest } from '@/api/client';
@@ -70,6 +71,100 @@ const DEFAULT_HP = {
   },
 };
 
+const POLL_LOG_PREF_KEY = 'ml-lab-autotune-show-poll-log';
+const MAX_POLL_LOG = 200;
+
+const SWEEP_PHASES = [
+  { until: 8, label: 'Queuing Optuna study…' },
+  { until: 25, label: 'Loading candles & feature space…' },
+  { until: 75, label: 'Running hyperparam trials…' },
+  { until: 92, label: 'Promoting top trials (full fidelity)…' },
+  { until: 100, label: 'Ranking importance & finalizing…' },
+];
+
+const SNAPSHOT_METRIC_ORDER = [
+  ['best_score', 'Best'],
+  ['last_score', 'Last'],
+  ['trial', 'Trial'],
+  ['accuracy', 'Acc'],
+  ['f1', 'F1'],
+  ['oos_accuracy', 'OOS Acc'],
+  ['oos_f1', 'OOS F1'],
+  ['sharpe', 'Sharpe'],
+  ['pbo', 'PBO'],
+  ['mean_return', 'Mean ret'],
+  ['profit_factor', 'PF'],
+];
+
+function formatElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return m > 0 ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
+}
+
+function formatBudgetLabel(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  if (s >= 3600) return `${Math.round(s / 3600)}h`;
+  if (s >= 60) return `${Math.round(s / 60)}m`;
+  return `${s}s`;
+}
+
+function formatPollLogTime(ts) {
+  try {
+    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
+  } catch {
+    return '—';
+  }
+}
+
+function formatPollLogLine(entry) {
+  const bits = [formatPollLogTime(entry.t)];
+  if (entry.level === 'warn') bits.push('WARN');
+  if (entry.status) bits.push(`status=${entry.status}`);
+  if (entry.pct != null) bits.push(`pct=${Math.round(entry.pct)}`);
+  if (entry.phase) bits.push(`phase=${entry.phase}`);
+  if (entry.trial != null && entry.max_trials != null) {
+    bits.push(`trial=${entry.trial}/${entry.max_trials}`);
+  } else if (entry.trial != null) {
+    bits.push(`trial=${entry.trial}`);
+  }
+  if (entry.best_score != null) bits.push(`best=${entry.best_score}`);
+  if (entry.last_score != null) bits.push(`score=${entry.last_score}`);
+  if (entry.detail) bits.push(`detail=${entry.detail}`);
+  if (entry.warning) bits.push(`warning=${entry.warning}`);
+  if (entry.note) bits.push(entry.note);
+  return bits.join(' ');
+}
+
+function formatSnapValue(key, value) {
+  if (value == null || value === '') return '—';
+  if (key === 'trial' && typeof value === 'string') return value;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  if (key === 'trial') return String(Math.round(n));
+  if (Math.abs(n) >= 100) return n.toFixed(1);
+  if (Math.abs(n) >= 1) return n.toFixed(3);
+  return n.toFixed(4);
+}
+
+function pollEntryFingerprint(entry) {
+  return [
+    entry.status,
+    entry.pct,
+    entry.phase,
+    entry.detail,
+    entry.trial,
+    entry.best_score,
+    entry.last_score,
+    entry.warning,
+    entry.note,
+    entry.level,
+  ].join('|');
+}
+
 function ConvergenceSparkline({ points }) {
   const vals = (points || []).map((p) => Number(p.score)).filter((n) => Number.isFinite(n));
   if (vals.length < 2) {
@@ -119,11 +214,11 @@ function ImportanceBars({ ranking }) {
           <span className="w-28 truncate num-mono text-muted-foreground" title={key}>{key}</span>
           <div className="flex-1 h-1.5 rounded bg-muted overflow-hidden">
             <div
-              className="h-full bg-primary/70"
+              className="h-full rounded bg-sky-500/80"
               style={{ width: `${Math.max(4, (val / max) * 100)}%` }}
             />
           </div>
-          <span className="w-10 text-right num-mono">{val.toFixed(2)}</span>
+          <span className="num-mono w-10 text-right">{val.toFixed(2)}</span>
         </li>
       ))}
     </ul>
@@ -131,32 +226,221 @@ function ImportanceBars({ ranking }) {
 }
 
 function DiffTable({ defaults, best }) {
-  const keys = [...new Set([...Object.keys(defaults || {}), ...Object.keys(best || {})])].sort();
+  const keys = useMemo(() => {
+    const set = new Set([
+      ...Object.keys(defaults || {}),
+      ...Object.keys(best || {}),
+    ]);
+    return [...set].sort();
+  }, [defaults, best]);
   if (!keys.length) return null;
   return (
-    <table className="w-full text-[10px] border-collapse">
-      <thead>
-        <tr className="text-muted-foreground text-left">
-          <th className="py-0.5 font-medium">Param</th>
-          <th className="py-0.5 font-medium">Default</th>
-          <th className="py-0.5 font-medium">Best</th>
-        </tr>
-      </thead>
-      <tbody>
-        {keys.map((k) => {
-          const a = defaults?.[k];
-          const b = best?.[k];
-          const changed = a !== b && b != null;
-          return (
-            <tr key={k} className={cn(changed && 'bg-emerald-500/10')}>
-              <td className="py-0.5 num-mono">{k}</td>
-              <td className="py-0.5 num-mono text-muted-foreground">{a ?? '—'}</td>
-              <td className="py-0.5 num-mono font-medium">{b ?? '—'}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="overflow-x-auto">
+      <table className="w-full text-[10px] num-mono">
+        <thead>
+          <tr className="text-muted-foreground text-left">
+            <th className="py-1 pr-2 font-medium">Param</th>
+            <th className="py-1 pr-2 font-medium">Default</th>
+            <th className="py-1 font-medium">Best</th>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.map((k) => {
+            const d = defaults?.[k];
+            const b = best?.[k];
+            const changed = d !== b && b !== undefined;
+            return (
+              <tr key={k} className={cn(changed && 'text-emerald-400')}>
+                <td className="py-0.5 pr-2 text-muted-foreground">{k}</td>
+                <td className="py-0.5 pr-2">{d == null ? '—' : String(d)}</td>
+                <td className="py-0.5">{b == null ? '—' : String(b)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SweepSnapshotChips({ progress }) {
+  if (!progress) return null;
+  const metrics = progress.metrics && typeof progress.metrics === 'object' ? progress.metrics : {};
+  const bag = {
+    best_score: progress.best_score,
+    last_score: progress.last_score,
+    trial: progress.trial != null && progress.max_trials != null
+      ? `${progress.trial}/${progress.max_trials}`
+      : progress.trial,
+    ...metrics,
+  };
+  const chips = SNAPSHOT_METRIC_ORDER
+    .map(([key, label]) => {
+      const raw = bag[key];
+      if (raw == null || raw === '') return null;
+      return { key, label, value: formatSnapValue(key, raw) };
+    })
+    .filter(Boolean);
+  if (progress.fidelity_phase) {
+    chips.unshift({
+      key: 'fidelity',
+      label: 'Fidelity',
+      value: String(progress.fidelity_phase),
+    });
+  }
+  if (progress.objective_kind) {
+    chips.push({
+      key: 'objective',
+      label: 'Obj',
+      value: String(progress.objective_kind),
+    });
+  }
+  if (progress.no_improve_streak != null && Number(progress.no_improve_streak) > 0) {
+    chips.push({
+      key: 'streak',
+      label: 'No↑',
+      value: String(progress.no_improve_streak),
+    });
+  }
+  if (!chips.length) return null;
+  return (
+    <div className="ml-training__metrics mt-2" aria-label="Auto-tune snapshot metrics">
+      {chips.slice(0, 10).map((chip, i) => (
+        <div
+          key={chip.key}
+          className={cn('ml-training__metric-chip', i === 0 && 'ml-training__metric-chip--primary')}
+        >
+          <span className="ml-training__metric-key">{chip.label}</span>
+          <strong className="num-mono">{chip.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SweepPollLog({ entries, enabled, onEnabledChange, onClear }) {
+  const logRef = useRef(null);
+  const lines = Array.isArray(entries) ? entries : [];
+
+  useEffect(() => {
+    if (!enabled || !logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [enabled, lines.length, lines[lines.length - 1]?.t]);
+
+  return (
+    <div className="ml-training__poll-log">
+      <div className="ml-training__poll-log-head">
+        <label className="ml-training__poll-log-toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => onEnabledChange(Boolean(e.target.checked))}
+          />
+          <span>Show poll log</span>
+        </label>
+        {enabled && (
+          <div className="ml-training__poll-log-actions">
+            <span className="ml-training__header-meta num-mono">{lines.length} lines</span>
+            {lines.length > 0 && typeof onClear === 'function' && (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[0.6rem]"
+                onClick={onClear}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+      {enabled && (
+        <pre
+          ref={logRef}
+          className="ml-training__poll-log-body num-mono"
+          aria-label="Auto-tune hyperparam sweep poll log"
+        >
+          {lines.length === 0
+            ? '# Poll snapshots appear while Auto-Tune runs…'
+            : lines.map(formatPollLogLine).join('\n')}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function SweepProgressBar({
+  active,
+  label,
+  startedAt,
+  budgetSec,
+  serverProgress,
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [active, startedAt]);
+
+  if (!active) return null;
+
+  const elapsed = Math.max(0, now - (startedAt || now));
+  const timeoutMs = Math.max((Number(budgetSec) || 600) * 1000, 60_000);
+  const hasServerPct = serverProgress?.pct != null && Number(serverProgress.pct) > 0;
+  const ratio = Math.min(0.94, 1 - Math.exp(-elapsed / (timeoutMs * 0.45)));
+  const estPct = Math.max(2, Math.round(ratio * 100));
+  const serverPct = hasServerPct ? Math.round(Number(serverProgress.pct)) : 0;
+  const doneLike = serverProgress?.status === 'done'
+    || serverProgress?.phase === 'done'
+    || serverPct >= 100;
+  const pct = hasServerPct
+    ? (doneLike ? 100 : Math.max(1, Math.min(99, serverPct)))
+    : estPct;
+  const phaseIdx = SWEEP_PHASES.findIndex((p) => pct < p.until);
+  const phase = SWEEP_PHASES[phaseIdx >= 0 ? phaseIdx : Math.max(SWEEP_PHASES.length - 1, 0)];
+  const phaseLabel = hasServerPct
+    ? [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
+      || phase?.label
+    : phase?.label;
+
+  return (
+    <div className="ml-training__progress" role="status" aria-live="polite">
+      <div className="ml-training__progress-head">
+        <span className="ml-training__progress-label">
+          <Loader2 size={12} className="animate-spin" aria-hidden />
+          {label}
+        </span>
+        <span className="ml-training__progress-meta num-mono">
+          {pct}% · {formatElapsed(elapsed)}
+          {timeoutMs >= 60_000 ? ` / ~${formatBudgetLabel(timeoutMs / 1000)}` : ''}
+          {hasServerPct ? ' · live' : ''}
+        </span>
+      </div>
+      <div
+        className="ml-training__progress-track"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        aria-label={label}
+      >
+        <div className="ml-training__progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="ml-training__progress-foot">
+        {phaseLabel && (
+          <p className="ml-training__progress-phase">{phaseLabel}</p>
+        )}
+      </div>
+      {serverProgress?.warning && (
+        <p className="mt-1 text-[10px] text-amber-400/90">
+          Warning: {serverProgress.warning}
+        </p>
+      )}
+      <SweepSnapshotChips progress={serverProgress} />
+    </div>
   );
 }
 
@@ -174,29 +458,107 @@ export default function MlAutoTunePanel({
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
+  const [startedAt, setStartedAt] = useState(null);
+  const [pollLog, setPollLog] = useState([]);
+  const [showPollLog, setShowPollLog] = useState(() => {
+    try {
+      return sessionStorage.getItem(POLL_LOG_PREF_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const lastLogFpRef = useRef('');
+  const aliveRef = useRef(true);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const defaults = useMemo(
     () => DEFAULT_HP[strategy] || DEFAULT_HP.ML_SIGNAL_BOOST,
     [strategy],
   );
 
+  const appendPoll = useCallback((entry) => {
+    if (!aliveRef.current) return;
+    const next = {
+      t: Date.now(),
+      ...entry,
+    };
+    const fp = pollEntryFingerprint(next);
+    if (fp && fp === lastLogFpRef.current) return;
+    lastLogFpRef.current = fp;
+    setPollLog((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return [...list, next].slice(-MAX_POLL_LOG);
+    });
+  }, []);
+
+  const onPollLogEnabled = useCallback((on) => {
+    setShowPollLog(on);
+    try {
+      sessionStorage.setItem(POLL_LOG_PREF_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const pollJob = useCallback(async (jobId) => {
     const deadline = Date.now() + Math.max(timeBudget * 1000, 120_000) + 60_000;
-    while (Date.now() < deadline) {
-      const body = await apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(jobId)}`, {
-        method: 'GET',
-        timeoutMs: 15_000,
-      });
-      const job = body?.job || body;
-      if (!job) throw new Error(body?.error || 'Job not found');
-      setProgress(job.progress || null);
-      if (['done', 'error', 'cancelled'].includes(job.status)) {
-        return job;
+    while (aliveRef.current && Date.now() < deadline) {
+      try {
+        const body = await apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(jobId)}`, {
+          method: 'GET',
+          timeoutMs: 15_000,
+        });
+        if (!aliveRef.current) return null;
+        const job = body?.job || body;
+        if (!job) throw new Error(body?.error || 'Job not found');
+        const prog = job.progress || null;
+        if (prog) {
+          setProgress({ ...prog, status: job.status });
+          appendPoll({
+            status: job.status,
+            pct: prog.pct,
+            phase: prog.phase,
+            detail: prog.detail,
+            trial: prog.trial,
+            max_trials: prog.max_trials,
+            best_score: prog.best_score,
+            last_score: prog.last_score,
+            warning: prog.warning,
+            level: prog.level || (prog.warning ? 'warn' : 'info'),
+          });
+        } else {
+          appendPoll({
+            status: job.status || 'running',
+            phase: 'waiting',
+            detail: 'no progress payload yet',
+            note: 'poll',
+          });
+        }
+        if (['done', 'error', 'cancelled'].includes(job.status)) {
+          return job;
+        }
+      } catch (err) {
+        if (!aliveRef.current) return null;
+        appendPoll({
+          status: 'running',
+          phase: 'waiting',
+          detail: 'server busy — still polling…',
+          note: 'poll_err',
+          warning: err?.message || 'poll failed',
+          level: 'warn',
+        });
       }
       await new Promise((r) => setTimeout(r, 1500));
     }
+    if (!aliveRef.current) return null;
     throw new Error('Hyperparam sweep timed out');
-  }, [timeBudget]);
+  }, [timeBudget, appendPoll]);
 
   const startSweep = useCallback(async () => {
     if (!symbol || !strategy) {
@@ -205,7 +567,17 @@ export default function MlAutoTunePanel({
     }
     setRunning(true);
     setResult(null);
-    setProgress({ pct: 1, phase: 'queued', detail: 'starting' });
+    setPollLog([]);
+    lastLogFpRef.current = '';
+    setStartedAt(Date.now());
+    setProgress({ pct: 1, phase: 'queued', detail: 'hyperparam sweep' });
+    appendPoll({
+      status: 'queued',
+      pct: 1,
+      phase: 'queued',
+      detail: 'starting hyperparam sweep',
+      level: 'info',
+    });
     try {
       const body = await apiRequest('/api/v1/ml/hyperparam-sweep', {
         method: 'POST',
@@ -227,30 +599,96 @@ export default function MlAutoTunePanel({
       });
       if (!body?.ok || !body.job_id) {
         toast.error(body?.error || 'Failed to start hyperparam sweep');
+        appendPoll({
+          status: 'error',
+          phase: 'error',
+          detail: body?.error || 'start failed',
+          level: 'warn',
+          warning: body?.error || 'start failed',
+        });
         return;
       }
       toast.message(`Auto-tune started · job ${String(body.job_id).slice(0, 8)}…`);
+      appendPoll({
+        status: 'running',
+        pct: 2,
+        phase: 'queued',
+        detail: `job ${String(body.job_id).slice(0, 8)} accepted`,
+        level: 'info',
+      });
       const job = await pollJob(body.job_id);
+      if (!aliveRef.current || !job) return;
       const res = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || res.cancelled) {
         toast.message('Hyperparam sweep cancelled');
+        appendPoll({
+          status: 'cancelled',
+          phase: 'cancelled',
+          detail: 'sweep cancelled',
+          level: 'warn',
+        });
         return;
       }
       if (job.status !== 'done' || res.ok === false) {
         toast.error(res.error || job.error || 'Hyperparam sweep failed');
         setResult(res);
+        appendPoll({
+          status: 'error',
+          phase: 'error',
+          detail: res.error || job.error || 'failed',
+          level: 'warn',
+          warning: res.error || job.error || 'failed',
+        });
         return;
       }
       setResult(res);
+      setProgress({
+        pct: 100,
+        phase: 'done',
+        detail: `best=${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
+        best_score: res.best_score,
+        trial: res.trials_completed,
+        max_trials: res.max_trials,
+        objective_kind: res.objective_kind,
+        fidelity_phase: res.multi_fidelity ? 'full' : 'full',
+        status: 'done',
+      });
+      appendPoll({
+        status: 'done',
+        pct: 100,
+        phase: 'done',
+        detail: `best=${res.best_score ?? '—'} · trials=${res.trials_completed ?? 0}`,
+        best_score: res.best_score,
+        trial: res.trials_completed,
+        max_trials: res.max_trials,
+        level: 'info',
+      });
       toast.success(
         `Best score ${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
       );
     } catch (err) {
       toast.error(err?.message || 'Hyperparam sweep failed');
+      appendPoll({
+        status: 'error',
+        phase: 'error',
+        detail: err?.message || 'failed',
+        warning: err?.message || 'failed',
+        level: 'warn',
+      });
     } finally {
       setRunning(false);
     }
-  }, [symbol, strategy, maxTrials, timeBudget, multiFidelity, timeframe, trainingWindow, pollJob]);
+  }, [
+    symbol,
+    strategy,
+    maxTrials,
+    timeBudget,
+    multiFidelity,
+    timeframe,
+    trainingWindow,
+    pollJob,
+    appendPoll,
+  ]);
 
   const applyRetrain = useCallback(() => {
     const hp = result?.best_hyperparams;
@@ -334,14 +772,30 @@ export default function MlAutoTunePanel({
         </Button>
       </div>
 
-      {progress && running && (
-        <p className="text-[10px] text-muted-foreground mb-2 num-mono">
-          {progress.pct ?? 0}% · {progress.phase || '…'} · {progress.detail || ''}
-        </p>
+      <SweepProgressBar
+        active={running}
+        label={`Auto-tune · ${strategy}`}
+        startedAt={startedAt}
+        budgetSec={Number(timeBudget) || 600}
+        serverProgress={progress}
+      />
+
+      {(running || pollLog.length > 0) && (
+        <div className="mt-2">
+          <SweepPollLog
+            entries={pollLog}
+            enabled={showPollLog}
+            onEnabledChange={onPollLogEnabled}
+            onClear={() => {
+              setPollLog([]);
+              lastLogFpRef.current = '';
+            }}
+          />
+        </div>
       )}
 
       {result?.ok && (
-        <div className="grid sm:grid-cols-2 gap-3 mt-2">
+        <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <div>
             <p className="text-[10px] uppercase text-muted-foreground mb-1">Convergence</p>
             <ConvergenceSparkline points={result.convergence} />

@@ -756,11 +756,13 @@ def run_hyperparam_sweep_job(
     write_ml_progress(progress_path, pct=2, phase="hyperparam_start", detail=str(strategy))
 
     def _progress(payload: dict) -> None:
+        data = dict(payload or {})
         write_ml_progress(
             progress_path,
-            pct=int(payload.get("pct") or 0),
-            phase=str(payload.get("phase") or "hyperparam_trial"),
-            detail=str(payload.get("detail") or "")[:160],
+            pct=int(data.get("pct") or 0),
+            phase=str(data.get("phase") or "hyperparam_trial"),
+            detail=str(data.get("detail") or "")[:160],
+            extra=data,
         )
 
     def _cancel() -> bool:

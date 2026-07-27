@@ -39,20 +39,31 @@ def write_ml_progress(
     pct: float | int,
     phase: str,
     detail: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> None:
-    """Overwrite progress JSON (best-effort; never raises into trainers)."""
+    """Overwrite progress JSON (best-effort; never raises into trainers).
+
+    ``extra`` merges additional snapshot fields (metrics, scores, warnings)
+    used by Auto-Tune / richer job UIs. Reserved keys cannot be overridden.
+    """
     if not progress_path:
         return
-    payload = {
+    payload: dict[str, Any] = {
         "pct": max(0, min(100, int(pct))),
         "phase": str(phase or ""),
         "detail": str(detail or ""),
         "updated_at": time.time(),
     }
+    if isinstance(extra, dict):
+        reserved = frozenset(payload.keys())
+        for key, val in extra.items():
+            if key in reserved:
+                continue
+            payload[key] = val
     try:
         tmp = f"{progress_path}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
+            json.dump(payload, fh, default=str)
         os.replace(tmp, progress_path)
     except OSError as exc:
         logger.debug("ml progress write failed: %s", exc)

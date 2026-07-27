@@ -42,12 +42,13 @@ if ($Restart -or $Recycle) {
 }
 
 Write-Host @"
-=== Alpaca terminal (live broker OMS) ===
+=== Alpaca terminal (live data; OMS via ALPACA_OMS_ENABLED) ===
   UI:      http://127.0.0.1:$dev
   Backend: ws://127.0.0.1:$ws  http://127.0.0.1:$http
   DB:      backend/trading-alpaca.db
   Assets:  equities + crypto + options
   Keys:    repo-root .env ALPACA_API_KEY / ALPACA_SECRET_KEY
+  OMS:     alpaca.env default false = Sim OMS; true = Alpaca broker
 
 Opening backend and frontend windows...
 "@ -ForegroundColor Green

@@ -28,6 +28,7 @@ from app.services.bots.backtest_job_store import get_active_backtest_job
 from app.services.bots.strategy_catalog import list_strategy_catalog
 from app.services.bots.execution_mode import execution_mode_label
 from app.services.order_capabilities import get_order_capabilities
+from app.services.runtime.system_state import get_safe_mode_info
 
 
 async def session_handler(request: Request) -> JSONResponse:
@@ -79,6 +80,7 @@ async def session_handler(request: Request) -> JSONResponse:
                 "scanner_enabled": SCANNER_ENABLED,
                 "operator_mode": OPERATOR_MODE,
                 "order_capabilities": get_order_capabilities(state.oms),
+                "safe_mode": get_safe_mode_info(),
             },
             "llm": llm,
             "account": account,

@@ -54,6 +54,18 @@ class ExecutionModeLabelTests(unittest.TestCase):
         self.assertFalse(uses_paper_oms())
         self.assertEqual(execution_mode_label(), "broker")
 
+    @patch("app.services.bots.execution_mode.ALPACA_OMS_ENABLED", False)
+    @patch("app.services.bots.execution_mode.TERMINAL_MODE", "LIVE_ALPACA")
+    def test_alpaca_sim_oms_is_paper(self) -> None:
+        self.assertTrue(uses_paper_oms())
+        self.assertEqual(execution_mode_label(), "paper")
+
+    @patch("app.services.bots.execution_mode.ALPACA_OMS_ENABLED", True)
+    @patch("app.services.bots.execution_mode.TERMINAL_MODE", "LIVE_ALPACA")
+    def test_alpaca_broker_oms(self) -> None:
+        self.assertFalse(uses_paper_oms())
+        self.assertEqual(execution_mode_label(), "broker")
+
 
 class MassiveReconcileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -117,7 +129,7 @@ class MassiveMarketTickTests(unittest.IsolatedAsyncioTestCase):
         self.manager._bar_tracker.check = MagicMock(return_value=True)
 
     @patch("app.services.bots.manager.ALLOW_LIVE_BOTS", True)
-    @patch("app.services.bots.manager.is_live_massive", return_value=True)
+    @patch("app.services.bots.manager.runs_live_feed_bot_ticks", return_value=True)
     async def test_process_market_tick_without_feed_skips_resample(self, _live) -> None:
         base = 1_700_000_000
         ohlcv_1m = [{"time": base + i * 60, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 1} for i in range(120)]
@@ -133,12 +145,29 @@ class MassiveMarketTickTests(unittest.IsolatedAsyncioTestCase):
         ]
         feed = MagicMock()
         with (
-            patch("app.services.bots.manager.is_live_massive", return_value=True),
+            patch("app.services.bots.execution_mode.runs_live_feed_bot_ticks", return_value=True),
             patch("app.services.bots.manager.ALLOW_LIVE_BOTS", True),
             patch("app.services.bots.manager.get_bot_candles", return_value=ht) as mock_candles,
         ):
             await self.manager.process_massive_ht_bar_close("AAPL", feed, {"1h"})
         mock_candles.assert_called_with("AAPL", feed, timeframe="1h")
+        self.manager._evaluate_bar_close_bots.assert_awaited_once()
+
+    async def test_process_ht_bar_close_works_for_alpaca(self) -> None:
+        """LIVE_ALPACA must not be gated behind is_live_massive()."""
+        base = 1_700_000_000
+        ht = [
+            {"time": base, "open": 1, "high": 2, "low": 0.5, "close": 1.0, "volume": 1},
+            {"time": base + 300, "open": 1, "high": 2, "low": 0.5, "close": 1.1, "volume": 1},
+        ]
+        feed = MagicMock()
+        with (
+            patch("app.services.bots.execution_mode.runs_live_feed_bot_ticks", return_value=True),
+            patch("app.services.bots.manager.is_live_massive", return_value=False),
+            patch("app.services.bots.manager.ALLOW_LIVE_BOTS", True),
+            patch("app.services.bots.manager.get_bot_candles", return_value=ht),
+        ):
+            await self.manager.process_massive_ht_bar_close("BTCUSDT", feed, {"5m"})
         self.manager._evaluate_bar_close_bots.assert_awaited_once()
 
 

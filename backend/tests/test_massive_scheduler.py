@@ -1,4 +1,4 @@
-"""LIVE_MASSIVE bot scheduler — TICK price hooks and HT BAR_CLOSE via REST."""
+"""LIVE_MASSIVE / LIVE_ALPACA bot scheduler — TICK price hooks and HT BAR_CLOSE via REST."""
 
 from __future__ import annotations
 
@@ -12,10 +12,13 @@ from app.services.bots.massive_scheduler import (
 
 
 class MassiveSchedulerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_inactive_when_not_live_massive(self) -> None:
+    async def test_inactive_when_live_feed_ticks_disabled(self) -> None:
         bot_manager = MagicMock()
         feed = MagicMock()
-        with patch("app.services.bots.massive_scheduler.is_live_massive", return_value=False):
+        with patch(
+            "app.services.bots.massive_scheduler.runs_live_feed_bot_ticks",
+            return_value=False,
+        ):
             prices = await run_massive_bot_tick(
                 bot_manager, feed, MagicMock(), MagicMock(), last_prices={"BTCUSDT": 100.0},
             )
@@ -23,9 +26,10 @@ class MassiveSchedulerTests(unittest.IsolatedAsyncioTestCase):
         bot_manager.process_price_tick.assert_not_called()
 
     @patch("app.services.bots.massive_scheduler.ALLOW_LIVE_BOTS", True)
-    @patch("app.services.bots.massive_scheduler.is_live_massive", return_value=True)
+    @patch("app.services.bots.massive_scheduler.runs_live_feed_bot_ticks", return_value=True)
+    @patch("app.services.bots.massive_scheduler.uses_paper_oms", return_value=True)
     @patch("app.services.bots.massive_scheduler.run_paper_oms_tick", new_callable=AsyncMock)
-    async def test_tick_bot_fires_on_price_change(self, _oms, _live) -> None:
+    async def test_tick_bot_fires_on_price_change(self, _oms, _paper, _live) -> None:
         bot_manager = MagicMock()
         bot_manager.active_bots = {
             "b1": {
@@ -47,11 +51,25 @@ class MassiveSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prices["BTCUSDT"], 101.0)
         bot_manager.process_price_tick.assert_awaited_once()
         bot_manager.process_massive_ht_bar_close.assert_not_called()
+        _oms.assert_awaited_once()
 
     @patch("app.services.bots.massive_scheduler.ALLOW_LIVE_BOTS", True)
-    @patch("app.services.bots.massive_scheduler.is_live_massive", return_value=True)
+    @patch("app.services.bots.massive_scheduler.runs_live_feed_bot_ticks", return_value=True)
+    @patch("app.services.bots.massive_scheduler.uses_paper_oms", return_value=False)
     @patch("app.services.bots.massive_scheduler.run_paper_oms_tick", new_callable=AsyncMock)
-    async def test_tick_bot_skips_unchanged_price(self, _oms, _live) -> None:
+    async def test_broker_alpaca_skips_paper_oms_tick(self, _oms, _paper, _live) -> None:
+        bot_manager = MagicMock()
+        bot_manager.active_bots = {}
+        feed = MagicMock()
+        feed.symbols = []
+        await run_massive_bot_tick(bot_manager, feed, MagicMock(), MagicMock())
+        _oms.assert_not_awaited()
+
+    @patch("app.services.bots.massive_scheduler.ALLOW_LIVE_BOTS", True)
+    @patch("app.services.bots.massive_scheduler.runs_live_feed_bot_ticks", return_value=True)
+    @patch("app.services.bots.massive_scheduler.uses_paper_oms", return_value=True)
+    @patch("app.services.bots.massive_scheduler.run_paper_oms_tick", new_callable=AsyncMock)
+    async def test_tick_bot_skips_unchanged_price(self, _oms, _paper, _live) -> None:
         bot_manager = MagicMock()
         bot_manager.active_bots = {
             "b1": {
@@ -73,9 +91,10 @@ class MassiveSchedulerTests(unittest.IsolatedAsyncioTestCase):
         bot_manager.process_price_tick.assert_not_called()
 
     @patch("app.services.bots.massive_scheduler.ALLOW_LIVE_BOTS", True)
-    @patch("app.services.bots.massive_scheduler.is_live_massive", return_value=True)
+    @patch("app.services.bots.massive_scheduler.runs_live_feed_bot_ticks", return_value=True)
+    @patch("app.services.bots.massive_scheduler.uses_paper_oms", return_value=True)
     @patch("app.services.bots.massive_scheduler.run_paper_oms_tick", new_callable=AsyncMock)
-    async def test_ht_bar_close_only_for_non_tick_ht_bots(self, _oms, _live) -> None:
+    async def test_ht_bar_close_only_for_non_tick_ht_bots(self, _oms, _paper, _live) -> None:
         bot_manager = MagicMock()
         bot_manager.active_bots = {
             "ht": {
@@ -107,9 +126,10 @@ class MassiveSchedulerTests(unittest.IsolatedAsyncioTestCase):
         bot_manager.process_massive_ht_bar_close.assert_not_called()
 
     @patch("app.services.bots.massive_scheduler.ALLOW_LIVE_BOTS", True)
-    @patch("app.services.bots.massive_scheduler.is_live_massive", return_value=True)
+    @patch("app.services.bots.massive_scheduler.runs_live_feed_bot_ticks", return_value=True)
+    @patch("app.services.bots.massive_scheduler.uses_paper_oms", return_value=True)
     @patch("app.services.bots.massive_scheduler.run_paper_oms_tick", new_callable=AsyncMock)
-    async def test_ht_eval_runs_on_new_1m_bar(self, _oms, _live) -> None:
+    async def test_ht_eval_runs_on_new_1m_bar(self, _oms, _paper, _live) -> None:
         bot_manager = MagicMock()
         bot_manager.active_bots = {
             "ht": {

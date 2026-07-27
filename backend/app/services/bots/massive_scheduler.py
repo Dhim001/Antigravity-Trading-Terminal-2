@@ -11,8 +11,8 @@ from typing import Any
 
 from app.config import ALLOW_LIVE_BOTS
 from app.services.bots.execution_mode import (
-    is_live_massive,
     runs_live_feed_bot_ticks,
+    uses_paper_oms,
 )
 from app.services.bots.paper_oms import run_paper_oms_tick
 from app.services.market.timeframes import normalize_timeframe
@@ -98,12 +98,12 @@ async def run_live_feed_bot_tick(
     """
     TICK bots + HT BAR_CLOSE evaluation on each live-feed broadcast cadence.
 
-    Massive also runs the paper OMS tick. Alpaca uses real OMS (no paper tick).
+    Paper OMS tick (SimulatedOMS SL/TP) runs for Massive and Alpaca-sim.
     """
     if not runs_live_feed_bot_ticks() or not ALLOW_LIVE_BOTS:
         return last_prices or {}
 
-    if is_live_massive():
+    if uses_paper_oms():
         await run_paper_oms_tick(oms, bot_manager, manager)
 
     if not bot_manager.active_bots:

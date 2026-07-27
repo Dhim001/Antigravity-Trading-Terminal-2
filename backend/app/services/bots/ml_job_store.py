@@ -135,11 +135,17 @@ def update_ml_job_progress(job_id: str, progress: dict[str, Any] | None) -> dict
         job = _jobs.get(job_id)
         if not job or job.get("status") in _TERMINAL:
             return None
-        payload = {
-            "pct": int((progress or {}).get("pct") or 0),
-            "phase": str((progress or {}).get("phase") or ""),
-            "detail": str((progress or {}).get("detail") or ""),
+        src = progress if isinstance(progress, dict) else {}
+        payload: dict[str, Any] = {
+            "pct": int(src.get("pct") or 0),
+            "phase": str(src.get("phase") or ""),
+            "detail": str(src.get("detail") or ""),
         }
+        # Preserve Auto-Tune / extended snapshot fields from the progress file.
+        for key, val in src.items():
+            if key in ("pct", "phase", "detail", "updated_at"):
+                continue
+            payload[key] = val
         job["progress"] = payload
         if job.get("status") == "queued":
             job["status"] = "running"

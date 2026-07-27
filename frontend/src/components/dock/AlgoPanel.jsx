@@ -766,15 +766,19 @@ export function AlgoTab({ hideToolbar = false }) {
             <strong>
               {massiveLive
                 ? 'Paper execution on Massive data'
-                : alpacaLive
-                  ? 'Live bots on Alpaca'
-                  : 'Live bots enabled'}
+                : alpacaLive && paperExecution
+                  ? 'Paper execution on Alpaca data'
+                  : alpacaLive
+                    ? 'Live bots on Alpaca'
+                    : 'Live bots enabled'}
             </strong>
             {massiveLive
               ? ' — instant fills at live prices (no broker routing). 1m BAR_CLOSE via feed bar hooks; higher timeframes via native REST; TICK bots on price updates.'
-              : alpacaLive
-                ? ' — real Alpaca OMS (paper/live URL). 1m BAR_CLOSE via feed hooks; higher TFs via Alpaca REST; TICK bots on price updates.'
-                : ` on ${terminalMode}`}
+              : alpacaLive && paperExecution
+                ? ' — app SimulatedOMS fills on live Alpaca quotes (ALPACA_OMS_ENABLED=false). Set true + restart for broker routing.'
+                : alpacaLive
+                  ? ' — real Alpaca OMS (paper/live URL). 1m BAR_CLOSE via feed hooks; higher TFs via Alpaca REST; TICK bots on price updates.'
+                  : ` on ${terminalMode}`}
             {distributed ? ` · role=${terminalRole} (distributed via Redis)` : ''}.
             {!nativeHtLive && (
               <>

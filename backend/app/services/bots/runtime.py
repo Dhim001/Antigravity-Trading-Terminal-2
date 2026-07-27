@@ -17,11 +17,26 @@ logger = logging.getLogger(__name__)
 
 def create_feed_and_oms():
     if TERMINAL_MODE == "LIVE_ALPACA":
+        from app.config import ALPACA_OMS_ENABLED
         from app.services.alpaca_feed import AlpacaFeedService
-        from app.services.alpaca_oms import AlpacaOMSService
 
         feed = AlpacaFeedService()
-        oms = AlpacaOMSService(feed)
+        if ALPACA_OMS_ENABLED:
+            from app.services.alpaca_oms import AlpacaOMSService
+
+            oms = AlpacaOMSService(feed)
+            logger.info(
+                "LIVE_ALPACA: market data from Alpaca; order execution via Alpaca OMS "
+                "(ALPACA_OMS_ENABLED=true)."
+            )
+        else:
+            from app.services.sim_oms import SimulatedOMSService
+
+            oms = SimulatedOMSService(feed)
+            logger.info(
+                "LIVE_ALPACA: market data from Alpaca; order execution uses simulated OMS "
+                "(ALPACA_OMS_ENABLED=false — set true for broker routing)."
+            )
     elif TERMINAL_MODE == "LIVE_BINANCE":
         from app.services.binance_feed import BinanceFeedService
         from app.services.binance_oms import BinanceOMSService

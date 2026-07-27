@@ -8,6 +8,8 @@ import pytest
 
 from app.services.bots.ml_hyperparam_sweep import (
     SWEEPABLE_ML_STRATEGIES,
+    _pick_progress_metrics,
+    _trial_warning,
     default_search_space,
     extract_objective_score,
     merge_search_space,
@@ -24,6 +26,20 @@ def test_default_search_spaces_cover_strategies():
     for strat in SWEEPABLE_ML_STRATEGIES:
         space = default_search_space(strat)
         assert isinstance(space, dict) and space, f"empty space for {strat}"
+
+
+def test_progress_snapshot_metrics_and_warning():
+    snap = _pick_progress_metrics({
+        "ok": True,
+        "metrics": {"accuracy": 0.61234, "f1": 0.55},
+        "aggregate": {"sharpe": 1.25, "noise": "x"},
+    })
+    assert snap["accuracy"] == 0.6123
+    assert snap["f1"] == 0.55
+    assert snap["sharpe"] == 1.25
+    assert _trial_warning({"ok": False, "error": "boom"}) == "boom"
+    assert _trial_warning({"ok": True}, score=-1e9) == "objective unscored (fallback floor)"
+    assert _trial_warning({"ok": True}, score=0.7) is None
 
 
 def test_merge_search_space_overrides():

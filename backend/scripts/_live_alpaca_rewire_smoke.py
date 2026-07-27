@@ -208,7 +208,24 @@ def main() -> int:
     from app.services.bots import execution_mode as em
 
     importlib.reload(em)
-    if em.runs_live_feed_bot_ticks() and not em.uses_paper_oms() and em.execution_mode_label() == "broker":
+    if em.runs_live_feed_bot_ticks() and em.is_live_alpaca():
+        if cfg.ALPACA_OMS_ENABLED:
+            if not em.uses_paper_oms() and em.execution_mode_label() == "broker":
+                ok("execution_mode ticks=True paper=False label=broker")
+            else:
+                fail(
+                    f"execution_mode ticks={em.runs_live_feed_bot_ticks()} "
+                    f"paper={em.uses_paper_oms()} label={em.execution_mode_label()}"
+                )
+        else:
+            if em.uses_paper_oms() and em.execution_mode_label() == "paper":
+                ok("execution_mode ticks=True paper=True label=paper (ALPACA_OMS_ENABLED=false)")
+            else:
+                fail(
+                    f"execution_mode ticks={em.runs_live_feed_bot_ticks()} "
+                    f"paper={em.uses_paper_oms()} label={em.execution_mode_label()}"
+                )
+    elif em.runs_live_feed_bot_ticks() and not em.uses_paper_oms() and em.execution_mode_label() == "broker":
         ok("execution_mode ticks=True paper=False label=broker")
     else:
         fail(

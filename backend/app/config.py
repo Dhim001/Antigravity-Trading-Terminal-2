@@ -493,6 +493,11 @@ DEFAULT_VOLATILITY_MULTIPLIER = 1.0
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+# When false (Alpaca profile default for testing): live Alpaca feed + SimulatedOMS fills.
+# Set true to route orders through Alpaca REST (paper or live URL above).
+ALPACA_OMS_ENABLED = os.environ.get("ALPACA_OMS_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
 # WebSocket equity stream — auto-resolved to sip or iex when ALPACA_DATA_FEED=auto (default).
 ALPACA_DATA_URL = os.environ.get("ALPACA_DATA_URL", "wss://stream.data.alpaca.markets/v2/sip")
 ALPACA_DATA_FEED = os.environ.get("ALPACA_DATA_FEED", "auto").strip().lower()  # auto | sip | iex

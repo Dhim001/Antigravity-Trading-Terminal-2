@@ -24,6 +24,50 @@ SWEEPABLE_ML_STRATEGIES = frozenset({
     "GNN_CROSS_ASSET",
 })
 
+# Keys surfaced on live progress snapshots for the Auto-Tune UI.
+_PROGRESS_METRIC_KEYS = (
+    "accuracy",
+    "f1",
+    "val_accuracy",
+    "oos_accuracy",
+    "oos_f1",
+    "sharpe",
+    "pbo",
+    "mean_return",
+    "profit_factor",
+)
+
+
+def _pick_progress_metrics(result: dict[str, Any] | None) -> dict[str, float]:
+    """Compact metric snapshot from a trial evaluate result."""
+    if not isinstance(result, dict):
+        return {}
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    agg = result.get("aggregate") if isinstance(result.get("aggregate"), dict) else {}
+    out: dict[str, float] = {}
+    for key in _PROGRESS_METRIC_KEYS:
+        raw = metrics.get(key)
+        if raw is None:
+            raw = agg.get(key)
+        if raw is None:
+            continue
+        try:
+            out[key] = round(float(raw), 4)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _trial_warning(result: dict[str, Any] | None, *, score: float | None = None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    if not result.get("ok"):
+        err = str(result.get("error") or "").strip()
+        return err or "trial failed"
+    if score is not None and score <= -1e8:
+        return "objective unscored (fallback floor)"
+    return None
+
 
 def default_search_space(strategy: str) -> dict[str, Any]:
     """Research-backed default search spaces (user overrides merge on top)."""
@@ -454,16 +498,46 @@ def run_ml_hyperparam_sweep(
         else:
             no_improve += 1
 
+        warn = _trial_warning(result, score=score)
+        snap_metrics = _pick_progress_metrics(result)
+        score_s = "—" if score <= -1e8 else str(round(float(score), 4))
+        best_s = "—" if best_score <= -1e8 else str(round(float(best_score), 4))
         _emit({
             "pct": min(85, int(((i + 1) / max(max_trials, 1)) * 80) + 5),
-            "phase": "hyperparam_trial",
-            "detail": f"trial {i + 1}/{max_trials} · best={best_score if best_score > -1e8 else '—'}",
+            "phase": "hyperparam_screen" if multi_fidelity else "hyperparam_trial",
+            "detail": (
+                f"{'screen' if multi_fidelity else 'trial'} {i + 1}/{max_trials}"
+                f" · score={score_s} · best={best_s}"
+            ),
             "trial": i + 1,
             "max_trials": max_trials,
-            "best_score": None if best_score <= -1e8 else best_score,
+            "trials_completed": len(trial_history),
+            "best_score": None if best_score <= -1e8 else round(float(best_score), 6),
+            "last_score": None if score <= -1e8 else round(float(score), 6),
+            "last_ok": bool(result.get("ok")),
+            "fidelity_phase": "screen" if multi_fidelity else "full",
+            "objective_kind": row.get("objective_kind"),
+            "no_improve_streak": no_improve,
+            "elapsed_sec": round(time.monotonic() - t0, 1),
+            "multi_fidelity": bool(multi_fidelity),
+            "metrics": snap_metrics,
+            "warning": warn,
+            "level": "warn" if warn else "info",
         })
 
         if no_improve >= patience and i + 1 >= min(5, max_trials):
+            _emit({
+                "pct": min(85, int(((i + 1) / max(max_trials, 1)) * 80) + 5),
+                "phase": "hyperparam_early_stop",
+                "detail": f"early stop — no improve for {no_improve} trials",
+                "trial": i + 1,
+                "max_trials": max_trials,
+                "trials_completed": len(trial_history),
+                "best_score": None if best_score <= -1e8 else round(float(best_score), 6),
+                "warning": f"early stop after {no_improve} non-improving trials",
+                "level": "warn",
+                "elapsed_sec": round(time.monotonic() - t0, 1),
+            })
             break
 
     # ── Phase B: promote top-k to full training ────────────────────────────
@@ -513,11 +587,32 @@ def run_ml_hyperparam_sweep(
             trial_history.append(full_row)
             if score > best_score + 1e-9:
                 best_score = score
+            warn = _trial_warning(result, score=score)
+            score_s = "—" if score <= -1e8 else str(round(float(score), 4))
+            best_s = "—" if best_score <= -1e8 else str(round(float(best_score), 4))
             _emit({
                 "pct": min(95, 85 + int(((j + 1) / max(len(ranked), 1)) * 10)),
                 "phase": "hyperparam_promote",
-                "detail": f"full train {j + 1}/{len(ranked)} · best={best_score if best_score > -1e8 else '—'}",
-                "best_score": None if best_score <= -1e8 else best_score,
+                "detail": (
+                    f"full train {j + 1}/{len(ranked)}"
+                    f" · score={score_s} · best={best_s}"
+                ),
+                "trial": full_row["trial"],
+                "max_trials": max_trials,
+                "trials_completed": len(trial_history),
+                "promote_index": j + 1,
+                "promote_total": len(ranked),
+                "promoted_from": row.get("trial"),
+                "best_score": None if best_score <= -1e8 else round(float(best_score), 6),
+                "last_score": None if score <= -1e8 else round(float(score), 6),
+                "last_ok": bool(result.get("ok")),
+                "fidelity_phase": "full",
+                "objective_kind": full_row.get("objective_kind"),
+                "elapsed_sec": round(time.monotonic() - t0, 1),
+                "multi_fidelity": True,
+                "metrics": _pick_progress_metrics(result),
+                "warning": warn,
+                "level": "warn" if warn else "info",
             })
 
     # Prefer best full-phase row; else best screen row
