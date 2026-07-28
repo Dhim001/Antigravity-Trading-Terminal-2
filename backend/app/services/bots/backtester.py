@@ -26,8 +26,11 @@ from app.services.bots.strategy_filter import build_filter_from_config
 from app.services.bots.strategy_runtime import (
     ExecutionChain,
     apply_indicator_parity_gates,
+    apply_shared_signal_gates,
     apply_vae_regime_meta_gate,
     chart_filter_reject_block,
+    evaluate_parity_pretrade,
+    scale_entry_quantity,
 )
 from app.services.bots.take_profit import merge_tp_config, resolve_take_profit
 from app.services.bots.backtest_category_metrics import (
@@ -788,9 +791,7 @@ class BacktesterService:
                 price=current_price,
                 stop_loss=stop_loss,
                 size_factor=size_factor,
-                apply_vol_sizing=(
-                    strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True)
-                ),
+                apply_vol_sizing=bool(cfg.get("use_vol_sizing", True)),
             )
             if research:
                 qty = min(qty, allocation / max(current_price, 1e-9))
@@ -820,12 +821,62 @@ class BacktesterService:
                 qty = decision.quantity if decision.quantity is not None else qty
                 chain.record("risk_gate", ok=True, quantity=round(qty, 6))
 
-            # 3.3-A: Confidence-scaled sizing — mirrors live manager behaviour.
-            if chart_cfg.get("use_confidence_sizing", True) and strat_key == "CHART_AGENT":
-                conf = float((signal_data or {}).get("confidence") or 0.55)
-                conf_scale = 0.7 + (conf * 0.6)
-                conf_scale = max(0.5, min(1.5, conf_scale))
-                qty *= conf_scale
+            # Shared live/backtest sizing overlays (confidence/temp/Kelly/meta/regime).
+            if live_parity:
+                exit_pnls = [
+                    float(t["pnl"])
+                    for t in trade_log
+                    if t.get("is_exit") and t.get("pnl") is not None
+                ]
+                bt_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
+                size_cfg = dict(cfg)
+                size_cfg.setdefault("symbol", symbol)
+                qty = scale_entry_quantity(
+                    qty,
+                    signal_data=signal_data,
+                    bot_config=size_cfg,
+                    bot_id=bt_bot_id,
+                    recent_closed_pnls=exit_pnls[-3:],
+                )
+
+                # Deterministic PreTradeIntel subset (streak / anomaly).
+                # Skip live get_aggregate_sentiment here — it is wall-clock
+                # based and would look ahead in historical sims.
+                anomaly = None
+                try:
+                    from app.services.agent.anomaly_detector import detect_bar_anomaly
+
+                    anomaly = detect_bar_anomaly(df, i)
+                except Exception:
+                    anomaly = None
+                pt = evaluate_parity_pretrade(
+                    side="BUY",
+                    symbol=symbol,
+                    bar_time=bar_time,
+                    bot_config=cfg,
+                    recent_exit_pnls=exit_pnls,
+                    anomaly=anomaly,
+                    sentiment=None,
+                )
+                if pt.get("verdict") == "VETO":
+                    blocked_entries += 1
+                    chain.record("pretrade", ok=False, reason=pt.get("reasoning"))
+                    _record_blocked(
+                        "pretrade",
+                        pt.get("reasoning") or "PreTrade parity veto",
+                        bar_time,
+                        side="BUY",
+                        signal="BUY",
+                    )
+                    return
+                if pt.get("verdict") == "REDUCE_SIZE":
+                    qty *= float(pt.get("size_multiplier") or 0.5)
+                    chain.record(
+                        "pretrade",
+                        ok=True,
+                        reason=pt.get("reasoning"),
+                        size_multiplier=pt.get("size_multiplier"),
+                    )
 
             if qty < _MIN_QTY:
                 blocked_entries += 1
@@ -968,9 +1019,7 @@ class BacktesterService:
                 price=current_price,
                 stop_loss=stop_loss,
                 size_factor=size_factor,
-                apply_vol_sizing=(
-                    strat_key == "CHART_AGENT" and chart_cfg.get("use_vol_sizing", True)
-                ),
+                apply_vol_sizing=bool(cfg.get("use_vol_sizing", True)),
             )
             if research:
                 qty = min(qty, allocation / max(current_price, 1e-9))
@@ -999,6 +1048,59 @@ class BacktesterService:
                     return
                 qty = decision.quantity if decision.quantity is not None else qty
                 chain.record("risk_gate", ok=True, quantity=round(qty, 6))
+
+            if live_parity:
+                exit_pnls = [
+                    float(t["pnl"])
+                    for t in trade_log
+                    if t.get("is_exit") and t.get("pnl") is not None
+                ]
+                bt_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
+                size_cfg = dict(cfg)
+                size_cfg.setdefault("symbol", symbol)
+                qty = scale_entry_quantity(
+                    qty,
+                    signal_data=signal_data,
+                    bot_config=size_cfg,
+                    bot_id=bt_bot_id,
+                    recent_closed_pnls=exit_pnls[-3:],
+                )
+                anomaly = None
+                try:
+                    from app.services.agent.anomaly_detector import detect_bar_anomaly
+
+                    anomaly = detect_bar_anomaly(df, i)
+                except Exception:
+                    anomaly = None
+                pt = evaluate_parity_pretrade(
+                    side="SELL",
+                    symbol=symbol,
+                    bar_time=bar_time,
+                    bot_config=cfg,
+                    recent_exit_pnls=exit_pnls,
+                    anomaly=anomaly,
+                    sentiment=None,
+                )
+                if pt.get("verdict") == "VETO":
+                    blocked_entries += 1
+                    chain.record("pretrade", ok=False, reason=pt.get("reasoning"))
+                    _record_blocked(
+                        "pretrade",
+                        pt.get("reasoning") or "PreTrade parity veto",
+                        bar_time,
+                        side="SELL",
+                        signal="SELL",
+                    )
+                    return
+                if pt.get("verdict") == "REDUCE_SIZE":
+                    qty *= float(pt.get("size_multiplier") or 0.5)
+                    chain.record(
+                        "pretrade",
+                        ok=True,
+                        reason=pt.get("reasoning"),
+                        size_multiplier=pt.get("size_multiplier"),
+                    )
+
             if qty < _MIN_QTY:
                 blocked_entries += 1
                 chain.record("size", ok=False, reason=f"below {_MIN_QTY}")
@@ -1115,6 +1217,23 @@ class BacktesterService:
                 if trigger:
                     _close_position(bar_time, exit_px, trigger)
 
+            # Time stop (bars) — parity with live BotManager.
+            if position and live_parity:
+                time_stop_bars = int(cfg.get("time_stop_bars") or 0)
+                if time_stop_bars > 0:
+                    try:
+                        from app.services.bots.position_duration import bars_held_since_open
+
+                        held = bars_held_since_open(
+                            position.get("entry_time"),
+                            bar_time,
+                            bt_timeframe,
+                        )
+                        if held is not None and held >= time_stop_bars:
+                            _close_position(bar_time, bar_close, "TIME_STOP")
+                    except Exception:
+                        pass
+
             signal_data = None
             if _chart_agent_signal is not None:
                 signal_data = _chart_agent_signal(i)
@@ -1158,8 +1277,8 @@ class BacktesterService:
                 )
             signal = parity_out.signal
 
-            # VAE meta-layer gate (opt-in; works without live_parity)
-            if signal in ("BUY", "SELL"):
+            # VAE meta-layer gate — new entries only (never block exits/reversals).
+            if signal in ("BUY", "SELL") and not position:
                 lookback = []
                 try:
                     # Recent prepared rows for feature context (best-effort).
@@ -1186,6 +1305,59 @@ class BacktesterService:
                     signal = None
                 else:
                     signal = vae_out.signal
+
+            # Shared conformal + HMM gates — new entries only (parity with live).
+            if signal in ("BUY", "SELL") and not position:
+                hmm_feats = None
+                try:
+                    from app.services.bots.hmm_regime import recent_regime_features
+
+                    lookback_n = int(cfg.get("hmm_regime_vol_lookback") or 20)
+                    # Prefer raw candle closes when available; fall back to df slice.
+                    start = max(0, i - lookback_n - 5)
+                    candle_slice = [
+                        {
+                            "close": float(df.iloc[j].get("close") or 0),
+                        }
+                        for j in range(start, i + 1)
+                    ]
+                    hmm_feats = recent_regime_features(
+                        candle_slice, vol_lookback=lookback_n,
+                    )
+                except Exception:
+                    hmm_feats = None
+                gate_cfg = dict(cfg)
+                gate_cfg.setdefault(
+                    "_bot_id",
+                    cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest",
+                )
+                shared_out = apply_shared_signal_gates(
+                    signal,
+                    signal_data,
+                    bot_config=gate_cfg,
+                    recent_features=hmm_feats,
+                )
+                if shared_out.block:
+                    blocked_entries += 1
+                    _record_blocked(
+                        shared_out.block.kind,
+                        shared_out.block.reason,
+                        bar_time,
+                        signal=shared_out.block.signal,
+                    )
+                    signal = None
+                    if shared_out.signal_data is not None:
+                        signal_data = shared_out.signal_data
+                else:
+                    signal = shared_out.signal
+                    if shared_out.signal_data is not None:
+                        signal_data = shared_out.signal_data
+                # LLM debate is live-only (async LLM). When enabled, record skip
+                # so operators know backtest did not apply advisory vetoes.
+                if signal in ("BUY", "SELL") and cfg.get("llm_debate_enabled"):
+                    if isinstance(signal_data, dict):
+                        signal_data = dict(signal_data)
+                        signal_data["llm_debate_skipped"] = "backtest_no_llm"
 
             if strat_key == "CHART_AGENT" and signal not in ("BUY", "SELL", "CLOSE"):
                 _record_filter_reject(signal_data, bar_time)

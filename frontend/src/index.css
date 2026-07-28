@@ -15,8 +15,9 @@
   --bg-tertiary:  #f8fafc;
   --bg-card:      #ffffff;
   --bg-elevated:  #f8fafc;
-  --bg-hover:     rgba(15,23,42,0.04);
-  --bg-active:    rgba(37,99,235,0.08);
+  /* Hover / press — must read clearly on card & list surfaces */
+  --bg-hover:     rgba(15, 23, 42, 0.08);
+  --bg-active:    rgba(37, 99, 235, 0.14);
 
   /* Borders */
   --border-subtle: rgba(15,23,42,0.04);
@@ -41,7 +42,7 @@
   /* Accent */
   --color-accent:       #2563eb;
   --color-accent-light: #3b82f6;
-  --color-accent-bg:    rgba(37,99,235,0.12);
+  --color-accent-bg:    rgba(37,99,235,0.14);
 
   /* Asset category colors */
   --color-crypto: #f59e0b;
@@ -154,9 +155,10 @@
   --primary-foreground: #ffffff;
   --secondary: var(--bg-elevated);
   --secondary-foreground: var(--text-primary);
-  --muted: var(--bg-tertiary);
+  --muted: var(--bg-secondary);
   --muted-foreground: var(--text-secondary);
-  --accent: var(--bg-elevated);
+  /* Menu / select / command highlight — primary tint, not elevated (was invisible on cards) */
+  --accent: var(--color-accent-bg);
   --accent-foreground: var(--text-primary);
   --destructive: var(--color-down);
   --border: var(--border-color);
@@ -164,8 +166,12 @@
   --ring: var(--color-accent-light);
   --radius: var(--r-md);
   /* Token bridge — prefer shadcn semantic tokens in new table/UI code */
-  --surface-hover: color-mix(in oklab, var(--muted) 45%, transparent);
+  --surface-hover: color-mix(in oklab, var(--color-accent) 12%, transparent);
   --watchlist-sticky-header-h: 1.875rem;
+
+  /* Text selection + native control accents */
+  --selection-bg: color-mix(in oklab, var(--color-accent) 32%, transparent);
+  --selection-fg: var(--text-primary);
 
   /* ─── Audit fixes: missing / unified tokens ────────────────────── */
   /* --color-primary was undefined → every active-tab glow & badge was transparent */
@@ -193,6 +199,19 @@ html, body, #root {
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  accent-color: var(--color-accent);
+  caret-color: var(--color-accent);
+}
+
+/* Text caret selection — must contrast with light and dark surfaces */
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
+
+::-moz-selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -11427,11 +11446,11 @@ body {
 }
 
 .data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"] td {
-  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  background: color-mix(in oklab, var(--primary) 16%, transparent);
 }
 
 .data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"]:hover td {
-  background: color-mix(in oklab, var(--primary) 12%, var(--muted) 38%);
+  background: color-mix(in oklab, var(--primary) 22%, transparent);
 }
 
 .data-table-row-deferred {
@@ -11956,9 +11975,10 @@ body {
   --bg-secondary: #0a0f1e;
   --bg-tertiary:  #0f1629;
   --bg-card:      #111827;
-  --bg-elevated:  #162038;
-  --bg-hover:     rgba(255,255,255,0.05);
-  --bg-active:    rgba(37,99,235,0.14);
+  --bg-elevated:  #1a2744;
+  --bg-hover:     rgba(255, 255, 255, 0.10);
+  --bg-active:    rgba(59, 130, 246, 0.22);
+  --color-accent-bg: rgba(59, 130, 246, 0.22);
 
   --border-subtle: rgba(255,255,255,0.06);
   --border-color:  rgba(255,255,255,0.10);
@@ -11994,15 +12014,19 @@ body {
   --primary-foreground: #ffffff;
   --secondary: var(--bg-elevated);
   --secondary-foreground: var(--text-primary);
-  --muted: var(--bg-tertiary);
+  /* Distinct from card/background so hover:bg-muted/* is visible */
+  --muted: #1a2338;
   --muted-foreground: var(--text-secondary);
-  --accent: var(--bg-elevated);
+  --accent: var(--color-accent-bg);
   --accent-foreground: var(--text-primary);
   --destructive: var(--color-down);
   --border: var(--border-color);
   --input: var(--border-color);
   --ring: var(--color-accent-light);
   --radius: var(--r-md);
+  --surface-hover: color-mix(in oklab, var(--color-accent) 18%, transparent);
+  --selection-bg: color-mix(in oklab, var(--color-accent) 42%, transparent);
+  --selection-fg: #f8fafc;
   --chart-1: var(--color-up);
   --chart-2: var(--color-accent-light);
   --chart-3: var(--color-crypto);
@@ -12012,7 +12036,7 @@ body {
   --sidebar-foreground: var(--text-primary);
   --sidebar-primary: var(--color-accent);
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: var(--bg-elevated);
+  --sidebar-accent: var(--color-accent-bg);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-color);
   --sidebar-ring: var(--color-accent-light);

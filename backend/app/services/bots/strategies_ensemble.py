@@ -204,6 +204,57 @@ class HybridEnsembleStrategy(BaseStrategy):
             except (TypeError, ValueError):
                 atr = 0.0
 
+        # Phase 2.6: optional stacking meta-learner combination. When
+        # ``ensemble_combination == "stacking"`` and a fitted model is
+        # available, override the weighted-vote decision with the stacked
+        # prediction. Falls back to weighted vote when no model is fitted.
+        combination = str(self._cfg.get("ensemble_combination") or "vote").lower()
+        if combination == "stacking":
+            try:
+                from app.services.bots.stacking_meta_learner import (
+                    load_stacking_model,
+                    stacked_signal,
+                )
+                bot_id = self._cfg.get("_bot_id") or self._cfg.get("bot_id")
+                if bot_id:
+                    sm = load_stacking_model(str(bot_id))
+                    if sm is not None:
+                        # Build base-prob vector in (ta, ml, rl) order; use
+                        # the per-component confidence as P(up) proxy.
+                        base_probs = []
+                        for name in ("ta", "ml", "rl"):
+                            d = detail.get(name) or {}
+                            conf = float(d.get("confidence") or 0.5)
+                            sig = str(d.get("signal") or "NONE")
+                            # Map signal → P(up): BUY=conf, SELL=1-conf, NONE=0.5
+                            if sig == "BUY":
+                                base_probs.append(conf)
+                            elif sig == "SELL":
+                                base_probs.append(1.0 - conf)
+                            else:
+                                base_probs.append(0.5)
+                        sig, conf = stacked_signal(
+                            base_probs, sm,
+                            threshold=float(self._cfg.get("stacking_threshold", 0.55)),
+                            min_margin=float(self._cfg.get("stacking_min_margin", 0.0)),
+                        )
+                        if sig in ("BUY", "SELL"):
+                            out = {
+                                "signal": sig,
+                                "confidence": round(min(conf, 1.0), 4),
+                                "stop_loss_distance": atr * 1.5 if atr > 0 else None,
+                                "ensemble": detail,
+                                "votes": {k: round(v, 4) for k, v in votes.items()},
+                                "model_type": "hybrid_ensemble_stacked",
+                                "stacking_mode": sm.mode,
+                                "ta_strategy": self._ta_id,
+                                "ml_strategy": self._ml_id,
+                                "rl_strategy": self._rl_id,
+                            }
+                            return apply_ml_meta_label_gate(out, df_row, self._cfg)
+            except Exception:
+                logger.debug("Stacking combination failed; falling back to vote", exc_info=True)
+
         if best in ("BUY", "SELL") and best_score > threshold:
             out = {
                 "signal": best,

@@ -7,6 +7,8 @@ import math
 import pytest
 import numpy as np
 
+from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
+
 
 # ── Scaler tests ─────────────────────────────────────────────────────────
 
@@ -88,7 +90,7 @@ class TestBuildSequences:
 
         assert X.ndim == 3
         assert X.shape[1] == 60  # lookback
-        assert X.shape[2] == 34  # N_FEATURES
+        assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)  # N_FEATURES (dynamic)
         assert len(y) == len(X)
         assert set(np.unique(y)).issubset({0, 1, 2})
 

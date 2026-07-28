@@ -93,6 +93,19 @@ class PreTradeIntelTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("sentiment_divergence" in v for v in verdict["vetoes"]))
         self.assertEqual(verdict["size_multiplier"], 0.5)
 
+    @patch("app.services.bots.pretrade_intel.get_aggregate_sentiment")
+    @patch("app.services.bots.pretrade_intel.check_entry_gates")
+    async def test_sentiment_divergence_store_keys(self, mock_gates, mock_sentiment):
+        """Real store shape uses aggregate_score/mention_count."""
+        mock_gates.return_value = (True, None, None)
+        mock_sentiment.return_value = {"aggregate_score": -0.6, "mention_count": 5}
+
+        verdict = await self.intel.evaluate(self.bot, "BUY", 100.0, {}, 1783836763)
+
+        self.assertEqual(verdict["verdict"], "REDUCE_SIZE")
+        self.assertTrue(any("sentiment_divergence" in v for v in verdict["vetoes"]))
+        self.assertEqual(verdict["size_multiplier"], 0.5)
+
     @patch("app.services.bots.pretrade_intel.get_bot_candles")
     @patch("app.services.bots.pretrade_intel.detect_bar_anomaly")
     @patch("app.services.bots.pretrade_intel.check_entry_gates")

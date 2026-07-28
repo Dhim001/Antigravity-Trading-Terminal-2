@@ -263,6 +263,33 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_bot_signal_ledger_status ON bot_signal_ledger (status)"
     )
 
+    # Phase 4.11: Reject telemetry for silent NONEs — durable record of every
+    # signal that was evaluated but never submitted, with the reason bucket.
+    _reject_serial = _serial_type()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS bot_signal_reject_log (
+            id {_reject_serial},
+            bot_id TEXT NOT NULL,
+            symbol TEXT,
+            strategy TEXT,
+            signal_kind TEXT,
+            reason_bucket TEXT NOT NULL,
+            reason_detail TEXT,
+            confidence REAL,
+            bar_time INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_signal_reject_bot ON bot_signal_reject_log (bot_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_signal_reject_bucket ON bot_signal_reject_log (reason_bucket)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bot_signal_reject_created ON bot_signal_reject_log (created_at)"
+    )
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_runtime (
             key TEXT PRIMARY KEY,
@@ -609,6 +636,7 @@ def reset_db():
     cursor.execute("DELETE FROM bot_snapshots;")
     cursor.execute("DELETE FROM bot_logs;")
     cursor.execute("DELETE FROM bot_signal_ledger;")
+    cursor.execute("DELETE FROM bot_signal_reject_log;")
     cursor.execute("UPDATE bots SET status = 'STOPPED'")
     
     # Collect all unique base assets dynamically from config

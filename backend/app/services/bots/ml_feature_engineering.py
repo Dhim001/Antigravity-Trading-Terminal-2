@@ -16,7 +16,7 @@ import numpy as np
 
 # ── Feature schema ────────────────────────────────────────────────────────
 
-SIGNAL_FEATURE_VERSION = 2
+SIGNAL_FEATURE_VERSION = 3
 
 SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     # Price action (4)
@@ -63,6 +63,10 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     # Pattern (2)
     "consecutive_up",
     "consecutive_down",
+    # Phase 3.7: Microstructure (3)
+    "cvd_z",
+    "cvd_slope",
+    "vpin",
 )
 
 
@@ -270,6 +274,41 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         consecutive_up = max(0.0, float(count)) / 10.0   # normalize
         consecutive_down = max(0.0, float(-count)) / 10.0
 
+    # ── Phase 3.7: Microstructure (CVD + VPIN) ───────────────────────
+    # Replay the lookback bars through the trackers, then update with the
+    # current bar. Falls back to 0 when no lookback is provided (cold start).
+    cvd_z = 0.0
+    cvd_slope = 0.0
+    vpin = 0.0
+    if lb:
+        try:
+            from app.services.bots.microstructure_features import CVDTracker, VPINTracker
+
+            cvd_t = CVDTracker(lookback=max(20, len(lb)))
+            vpin_t = VPINTracker(n_buckets=50)
+            for r in lb:
+                cvd_t.update_bar(
+                    open_=_safe_float(r.get("open")),
+                    close=_safe_float(r.get("close")),
+                    high=_safe_float(r.get("high")),
+                    low=_safe_float(r.get("low")),
+                    volume=_safe_float(r.get("volume")),
+                )
+                vpin_t.update_bar(
+                    open_=_safe_float(r.get("open")),
+                    close=_safe_float(r.get("close")),
+                    high=_safe_float(r.get("high")),
+                    low=_safe_float(r.get("low")),
+                    volume=_safe_float(r.get("volume")),
+                )
+            cvd_t.update_bar(open_=open_, close=close, high=high, low=low, volume=volume)
+            vpin_t.update_bar(open_=open_, close=close, high=high, low=low, volume=volume)
+            cvd_z = cvd_t.cvd_z
+            cvd_slope = cvd_t.cvd_slope
+            vpin = vpin_t.vpin
+        except Exception:
+            pass
+
     return {
         "returns_1": returns_1,
         "returns_5": returns_5,
@@ -305,6 +344,9 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         "volume_z_20": volume_z_20,
         "consecutive_up": consecutive_up,
         "consecutive_down": consecutive_down,
+        "cvd_z": cvd_z,
+        "cvd_slope": cvd_slope,
+        "vpin": vpin,
     }
 
 

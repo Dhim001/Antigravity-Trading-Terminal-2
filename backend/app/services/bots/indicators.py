@@ -68,6 +68,14 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "adx_length": 14,
         "min_confidence": 0.55,
         "use_llm": False,
+        # Phase 3.9: LLM Bull/Bear/Judge debate + deterministic firewall.
+        "llm_debate_enabled": False,
+        "llm_debate_min_confidence": 0.50,
+        # Phase 4.10: VWAP/POV execution slicing. 'single' (legacy) | 'vwap' | 'pov'.
+        "execution_algo": "single",
+        "vwap_slices": 5,
+        "pov_rate": 0.10,
+        "slice_interval_sec": 60,
         "use_vol_sizing": True,
         "require_trend_alignment": False,
         "block_elevated_vol": False,
@@ -80,7 +88,23 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "meta_label_min_train_samples": 30,
         "meta_label_shadow_mode": False,
         "use_meta_label_sizing": False,
+        # Phase 2.4: triple-barrier label source for meta-label GBM.
+        "meta_label_label_source": "realized",  # "realized" | "triple_barrier"
+        "triple_barrier_atr_mult_upper": 2.0,   # asymmetric barrier support
+        "triple_barrier_atr_mult_lower": 2.0,
+        # Phase 2.5: HMM regime gate (soft posterior-weighted, off by default).
+        "hmm_regime_gate_enabled": False,
+        "hmm_regime_n_states": 4,
+        "hmm_regime_vol_lookback": 20,
         "use_confidence_sizing": True,
+        # Phase 1.1: temperature scaling + fractional-Kelly sizing (off by default).
+        "use_kelly_sizing": False,
+        "kelly_fraction": 0.25,  # quarter-Kelly
+        "kelly_min_p": 0.50,     # below this calibrated p, no Kelly edge → use risk-based size
+        # Phase 1.2: conformal prediction-set gate (off by default).
+        "conformal_gate_enabled": False,
+        "conformal_alpha": 0.10,  # 90% coverage
+        "conformal_min_samples": 30,
         "regime_routing_enabled": False,
         "elevated_min_confidence": 0.65,
         "elevated_min_score": 3,
@@ -144,6 +168,12 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "min_train_samples": 200,
         "val_fraction": 0.2,
         "direction_mode": "BOTH",
+        # Phase 3.8: champion-challenger promotion gate (off by default).
+        "champion_challenger_enabled": False,
+        "cc_min_oos_improvement_pct": 5.0,
+        "cc_min_sample_size": 200,
+        "cc_require_champion_validation": False,
+        "cc_primary_metric": "oos_sharpe",
         # GBM architecture — GPU hosts still train HistGBM on CPU; larger trees help capacity.
         "gbm_max_depth": 6,
         "gbm_learning_rate": 0.05,
@@ -306,6 +336,10 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "ensemble_threshold": 0.5,
         "ensemble_require_agreement": False,
         "ensemble_adaptive_weights": None,
+        # Phase 2.6: stacking meta-learner combination (off by default).
+        "ensemble_combination": "vote",  # "vote" | "stacking"
+        "stacking_threshold": 0.55,
+        "stacking_min_margin": 0.0,
         "model_symbol": "",
         "direction_mode": "BOTH",
         "calibration_gate_enabled": False,

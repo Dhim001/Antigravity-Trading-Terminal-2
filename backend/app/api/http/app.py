@@ -430,7 +430,9 @@ async def ml_model_status(request: Request) -> JSONResponse:
 
     result = loader(symbol, timeframe)
     result["timeframe"] = timeframe
-    return JSONResponse({"ok": True, **result})
+    # Scrub ±inf/NaN (e.g. PPO best_mean_return=-inf when ep=0) so Starlette
+    # never 500s — frontend shows "Invalid JSON from /ml/model-status".
+    return JSONResponse({"ok": True, **_json_safe(result)})
 
 
 def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:

@@ -3,6 +3,8 @@
 import pytest
 import numpy as np
 
+from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
+
 
 def _make_candles(n=200, trend=0.1):
     candles = []
@@ -30,7 +32,7 @@ class TestTransformerSequences:
         X, y = build_transformer_sequences(candles, labels, lookback=60, max_holding_bars=30)
         assert X.ndim == 3
         assert X.shape[1] == 60
-        assert X.shape[2] == 34
+        assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)
         assert set(np.unique(y)).issubset({0, 1, 2})
 
     def test_insufficient_candles(self):

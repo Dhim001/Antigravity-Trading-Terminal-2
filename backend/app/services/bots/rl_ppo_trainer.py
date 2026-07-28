@@ -424,11 +424,19 @@ def train_ppo_agent(
                 best_mean_return = mean_ret
 
     train_device_meta = device_info(device)
+    # Never emit ±inf/NaN — Starlette JSONResponse raises ValueError and the
+    # Lab UI gets HTTP 500 on GET /ml/jobs/{id}, which looks like a hung train
+    # (poll_err / "server busy") even though the job already finished.
+    safe_best = (
+        round(best_mean_return, 4)
+        if episode_returns and math.isfinite(best_mean_return)
+        else None
+    )
     metrics = {
         "total_timesteps": total_steps,
         "episodes": episode_count,
         "mean_return_pct": round(sum(episode_returns) / max(1, len(episode_returns)), 4) if episode_returns else 0.0,
-        "best_mean_return": round(best_mean_return, 4),
+        "best_mean_return": safe_best,
         "mean_trades_per_episode": round(sum(episode_trades) / max(1, len(episode_trades)), 1) if episode_trades else 0,
         "last_10_returns": [round(r, 4) for r in episode_returns[-10:]],
         "hidden_dim": hidden_dim,

@@ -29,6 +29,7 @@ from app.services.bots.risk_sizing import RISK_PCT
 from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
+from app.services.bots import reject_telemetry
 from app.services.bots.config_validation import normalize_bot_config, sanitize_bot_config
 from app.services.runtime import system_state
 
@@ -814,6 +815,23 @@ class BotManagerService:
             pass
 
     async def _evaluate_bar_close_bots(self, symbol: str, timeframe: str, ohlcv_data: list):
+        # Phase 4.10: cache recent bar volumes for POV execution slicing.
+        # POV sizes each child order as a % of recent bar volume, so it needs
+        # a volume series to schedule against.
+        try:
+            vols = [
+                float(b.get("volume") or 0)
+                for b in (ohlcv_data or [])
+                if isinstance(b, dict)
+            ]
+            if vols:
+                if not hasattr(self, "_recent_bar_volumes"):
+                    self._recent_bar_volumes = {}
+                # Keep last 50 bars — enough for POV to fill a typical parent order.
+                self._recent_bar_volumes[symbol] = vols[-50:]
+        except Exception:
+            pass
+
         running = [
             (bot_id, bot)
             for bot_id, bot in list(self.active_bots.items())
@@ -931,9 +949,29 @@ class BotManagerService:
                             },
                         )
                 if signal not in ("BUY", "SELL", "CLOSE"):
+                    # Phase 4.11: record silent NONE so we can answer "why aren't we trading?"
+                    reject_telemetry.record_reject(
+                        bot_id=bot_id,
+                        reason_bucket=reject_telemetry.classify_reject(signal_data),
+                        symbol=symbol,
+                        strategy=strat_key,
+                        signal_kind=getattr(strat, "signal_kind", None),
+                        reason_detail=signal_data.get("reject_reason") if signal_data else None,
+                        confidence=signal_data.get("confidence") if signal_data else None,
+                        bar_time=bar_time,
+                    )
                     continue
 
                 if bar_time is not None and bot.get("last_signal_bar_time") == bar_time:
+                    reject_telemetry.record_reject(
+                        bot_id=bot_id,
+                        reason_bucket="duplicate",
+                        symbol=symbol,
+                        strategy=strat_key,
+                        signal_kind=getattr(strat, "signal_kind", None),
+                        reason_detail="same bar already signaled",
+                        bar_time=bar_time,
+                    )
                     continue
 
                 # ── Multi-timeframe confirmation gate ──
@@ -943,6 +981,11 @@ class BotManagerService:
                     if signal == "BUY" and htf_bias == "BEAR":
                         bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id, reason_bucket="htf_gate", symbol=symbol,
+                            strategy=strat_key, signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=f"BUY blocked — {confirm_tf} bias BEAR", bar_time=bar_time,
+                        )
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"HTF gate blocked BUY — {confirm_tf} bias is BEAR",
@@ -951,6 +994,11 @@ class BotManagerService:
                     if signal == "SELL" and htf_bias == "BULL":
                         bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "htf_gate"})
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id, reason_bucket="htf_gate", symbol=symbol,
+                            strategy=strat_key, signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=f"SELL blocked — {confirm_tf} bias BULL", bar_time=bar_time,
+                        )
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"HTF gate blocked SELL — {confirm_tf} bias is BULL",
@@ -964,14 +1012,19 @@ class BotManagerService:
                     if not allowed:
                         bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                         inc("bot_orders_blocked_total", labels={"strategy": strat_key, "reason": "filter_gate"})
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id, reason_bucket="filter", symbol=symbol,
+                            strategy=strat_key, signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=reason, bar_time=bar_time,
+                        )
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"Filter gate blocked {signal}: {reason}",
                         )
                         continue
 
-                # ── VAE regime meta-layer (proposal §2.6) ──
-                if signal in ("BUY", "SELL"):
+                # ── VAE regime meta-layer (proposal §2.6) — new entries only ──
+                if signal in ("BUY", "SELL") and pos_size == 0:
                     from app.services.bots.strategy_runtime import apply_vae_regime_meta_gate
 
                     vae_out = apply_vae_regime_meta_gate(
@@ -985,6 +1038,11 @@ class BotManagerService:
                         inc(
                             "bot_orders_blocked_total",
                             labels={"strategy": strat_key, "reason": "vae_regime_gate"},
+                        )
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id, reason_bucket="regime_gate", symbol=symbol,
+                            strategy=strat_key, signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=vae_out.block.reason, bar_time=bar_time,
                         )
                         await self.log_bot_event(
                             bot_id, "WARN",
@@ -1005,12 +1063,100 @@ class BotManagerService:
                             "bot_orders_blocked_total",
                             labels={"strategy": strat_key, "reason": gate_kind or "event"},
                         )
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id, reason_bucket="other", symbol=symbol,
+                            strategy=strat_key, signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=f"event_gate:{gate_kind}:{gate_reason}", bar_time=bar_time,
+                        )
                         await self.log_bot_event(
                             bot_id, "WARN",
                             f"Event gate blocked {signal}: {gate_reason}",
                             meta={"event_type": "event_gate", "gate": gate_kind},
                         )
                         continue
+
+                # ── Shared post-signal gates (conformal + HMM) — new entries only ──
+                # Must not run while flat≠0: a SELL/BUY used to exit/reverse must
+                # not be vetoed by entry-quality gates (same rule as event gates).
+                if signal in ("BUY", "SELL") and pos_size == 0:
+                    from app.services.bots.strategy_runtime import (
+                        apply_shared_signal_gates,
+                        maybe_apply_llm_debate,
+                    )
+
+                    hmm_feats = None
+                    try:
+                        from app.services.bots.hmm_regime import recent_regime_features
+
+                        lookback = int((bot_config or {}).get("hmm_regime_vol_lookback") or 20)
+                        if ohlcv_data and len(ohlcv_data) >= 2:
+                            hmm_feats = recent_regime_features(
+                                ohlcv_data[-(lookback + 5):],
+                                vol_lookback=lookback,
+                            )
+                    except Exception:
+                        hmm_feats = None
+
+                    gate_cfg = dict(bot_config or {})
+                    gate_cfg.setdefault("_bot_id", bot_id)
+                    gate_cfg.setdefault("bot_id", bot_id)
+                    shared_out = apply_shared_signal_gates(
+                        signal,
+                        signal_data,
+                        bot_config=gate_cfg,
+                        recent_features=hmm_feats,
+                    )
+                    if shared_out.block:
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                        bucket = (
+                            "conformal"
+                            if "conformal" in (shared_out.block.kind or "")
+                            else "regime_gate"
+                        )
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id,
+                            reason_bucket=bucket,
+                            symbol=symbol,
+                            strategy=strat_key,
+                            signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=shared_out.block.reason,
+                            bar_time=bar_time,
+                        )
+                        await self.log_bot_event(
+                            bot_id,
+                            "WARN",
+                            f"{shared_out.block.kind} blocked {signal}: {shared_out.block.reason}",
+                        )
+                        continue
+                    signal = shared_out.signal
+                    if shared_out.signal_data is not None:
+                        signal_data = shared_out.signal_data
+
+                    # Phase 3.9: LLM debate + deterministic firewall (opt-in).
+                    if signal in ("BUY", "SELL"):
+                        debate_out = await maybe_apply_llm_debate(
+                            signal, signal_data, bot_config=gate_cfg,
+                        )
+                        if debate_out.block:
+                            bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                            reject_telemetry.record_reject(
+                                bot_id=bot_id,
+                                reason_bucket="llm_firewall",
+                                symbol=symbol,
+                                strategy=strat_key,
+                                signal_kind=getattr(strat, "signal_kind", None),
+                                reason_detail=debate_out.block.reason,
+                                bar_time=bar_time,
+                            )
+                            await self.log_bot_event(
+                                bot_id,
+                                "WARN",
+                                f"LLM debate blocked {signal}: {debate_out.block.reason}",
+                            )
+                            continue
+                        signal = debate_out.signal
+                        if debate_out.signal_data is not None:
+                            signal_data = debate_out.signal_data
 
                 await self._handle_signal(bot, signal, signal_data, eval_price, bar_time)
 
@@ -1239,74 +1385,38 @@ class BotManagerService:
                 if size_factor > 0 and size_factor != 1.0:
                     quantity *= size_factor
 
-            # 3.3-A: Confidence-scaled sizing — bet proportionally to signal conviction.
-            # Scale range [0.7, 1.3] centred at confidence=0.75. Opt-out via use_confidence_sizing=false.
-            if bot_cfg.get("use_confidence_sizing", True):
-                conf = float(signal_data.get("confidence") or 0.55)
-                # Linear interpolation: conf 0.55 → 0.76×, 0.75 → 1.00×, 1.00 → 1.30×
-                conf_scale = 0.7 + (conf * 0.6)
-                conf_scale = max(0.5, min(1.5, conf_scale))
-                quantity *= conf_scale
+            # Shared live/backtest sizing overlays (confidence/temp/Kelly/meta-label/regime).
+            from app.services.bots.strategy_runtime import scale_entry_quantity
+            from app.services.bots.positions import get_recent_closed_trades_pnl
+
+            recent_pnls = get_recent_closed_trades_pnl(bot_id, limit=3)
+            quantity = scale_entry_quantity(
+                quantity,
+                signal_data=signal_data,
+                bot_config=bot_cfg,
+                bot_id=bot_id,
+                recent_closed_pnls=recent_pnls,
+            )
 
             if verdict.get("verdict") == "REDUCE_SIZE":
                 size_mult = float(verdict.get("size_multiplier") or 0.5)
                 quantity *= size_mult
-
-            if bot_cfg.get("use_meta_label_sizing"):
-                snap = signal_data.get("insight_snapshot") or {
-                    "score": signal_data.get("score"),
-                    "confidence": signal_data.get("confidence"),
-                    "sub_reports": signal_data.get("sub_reports"),
-                }
-                from app.services.bots.meta_label_model import predict_meta_label_prob
-
-                prob = predict_meta_label_prob(
-                    bot_id,
-                    snap,
-                    symbol=symbol,
-                    side=side,
-                    timeframe=str(bot_cfg.get("timeframe") or bot.get("timeframe") or "1m"),
-                    bar_time=bar_time,
-                )
-                if prob is not None:
-                    ml_scale = 0.7 + (0.6 * prob)
-                    ml_scale = max(0.5, min(1.5, ml_scale))
-                    quantity *= ml_scale
-
-            # 3.4-A: Regime-Adaptive Sizing (Kelly scaling during drawdowns)
-            if bot_cfg.get("use_regime_sizing", True):
-                from app.services.bots.positions import get_recent_closed_trades_pnl
-                recent_pnls = get_recent_closed_trades_pnl(bot_id, limit=3)
-                if len(recent_pnls) == 3 and all(pnl < 0 for pnl in recent_pnls):
-                    quantity *= 0.5
-                    await self.log_bot_event(bot_id, "INFO", "Bot in drawdown (3 consecutive losses). Halving allocation size.")
-
-            # Agent 4: Pre-Trade Intelligence — holistic last-mile entry filter.
-            pt = await self._pretrade_intel.evaluate(
-                bot,
-                side,
-                current_price,
-                signal_data,
-                bar_time=signal_data.get("time"),
-            )
-            verdict = pt.get("verdict")
-            reasoning = pt.get("reasoning")
-            reasoning_chain = pt.get("reasoning_chain")
-
-            if verdict == "VETO":
-                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
-                signal_ledger.release_signal(signal_id)
-                await self.log_bot_event(bot_id, "WARN", f"Pre-trade veto: {reasoning}", meta={"reasoning_chain": reasoning_chain})
-                _record_order_blocked(bot, f"Pre-trade veto: {reasoning}")
-                return
-            if verdict == "REDUCE_SIZE" and pt.get("size_multiplier", 1.0) < 1.0:
-                size_factor = pt.get("size_multiplier", 1.0)
-                quantity *= size_factor
+                reasoning = verdict.get("reasoning")
+                if reasoning:
+                    await self.log_bot_event(
+                        bot_id,
+                        "INFO",
+                        f"Pre-trade reduce ×{size_mult:.2f}: {reasoning}",
+                        meta={"reasoning_chain": verdict.get("reasoning_chain")},
+                    )
+            if (
+                bot_cfg.get("use_regime_sizing", True)
+                and len(recent_pnls) >= 3
+                and all(p < 0 for p in recent_pnls[-3:])
+            ):
                 await self.log_bot_event(
-                    bot_id,
-                    "INFO",
-                    f"Pre-trade reduce ×{size_factor:.2f}: {reasoning}",
-                    meta={"reasoning_chain": reasoning_chain}
+                    bot_id, "INFO",
+                    "Bot in drawdown (3 consecutive losses). Halving allocation size.",
                 )
 
         pos_size = self._get_bot_position_size(bot_id, symbol)
@@ -1495,7 +1605,55 @@ class BotManagerService:
                 pass
 
         try:
-            result = await self.oms.place_order(order_req)
+            # Phase 4.10: VWAP/POV execution slicing for large orders.
+            # Opt-in via execution_algo config; falls back to single-shot.
+            # NOTE: use bot.get("config", {}) here, NOT bot_cfg — bot_cfg is
+            # only assigned inside `if not is_exit:` blocks above, so it is
+            # undefined for exit orders.
+            result = None
+            sliced_live_submitted = False
+            try:
+                from app.services.bots.execution_algos import (
+                    build_slices,
+                    execute_sliced_order,
+                    resolve_execution_algo,
+                )
+                slice_config = bot.get("config", {})
+                if isinstance(slice_config, str):
+                    try:
+                        import json as _json
+                        slice_config = _json.loads(slice_config) if slice_config else {}
+                    except Exception:
+                        slice_config = {}
+                algo = resolve_execution_algo(slice_config)
+                if algo != "single" and quantity > 0:
+                    slices = build_slices(
+                        quantity, algo=algo, config=slice_config,
+                        bar_volumes=getattr(self, "_recent_bar_volumes", {}).get(symbol),
+                    )
+                    if slices and len(slices) > 1:
+                        sliced_result = await execute_sliced_order(
+                            self.oms, order_req, slices=slices,
+                        )
+                        sliced_live_submitted = sliced_result.get("live_submitted", False)
+                        # Adapt to the single-shot result shape expected below.
+                        # Use the first real broker order_id (comma-joined if
+                        # multiple) so reconciliation can find the fills.
+                        order_ids = sliced_result.get("order_ids") or []
+                        if sliced_result.get("ok") and order_ids:
+                            result = {
+                                "status": "success",
+                                "order_id": ",".join(str(oid) for oid in order_ids),
+                                "average_fill_price": (
+                                    sliced_result.get("avg_fill_price") or None
+                                ),
+                                "filled_quantity": sliced_result.get("total_filled"),
+                            }
+            except Exception:
+                logger.debug("Execution slicing failed, falling back to single-shot", exc_info=True)
+
+            if result is None:
+                result = await self.oms.place_order(order_req)
 
             if result.get("status") == "success":
                 if not is_exit:
@@ -1505,7 +1663,13 @@ class BotManagerService:
                 order_id = result.get("order_id")
                 fill_price = float(result.get("average_fill_price") or current_price)
                 filled_qty = float(result.get("filled_quantity") or quantity or 0)
-                live_submitted = not uses_paper_oms() and result.get("average_fill_price") is None
+                # For sliced orders, use the live_submitted flag from the slicer
+                # (which checks each slice individually) rather than the single-
+                # shot heuristic (avg_fill_price is None).
+                if sliced_live_submitted:
+                    live_submitted = True
+                else:
+                    live_submitted = not uses_paper_oms() and result.get("average_fill_price") is None
 
                 if live_submitted:
                     signal_ledger.mark_signal_submitted(

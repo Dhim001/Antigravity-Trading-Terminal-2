@@ -24,6 +24,7 @@ export function applySettingsToDOM(settings = DEFAULT_TERMINAL_SETTINGS, resolve
 
   const effective = getEffectiveSettings(settings, resolvedTheme);
   const root = document.documentElement;
+  const isDark = resolvedTheme === 'dark';
 
   for (const [varName, getter] of SETTINGS_CSS_VARS) {
     root.style.setProperty(varName, getter(effective));
@@ -31,7 +32,11 @@ export function applySettingsToDOM(settings = DEFAULT_TERMINAL_SETTINGS, resolve
 
   root.style.setProperty('--color-up-bg', hexToRgba(effective.bullishColor, 0.12));
   root.style.setProperty('--color-down-bg', hexToRgba(effective.bearishColor, 0.12));
-  root.style.setProperty('--color-accent-bg', hexToRgba(effective.accentColor, 0.12));
+  // Stronger tint in dark mode so menu/select hover & ::selection read on navy surfaces
+  root.style.setProperty(
+    '--color-accent-bg',
+    hexToRgba(effective.accentColor, isDark ? 0.22 : 0.14),
+  );
 }
 
 /**

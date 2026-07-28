@@ -70,7 +70,15 @@ def apply_ml_meta_label_gate(
         return result
 
     if not reject:
-        return result
+        # Phase 1.2: chain into the conformal prediction-set gate. Opt-in via
+        # ``conformal_gate_enabled``; no-op otherwise. Kept inside the
+        # calibration_gate_enabled branch so conformal can't run when the
+        # operator has explicitly disabled post-hoc gating.
+        try:
+            from app.services.bots.conformal_gate import apply_conformal_gate
+            return apply_conformal_gate(result, cfg)
+        except Exception:
+            return result
 
     out = dict(result)
     out["signal"] = "NONE"
@@ -78,3 +86,20 @@ def apply_ml_meta_label_gate(
     out["reject_reason"] = "meta_label_gate"
     out["reject_detail"] = str(reject)
     return out
+
+
+def apply_ml_conformal_gate(
+    result: dict[str, Any] | None,
+    config: dict | None,
+) -> dict[str, Any]:
+    """Conformal prediction-set gate (Phase 1.2).
+
+    Thin wrapper around ``conformal_gate.apply_conformal_gate`` kept here so
+    ML strategies can import a single ``ml_signal_gates`` module for all
+    post-hoc gates. Opt-in via ``conformal_gate_enabled``.
+    """
+    try:
+        from app.services.bots.conformal_gate import apply_conformal_gate
+    except Exception:
+        return result if isinstance(result, dict) else {"signal": "NONE"}
+    return apply_conformal_gate(result, config)

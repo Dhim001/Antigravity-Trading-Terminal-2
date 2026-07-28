@@ -209,3 +209,39 @@ def label_distribution(labels: list[dict]) -> dict[str, int]:
             counts["invalid"] += 1
     return counts
 
+
+# ── Phase 2.4: config resolver + asymmetric barrier support ─────────────────
+
+
+def resolve_barrier_multipliers(config: dict | None) -> tuple[float, float]:
+    """Resolve (upper, lower) ATR multipliers from config.
+
+    Supports asymmetric barriers via ``triple_barrier_atr_mult_upper`` /
+    ``triple_barrier_atr_mult_lower``. Falls back to the symmetric
+    ``triple_barrier_atr_mult`` knob for backward compatibility.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    sym = float(cfg.get("triple_barrier_atr_mult") or 2.0)
+    upper = float(cfg.get("triple_barrier_atr_mult_upper") or sym)
+    lower = float(cfg.get("triple_barrier_atr_mult_lower") or sym)
+    # Sanity: barriers must be positive and not degenerate.
+    upper = max(0.1, min(20.0, upper))
+    lower = max(0.1, min(20.0, lower))
+    return upper, lower
+
+
+def label_triple_barrier_from_config(
+    candles: list[dict],
+    config: dict | None,
+) -> list[dict]:
+    """Convenience wrapper that pulls ATR mult + horizon from config."""
+    cfg = config if isinstance(config, dict) else {}
+    upper, lower = resolve_barrier_multipliers(cfg)
+    max_bars = max(1, int(cfg.get("triple_barrier_max_bars") or 30))
+    return label_triple_barrier(
+        candles,
+        atr_mult_upper=upper,
+        atr_mult_lower=lower,
+        max_holding_bars=max_bars,
+    )
+

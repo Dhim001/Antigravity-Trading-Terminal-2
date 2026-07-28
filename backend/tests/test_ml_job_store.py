@@ -63,6 +63,28 @@ class MlJobStoreTests(unittest.TestCase):
         self.assertEqual(pub["result"]["ok"], True)
         self.assertNotIn("progress_path", pub)
 
+    def test_public_ml_job_strips_nonfinite_and_wf_bundle(self):
+        """Regression: -inf in PPO metrics made GET /ml/jobs/{id} HTTP 500."""
+        from starlette.responses import JSONResponse
+
+        job_id = create_ml_job(kind="train", strategy="RL_PPO_AGENT", symbol="AAPL")
+        mark_ml_job_running(job_id)
+        finish_ml_job(
+            job_id,
+            "done",
+            result={
+                "ok": True,
+                "metrics": {"best_mean_return": float("-inf"), "episodes": 0},
+                "_wf_bundle": {"model": object()},
+            },
+        )
+        pub = public_ml_job(get_ml_job(job_id), include_result=True)
+        self.assertIsNone(pub["result"]["metrics"]["best_mean_return"])
+        self.assertNotIn("_wf_bundle", pub["result"])
+        # Must be Starlette-serializable
+        body = JSONResponse({"ok": True, "job": pub}).body
+        self.assertIn(b'"ok":true', body)
+
     def test_cancel_queued_via_future(self):
         job_id = create_ml_job(kind="validate", strategy="LSTM_DIRECTION", symbol="ETHUSDT")
         fut = Future()

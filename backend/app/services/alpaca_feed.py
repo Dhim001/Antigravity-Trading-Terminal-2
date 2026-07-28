@@ -709,6 +709,66 @@ class AlpacaFeedService(BaseFeedService):
             pass
         self._queue_market_broadcast(symbol)
 
+    def _apply_correction(self, symbol: str, msg: dict) -> None:
+        """Apply an Alpaca trade correction (``T="c"``).
+
+        A correction revises a prior trade's price/size. We do not keep a
+        per-trade ledger, so we cannot precisely undo the original print's
+        volume. Strategy:
+
+        - If the corrected trade lands in the *current forming* minute (and it
+          is not yet sealed by an official ``bars`` message), update the
+          forming candle's close to the corrected price and extend H/L so OHLC
+          stays valid.
+        - Otherwise (past, already-sealed minute) defer to the next
+          ``updatedBars`` revision, which is Alpaca's authoritative
+          reconciliation path.
+
+        Volume is intentionally left untouched — the next ``bars`` /
+        ``updatedBars`` message carries the authoritative minute volume.
+        """
+        if symbol not in self._symbols:
+            return
+        t_val = msg.get("t")
+        try:
+            t_epoch = int(
+                datetime.fromisoformat(str(t_val).replace("Z", "+00:00")).timestamp()
+            )
+        except Exception:
+            return
+        t_bucket = int(t_epoch // 60) * 60
+        buf = self.candles.get(symbol)
+        if not buf:
+            return
+        last = buf[-1]
+        if int(last.get("time") or 0) != t_bucket:
+            # Correction targets a past minute — official updatedBars reconciles.
+            return
+        if self._sealed_bar_ts.get(symbol) == t_bucket:
+            return
+        try:
+            px = float(msg.get("p"))
+        except (TypeError, ValueError):
+            return
+        self._patch_forming_candle(symbol, px, from_quote=True, volume=0.0)
+        self._queue_market_broadcast(symbol)
+
+    def _apply_cancel_error(self, symbol: str, msg: dict) -> None:
+        """Record an Alpaca cancel / cancel-error (``T="x"``).
+
+        A cancel-error voids a prior trade. Without a per-trade ledger we
+        cannot subtract the voided volume from the forming candle; the next
+        official ``bars`` / ``updatedBars`` message is the authoritative
+        reconciliation. We log the event for observability and otherwise defer.
+        """
+        logging.info(
+            "Alpaca cancel-error %s trade_id=%s t=%s "
+            "(forming candle will self-heal on next bars)",
+            symbol,
+            msg.get("i"),
+            msg.get("t"),
+        )
+
     async def _auth_json_stream(self, ws) -> tuple[bool, dict]:
         welcome = await ws.recv()
         logging.info("Alpaca stream connected: %s", welcome)
@@ -807,6 +867,19 @@ class AlpacaFeedService(BaseFeedService):
                                 # Late-trade revision of a prior minute (updatedBars).
                                 self._apply_bar(symbol, m, updated=True)
                                 self._status["equity"]["last_tick_ts"] = time.time()
+                            elif stream_type == "c":
+                                # Trade correction — revise forming candle price.
+                                self._apply_correction(symbol, m)
+                                self._status["equity"]["last_tick_ts"] = time.time()
+                            elif stream_type == "x":
+                                # Cancel / cancel-error — log; bars self-heal volume.
+                                self._apply_cancel_error(symbol, m)
+                                self._status["equity"]["last_tick_ts"] = time.time()
+                            elif stream_type == "error":
+                                logging.warning("Alpaca equity stream error: %s", m)
+                                self._status["equity"]["last_error"] = str(
+                                    m.get("msg") or m
+                                )[:200]
                         await self._yield_loop(spun)
             except asyncio.CancelledError:
                 break
@@ -935,6 +1008,14 @@ class AlpacaFeedService(BaseFeedService):
                                     self._status["crypto"].get("ws_updated_bars") or 0
                                 ) + 1
                                 self._apply_bar(symbol, m, updated=True)
+                                self._status["crypto"]["last_tick_ts"] = time.time()
+                            elif stream_type == "c":
+                                # Trade correction — revise forming candle price.
+                                self._apply_correction(symbol, m)
+                                self._status["crypto"]["last_tick_ts"] = time.time()
+                            elif stream_type == "x":
+                                # Cancel / cancel-error — log; bars self-heal volume.
+                                self._apply_cancel_error(symbol, m)
                                 self._status["crypto"]["last_tick_ts"] = time.time()
                         await self._yield_loop(spun, every=8)
             except asyncio.CancelledError:

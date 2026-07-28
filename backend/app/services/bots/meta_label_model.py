@@ -250,6 +250,90 @@ def build_meta_label_dataset(
     }
 
 
+# ── Phase 2.4: triple-barrier label source for meta-label GBM ───────────────
+
+
+def build_meta_label_dataset_from_candles(
+    bot_id: str,
+    candles: list[dict],
+    *,
+    config: dict | None = None,
+    entry_snapshots: dict[int, dict] | None = None,
+) -> dict[str, Any]:
+    """Build labeled rows from triple-barrier labels on historical candles.
+
+    This unifies the meta-label GBM's label definition with the primary ML
+    model's: instead of waiting for realized closed-trade outcomes (slow, and
+    conflated with execution quality), we label every bar with the same
+    triple-barrier method the primary model trains on, then attach the
+    entry-time insight features (when available) or fall back to bar-derived
+    features.
+
+    The result is many more training samples (one per bar, not one per closed
+    trade) and a label definition that matches what the primary model predicts.
+    """
+    from app.services.bots.ml_triple_barrier import label_triple_barrier_from_config
+
+    cfg = config if isinstance(config, dict) else {}
+    labels = label_triple_barrier_from_config(candles, cfg)
+
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    snaps = entry_snapshots or {}
+
+    for lab in labels:
+        idx = int(lab.get("index", 0))
+        candle = candles[idx] if 0 <= idx < len(candles) else {}
+        label = int(lab.get("label", 0))
+        # Triple-barrier produces BUY/SELL/NONE; for the binary P(win) GBM we
+        # treat BUY (upper hit) as win=1, SELL (lower hit) as win=0, and skip
+        # NONE (time barrier) — those are ambiguous "no edge" samples.
+        if label == 0:
+            skipped += 1
+            continue
+
+        snap = snaps.get(idx)
+        side = "BUY" if label == 1 else "SELL"
+        symbol = str(cfg.get("model_symbol") or cfg.get("symbol") or "").upper()
+        timeframe = str(cfg.get("timeframe") or "1m")
+
+        if snap:
+            feat = insight_to_features(
+                snap, symbol=symbol, side=side, timeframe=timeframe,
+                entry_ts=candle.get("time"),
+            )
+        else:
+            # No insight snapshot — synthesize a minimal feature vector from
+            # the bar itself so the GBM still gets a row. The model learns
+            # less from these (no sub-report scores) but the triple-barrier
+            # label is the signal.
+            feat = insight_to_features(
+                {"confidence": 0.5, "score": 0},
+                symbol=symbol, side=side, timeframe=timeframe,
+                entry_ts=candle.get("time"),
+            )
+
+        rows.append({
+            "features": feat,
+            "vector": features_to_vector(feat).tolist(),
+            "win": label == 1,
+            "pnl": float(lab.get("exit_price", 0) - lab.get("entry_price", 0)) * (1 if label == 1 else -1),
+            "entry_ts": str(candle.get("time") or ""),
+        })
+
+    return {
+        "bot_id": bot_id,
+        "rows": rows,
+        "sample_count": len(rows),
+        "skipped": skipped,
+        "label_source": "triple_barrier",
+        "label_distribution": {
+            "BUY": sum(1 for r in rows if r["win"]),
+            "SELL": sum(1 for r in rows if not r["win"]),
+        },
+    }
+
+
 def _bot_model_dir(bot_id: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(bot_id))
     return os.path.join(META_LABEL_MODEL_DIR, safe)
@@ -407,10 +491,35 @@ def train_meta_label_model(
     *,
     min_samples: int | None = None,
     val_fraction: float = 0.2,
+    candles: list[dict] | None = None,
+    config: dict | None = None,
 ) -> dict[str, Any]:
-    """Train HistGradientBoosting classifier; persist artifact + metadata."""
+    """Train HistGradientBoosting classifier; persist artifact + metadata.
+
+    Label source is selected by ``meta_label_label_source`` in the bot config:
+
+    - ``"realized"`` (default): labels from closed-trade win/loss — legacy.
+    - ``"triple_barrier"``: labels from triple-barrier on ``candles`` —
+      unifies the meta-label definition with the primary ML model and
+      yields far more training samples (one per bar, not one per trade).
+    """
     min_samples = int(min_samples if min_samples is not None else META_LABEL_MIN_TRAIN_SAMPLES)
-    dataset = build_meta_label_dataset(bot_id)
+    cfg = config if isinstance(config, dict) else {}
+    label_source = str(cfg.get("meta_label_label_source") or "realized").lower()
+
+    if label_source == "triple_barrier":
+        if not candles:
+            return {
+                "ok": False,
+                "error": "triple_barrier label source requires candles",
+                "bot_id": bot_id,
+                "sample_count": 0,
+            }
+        dataset = build_meta_label_dataset_from_candles(
+            bot_id, candles, config=cfg,
+        )
+    else:
+        dataset = build_meta_label_dataset(bot_id)
     rows = dataset["rows"]
 
     trained = train_model_from_rows(rows, min_samples=min_samples, val_fraction=val_fraction)

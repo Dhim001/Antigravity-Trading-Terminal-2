@@ -175,9 +175,20 @@ class PreTradeIntel:
         # 4. News Sentiment Divergence check
         try:
             sentiment = get_aggregate_sentiment(symbol, lookback_hours=24.0)
-            mentions = sentiment.get("mentions", 0) if sentiment else 0
+            # Store returns aggregate_score/mention_count; accept legacy aliases too.
+            mentions = 0
+            if sentiment:
+                mentions = int(
+                    sentiment.get("mentions")
+                    if sentiment.get("mentions") is not None
+                    else (sentiment.get("mention_count") or 0)
+                )
             if sentiment and mentions >= PRETRADE_SENTIMENT_MIN_MENTIONS:
-                score = float(sentiment.get("score") or 0.0)
+                score = float(
+                    sentiment.get("score")
+                    if sentiment.get("score") is not None
+                    else (sentiment.get("aggregate_score") or 0.0)
+                )
                 if (side == "BUY" and score <= -PRETRADE_SENTIMENT_THRESHOLD) or (
                     side == "SELL" and score >= PRETRADE_SENTIMENT_THRESHOLD
                 ):
@@ -188,8 +199,9 @@ class PreTradeIntel:
                 else:
                     observations.append(Observation("sentiment_divergence", "positive", 0.80, f"Sentiment aligns or neutral (score {score:+.2f})"))
             elif sentiment:
+                score_disp = sentiment.get("score", sentiment.get("aggregate_score", 0))
                 uncertainty_sources.append(f"Not enough sentiment mentions ({mentions}) for high confidence.")
-                observations.append(Observation("sentiment", "neutral", 0.60, f"Score {sentiment.get('score', 0):.2f} but low volume ({mentions})."))
+                observations.append(Observation("sentiment", "neutral", 0.60, f"Score {score_disp:.2f} but low volume ({mentions})."))
             else:
                 uncertainty_sources.append("Sentiment data unavailable or incomplete.")
                 observations.append(Observation("sentiment", "neutral", 0.50, "Data missing."))

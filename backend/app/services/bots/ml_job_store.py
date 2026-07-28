@@ -5,6 +5,7 @@ Statuses: queued | running | done | error | cancelled
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 import uuid
@@ -262,7 +263,12 @@ def request_ml_job_cancel(job_id: str) -> dict[str, Any]:
 
 
 def public_ml_job(job: dict[str, Any] | None, *, include_result: bool = True) -> dict[str, Any] | None:
-    """API-safe job view (no progress_path / internal fields)."""
+    """API-safe job view (no progress_path / internal fields).
+
+    Strips non-JSON values (``±inf``/NaN, torch modules in ``_wf_bundle``) so
+    Starlette ``JSONResponse`` never 500s after a successful train — that
+    previously stranded the Lab UI on ``poll_err`` / \"server busy\".
+    """
     if not job:
         return None
     out = {
@@ -279,8 +285,36 @@ def public_ml_job(job: dict[str, Any] | None, *, include_result: bool = True) ->
         "cancel_requested": bool(job.get("cancel_requested")),
     }
     if include_result and job.get("status") in _TERMINAL:
-        out["result"] = job.get("result")
+        result = job.get("result")
+        if isinstance(result, dict):
+            # Drop in-memory torch bundles — never belong in HTTP responses.
+            safe = {k: v for k, v in result.items() if k != "_wf_bundle"}
+            out["result"] = _json_safe_ml_value(safe)
+        else:
+            out["result"] = result
     return out
+
+
+def _json_safe_ml_value(value: Any) -> Any:
+    """Recursively replace non-finite floats and unknown objects for JSON."""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe_ml_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_ml_value(v) for v in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    # numpy scalars
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe_ml_value(item())
+        except Exception:
+            return str(value)
+    return str(value)
 
 
 def reset_ml_job_store_for_tests() -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 from datetime import datetime, timezone
@@ -123,6 +124,29 @@ def version_index_path(model_root: str) -> str:
     return os.path.join(versions_dir(model_root), "index.json")
 
 
+def json_safe_value(value: Any) -> Any:
+    """Recursively replace non-finite floats so JSON dumps / Starlette never 500.
+
+    PPO can emit ``best_mean_return=-inf`` when no episode completes; Python's
+    ``json.dump`` accepts that, but HTTP ``JSONResponse`` does not.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): json_safe_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe_value(v) for v in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return json_safe_value(item())
+        except Exception:
+            return str(value)
+    return value
+
+
 def _read_index(model_root: str) -> list[dict[str, Any]]:
     path = version_index_path(model_root)
     if not os.path.isfile(path):
@@ -130,7 +154,9 @@ def _read_index(model_root: str) -> list[dict[str, Any]]:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [json_safe_value(e) if isinstance(e, dict) else e for e in data]
     except Exception:
         return []
 
@@ -138,8 +164,9 @@ def _read_index(model_root: str) -> list[dict[str, Any]]:
 def _write_index(model_root: str, entries: list[dict[str, Any]]) -> None:
     os.makedirs(versions_dir(model_root), exist_ok=True)
     path = version_index_path(model_root)
+    safe = json_safe_value(entries)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2)
+        json.dump(safe, f, indent=2, allow_nan=False)
 
 
 def list_model_versions(model_root: str | None) -> list[dict[str, Any]]:
@@ -486,7 +513,7 @@ def snapshot_current_version(
     version_meta["version_id"] = vid
     version_meta["version_path"] = f"versions/{vid}"
     with open(os.path.join(vdir, "metadata.json"), "w", encoding="utf-8") as f:
-        json.dump(version_meta, f, indent=2)
+        json.dump(json_safe_value(version_meta), f, indent=2, allow_nan=False)
 
     entry = {
         "version_id": vid,
@@ -501,7 +528,7 @@ def snapshot_current_version(
     }
 
     index = [e for e in _read_index(model_root) if e.get("version_id") != vid]
-    index.insert(0, entry)
+    index.insert(0, json_safe_value(entry))
 
     # Prune old versions
     while len(index) > max_kept:

@@ -152,6 +152,71 @@ class AlpacaCandleFormationTests(unittest.TestCase):
         self.assertEqual(snap["high"], 100.5)
         self.assertEqual(snap["low"], 100.0)
 
+    def test_correction_updates_current_forming_minute_close(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        bucket = int(time.time() // 60) * 60
+        feed.candles["AAPL"] = [
+            {"time": bucket, "open": 180.0, "high": 181.0, "low": 179.0, "close": 180.5, "volume": 50}
+        ]
+        feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
+        ts = datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        feed._apply_correction("AAPL", {"t": ts, "p": 182.0, "s": 10, "i": "1", "ci": "2"})
+        bar = feed.candles["AAPL"][-1]
+        self.assertEqual(bar["close"], 182.0)
+        self.assertEqual(bar["high"], 182.0)
+        # Volume is intentionally NOT revised (no per-trade ledger).
+        self.assertEqual(bar["volume"], 50)
+
+    def test_correction_for_past_sealed_minute_is_ignored(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        now = int(time.time() // 60) * 60
+        prev = now - 60
+        feed.candles["AAPL"] = [
+            {"time": prev, "open": 180.0, "high": 181.0, "low": 179.0, "close": 180.5, "volume": 100},
+            {"time": now, "open": 180.5, "high": 180.5, "low": 180.5, "close": 180.5, "volume": 0},
+        ]
+        feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
+        feed._sealed_bar_ts["AAPL"] = prev
+        ts = datetime.fromtimestamp(prev, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        feed._apply_correction("AAPL", {"t": ts, "p": 200.0, "s": 10})
+        # Past sealed minute untouched — updatedBars is the reconciliation path.
+        self.assertEqual(feed.candles["AAPL"][0]["close"], 180.5)
+        self.assertEqual(feed.candles["AAPL"][-1]["close"], 180.5)
+
+    def test_correction_on_sealed_current_minute_is_ignored(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        bucket = int(time.time() // 60) * 60
+        feed.candles["AAPL"] = [
+            {"time": bucket, "open": 180.0, "high": 181.0, "low": 179.0, "close": 180.5, "volume": 50}
+        ]
+        feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
+        feed._sealed_bar_ts["AAPL"] = bucket
+        ts = datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        feed._apply_correction("AAPL", {"t": ts, "p": 200.0, "s": 10})
+        self.assertEqual(feed.candles["AAPL"][-1]["close"], 180.5)
+
+    def test_cancel_error_does_not_mutate_candle(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        bucket = int(time.time() // 60) * 60
+        feed.candles["AAPL"] = [
+            {"time": bucket, "open": 180.0, "high": 181.0, "low": 179.0, "close": 180.5, "volume": 50}
+        ]
+        feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
+        before = dict(feed.candles["AAPL"][-1])
+        # Should not raise and should not mutate the forming candle.
+        feed._apply_cancel_error("AAPL", {"i": "trade-1", "t": "2024-01-01T00:00:00Z"})
+        self.assertEqual(feed.candles["AAPL"][-1], before)
+
+    def test_correction_bad_timestamp_is_ignored(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        bucket = int(time.time() // 60) * 60
+        feed.candles["AAPL"] = [
+            {"time": bucket, "open": 180.0, "high": 181.0, "low": 179.0, "close": 180.5, "volume": 50}
+        ]
+        feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
+        feed._apply_correction("AAPL", {"t": "not-a-timestamp", "p": 200.0, "s": 10})
+        self.assertEqual(feed.candles["AAPL"][-1]["close"], 180.5)
+
 
 if __name__ == "__main__":
     unittest.main()

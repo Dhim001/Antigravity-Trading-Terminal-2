@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -65,20 +66,36 @@ def _extract_metrics(result: dict | None) -> dict[str, Any]:
         "val_samples",
     ):
         if src.get(key) is not None:
-            metrics[key] = src.get(key)
+            metrics[key] = _finite_or_none(src.get(key))
     if result.get("mean_accuracy") is not None:
-        metrics["mean_accuracy"] = result.get("mean_accuracy")
+        metrics["mean_accuracy"] = _finite_or_none(result.get("mean_accuracy"))
     agg = result.get("aggregate") if isinstance(result.get("aggregate"), dict) else {}
     if agg.get("mean_oos_accuracy") is not None:
-        metrics["mean_oos_accuracy"] = agg.get("mean_oos_accuracy")
+        metrics["mean_oos_accuracy"] = _finite_or_none(agg.get("mean_oos_accuracy"))
     if result.get("n_folds") is not None:
         metrics["n_folds"] = result.get("n_folds")
     pbo = result.get("pbo")
     if isinstance(pbo, dict) and pbo.get("pbo") is not None:
-        metrics["pbo"] = pbo.get("pbo")
+        metrics["pbo"] = _finite_or_none(pbo.get("pbo"))
     elif pbo is not None and not isinstance(pbo, dict):
-        metrics["pbo"] = pbo
-    return metrics
+        metrics["pbo"] = _finite_or_none(pbo)
+    # Drop keys emptied solely by non-finite scrubbing.
+    return {k: v for k, v in metrics.items() if v is not None}
+
+
+def _finite_or_none(value: Any) -> Any:
+    """JSON-safe scalar — Starlette rejects ±inf/NaN."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return value
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return value
+    return value
 
 
 def _extract_timeframe(result: dict | None, job: dict | None = None) -> str | None:
@@ -268,6 +285,11 @@ def _row_to_run(row) -> dict[str, Any]:
                 "timeframe": row[14] if len(row) > 14 else None,
             }
     metrics = _parse_json(item.pop("metrics_json", None), {})
+    if isinstance(metrics, dict):
+        metrics = {k: _finite_or_none(v) for k, v in metrics.items()}
+        metrics = {k: v for k, v in metrics.items() if v is not None}
+    else:
+        metrics = {}
     return {
         "id": item.get("id"),
         "kind": item.get("kind"),
@@ -279,7 +301,7 @@ def _row_to_run(row) -> dict[str, Any]:
         "duration_ms": item.get("duration_ms"),
         "ok": bool(item.get("ok")),
         "error": item.get("error"),
-        "metrics": metrics or {},
+        "metrics": metrics,
         "config_hash": item.get("config_hash"),
         "version_id": item.get("version_id"),
         "job_id": item.get("job_id"),

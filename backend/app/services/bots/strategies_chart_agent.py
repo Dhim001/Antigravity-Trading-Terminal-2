@@ -232,7 +232,23 @@ def build_signal_from_insight(
         "size_factor": size_factor,
         "regime": atr_regime,
         "insight_snapshot": compact_insight_snapshot(insight, regime=atr_regime),
+        "symbol": str(gate_symbol or ""),
+        "timeframe": str(gate_tf or "1m"),
     }
+    # Phase 1.2: conformal prediction-set gate (opt-in). Shared path also
+    # re-applies this; running here keeps standalone evaluate() honest.
+    if effective_cfg.get("conformal_gate_enabled"):
+        try:
+            from app.services.bots.conformal_gate import apply_conformal_gate
+
+            gate_cfg = dict(effective_cfg)
+            if gate_bot_id and not gate_cfg.get("_bot_id"):
+                gate_cfg["_bot_id"] = gate_bot_id
+            out = apply_conformal_gate(out, gate_cfg)
+            if str(out.get("signal") or "").upper() not in ("BUY", "SELL"):
+                return out
+        except Exception:
+            pass
     levels = insight.get("levels") or {}
     if levels.get("stop_loss_distance") is not None:
         out["stop_loss_distance"] = levels["stop_loss_distance"]

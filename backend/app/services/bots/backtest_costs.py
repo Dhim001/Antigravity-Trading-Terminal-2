@@ -68,6 +68,9 @@ class CostModel:
     max_participation_pct: float = 10.0  # max 10% of bar volume
     min_spread_bps: float = 0.0
     second_fill_penalty_bps: float = 2.0
+    # Phase 1.3: latency-aware fills — adverse selection proxy for the
+    # signal-to-execution gap (the backtest-to-live gap). Default 0 = legacy.
+    latency_slippage_bps: float = 0.0
     _fills_this_bar: int = field(default=0, repr=False)
     _last_bar_time: Any = field(default=None, repr=False)
 
@@ -83,6 +86,7 @@ class CostModel:
             max_participation_pct=float(cfg.get("max_participation_pct") or 10.0),
             min_spread_bps=max(0.0, float(cfg.get("min_spread_bps") or 0)),
             second_fill_penalty_bps=float(cfg.get("second_fill_penalty_bps") or 2.0),
+            latency_slippage_bps=max(0.0, float(cfg.get("latency_slippage_bps") or 0.0)),
         )
 
     def reset_bar(self, bar_time: Any = None) -> None:
@@ -118,6 +122,12 @@ class CostModel:
         if self.min_spread_bps > 0:
             half_spread = self.min_spread_bps / 2.0
             base = max(base, half_spread)
+
+        # Phase 1.3: latency adverse selection — models the signal-to-fill gap.
+        # Added unconditionally (not scaled by participation) because latency
+        # cost applies even to small orders; it's a function of time, not size.
+        if self.latency_slippage_bps > 0:
+            base += self.latency_slippage_bps
 
         # Second-fill-in-bar penalty (models order book depletion)
         if self._fills_this_bar > 0 and self.second_fill_penalty_bps > 0:
@@ -170,4 +180,39 @@ class CostModel:
             "max_participation_pct": self.max_participation_pct,
             "min_spread_bps": self.min_spread_bps,
             "second_fill_penalty_bps": self.second_fill_penalty_bps,
+            "latency_slippage_bps": self.latency_slippage_bps,
         }
+
+
+# ── Phase 1.3: latency slippage estimator ────────────────────────────────────
+
+
+def estimate_latency_slippage_bps(
+    atr_pct: float,
+    latency_seconds: float,
+    *,
+    bar_seconds: float = 60.0,
+    safety_factor: float = 1.0,
+) -> float:
+    """Estimate adverse-selection slippage (bps) from volatility + latency.
+
+    Models the expected adverse move during the signal-to-fill gap as a
+    Brownian-time-scaling of the bar's ATR: the std-dev of price moves scales
+    with ``sqrt(t)``, so the expected adverse move over ``latency_seconds`` is
+    roughly ``atr_pct * sqrt(latency / bar_seconds)``.
+
+    Args:
+        atr_pct: ATR as a fraction of price (e.g. 0.001 = 10bps per bar).
+        latency_seconds: signal-to-fill gap (order round-trip + decision lag).
+        bar_seconds: bar duration the ATR was measured on (default 60s = 1m).
+        safety_factor: multiplier to dial the estimate up/down (default 1.0).
+
+    Returns:
+        Slippage in basis points, clamped to ``[0, 500]`` (5%).
+    """
+    if atr_pct <= 0 or latency_seconds <= 0 or bar_seconds <= 0:
+        return 0.0
+    time_ratio = max(latency_seconds / bar_seconds, 0.0)
+    adverse_move_pct = float(atr_pct) * math.sqrt(time_ratio) * float(safety_factor)
+    bps = adverse_move_pct * 10_000.0
+    return max(0.0, min(500.0, bps))
