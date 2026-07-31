@@ -358,10 +358,28 @@ class AlpacaFeedService(BaseFeedService):
         logging.info("Alpaca feed streams stopped.")
 
     async def subscribe(self, symbol: str) -> None:
-        pass
+        # Alpaca symbol set is fixed at startup; prune stale per-symbol state
+        # whenever the churn point is reached (MEMORY #33).
+        self._prune_symbol_state_maps()
 
     async def unsubscribe(self, symbol: str) -> None:
-        pass
+        # WS stays subscribed (no Alpaca unsubscribe flow); drop local state.
+        self._last_quote_apply_ts.pop(symbol, None)
+        self._crypto_last_trade_event_ts.pop(symbol, None)
+        self._sealed_bar_ts.pop(symbol, None)
+
+    def _prune_symbol_state_maps(self) -> None:
+        """Drop per-symbol state for symbols no longer in the universe (#33)."""
+        live = set(self._symbols)
+        for m in (
+            self._last_quote_apply_ts,
+            self._crypto_last_trade_event_ts,
+            self._sealed_bar_ts,
+        ):
+            if len(m) <= len(live) + 8:  # small hysteresis
+                continue
+            for k in [k for k in m if k not in live]:
+                del m[k]
 
     def _merge_option_watchlist(self) -> None:
         if not (ALPACA_OPTIONS_ENABLED and env_flag("ALPACA_OPTIONS_ENABLED", True)):

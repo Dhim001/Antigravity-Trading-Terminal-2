@@ -51,6 +51,7 @@ export function applySessionToStore(session, storeActions) {
     scannerEnabled: t.scanner_enabled,
     isOperator: t.operator_mode,
     orderCapabilities: normalizeOrderCapabilities(t.order_capabilities),
+    safeMode: t.safe_mode || { active: false },
   });
   if (llm.preferred_model) {
     storeActions.setSelectedLlmModel(llm.preferred_model);
@@ -418,6 +419,36 @@ export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
   const body = await apiRequest(`/api/v1/bots/filter-rejects?${qs}`);
   if (!body?.ok) throw new Error(body?.error || 'Filter rejects unavailable');
   return body.filter_rejects;
+}
+
+/** GET /api/v1/execution/quality — TCA aggregates (IS trend, algo table, worst fills). */
+export async function fetchExecutionQuality({ botId, symbol, strategy, hours } = {}) {
+  const qs = new URLSearchParams();
+  if (botId) qs.set('bot_id', botId);
+  if (symbol) qs.set('symbol', symbol);
+  if (strategy) qs.set('strategy', strategy);
+  if (hours) qs.set('hours', String(hours));
+  const body = await apiRequest(`/api/v1/execution/quality?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Execution quality unavailable');
+  return body.execution;
+}
+
+/** GET /api/v1/execution/cost-suggestions — per-symbol backtest cost calibration. */
+export async function fetchCostSuggestions({ refresh = true } = {}) {
+  const qs = new URLSearchParams({ refresh: refresh ? '1' : '0' });
+  const body = await apiRequest(`/api/v1/execution/cost-suggestions?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Cost suggestions unavailable');
+  return body.suggestions ?? [];
+}
+
+/** POST /api/v1/execution/cost-suggestions/apply — approve one symbol's patch. */
+export async function applyCostSuggestion(symbol) {
+  const body = await apiRequest('/api/v1/execution/cost-suggestions/apply', {
+    method: 'POST',
+    body: { symbol },
+  });
+  if (!body?.ok) throw new Error(body?.error || 'Apply failed');
+  return body.applied;
 }
 
 /** GET /api/v1/news/{symbol} — financial headlines (Finnhub, Alpaca, Polygon, yfinance). */

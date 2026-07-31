@@ -88,3 +88,84 @@ describe('invalidateMlBacktests', () => {
     expect(useResearchStore.getState().backtestResults?.run_id).toBe('ml-1');
   });
 });
+
+/** MEMORY_CENTRIC_REVIEW #39 — wholesale history replace must respect caps. */
+describe('setAgentInsightHistory caps (#39)', () => {
+  beforeEach(() => {
+    useResearchStore.setState({ agentInsightHistory: {} });
+  });
+
+  it('caps a symbol history at 20 entries on wholesale replace', () => {
+    const insights = Array.from({ length: 30 }, (_, i) => ({ insight_id: `i${i}` }));
+    useResearchStore.getState().setAgentInsightHistory('BTCUSDT', insights);
+    const hist = useResearchStore.getState().agentInsightHistory.BTCUSDT;
+    expect(hist).toHaveLength(20);
+    expect(hist[0].insight_id).toBe('i0'); // newest-first order preserved
+  });
+
+  it('caps the symbol map at 8 entries', () => {
+    for (let i = 0; i < 10; i++) {
+      useResearchStore.getState().setAgentInsightHistory(`SYM${i}`, [{ insight_id: `x${i}` }]);
+    }
+    const keys = Object.keys(useResearchStore.getState().agentInsightHistory);
+    expect(keys).toHaveLength(8);
+    expect(keys).not.toContain('SYM0');
+    expect(keys).not.toContain('SYM1');
+    expect(keys).toContain('SYM9');
+  });
+
+  it('uppercases the symbol key so replace and append share a bucket', () => {
+    useResearchStore.getState().setAgentInsightHistory('btcusdt', [{ insight_id: 'a' }]);
+    expect(useResearchStore.getState().agentInsightHistory.BTCUSDT).toHaveLength(1);
+  });
+});
+
+/** MEMORY_CENTRIC_REVIEW #42 — analytics TTL + snapshot lifecycle. */
+describe('analyticsReport TTL and backtestSnapshot lifecycle (#42)', () => {
+  beforeEach(() => {
+    useResearchStore.setState({
+      analyticsReport: null,
+      backtestSnapshot: null,
+      backtestResults: null,
+    });
+  });
+
+  it('rebuilds from the partial when the previous report is stale', () => {
+    useResearchStore.setState({
+      analyticsReport: {
+        report: 'dashboard',
+        equity: { points: [1, 2] },
+        _updatedAt: Date.now() - 31 * 60 * 1000,
+      },
+    });
+    useResearchStore.getState().setAnalyticsReport({ report: 'risk', risk: { var95: -3 } });
+    const rep = useResearchStore.getState().analyticsReport;
+    expect(rep.risk).toEqual({ var95: -3 });
+    expect(rep.equity).toBeUndefined(); // stale base dropped, not merged
+    expect(rep.report).toBe('risk');
+  });
+
+  it('merges partials into a fresh dashboard report and keeps identity', () => {
+    useResearchStore.getState().setAnalyticsReport({ report: 'dashboard', equity: { points: [1] } });
+    useResearchStore.getState().setAnalyticsReport({ report: 'risk', risk: { var95: -3 } });
+    const rep = useResearchStore.getState().analyticsReport;
+    expect(rep.report).toBe('dashboard');
+    expect(rep.equity).toEqual({ points: [1] });
+    expect(rep.risk).toEqual({ var95: -3 });
+  });
+
+  it('clears backtestSnapshot when results are cleared', () => {
+    useResearchStore.setState({
+      backtestSnapshot: '{"x":1}',
+      backtestResults: { run_id: 'r1' },
+    });
+    useResearchStore.getState().setBacktestResults(null);
+    expect(useResearchStore.getState().backtestSnapshot).toBeNull();
+  });
+
+  it('keeps backtestSnapshot when results arrive', () => {
+    useResearchStore.setState({ backtestSnapshot: '{"x":1}' });
+    useResearchStore.getState().setBacktestResults({ run_id: 'r2' });
+    expect(useResearchStore.getState().backtestSnapshot).toBe('{"x":1}');
+  });
+});

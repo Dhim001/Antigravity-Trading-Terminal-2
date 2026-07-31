@@ -495,18 +495,51 @@ async def main():
     run_alembic_upgrade_if_enabled()
     system_state.mark_process_starting()
     try:
-        from app.config import BACKTEST_JOB_RETENTION_DAYS, OPTIMIZATION_RETENTION_DAYS
+        from app.config import (
+            BACKTEST_JOB_RETENTION_DAYS,
+            EXEC_QUALITY_MAX_ROWS,
+            EXEC_QUALITY_RETENTION_DAYS,
+            ML_TRAIN_RUNS_RETENTION_DAYS,
+            OPTIMIZATION_RETENTION_DAYS,
+            REJECT_LOG_MAX_ROWS,
+            REJECT_LOG_RETENTION_DAYS,
+        )
         from app.services.bots.backtest_job_store import prune_backtest_jobs
+        from app.services.bots.execution_tca import prune_execution_quality_log
+        from app.services.bots.ml_train_runs import prune_ml_train_runs
         from app.services.bots.optimization_store import prune_optimization_runs
+        from app.services.bots.reject_telemetry import prune_reject_log
 
         opt_del = prune_optimization_runs(OPTIMIZATION_RETENTION_DAYS)
         job_del = prune_backtest_jobs(BACKTEST_JOB_RETENTION_DAYS)
-        if opt_del or job_del:
+        reject_del = prune_reject_log(REJECT_LOG_RETENTION_DAYS, max_rows=REJECT_LOG_MAX_ROWS)
+        runs_del = prune_ml_train_runs(ML_TRAIN_RUNS_RETENTION_DAYS)
+        tca_del = prune_execution_quality_log(
+            EXEC_QUALITY_RETENTION_DAYS, max_rows=EXEC_QUALITY_MAX_ROWS
+        )
+        if opt_del or job_del or reject_del or runs_del or tca_del:
             logging.info(
-                "Retention prune: %s optimization run(s), %s backtest job(s)",
+                "Retention prune: %s optimization run(s), %s backtest job(s), "
+                "%s reject-log row(s), %s ml train run(s), %s exec-quality row(s)",
                 opt_del,
                 job_del,
+                reject_del,
+                runs_del,
+                tca_del,
             )
+        # Phase 2 nightly: refresh backtest cost suggestions from measured TCA
+        # (champion-challenger — operator still approves each apply).
+        try:
+            from app.services.bots.execution_calibration import compute_cost_suggestions
+
+            suggestions = compute_cost_suggestions()
+            ready = [s for s in suggestions if not s.get("insufficient_data")]
+            if ready:
+                logging.info(
+                    "Execution cost calibration refreshed for %d symbol(s)", len(ready)
+                )
+        except Exception:
+            logging.debug("Execution cost calibration refresh failed", exc_info=True)
     except Exception:
         logging.exception("Retention prune failed")
     state.bot_manager.load_bots_from_db()

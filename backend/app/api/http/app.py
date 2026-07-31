@@ -617,6 +617,26 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     async_mode = bool(body.get("async"))
     event_bus = getattr(state, "event_bus", None)
+    # Lab Train (Trigger retrain / Apply & Retrain) must never inherit Optuna
+    # trial flags (skip_persist, _wf_mode, hyperparam_cv bar caps) — those
+    # produce a fast "ok" with no champion write and no loss curve.
+    from app.services.bots.ml_training_window import prepare_lab_champion_train_config
+
+    config = prepare_lab_champion_train_config(config)
+    # Fill train knobs missing from the Lab request with the latest Optuna /
+    # auto-tune best_config (same behaviour as the scheduled retrain drain).
+    # Explicit UI / Apply & Retrain keys always win.
+    try:
+        from app.services.bots.optimization_store import merge_optimized_train_hyperparams
+
+        config = merge_optimized_train_hyperparams(
+            config, symbol, strategy, require_opt_in=True,
+        )
+        # Re-assert champion guards after merge (store only copies train knobs,
+        # but be defensive if a future key leaks).
+        config = prepare_lab_champion_train_config(config)
+    except Exception:
+        logger.debug("Optimized hyperparam merge skipped", exc_info=True)
     config = {
         **config,
         "timeframe": tf,
@@ -953,6 +973,7 @@ async def _fetch_validate_candles_enough(
     vmax = max(200, int(limit))
     candles: list[dict] = []
     cfg = dict(config or {})
+    wf_parity = bool(cfg.get("wf_capacity_parity", True))
 
     while True:
         cfg["training_window_months"] = win
@@ -970,12 +991,20 @@ async def _fetch_validate_candles_enough(
         if nxt is None:
             break
         win = nxt
-        lean_cap = 8_000 if win <= 12 else (18_000 if win <= 24 else 24_000)
+        expand_cap = (
+            bar_limit_for_training_window(
+                win, timeframe=tf, purpose="validate", capacity_parity=True,
+            )
+            if wf_parity
+            else (8_000 if win <= 12 else (18_000 if win <= 24 else 24_000))
+        )
         vmax = max(
             vmax,
             min(
-                bar_limit_for_training_window(win, timeframe=tf, purpose="validate"),
-                lean_cap,
+                bar_limit_for_training_window(
+                    win, timeframe=tf, purpose="validate", capacity_parity=wf_parity,
+                ),
+                expand_cap,
             ),
             min_needed,
         )
@@ -1135,19 +1164,29 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
         tf = normalize_model_timeframe(
             config.get("timeframe") or body.get("timeframe")
         )
-        bar_limit = bar_limit_for_training_window(win_months, timeframe=tf, purpose="validate")
-        # Honor Lab validate_max_bars. Cap scales with window so 18–36mo picks
-        # are not crushed to the old interactive 8k ceiling.
-        validate_hard_cap = (
-            8_000 if win_months <= 12
-            else (18_000 if win_months <= 24 else 24_000)
+        # Accuracy-first Lab Validate: capacity parity matches Train depth.
+        # Explicit wf_capacity_parity=false keeps the old lean interactive caps.
+        wf_parity = bool(config.get("wf_capacity_parity", True))
+        config["wf_capacity_parity"] = wf_parity
+        bar_limit = bar_limit_for_training_window(
+            win_months, timeframe=tf, purpose="validate", capacity_parity=wf_parity,
         )
+        if wf_parity:
+            # bar_limit already respects ML_TRAIN_CANDLE_MAX.
+            validate_hard_cap = bar_limit
+        else:
+            validate_hard_cap = (
+                8_000 if win_months <= 12
+                else (18_000 if win_months <= 24 else 24_000)
+            )
         try:
             user_vmax = int(config.get("validate_max_bars") or 0)
         except (TypeError, ValueError):
             user_vmax = 0
         if user_vmax > 0:
             vmax = min(user_vmax, bar_limit, validate_hard_cap)
+        elif wf_parity:
+            vmax = min(bar_limit, validate_hard_cap)
         else:
             default_cap = (
                 2_500 if win_months <= 6
@@ -1159,6 +1198,7 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             "timeframe": tf,
             "training_window_months": win_months,
             "validate_max_bars": vmax,
+            "wf_capacity_parity": wf_parity,
         }
         try:
             from app.services.bots.ml_data_calendar import calendar_holdout_enabled
@@ -1728,12 +1768,17 @@ async def get_backtest_run_handler(request: Request) -> JSONResponse:
     all_trades = results.get("trades") or []
     results["trades"] = all_trades[-100:]
     results["trades_total"] = len(all_trades)
+    summary = results.get("summary") if isinstance(results.get("summary"), dict) else results
+    from app.services.bots.pretrade_context import suggest_streak_thresholds_from_backtest
+
+    streak_hint = suggest_streak_thresholds_from_backtest(summary)
     return JSONResponse({
         "ok": True,
         "run": {
             **run,
             "results": results,
         },
+        "pretrade_streak_suggestion": streak_hint,
     })
 
 
@@ -1925,12 +1970,14 @@ async def ml_hyperparam_sweep_status_handler(request: Request) -> JSONResponse:
     job_id = request.path_params.get("job_id")
     if not job_id:
         return JSONResponse({"ok": False, "error": "job_id required"}, status_code=400)
-    from app.services.bots.ml_job_store import get_ml_job
+    from app.services.bots.ml_job_store import get_ml_job, public_ml_job
 
     job = get_ml_job(job_id)
     if not job:
         return JSONResponse({"ok": False, "error": "job not found"}, status_code=404)
-    return JSONResponse({"ok": True, "job": job})
+    # Must hydrate offloaded results — raw get_ml_job can drop best_hyperparams
+    # after #31 slim, which broke Apply & Retrain.
+    return JSONResponse({"ok": True, "job": public_ml_job(job, include_result=True)})
 
 
 async def apply_optimized_config_handler(request: Request) -> JSONResponse:
@@ -2013,6 +2060,23 @@ async def apply_optimized_config_handler(request: Request) -> JSONResponse:
         if prior.get(k) != patch[k]
     }
 
+    # Soft compatibility check — a sweep tuned for one strategy/symbol may not
+    # transfer to this bot. Non-blocking (transfer can be intentional), but the
+    # caller should see the mismatch.
+    mismatch_warnings: list[str] = []
+    run_strategy = str(run.get("strategy") or "").upper()
+    bot_strategy = str(bot.get("strategy") or "").upper()
+    if run_strategy and bot_strategy and run_strategy != bot_strategy:
+        mismatch_warnings.append(
+            f"Optimization run strategy is {run_strategy} but bot strategy is {bot_strategy}"
+        )
+    run_symbol = str(run.get("symbol") or "").upper()
+    bot_symbol = str(bot.get("symbol") or "").upper()
+    if run_symbol and bot_symbol and run_symbol != bot_symbol:
+        mismatch_warnings.append(
+            f"Optimization run symbol is {run_symbol} but bot symbol is {bot_symbol}"
+        )
+
     deploy_gate_result = {
         "ok": True,
         "skipped": True,
@@ -2058,6 +2122,7 @@ async def apply_optimized_config_handler(request: Request) -> JSONResponse:
         "optimization_run_id": run_id,
         "config_source": source,
         "config_diff": config_diff,
+        "warnings": mismatch_warnings,
         "deploy_gate_result": deploy_gate_result,
         "bot": updated_bot,
         "detail": detail,
@@ -2111,6 +2176,66 @@ async def get_filter_rejects_handler(request: Request) -> JSONResponse:
     strategy = request.query_params.get("strategy") or None
     data = get_filter_reject_dashboard(bot_id=bot_id, symbol=symbol, strategy=strategy)
     return JSONResponse({"ok": True, "filter_rejects": data})
+
+
+async def get_execution_quality_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/execution/quality — TCA aggregates (EXECUTION_RISK Phase 2)."""
+    from app.services.bots.execution_tca import execution_quality_dashboard
+
+    try:
+        hours = int(request.query_params.get("hours", "0")) or None
+    except (TypeError, ValueError):
+        hours = None
+    data = execution_quality_dashboard(
+        bot_id=request.query_params.get("bot_id") or None,
+        symbol=request.query_params.get("symbol") or None,
+        strategy=request.query_params.get("strategy") or None,
+        hours=hours,
+    )
+    return JSONResponse({"ok": True, "execution": data})
+
+
+async def get_execution_cost_suggestions_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/execution/cost-suggestions — refresh + list calibration."""
+    from app.services.bots.execution_calibration import (
+        compute_cost_suggestions,
+        list_cost_suggestions,
+    )
+
+    refresh = (request.query_params.get("refresh") or "1").strip().lower() not in {
+        "0", "false",
+    }
+    fresh: list[dict] = []
+    if refresh:
+        fresh = compute_cost_suggestions()
+    persisted = list_cost_suggestions()
+    if fresh:
+        # Merge: persisted rows carry applied flags; fresh compute carries the
+        # insufficient-data symbols that are intentionally not persisted.
+        by_symbol = {row["symbol"]: row for row in persisted}
+        for entry in fresh:
+            sym = entry.get("symbol")
+            if sym and sym not in by_symbol and entry.get("insufficient_data"):
+                persisted.append(entry)
+    return JSONResponse({"ok": True, "suggestions": persisted})
+
+
+async def apply_execution_cost_suggestion_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/execution/cost-suggestions/apply — operator approval."""
+    from app.services.bots.execution_calibration import apply_cost_suggestion
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    symbol = (body or {}).get("symbol")
+    patch = apply_cost_suggestion(symbol)
+    if patch is None:
+        return JSONResponse(
+            {"ok": False, "error": f"No cost suggestion for symbol {symbol!r}"},
+            status_code=404,
+        )
+    return JSONResponse({"ok": True, "applied": patch})
 
 
 async def get_market_news_handler(request: Request) -> JSONResponse:
@@ -2940,6 +3065,9 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/bots/{bot_id}/meta-label/retrain", meta_label_retrain_handler, methods=["POST"]),
         Route("/api/v1/bots/{bot_id}/meta-label/operational", meta_label_operational_handler, methods=["POST"]),
         Route("/api/v1/bots/filter-rejects", get_filter_rejects_handler, methods=["GET"]),
+        Route("/api/v1/execution/quality", get_execution_quality_handler, methods=["GET"]),
+        Route("/api/v1/execution/cost-suggestions", get_execution_cost_suggestions_handler, methods=["GET"]),
+        Route("/api/v1/execution/cost-suggestions/apply", apply_execution_cost_suggestion_handler, methods=["POST"]),
         Route("/api/v1/agent/pipeline/scan-deploy", agent_pipeline_scan_deploy_handler, methods=["POST"]),
         Route("/api/v1/agent/pipeline/status", agent_pipeline_status_handler, methods=["GET"]),
         Route("/api/v1/routes", list_api_routes, methods=["GET"]),

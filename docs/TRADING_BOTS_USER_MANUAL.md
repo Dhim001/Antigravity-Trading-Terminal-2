@@ -266,6 +266,32 @@ Before **Deploy Bot**, the gate typically checks:
 
 **Force deploy** exists for paper/debug only — do not use for live capital.
 
+### 7.5 Pre-Trade streak policy (adaptive)
+
+Losing streaks are common even in **profitable** backtests (`max_consecutive_losses`
+in the summary). Live Pre-Trade Intel therefore **does not hard-veto** on a short
+streak by default:
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `pretrade_streak_mode` | `reduce` | Size down (0.5 at 3 losses, 0.25 at 5+); `veto` restores old hard block; `off` disables |
+| `pretrade_aware_signals` | on | ML/agent prefer **HOLD** when streak ≥ fail limit or cool-down is active |
+| `pretrade_streak_cooldown_sec` | 900 | Brief entry pause after streak action (stops WARN spam) |
+| `max_consecutive_losses` | 5 | Risk Sentinel pause owner — Pre-Trade escalates to VETO only at this level |
+
+Use backtest `max_consecutive_losses` to set thresholds (suggested knobs via
+`suggest_streak_thresholds_from_backtest`). Hard VETO still applies to event
+blackouts, price gaps, and market anomalies.
+
+While a streak cool-down is armed, `pretrade_aware_signals` converts new entries
+to HOLD (spam stop). Streak count alone does **not** permanent-freeze the bot —
+size cuts happen via Pre-Trade `REDUCE_SIZE` so a reduced entry can still clear
+the streak.
+
+**ML trade-state features** (`ml_include_trade_state`): opt-in schema v5 adds
+`bot_loss_streak`, `bot_win_rate_24h`, `hours_since_last_loss`. Requires a Lab
+**retrain** — do not mix with v4 models.
+
 ---
 
 ## 8. Live / paper operations

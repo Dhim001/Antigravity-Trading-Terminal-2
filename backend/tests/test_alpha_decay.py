@@ -31,6 +31,11 @@ class AlphaDecayTests(unittest.IsolatedAsyncioTestCase):
         self.bot_manager.screener = MagicMock()
 
         self.monitor = AlphaDecayMonitor(self.bot_manager)
+        self._candles_patcher = patch(
+            "app.services.bots.alpha_decay.get_bot_candles", return_value=[],
+        )
+        self._candles_patcher.start()
+        self.addCleanup(self._candles_patcher.stop)
 
     @patch("app.services.bots.alpha_decay.get_connection")
     @patch("app.services.bots.alpha_decay.get_backtest_expectations")
@@ -112,7 +117,8 @@ class AlphaDecayTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.alpha_decay.get_connection")
     @patch("app.services.bots.alpha_decay.get_backtest_expectations")
     @patch("app.services.bots.alpha_decay.emit_notification", new_callable=AsyncMock)
-    async def test_filter_rejection_decay_alert(self, mock_emit, mock_expectations, mock_db):
+    @patch("app.services.altdata.calendar.is_equity_rth_open", return_value=(True, None))
+    async def test_filter_rejection_decay_alert(self, mock_rth, mock_emit, mock_expectations, mock_db):
         """Rejection rate of >=80% triggers consecutive rejections alert."""
         mock_expectations.return_value = (55.0, 1.5)
         mock_cursor = MagicMock()
@@ -133,6 +139,29 @@ class AlphaDecayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(res["decaying_bots"]), 1)
         reasons = res["decaying_bots"][0]["reasons"]
         self.assertTrue(any("Filter Stale" in r for r in reasons))
+
+    @patch("app.services.bots.alpha_decay.get_connection")
+    @patch("app.services.bots.alpha_decay.get_backtest_expectations")
+    @patch("app.services.bots.alpha_decay.emit_notification", new_callable=AsyncMock)
+    @patch("app.services.altdata.calendar.is_equity_rth_open", return_value=(False, "After market close"))
+    async def test_filter_stale_skipped_outside_rth(self, mock_rth, mock_emit, mock_expectations, mock_db):
+        """Post-close filter blocks must not trip Filter Stale for equities."""
+        mock_expectations.return_value = (55.0, 1.5)
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+        mock_db.return_value = mock_conn
+
+        bot = self.bot_manager.active_bots["bot-1"]
+        for _ in range(20):
+            bot["signal_history"].append(False)
+
+        res = await self.monitor.evaluate()
+        decaying = res.get("decaying_bots") or []
+        for row in decaying:
+            self.assertFalse(any("Filter Stale" in r for r in row.get("reasons") or []))
+
 
     @patch("app.services.bots.alpha_decay.get_connection")
     @patch("app.services.bots.alpha_decay.get_meta_label_store")

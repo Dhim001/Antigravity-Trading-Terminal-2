@@ -389,6 +389,43 @@ export function mapVwapSeries(candles) {
   return padIndicatorValues(buildVwapSeriesValues(candles));
 }
 
+/**
+ * Patch the last main-series slot in place, re-referencing the outer array
+ * only when a value actually changed.
+ *
+ * MEMORY_CENTRIC_REVIEW #4/#36 — ECharts caches parsed sources per data-array
+ * reference, so passing the same reference skips the redraw (stale chart) while
+ * slicing on every tick churns GC ~4×/s per chart. Mutating the slot in place
+ * plus an equality guard gives us neither: quiet ticks allocate nothing and
+ * skip the repaint entirely, changed ticks get one fresh outer array.
+ *
+ * @returns {{ data: Array, changed: boolean }} sliced outer array when changed,
+ *   the original reference when unchanged.
+ */
+export function patchMainSlotInPlace(mainData, idx, bar, chartType) {
+  if (!mainData || idx < 0 || idx >= mainData.length || !bar) {
+    return { data: mainData, changed: false };
+  }
+  if (chartType === 'line') {
+    if (mainData[idx] === bar.close) return { data: mainData, changed: false };
+    mainData[idx] = bar.close;
+    return { data: mainData.slice(), changed: true };
+  }
+  const slot = mainData[idx];
+  if (Array.isArray(slot)) {
+    if (slot[0] === bar.open && slot[1] === bar.close && slot[2] === bar.low && slot[3] === bar.high) {
+      return { data: mainData, changed: false };
+    }
+    slot[0] = bar.open;
+    slot[1] = bar.close;
+    slot[2] = bar.low;
+    slot[3] = bar.high;
+    return { data: mainData.slice(), changed: true };
+  }
+  mainData[idx] = [bar.open, bar.close, bar.low, bar.high];
+  return { data: mainData.slice(), changed: true };
+}
+
 /** Fast live patch: price (+ volume) only — indicators update on new bar / full rebuild. */
 export function updateLiveSeriesCache(cache, bars, chartType, active, indicatorTheme, { forceRebuild = false } = {}) {
   const barCount = bars.length;
@@ -402,32 +439,40 @@ export function updateLiveSeriesCache(cache, bars, chartType, active, indicatorT
     cache.chartType = chartType;
     cache.main = buildMainSeriesData(bars, chartType);
     cache.volume = active.volume ? buildVolumeSeriesData(bars, indicatorTheme) : null;
-    return;
+    return true;
   }
 
   const idx = barCount - 1;
   const bar = bars[idx];
-  // Always assign a new last slot + new array ref. ECharts skips redraw when the
-  // series `data` reference is unchanged and only inner OHLC cells were mutated.
-  if (chartType === 'line') {
-    const next = cache.main.slice();
-    next[idx] = bar.close;
-    cache.main = next;
-  } else {
-    const next = cache.main.slice();
-    next[idx] = [bar.open, bar.close, bar.low, bar.high];
-    cache.main = next;
-  }
+  const mainPatch = patchMainSlotInPlace(cache.main, idx, bar, chartType);
+  cache.main = mainPatch.data;
+  let changed = mainPatch.changed;
+
   if (active.volume) {
     if (!cache.volume) {
       cache.volume = buildVolumeSeriesData(bars, indicatorTheme);
+      changed = true;
     } else {
       const nextVol = volumeSeriesEntry(bar, indicatorTheme);
-      const next = cache.volume.slice();
-      next[idx] = nextVol;
-      cache.volume = next;
+      const prevVol = cache.volume[idx];
+      if (
+        !prevVol
+        || typeof prevVol !== 'object'
+        || prevVol.value !== nextVol.value
+        || prevVol.itemStyle?.color !== nextVol.itemStyle?.color
+      ) {
+        if (prevVol && typeof prevVol === 'object') {
+          prevVol.value = nextVol.value;
+          prevVol.itemStyle = nextVol.itemStyle;
+        } else {
+          cache.volume[idx] = nextVol;
+        }
+        cache.volume = cache.volume.slice();
+        changed = true;
+      }
     }
   }
+  return changed;
 }
 
 export function buildLightLiveSeriesPatchesFromCache(cache, chartType, active) {

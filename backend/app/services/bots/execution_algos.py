@@ -19,7 +19,14 @@ OMS. The async ``execute_sliced_order`` submits child orders to the OMS with
    configurable spacing between slices.
 
 Opt-in via ``execution_algo`` config: ``"single"`` (default, legacy) |
-``"vwap"`` | ``"pov"``.
+``"vwap"`` | ``"pov"`` | ``"adaptive"`` (Phase 3 MPC-lite).
+
+Phase 3 (EXECUTION_RISK_INTELLIGENCE_PLAN): arrival-anchored aggressiveness —
+an ``AdaptivePacer`` compresses the next inter-slice gap when the mark drifts
+in the order's favour (take liquidity while prices are good) and stretches it
+on adverse drift (wait for reversion), bounded to ±50% cumulative schedule
+deviation. ``choose_adaptive_algo`` picks POV vs VWAP per order from measured
+TCA impact stats (Phase 2).
 """
 
 from __future__ import annotations
@@ -162,6 +169,77 @@ def slice_pov(
 
 # ── Async execution ────────────────────────────────────────────────────────
 
+DEFAULT_DRIFT_THRESHOLD_BPS = 15.0   # |drift| that triggers pacing adjustment
+SPEEDUP_FACTOR = 0.5                 # compress gap on favourable drift
+SLOWDOWN_FACTOR = 2.0                # stretch gap on adverse drift
+MAX_SCHEDULE_DEVIATION = 0.5         # ±50% cumulative deviation bound
+
+
+@dataclass
+class AdaptivePacer:
+    """Arrival-anchored aggressiveness controller (Phase 3 MPC-lite).
+
+    Between slices, compares the current mark to the arrival benchmark:
+      * favourable drift ≥ threshold → compress the next gap (speed up: take
+        liquidity while prices are good),
+      * adverse drift ≥ threshold → stretch the next gap (slow down: wait for
+        reversion),
+      * otherwise → keep the planned gap.
+
+    Cumulative deviation from the planned schedule is clamped to
+    ±``max_deviation`` of the planned offset at the next slice (±50% default).
+    Pure/stateful-by-design so pacing is unit-testable without an OMS.
+    """
+
+    side: str
+    arrival_price: float
+    drift_threshold_bps: float = DEFAULT_DRIFT_THRESHOLD_BPS
+    speedup_factor: float = SPEEDUP_FACTOR
+    slowdown_factor: float = SLOWDOWN_FACTOR
+    max_deviation: float = MAX_SCHEDULE_DEVIATION
+    _elapsed: float = 0.0           # sum of gaps slept so far (schedule time)
+
+    @property
+    def _sign(self) -> float:
+        return -1.0 if str(self.side or "").upper() == "SELL" else 1.0
+
+    def drift_bps(self, mark_price: float | None) -> float | None:
+        """Signed drift vs arrival in cost terms: positive = adverse."""
+        if mark_price is None or self.arrival_price <= 0:
+            return None
+        return self._sign * (float(mark_price) - self.arrival_price) / self.arrival_price * 10_000.0
+
+    def adjust_gap(
+        self,
+        planned_gap: float,
+        planned_offset_next: float,
+        mark_price: float | None,
+    ) -> float:
+        """Return the pacing-adjusted gap before the next slice."""
+        if planned_gap <= 0:
+            return 0.0
+        drift = self.drift_bps(mark_price)
+        if drift is None:
+            gap = planned_gap
+        elif drift <= -abs(self.drift_threshold_bps):
+            gap = planned_gap * self.speedup_factor
+        elif drift >= abs(self.drift_threshold_bps):
+            gap = planned_gap * self.slowdown_factor
+        else:
+            gap = planned_gap
+
+        # Bound cumulative deviation to ±max_deviation of the planned schedule.
+        anchor = max(float(planned_offset_next), 1e-9)
+        max_dev = abs(self.max_deviation) * anchor
+        deviation = (self._elapsed + gap) - anchor
+        if deviation > max_dev:
+            gap -= deviation - max_dev
+        elif deviation < -max_dev:
+            gap += -max_dev - deviation
+        gap = max(0.0, gap)
+        self._elapsed += gap
+        return gap
+
 
 async def execute_sliced_order(
     oms,
@@ -169,6 +247,8 @@ async def execute_sliced_order(
     *,
     slices: list[OrderSlice],
     on_fill=None,
+    pacer: AdaptivePacer | None = None,
+    mark_price_fn=None,
 ) -> dict:
     """Submit child orders to the OMS over time.
 
@@ -177,6 +257,9 @@ async def execute_sliced_order(
 
     ``on_fill`` is an optional async callback ``(slice, result)`` invoked
     after each child fill — useful for logging / telemetry.
+
+    Phase 3: pass ``pacer`` + ``mark_price_fn`` (sync callable → current mark
+    or None) to adapt inter-slice pacing around the arrival benchmark.
     """
     if not slices:
         return {"ok": False, "error": "no slices", "total_filled": 0.0}
@@ -187,7 +270,7 @@ async def execute_sliced_order(
     total_filled = 0.0
     weighted_price_sum = 0.0
 
-    for sl in slices:
+    for pos, sl in enumerate(slices):
         if sl.quantity <= 0:
             continue
         child_req = dict(base_req)
@@ -216,9 +299,19 @@ async def execute_sliced_order(
         # time_offset_sec is absolute (from parent submission), so the gap is
         # next.offset - current.offset. For uniform schedules this equals
         # interval_sec; for POV (variable offsets) it adapts correctly.
-        if sl.index < len(slices) - 1:
-            next_offset = slices[sl.index + 1].time_offset_sec
+        # NOTE: index by list position, not sl.index — POV skips zero-volume
+        # bars, leaving non-sequential indices that would mis-time gaps.
+        if pos < len(slices) - 1:
+            next_offset = slices[pos + 1].time_offset_sec
             gap = next_offset - sl.time_offset_sec
+            if pacer is not None:
+                mark = None
+                if mark_price_fn is not None:
+                    try:
+                        mark = mark_price_fn()
+                    except Exception:
+                        logger.debug("mark_price_fn failed", exc_info=True)
+                gap = pacer.adjust_gap(gap, next_offset, mark)
             if gap > 0:
                 await asyncio.sleep(gap)
 
@@ -246,16 +339,74 @@ async def execute_sliced_order(
     }
 
 
+def adopt_partial_sliced_result(sliced_result: dict | None, *, fallback_id: str) -> dict | None:
+    """Single-shot-shaped result for a sliced run that DID fill something but
+    produced no clean broker-id outcome.
+
+    The caller's fallback after a sliced attempt is ``place_order`` for the
+    FULL parent quantity — safe only when nothing was filled or submitted.
+    When slices already filled against the broker, re-submitting would double
+    the position, so the sliced outcome must be adopted instead. Returns None
+    when a genuine full-quantity fallback is safe.
+    """
+    if not sliced_result:
+        return None
+    if not (sliced_result.get("total_filled") or sliced_result.get("order_ids")):
+        return None
+    return {
+        "status": "success",
+        "order_id": ",".join(str(oid) for oid in (sliced_result.get("order_ids") or []))
+        or fallback_id,
+        "average_fill_price": sliced_result.get("avg_fill_price") or None,
+        "filled_quantity": sliced_result.get("total_filled"),
+    }
+
+
 # ── Config resolver ────────────────────────────────────────────────────────
 
 
 def resolve_execution_algo(config: dict | None) -> str:
-    """Return the configured execution algo: 'single' | 'vwap' | 'pov'."""
+    """Return the configured execution algo: 'single' | 'vwap' | 'pov' | 'adaptive'.
+
+    ``adaptive`` (Phase 3) is resolved to a concrete algo by the caller via
+    ``choose_adaptive_algo`` before ``build_slices`` is invoked.
+    """
     cfg = config or {}
     algo = str(cfg.get("execution_algo") or "single").lower()
-    if algo not in ("single", "vwap", "pov"):
+    if algo not in ("single", "vwap", "pov", "adaptive"):
         return "single"
     return algo
+
+
+def choose_adaptive_algo(
+    symbol: str | None,
+    *,
+    impact_threshold_bps: float = 10.0,
+    default_algo: str = "vwap",
+    measured: dict | None = None,
+) -> str:
+    """Phase 3 stats-informed algo choice: prefer POV when the measured
+    market impact for this symbol exceeds the threshold (participate at a
+    fixed fraction of volume instead of pushing a time schedule); otherwise
+    VWAP. Falls back to ``default_algo`` when no measurement exists.
+
+    ``measured`` may be injected for tests; otherwise read from the Phase 2
+    TCA log via ``execution_tca.measured_symbol_impact``.
+    """
+    stats = measured
+    if stats is None:
+        try:
+            from app.services.bots import execution_tca
+
+            stats = execution_tca.measured_symbol_impact(symbol)
+        except Exception:
+            stats = None
+    if stats and (stats.get("n") or 0) > 0:
+        impact = stats.get("avg_impact_bps")
+        if impact is not None and float(impact) > float(impact_threshold_bps):
+            return "pov"
+        return "vwap"
+    return default_algo
 
 
 def build_slices(

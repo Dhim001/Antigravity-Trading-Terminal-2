@@ -246,7 +246,8 @@ def evaluate_trial_purged_cv(
     cfg.setdefault("skip_snapshot", True)
     cfg.setdefault("skip_refit", True)
     cfg["_wf_mode"] = True
-    cfg.setdefault("wf_capacity_parity", False)
+    # Optuna trials must stay lean even if the Lab base config had parity on.
+    cfg["wf_capacity_parity"] = False
 
     folds = max(2, min(5, int(n_folds or 3)))
     if len(candles or []) < 180:

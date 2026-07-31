@@ -43,9 +43,17 @@ def test_htf_train_honors_calendar_not_1m_scale():
     assert b <= 100_000
 
 
-def test_htf_validate_leaner_than_train():
+def test_htf_validate_parity_matches_train():
     train = bar_limit_for_training_window(6, timeframe="5m", purpose="train")
     validate = bar_limit_for_training_window(6, timeframe="5m", purpose="validate")
+    assert validate == train
+
+
+def test_htf_validate_leaner_than_train_when_parity_off():
+    train = bar_limit_for_training_window(6, timeframe="5m", purpose="train")
+    validate = bar_limit_for_training_window(
+        6, timeframe="5m", purpose="validate", capacity_parity=False,
+    )
     assert validate < train
     assert validate >= 2_500
 
@@ -103,11 +111,16 @@ def test_skip_live_artifact_writes():
     assert skip_live_artifact_writes(None) is False
 
 
-def test_validate_purpose_allows_more_than_train():
+def test_validate_purpose_matches_train_at_parity():
     train = bar_limit_for_training_window(3, purpose="train")
     validate = bar_limit_for_training_window(3, purpose="validate")
-    assert validate >= train
+    assert validate == train
 
+
+def test_validate_lean_1m_allows_more_than_train():
+    train = bar_limit_for_training_window(3, purpose="train")
+    validate = bar_limit_for_training_window(3, purpose="validate", capacity_parity=False)
+    assert validate >= train
 
 def test_trim_candles_to_training_window():
     now = int(time.time())

@@ -228,6 +228,24 @@ def regime_signal_scale(
 # ── Persistence + per-bot cache ────────────────────────────────────────────
 
 _bot_models: dict[str, RegimeModel] = {}
+_cache_lru = None
+
+
+def _get_cache_lru():
+    """MEMORY_CENTRIC_REVIEW #28 — bound LRU+TTL so a growing bot fleet cannot
+    retain every fitted model for the life of the process. Disk stays the
+    source of truth; eviction only drops the hot copy."""
+    global _cache_lru
+    if _cache_lru is None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
+        _cache_lru = bind_dict_cache(
+            _bot_models,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
+    return _cache_lru
 
 
 def _default_path(bot_id: str) -> str:
@@ -243,10 +261,12 @@ def save_regime_model(bot_id: str, model: RegimeModel, *, path: str | None = Non
         json.dump(model.to_dict(), fh, indent=2)
     os.replace(tmp, target)
     _bot_models[bot_id] = model
+    _get_cache_lru().touch(bot_id)
 
 
 def load_regime_model(bot_id: str, *, path: str | None = None) -> RegimeModel | None:
     if bot_id in _bot_models:
+        _get_cache_lru().touch(bot_id)
         return _bot_models[bot_id]
     target = path or _default_path(bot_id)
     try:
@@ -254,6 +274,7 @@ def load_regime_model(bot_id: str, *, path: str | None = None) -> RegimeModel | 
             model = RegimeModel.from_dict(json.load(fh))
         if model:
             _bot_models[bot_id] = model
+            _get_cache_lru().touch(bot_id)
         return model
     except FileNotFoundError:
         return None
@@ -264,9 +285,11 @@ def load_regime_model(bot_id: str, *, path: str | None = None) -> RegimeModel | 
 
 def invalidate_regime_cache(bot_id: str | None = None) -> None:
     if bot_id is None:
+        _get_cache_lru().clear()
         _bot_models.clear()
     else:
         _bot_models.pop(bot_id, None)
+        _get_cache_lru().discard(bot_id)
 
 
 # ── Live gate ──────────────────────────────────────────────────────────────

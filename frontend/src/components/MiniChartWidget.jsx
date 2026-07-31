@@ -13,6 +13,7 @@ import { CHART_LAYOUT_RESET_EVENT, DEFAULT_TERMINAL_SETTINGS } from '../settings
 import { calcEMA, calcBollingerBands, buildVwapSeriesValues } from '../utils/indicators';
 import { cn } from '@/lib/utils';
 import { getCandles, toUnixSeconds } from '../services/candleBuffer';
+import { patchMainSlotInPlace } from '../lib/chart/chartHelpers';
 import { Maximize2, Minimize2, Link2 } from 'lucide-react';
 import { cycleLinkGroup, LINK_GROUP_COLORS } from '../lib/chartLinkGroups';
 import { Button } from '@/components/ui/button';
@@ -184,17 +185,6 @@ function patchLastDisplayBucket(displayBars, raw, intervalSecs) {
   prevLast.close = close;
   prevLast.volume = vol;
   return 'patched';
-}
-
-function patchMiniMainSlot(mainData, idx, bar, chartType) {
-  if (!mainData || idx < 0 || idx >= mainData.length || !bar) return mainData;
-  const next = mainData.slice();
-  if (chartType === 'line') {
-    next[idx] = bar.close;
-  } else {
-    next[idx] = [bar.open, bar.close, bar.low, bar.high];
-  }
-  return next;
 }
 
 function padMiniIndicatorValues(data) {
@@ -544,8 +534,12 @@ export default function MiniChartWidget({
       configureChart();
       return;
     }
-    const nextMain = patchMiniMainSlot(main, idx, last, chartType);
+    // MEMORY_CENTRIC_REVIEW #36 — in-place slot patch; skip repaint entirely
+    // when the visible values did not move (e.g. volume-only bucket updates on
+    // line charts).
+    const { data: nextMain, changed: mainChanged } = patchMainSlotInPlace(main, idx, last, chartType);
     mainDataRef.current = nextMain;
+    if (!mainChanged) return;
 
     const mainId = chartType === 'line' ? 'main' : 'candles';
     try {

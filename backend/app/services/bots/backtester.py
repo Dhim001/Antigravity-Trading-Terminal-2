@@ -870,12 +870,23 @@ class BacktesterService:
                     )
                     return
                 if pt.get("verdict") == "REDUCE_SIZE":
-                    qty *= float(pt.get("size_multiplier") or 0.5)
+                    from app.services.bots.pretrade_context import (
+                        apply_reduce_size_multiplier,
+                    )
+
+                    qty, _size_note = apply_reduce_size_multiplier(
+                        qty,
+                        float(pt.get("size_multiplier") or 0.5),
+                        vetoes=pt.get("vetoes") or [],
+                        recent_closed_pnls=exit_pnls[-3:],
+                        use_regime_sizing=bool(cfg.get("use_regime_sizing", True)),
+                    )
                     chain.record(
                         "pretrade",
                         ok=True,
                         reason=pt.get("reasoning"),
                         size_multiplier=pt.get("size_multiplier"),
+                        size_note=_size_note,
                     )
 
             if qty < _MIN_QTY:
@@ -1093,12 +1104,23 @@ class BacktesterService:
                     )
                     return
                 if pt.get("verdict") == "REDUCE_SIZE":
-                    qty *= float(pt.get("size_multiplier") or 0.5)
+                    from app.services.bots.pretrade_context import (
+                        apply_reduce_size_multiplier,
+                    )
+
+                    qty, _size_note = apply_reduce_size_multiplier(
+                        qty,
+                        float(pt.get("size_multiplier") or 0.5),
+                        vetoes=pt.get("vetoes") or [],
+                        recent_closed_pnls=exit_pnls[-3:],
+                        use_regime_sizing=bool(cfg.get("use_regime_sizing", True)),
+                    )
                     chain.record(
                         "pretrade",
                         ok=True,
                         reason=pt.get("reasoning"),
                         size_multiplier=pt.get("size_multiplier"),
+                        size_note=_size_note,
                     )
 
             if qty < _MIN_QTY:

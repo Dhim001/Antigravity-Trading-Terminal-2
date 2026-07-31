@@ -192,7 +192,191 @@ def get_bot_entry_hold(bot: dict, *, total_pnl: float | None = None) -> dict | N
                 "block_reason": block_reason,
             }
 
-    return _compute_drawdown_hold(bot, total_pnl)
+    hold = _compute_drawdown_hold(bot, total_pnl)
+    if hold:
+        return hold
+
+    # Pre-Trade streak cool-down (adaptive reduce path) — brief entry pause.
+    from app.services.bots.pretrade_context import get_bot_streak_cooldown_hold
+
+    pt_hold = get_bot_streak_cooldown_hold(bot)
+    if pt_hold:
+        return pt_hold
+
+    # Phase 5: dd-budget ladder freeze (tier ≥2) surfaces as an entry hold so
+    # the UI chip and _check_streak_and_cooloff see the freeze consistently.
+    ladder = evaluate_dd_ladder(bot, total_pnl)
+    if ladder and ladder.get("freeze_entries"):
+        return {
+            "kind": "dd_budget",
+            "tier": ladder["tier"],
+            "consumed_pct": ladder["consumed_pct"],
+            "budget_pct": ladder["budget_pct"],
+            "reason": f"DD budget {ladder['consumed_pct']:.0f}% consumed",
+            "block_reason": ladder["reason"],
+        }
+    return None
+
+
+# ── Phase 4: Contradictory-position blocker ────────────────────────────────
+
+CONTRARY_POLICIES = ("allow", "block", "net")
+
+
+def resolve_contrary_policy(cfg: dict | None) -> str:
+    """Per-bot contrary-position policy: 'allow' (default, legacy) | 'block' | 'net'."""
+    policy = str((cfg or {}).get("contrary_position_policy") or "allow").lower()
+    return policy if policy in CONTRARY_POLICIES else "allow"
+
+
+def check_contrary_position(
+    *,
+    bot: dict,
+    side: str,
+    quantity: float,
+    fleet: list[dict],
+) -> RiskDecision | None:
+    """Fleet-wide contradictory-position gate (EXECUTION_RISK Phase 4).
+
+    Conservative by design — the check only engages when BOTH bots opt in:
+    the entering bot must set ``contrary_position_policy`` to ``block`` or
+    ``net``, and the position-holding bot must also have a non-``allow``
+    policy. Legacy bots (default ``allow``) never interfere with each other.
+
+    ``fleet`` entries: ``{bot_id, symbol, status, config, position_size}``
+    with signed position_size (positive = long, negative = short).
+
+    Returns None when the entry proceeds unchanged; otherwise a RiskDecision
+    that either blocks (``block`` policy / fully netted) or reduces quantity
+    (``net`` policy partially netted).
+    """
+    policy = resolve_contrary_policy(RiskGate._parse_bot_config(bot))
+    if policy == "allow":
+        return None
+
+    symbol = str(bot.get("symbol") or "").upper()
+    my_id = bot.get("id")
+    side = str(side or "").upper()
+    opposite_total = 0.0
+    holders: list[str] = []
+
+    for entry in fleet or []:
+        if entry.get("bot_id") == my_id:
+            continue
+        if str(entry.get("symbol") or "").upper() != symbol:
+            continue
+        if str(entry.get("status") or "").upper() != "RUNNING":
+            continue
+        # Both bots must opt in — an "allow" holder never blocks anyone.
+        holder_cfg = entry.get("config") or {}
+        if isinstance(holder_cfg, str):
+            try:
+                holder_cfg = json.loads(holder_cfg) if holder_cfg else {}
+            except (json.JSONDecodeError, TypeError):
+                holder_cfg = {}
+        if resolve_contrary_policy(holder_cfg if isinstance(holder_cfg, dict) else {}) == "allow":
+            continue
+        size = float(entry.get("position_size") or 0.0)
+        # Entering BUY contradicts an existing SHORT; entering SELL (short)
+        # contradicts an existing LONG.
+        if (side == "BUY" and size < 0) or (side == "SELL" and size > 0):
+            opposite_total += abs(size)
+            holders.append(str(entry.get("bot_id")))
+
+    if opposite_total <= 0:
+        return None
+
+    holder_label = ", ".join(holders[:3]) + ("…" if len(holders) > 3 else "")
+    if policy == "block":
+        return RiskDecision(
+            False,
+            f"Contrary position: {holder_label} holds the opposite side of "
+            f"{symbol} ({opposite_total:.4f}) — entry blocked (policy=block).",
+        )
+    # net: reduce the entry by the opposing size.
+    net_qty = (quantity or 0.0) - opposite_total
+    if net_qty <= 1e-9:
+        return RiskDecision(
+            False,
+            f"Contrary position: {holder_label} holds {opposite_total:.4f} of "
+            f"{symbol} — entry fully netted (policy=net).",
+        )
+    return RiskDecision(
+        True,
+        f"Contrary position: netted {opposite_total:.4f} against {holder_label} "
+        f"— size reduced to {net_qty:.4f} (policy=net).",
+        net_qty,
+    )
+
+
+# ── Phase 5: Per-bot drawdown budget ladder ────────────────────────────────
+
+DD_LADDER_REDUCE_PCT = 50.0   # ≥50% of budget consumed → halve size
+DD_LADDER_FREEZE_PCT = 80.0   # ≥80% → flatten + freeze entries
+DD_LADDER_STOP_PCT = 100.0    # ≥100% → stop bot
+
+
+def evaluate_dd_ladder(bot: dict, total_pnl: float | None = None) -> dict | None:
+    """Per-bot drawdown budget ladder (EXECUTION_RISK Phase 5).
+
+    Opt-in via ``dd_budget_pct`` (budget = allocation × pct/100). Returns None
+    when disabled / not computable; otherwise a tier dict:
+
+      tier 0  below 50% consumed — no action
+      tier 1  ≥50%  — ``size_mult`` (default 0.5) applies to entries
+      tier 2  ≥80%  — freeze entries + flatten open position (once per crossing)
+      tier 3  ≥100% — stop the bot
+
+    Side effects (flatten/stop) are the caller's job; this is pure evaluation
+    so both live and tests share one ladder.
+    """
+    cfg = RiskGate._parse_bot_config(bot)
+    budget_pct = float(cfg.get("dd_budget_pct") or 0)
+    if budget_pct <= 0:
+        return None
+
+    allocation = float(bot.get("allocation") or 0)
+    if allocation <= 0:
+        return None
+
+    pnl = _resolve_bot_total_pnl(bot, total_pnl)
+    budget = allocation * budget_pct / 100.0
+    consumed = (abs(pnl) / budget * 100.0) if pnl < 0 and budget > 0 else 0.0
+    size_mult = float(cfg.get("dd_budget_size_mult") or 0.5)
+    size_mult = max(0.0, min(1.0, size_mult))
+
+    if consumed >= DD_LADDER_STOP_PCT:
+        tier = 3
+    elif consumed >= DD_LADDER_FREEZE_PCT:
+        tier = 2
+    elif consumed >= DD_LADDER_REDUCE_PCT:
+        tier = 1
+    else:
+        tier = 0
+
+    reasons = {
+        1: f"DD budget {consumed:.0f}% consumed (≥{DD_LADDER_REDUCE_PCT:.0f}%) — size halved.",
+        2: (
+            f"DD budget {consumed:.0f}% consumed (≥{DD_LADDER_FREEZE_PCT:.0f}%) — "
+            "entries frozen, flattening position."
+        ),
+        3: (
+            f"DD budget {consumed:.0f}% consumed (≥{DD_LADDER_STOP_PCT:.0f}%) — "
+            "budget exhausted, stopping bot."
+        ),
+    }
+    return {
+        "tier": tier,
+        "consumed_pct": round(consumed, 1),
+        "budget_pct": budget_pct,
+        "budget_amount": round(budget, 2),
+        "total_pnl": round(pnl, 2),
+        "size_mult": size_mult if tier == 1 else 1.0,
+        "freeze_entries": tier >= 2,
+        "flatten": tier >= 2,
+        "stop": tier >= 3,
+        "reason": reasons.get(tier, ""),
+    }
 
 
 class RiskGate:

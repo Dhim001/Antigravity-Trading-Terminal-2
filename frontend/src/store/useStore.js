@@ -56,8 +56,21 @@ const setLocal = (key, val) => {
 
 /** Max symbols to keep orderBook data for (active + recently viewed). */
 const MAX_ORDERBOOK_SYMBOLS = 6;
+/** Max symbols retained in tickerData — interest-gated LRU (#38). The
+ * watchlist universe, active symbol, and position symbols are never evicted;
+ * least-recently-updated extras beyond the cap are. */
+const MAX_TICKER_SYMBOLS = 96;
+/** Max symbols / per-symbol entries retained in tickData (#38). */
+const MAX_TICKDATA_SYMBOLS = 8;
+const MAX_TICKDATA_ENTRIES = 500;
+/** Recency stamps for tickerData eviction — module-side so stamp writes do
+ * not re-render subscribers; pruned alongside tickerData. */
+const tickerUpdateStamp = new Map();
+let tickerStampCounter = 0;
 /** Max trade history entries retained client-side. */
 const MAX_TRADE_HISTORY = 500;
+/** Max bot-history entries mirrored client-side (#40b). */
+const MAX_BOT_HISTORY = 200;
 /** Max symbols with chart drawings. */
 const MAX_CHART_DRAWING_SYMBOLS = 8;
 /** Max drawing primitives per symbol. */
@@ -114,6 +127,8 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   tradeStats: null,
 
   systemStats: { clients: 1, positions_count: 0, pending_orders_count: 0, filled_trades_count: 0, tick_interval: 0.25, volatility_multiplier: 1.0 },
+  /** @type {{ active?: boolean, reason?: string } | null} */
+  safeMode: { active: false },
 
   activeBots: [],
   isBotRunning: false,
@@ -359,9 +374,35 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     });
   },
 
-  setSystemStats: (stats) => set({ systemStats: stats }),
+  setSystemStats: (stats) => set((state) => {
+    const next = { systemStats: stats && typeof stats === 'object' ? stats : state.systemStats };
+    const sm = stats?.runtime?.safe_mode;
+    if (sm && typeof sm === 'object') {
+      next.safeMode = sm;
+    }
+    return next;
+  }),
 
-  setTerminalConfig: ({ terminalMode, executionMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled, orderCapabilities, isOperator }) => set((state) => ({
+  setSafeMode: (safeMode) => set((state) => {
+    const next = safeMode && typeof safeMode === 'object'
+      ? safeMode
+      : { active: false };
+    const prevRuntime = state.systemStats?.runtime && typeof state.systemStats.runtime === 'object'
+      ? state.systemStats.runtime
+      : {};
+    const systemStats = state.systemStats && typeof state.systemStats === 'object'
+      ? {
+          ...state.systemStats,
+          runtime: {
+            ...prevRuntime,
+            safe_mode: next,
+          },
+        }
+      : state.systemStats;
+    return { safeMode: next, systemStats };
+  }),
+
+  setTerminalConfig: ({ terminalMode, executionMode, allowLiveBots, allowCustomStrategies, symbols, terminalRole, distributed, botMinCandles, archiveTicksEnabled, archiveParquetEnabled, archiveBackend, workerAlive, workerHeartbeatAge, agentLlmEnabled, agentLlmAvailable, agentLlmProvider, agentLlmModel, agentLlmModels, agentVisionEnabled, agentEnabled, scannerEnabled, orderCapabilities, isOperator, safeMode }) => set((state) => ({
     terminalMode: terminalMode ?? state.terminalMode,
     executionMode: executionMode ?? state.executionMode,
     isLive: (terminalMode ?? state.terminalMode) !== 'SIMULATED',
@@ -385,6 +426,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     agentVisionEnabled: agentVisionEnabled ?? state.agentVisionEnabled,
     agentEnabled: agentEnabled ?? state.agentEnabled,
     scannerEnabled: scannerEnabled ?? state.scannerEnabled,
+    ...(safeMode !== undefined
+      ? { safeMode: safeMode && typeof safeMode === 'object' ? safeMode : { active: false } }
+      : {}),
     ...(Array.isArray(symbols) ? { symbolsList: symbols } : {}),
   })),
 
@@ -471,11 +515,28 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   setSelectedBotId: (id) => set({ selectedBotId: id }),
   setBotDetail: (detail) => set({ botDetail: detail }),
   setBotDrawerOpen: (open) => set({ botDrawerOpen: !!open }),
-  setBotHistory: (bots) => set({ botHistory: Array.isArray(bots) ? bots : [] }),
+  setBotHistory: (bots) => set({
+    // #40b — cap the mirrored history; order-history storms grow heap otherwise.
+    botHistory: Array.isArray(bots) ? bots.slice(0, MAX_BOT_HISTORY) : [],
+  }),
 
-  setTickData: (data, meta) => set({
-    tickData: data && typeof data === 'object' ? { ...data } : {},
-    tickMeta: meta ?? null,
+  setTickData: (data, meta) => set((state) => {
+    const src = data && typeof data === 'object' ? data : {};
+    const out = {};
+    // Per-symbol entry cap — tick ranges grow unbounded on long ranges (#38).
+    for (const [sym, ticks] of Object.entries(src)) {
+      out[sym] = Array.isArray(ticks) && ticks.length > MAX_TICKDATA_ENTRIES
+        ? ticks.slice(-MAX_TICKDATA_ENTRIES)
+        : ticks;
+    }
+    // Symbol cap — keep the active symbol + most recent keys (#38).
+    const keys = Object.keys(out);
+    if (keys.length > MAX_TICKDATA_SYMBOLS) {
+      const keep = new Set([state.activeSymbol]);
+      for (const k of keys.slice(-MAX_TICKDATA_SYMBOLS)) keep.add(k);
+      for (const k of keys) if (!keep.has(k)) delete out[k];
+    }
+    return { tickData: out, tickMeta: meta ?? null };
   }),
 
   setOrderResult: (result) => {
@@ -558,6 +619,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
             nextTickers = { ...tickerData };
             tickerChanged = true;
           }
+          tickerUpdateStamp.set(symbol, ++tickerStampCounter);
           if (prev) {
             const nextPrev = { ...prev };
             for (const k of tickerFields) {
@@ -618,6 +680,35 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
                 if (keys.length) candlesTouched = true;
               }
             }
+          }
+        }
+      }
+
+      // MEMORY #38 — interest-gated LRU: never evict the watchlist universe,
+      // the active symbol, or open-position symbols; evict least-recently
+      // updated extras beyond the cap (priceDirections pruned in tandem).
+      if (tickerChanged) {
+        const tKeys = Object.keys(nextTickers);
+        if (tKeys.length > MAX_TICKER_SYMBOLS) {
+          const protectedSyms = new Set([state.activeSymbol]);
+          for (const s of state.symbolsList || []) protectedSyms.add(s);
+          for (const s of Object.keys(state.positions || {})) protectedSyms.add(s);
+          const evictable = tKeys
+            .filter((k) => !protectedSyms.has(k))
+            .sort((a, b) => (tickerUpdateStamp.get(a) || 0) - (tickerUpdateStamp.get(b) || 0));
+          let excess = tKeys.length - MAX_TICKER_SYMBOLS;
+          for (const k of evictable) {
+            if (excess <= 0) break;
+            delete nextTickers[k];
+            delete priceDirections[k];
+            tickerUpdateStamp.delete(k);
+            excess -= 1;
+          }
+          nextDirections = priceDirections;
+          directionChanged = true;
+          // Keep the stamp map bounded to what the store actually holds.
+          for (const k of [...tickerUpdateStamp.keys()]) {
+            if (!(k in nextTickers)) tickerUpdateStamp.delete(k);
           }
         }
       }

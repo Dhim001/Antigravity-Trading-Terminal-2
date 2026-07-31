@@ -3,6 +3,9 @@ import os
 # Base Directory & Database Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_ROOT = os.path.dirname(BASE_DIR)
+# Shared on-disk data root (models, calibrations, job results, archives).
+# Several bot services import this — previously reinvented per-module.
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
 
 def _load_env_file(path: str) -> None:
@@ -75,10 +78,15 @@ ML_TRAIN_MAX_WORKERS = int(os.environ.get("ML_TRAIN_MAX_WORKERS", "1"))
 ML_TRAIN_RSS_LIMIT_MB = int(os.environ.get("ML_TRAIN_RSS_LIMIT_MB", "4096"))
 # Cap concurrent async train/validate tasks so candle lists are not pinned unboundedly.
 ML_ASYNC_MAX_INFLIGHT = int(os.environ.get("ML_ASYNC_MAX_INFLIGHT", "1"))
-# Torch/RL trains: run in a worker thread (not ProcessPool). Pickling tens of thousands of
-# enriched candles into a spawned process hangs Lab Train from the start on Windows, and
-# CUDA + spawn is fragile once the parent has touched the GPU. GBM still uses the pool.
-ML_TRAIN_TORCH_IN_PROCESS = os.environ.get("ML_TRAIN_TORCH_IN_PROCESS", "true").lower() in (
+# Torch/RL trains: default to the process pool (MEMORY_CENTRIC_REVIEW #41) so the
+# largest RSS spikes stay out of the live feed/OMS process (Hummingbot lesson).
+# The previous in-process default avoided two Windows issues: (1) pickling tens of
+# thousands of enriched candles into a spawn worker looked like a hang from pct=0 —
+# mitigated now by parent-side candle trimming for pool-bound validate jobs
+# (submit_validate_job) and progress-file writes from the worker; (2) CUDA + spawn
+# fragility — workers import torch lazily and touch CUDA only post-spawn.
+# Set ML_TRAIN_TORCH_IN_PROCESS=1 to opt back into in-process threads for debugging.
+ML_TRAIN_TORCH_IN_PROCESS = os.environ.get("ML_TRAIN_TORCH_IN_PROCESS", "false").lower() in (
     "1", "true", "yes"
 )
 # Training device override: empty = auto (CUDA if available). Example: ML_TRAIN_DEVICE=cpu
@@ -155,6 +163,32 @@ BOT_MAX_DRAWDOWN_PCT = float(os.environ.get("BOT_MAX_DRAWDOWN_PCT", "15.0"))
 BOT_MAX_PER_SYMBOL = int(os.environ.get("BOT_MAX_PER_SYMBOL", "3"))
 OPTIMIZATION_RETENTION_DAYS = int(os.environ.get("OPTIMIZATION_RETENTION_DAYS", "30"))
 BACKTEST_JOB_RETENTION_DAYS = int(os.environ.get("BACKTEST_JOB_RETENTION_DAYS", "14"))
+# Reject-telemetry + ML run history retention (MEMORY_CENTRIC_REVIEW #29/#30).
+REJECT_LOG_RETENTION_DAYS = int(os.environ.get("REJECT_LOG_RETENTION_DAYS", "7"))
+REJECT_LOG_MAX_ROWS = int(os.environ.get("REJECT_LOG_MAX_ROWS", "500000"))
+ML_TRAIN_RUNS_RETENTION_DAYS = int(os.environ.get("ML_TRAIN_RUNS_RETENTION_DAYS", "30"))
+# Terminal ML job results larger than this are offloaded to disk and slimmed in
+# RAM (MEMORY_CENTRIC_REVIEW #31); smaller results stay hot in the job store.
+ML_JOB_RESULT_OFFLOAD_BYTES = int(os.environ.get("ML_JOB_RESULT_OFFLOAD_BYTES", "65536"))
+
+# --- Execution TCA (EXECUTION_RISK_INTELLIGENCE_PLAN Phase 1) ----------------
+# Arrival-price benchmark capture + implementation-shortfall decomposition for
+# every bot order (immediate fills at submit, live fills at reconciliation).
+# Read-only telemetry: failures are logged and swallowed, never raised into the
+# order path. Set EXEC_QUALITY_LOG_ENABLED=0 to disable capture entirely.
+EXEC_QUALITY_LOG_ENABLED = os.environ.get("EXEC_QUALITY_LOG_ENABLED", "1").strip().lower() not in {
+    "0", "false", "off",
+}
+EXEC_QUALITY_RETENTION_DAYS = int(os.environ.get("EXEC_QUALITY_RETENTION_DAYS", "30"))
+EXEC_QUALITY_MAX_ROWS = int(os.environ.get("EXEC_QUALITY_MAX_ROWS", "200000"))
+
+# Phase 2 — backtest cost calibration from measured live execution. Suggested
+# slippage = measured avg exec cost (spread+impact) × safety factor, clamped to
+# [EXEC_CAL_MIN_BPS, EXEC_CAL_MAX_BPS]; latency suggestion = max(0, avg delay).
+EXEC_CAL_MIN_SAMPLES = int(os.environ.get("EXEC_CAL_MIN_SAMPLES", "10"))
+EXEC_CAL_SAFETY_FACTOR = float(os.environ.get("EXEC_CAL_SAFETY_FACTOR", "1.25"))
+EXEC_CAL_MIN_BPS = float(os.environ.get("EXEC_CAL_MIN_BPS", "0.5"))
+EXEC_CAL_MAX_BPS = float(os.environ.get("EXEC_CAL_MAX_BPS", "200"))
 # Parallel symbol/sweep workers (memory-bound — default 4).
 BACKTEST_PARALLEL_WORKERS = int(os.environ.get("BACKTEST_PARALLEL_WORKERS", "4"))
 # Run portfolio / sweep / WF / reasoning in a background asyncio task.
@@ -207,6 +241,14 @@ PRETRADE_SENTIMENT_THRESHOLD = float(os.environ.get("PRETRADE_SENTIMENT_THRESHOL
 PRETRADE_SENTIMENT_MIN_MENTIONS = int(os.environ.get("PRETRADE_SENTIMENT_MIN_MENTIONS", "3"))
 PRETRADE_REDUCE_SIZE_FACTOR = float(os.environ.get("PRETRADE_REDUCE_SIZE_FACTOR", "0.5"))
 PRETRADE_GAP_VETO_PCT = float(os.environ.get("PRETRADE_GAP_VETO_PCT", "3.0"))
+# failures_streak: reduce (default) | veto | off — streaks are often survivable in backtests
+PRETRADE_STREAK_MODE = os.environ.get("PRETRADE_STREAK_MODE", "reduce").strip().lower()
+PRETRADE_STREAK_REDUCE_FACTOR = float(os.environ.get("PRETRADE_STREAK_REDUCE_FACTOR", "0.5"))
+PRETRADE_STREAK_SEVERE_FACTOR = float(os.environ.get("PRETRADE_STREAK_SEVERE_FACTOR", "0.25"))
+PRETRADE_STREAK_SEVERE_LIMIT = int(os.environ.get("PRETRADE_STREAK_SEVERE_LIMIT", "5"))
+PRETRADE_STREAK_COOLDOWN_SEC = int(os.environ.get("PRETRADE_STREAK_COOLDOWN_SEC", "900"))  # 15 min
+PRETRADE_AWARE_SIGNALS = os.environ.get("PRETRADE_AWARE_SIGNALS", "true").lower() in ("1", "true", "yes")
+PRETRADE_WARN_DEBOUNCE_SEC = int(os.environ.get("PRETRADE_WARN_DEBOUNCE_SEC", "900"))
 
 # Post-Trade Learning Agent (close → classify → lesson → optional config apply)
 POSTTRADE_LEARNER_ENABLED = os.environ.get("POSTTRADE_LEARNER_ENABLED", "true").lower() in ("1", "true", "yes")

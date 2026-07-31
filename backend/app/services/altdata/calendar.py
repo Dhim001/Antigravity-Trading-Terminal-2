@@ -139,3 +139,141 @@ def calendar_gate(symbol: str, ts: float | None) -> tuple[bool, str | None]:
     if open_ok:
         return False, None
     return True, reason or "Market session closed"
+
+
+def _bar_epoch(bar: dict[str, Any] | None) -> float | None:
+    if not isinstance(bar, dict):
+        return None
+    raw = bar.get("time")
+    if raw is None:
+        return None
+    try:
+        ts = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if ts > 1e12:
+        ts /= 1000.0
+    return ts
+
+
+def _rth_open_with_holidays(
+    ts: float,
+    *,
+    holidays: dict[str, dict[str, Any]],
+) -> tuple[bool, str | None]:
+    """RTH check using a preloaded holiday map (avoids per-bar DB hits).
+
+    Matches ``is_equity_rth_open``: any stored holiday date is a full close;
+    early-close parsing applies only when no holiday row exists (same as live).
+    """
+    local = _to_local(ts)
+    if local.weekday() >= 5:
+        return False, "Weekend — equity market closed"
+    row = holidays.get(_date_key(local))
+    if row:
+        title = row.get("title") or "Market holiday"
+        return False, f"Exchange holiday ({title})"
+    close_t = _parse_early_close(None) or _RTH_CLOSE
+    open_t = _RTH_OPEN
+    local_t = local.time().replace(microsecond=0)
+    if local_t < open_t:
+        return False, f"Before market open ({open_t.strftime('%H:%M')} {RISK_EQUITY_MARKET_TZ})"
+    if local_t >= close_t:
+        return False, f"After market close ({close_t.strftime('%H:%M')} {RISK_EQUITY_MARKET_TZ})"
+    return True, None
+
+
+def filter_equity_rth_candles(symbol: str, candles: list | None) -> list:
+    """Keep only US equity RTH bars for training/backtest feature builds.
+
+    Crypto (and when calendar gates are disabled) returns the list unchanged.
+    Holiday map is loaded once for the batch.
+    """
+    bars = list(candles or [])
+    if not bars:
+        return bars
+    if not CALENDAR_GATES_ENABLED or is_crypto_symbol(symbol):
+        return bars
+    try:
+        holidays = _load_holiday_map()
+    except Exception:
+        holidays = {}
+    out: list = []
+    for bar in bars:
+        epoch = _bar_epoch(bar if isinstance(bar, dict) else None)
+        if epoch is None:
+            out.append(bar)
+            continue
+        open_ok, _ = _rth_open_with_holidays(epoch, holidays=holidays)
+        if open_ok:
+            out.append(bar)
+    return out
+
+
+def session_features_for_bar(
+    symbol: str | None,
+    ts: float | None,
+) -> dict[str, float]:
+    """Equity session features for ML; crypto gets always-open defaults.
+
+    Uses clock-based RTH (9:30–16:00 ET, weekdays) without hitting the holiday DB
+    so training feature extraction stays cheap. Live calendar gates still enforce
+    holidays separately.
+
+    Returns:
+      is_rth, minutes_from_open_norm, et_hour_sin, et_hour_cos
+    """
+    import math
+
+    # Crypto / unknown → treat as always open; keep ET clocks at neutral defaults.
+    if not symbol or is_crypto_symbol(symbol):
+        return {
+            "is_rth": 1.0,
+            "minutes_from_open_norm": 0.0,
+            "et_hour_sin": 0.0,
+            "et_hour_cos": 1.0,
+        }
+    if ts is None:
+        return {
+            "is_rth": 0.0,
+            "minutes_from_open_norm": 0.0,
+            "et_hour_sin": 0.0,
+            "et_hour_cos": 1.0,
+        }
+    try:
+        epoch = float(ts)
+    except (TypeError, ValueError):
+        return {
+            "is_rth": 0.0,
+            "minutes_from_open_norm": 0.0,
+            "et_hour_sin": 0.0,
+            "et_hour_cos": 1.0,
+        }
+    if epoch > 1e12:
+        epoch /= 1000.0
+
+    local = _to_local(epoch)
+    et_hour = local.hour + local.minute / 60.0
+    angle = 2.0 * math.pi * et_hour / 24.0
+    et_sin, et_cos = math.sin(angle), math.cos(angle)
+
+    local_t = local.time().replace(microsecond=0)
+    open_ok = local.weekday() < 5 and _RTH_OPEN <= local_t < _RTH_CLOSE
+    open_dt = local.replace(hour=_RTH_OPEN.hour, minute=_RTH_OPEN.minute, second=0, microsecond=0)
+    minutes = (local - open_dt).total_seconds() / 60.0
+    session_len = float(
+        (_RTH_CLOSE.hour * 60 + _RTH_CLOSE.minute) - (_RTH_OPEN.hour * 60 + _RTH_OPEN.minute)
+    )
+    if session_len <= 0:
+        session_len = 390.0
+    if open_ok:
+        minutes_norm = max(0.0, min(1.0, minutes / session_len))
+    else:
+        minutes_norm = 0.0
+
+    return {
+        "is_rth": 1.0 if open_ok else 0.0,
+        "minutes_from_open_norm": minutes_norm,
+        "et_hour_sin": et_sin,
+        "et_hour_cos": et_cos,
+    }

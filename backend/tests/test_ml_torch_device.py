@@ -50,7 +50,24 @@ def test_resolve_wf_torch_device_opt_out():
 def test_cap_wf_epochs():
     from app.services.bots.ml_torch_device import cap_wf_epochs
 
-    assert cap_wf_epochs(80, {"_wf_mode": True}, default=8) == 8
-    assert cap_wf_epochs(80, {"_wf_mode": True, "wf_epochs": 12}, default=8) == 12
+    # Lean WF (explicit parity off) clamps to wf_epochs / default.
+    assert cap_wf_epochs(80, {"_wf_mode": True, "wf_capacity_parity": False}, default=8) == 8
+    assert (
+        cap_wf_epochs(
+            80, {"_wf_mode": True, "wf_capacity_parity": False, "wf_epochs": 12}, default=8,
+        )
+        == 12
+    )
     assert cap_wf_epochs(80, {}, default=8) == 80
-    assert cap_wf_epochs(3, {"_wf_mode": True}, default=8) == 3
+    assert cap_wf_epochs(3, {"_wf_mode": True, "wf_capacity_parity": False}, default=8) == 3
+    # Capacity parity (default True when key missing) keeps full train epochs.
+    assert cap_wf_epochs(80, {"_wf_mode": True}, default=8) == 80
+    assert cap_wf_epochs(80, {"_wf_mode": True, "wf_capacity_parity": True}, default=8) == 80
+    assert (
+        cap_wf_epochs(
+            100,
+            {"_wf_mode": True, "wf_capacity_parity": True, "wf_epochs": 12},
+            default=8,
+        )
+        == 100
+    )

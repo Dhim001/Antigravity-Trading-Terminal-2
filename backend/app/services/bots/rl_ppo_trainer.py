@@ -236,29 +236,39 @@ def train_ppo_agent(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("RL_PPO_AGENT", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
+    if cfg.get("champion_train"):
+        wf_mode = False
 
-    # Interactive WF/PBO calls trainer(symbol, candles, config=cfg) without
-    # total_timesteps — keep those runs short so validate finishes in-UI.
+    # Interactive WF/PBO calls trainer without total_timesteps — lean only
+    # when capacity parity is off. Otherwise keep the function-arg budget
+    # (Lab Train default 200k) or an explicit config override above.
+    wf_parity = bool(cfg.get("wf_capacity_parity", True))
     if cfg.get("total_timesteps") is not None:
         total_timesteps = int(cfg["total_timesteps"])
-    elif wf_mode:
+    elif wf_mode and not wf_parity:
         total_timesteps = 2048
 
     gamma = float(cfg.get("gamma", 0.99))
     gae_lambda = float(cfg.get("gae_lambda", 0.95))
     clip_epsilon = float(cfg.get("clip_epsilon", 0.2))
-    ppo_epochs = int(cfg.get("ppo_epochs", 2 if wf_mode else 10))
-    n_steps = int(cfg.get("n_steps", 512 if wf_mode else 2048))
-    # Interactive WF clamps steps so Lab Validate finishes; flag capacity gap.
-    if wf_mode:
+    ppo_epochs = int(cfg.get("ppo_epochs", 2 if (wf_mode and not wf_parity) else 10))
+    n_steps = int(cfg.get("n_steps", 512 if (wf_mode and not wf_parity) else 2048))
+    # Fast WF clamps steps so Lab Validate finishes; capacity parity keeps
+    # production-scale rollouts for accurate OOS returns.
+    if wf_mode and not wf_parity:
         ppo_epochs = min(ppo_epochs, 4)
         n_steps = min(n_steps, 1024)
         total_timesteps = min(total_timesteps, max(n_steps, 8192))
-    hidden_dim = int(cfg.get("hidden_dim", 64 if wf_mode else 256))
+    hidden_dim = int(cfg.get(
+        "hidden_dim",
+        64 if (wf_mode and not wf_parity) else 256,
+    ))
     lr = float(cfg.get("learning_rate", 3e-4))
     vf_coef = float(cfg.get("vf_coef", 0.5))
     ent_coef = float(cfg.get("ent_coef", 0.01))
@@ -286,6 +296,7 @@ def train_ppo_agent(
         }
 
     # Create environment (numpy / CPU)
+    cfg.setdefault("symbol", symbol)
     env = TradingEnv(candles, config=cfg)
 
     # Build model on train device
@@ -469,6 +480,11 @@ def train_ppo_agent(
         or cfg.get("skip_onnx_export")
         or cfg.get("skip_persist")
     )
+    if cfg.get("champion_train"):
+        skip_persist = False
+        cfg["skip_snapshot"] = False
+        cfg.pop("_wf_mode", None)
+        cfg.pop("wf_mode", None)
 
     metadata = {
         "symbol": symbol,

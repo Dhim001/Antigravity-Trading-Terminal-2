@@ -336,6 +336,10 @@ def record_pending_fill(
     is_exit: bool = False,
     entry_price: float | None = None,
     insight_snapshot: dict | None = None,
+    arrival_price: float | None = None,
+    arrival_bid: float | None = None,
+    arrival_ask: float | None = None,
+    exec_algo: str | None = None,
 ) -> str:
     """Queue a live order for broker confirmation before bot_trades write."""
     pending_id = str(uuid.uuid4())
@@ -345,8 +349,9 @@ def record_pending_fill(
     cursor.execute(
         """
         INSERT INTO bot_pending_fills
-        (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price, insight_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price, insight_snapshot,
+         arrival_price, arrival_bid, arrival_ask, exec_algo)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             pending_id,
@@ -360,6 +365,10 @@ def record_pending_fill(
             1 if is_exit else 0,
             entry_price,
             snapshot_json,
+            arrival_price,
+            arrival_bid,
+            arrival_ask,
+            exec_algo,
         ),
     )
     conn.commit()
@@ -374,7 +383,8 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
         cursor.execute(
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
-                   signal_id, is_exit, entry_price, created_at, insight_snapshot
+                   signal_id, is_exit, entry_price, created_at, insight_snapshot,
+                   arrival_price, arrival_bid, arrival_ask, exec_algo
             FROM bot_pending_fills WHERE bot_id = ?
             ORDER BY created_at ASC
             """,
@@ -384,7 +394,8 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
         cursor.execute(
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
-                   signal_id, is_exit, entry_price, created_at, insight_snapshot
+                   signal_id, is_exit, entry_price, created_at, insight_snapshot,
+                   arrival_price, arrival_bid, arrival_ask, exec_algo
             FROM bot_pending_fills
             ORDER BY created_at ASC
             """

@@ -24,8 +24,7 @@ from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
-    bar_to_signal_features,
-    signal_features_to_vector,
+    precompute_signal_feature_matrix,
 )
 from app.services.bots.ml_triple_barrier import label_distribution, label_triple_barrier
 
@@ -127,19 +126,22 @@ def build_transformer_sequences(
 ) -> tuple[np.ndarray, np.ndarray]:
     n = len(candles)
     feature_lb = 20
+    feat_matrix = precompute_signal_feature_matrix(
+        candles, feature_lookback=feature_lb,
+    )
     seqs_x, seqs_y = [], []
 
     for i in range(lookback + feature_lb, n - max_holding_bars):
+        if i >= len(labels):
+            break
         lbl = labels[i]
         if lbl.get("barrier_hit") == "invalid":
             continue
-        window = []
-        for j in range(i - lookback + 1, i + 1):
-            lb_start = max(0, j - feature_lb)
-            feat = bar_to_signal_features(candles[j], lookback_rows=candles[lb_start:j])
-            window.append(signal_features_to_vector(feat))
-        seqs_x.append(np.stack(window))
-        seqs_y.append(LABEL_MAP[lbl["label"]])
+        mapped = LABEL_MAP.get(lbl.get("label"))
+        if mapped is None:
+            continue
+        seqs_x.append(feat_matrix[i - lookback + 1 : i + 1])
+        seqs_y.append(mapped)
 
     if not seqs_x:
         return np.array([]), np.array([])
@@ -156,21 +158,28 @@ def train_transformer_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("TRANSFORMER_SIGNAL", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 90))
     d_model = int(cfg.get("d_model", 128))
     nhead = int(cfg.get("nhead", 4))
     n_layers = int(cfg.get("num_layers", 4))
     lr = float(cfg.get("learning_rate", 0.0005))
-    if bool(cfg.get("_wf_mode")) and "min_train_samples" not in raw_cfg:
+    if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train") and "min_train_samples" not in raw_cfg:
         min_samples = int(cfg.get("wf_min_train_samples", 150))
     else:
         min_samples = int(cfg.get("min_train_samples", 300))
-    # Interactive WF: smaller net so folds finish; full train keeps Lab architecture.
-    if bool(cfg.get("_wf_mode")):
+    # Interactive WF: smaller net so folds finish; capacity parity keeps
+    # full Lab architecture for accurate OOS.
+    if (
+        bool(cfg.get("_wf_mode"))
+        and not cfg.get("champion_train")
+        and not bool(cfg.get("wf_capacity_parity", True))
+    ):
         lookback = min(lookback, int(cfg.get("wf_lookback", 60)))
         d_model = min(d_model, int(cfg.get("wf_d_model", 64)))
         n_layers = min(n_layers, int(cfg.get("wf_num_layers", 2)))
@@ -192,7 +201,7 @@ def train_transformer_model(
         suggest_batch_size,
     )
 
-    if bool(cfg.get("_wf_mode")):
+    if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train"):
         epochs = cap_wf_epochs(epochs, cfg, default=8)
         device = resolve_wf_torch_device(cfg)
     else:

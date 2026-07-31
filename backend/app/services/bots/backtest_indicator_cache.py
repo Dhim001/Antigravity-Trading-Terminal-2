@@ -67,6 +67,14 @@ EXECUTION_ONLY_KEYS = frozenset({
     "vwap_slices",
     "pov_rate",
     "slice_interval_sec",
+    # Phase 3: adaptive execution
+    "execution_adaptive",
+    "adaptive_impact_threshold_bps",
+    "adaptive_drift_threshold_bps",
+    # Phase 4/5: contrary-position policy + drawdown budget ladder
+    "contrary_position_policy",
+    "dd_budget_pct",
+    "dd_budget_size_mult",
     "use_vol_sizing",
     "direction_mode",
     "timeframe",

@@ -159,6 +159,18 @@ def _insight_summary(insight: dict) -> str:
     reasons = insight.get("reasons") or []
     if reasons:
         parts.append("reasons=" + "; ".join(str(r) for r in reasons[:3]))
+    # Pre-Trade / loss-streak awareness so the Judge can prefer HOLD.
+    pt = insight.get("pretrade_context") or insight.get("trade_state")
+    if isinstance(pt, dict):
+        streak = pt.get("consecutive_losses")
+        verdict = pt.get("last_pretrade_verdict")
+        cool = pt.get("cool_until_ts")
+        if streak is not None:
+            parts.append(f"loss_streak={streak}")
+        if verdict:
+            parts.append(f"pretrade_verdict={verdict}")
+        if cool:
+            parts.append("pretrade_cooldown=active")
     return " ".join(parts)
 
 
@@ -179,7 +191,8 @@ _JUDGE_SYSTEM = (
     "market insight. Return JSON: {\"signal\": \"BUY\"|\"SELL\"|\"NONE\", "
     "\"confidence\": 0.0-1.0, \"reasoning\": \"one sentence\"}. "
     "Only choose BUY or SELL if the winning argument is materially stronger. "
-    "When in doubt, choose NONE."
+    "When in doubt, or when loss_streak is elevated / pretrade_cooldown is active, "
+    "choose NONE (wait)."
 )
 
 

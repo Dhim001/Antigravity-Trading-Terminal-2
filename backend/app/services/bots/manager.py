@@ -30,6 +30,7 @@ from app.services.bots import analytics as bot_analytics
 from app.services.bots import positions as bot_positions
 from app.services.bots import signal_ledger
 from app.services.bots import reject_telemetry
+from app.services.bots import execution_tca
 from app.services.bots.config_validation import normalize_bot_config, sanitize_bot_config
 from app.services.runtime import system_state
 
@@ -329,6 +330,79 @@ class BotManagerService:
         except Exception:
             pass
 
+    async def _log_pretrade_debounced(
+        self,
+        bot_id: str,
+        bot: dict,
+        message: str,
+        *,
+        level: str = "WARN",
+    ) -> None:
+        """Emit identical Pre-Trade messages at most once per debounce window."""
+        from app.config import PRETRADE_WARN_DEBOUNCE_SEC
+
+        now = time.time()
+        key = f"{level}:{message}"
+        last = bot.get("_pretrade_warn_log") or {}
+        try:
+            last_key = str(last.get("key") or "")
+            last_ts = float(last.get("ts") or 0)
+        except (TypeError, ValueError):
+            last_key, last_ts = "", 0.0
+        debounce = max(0, int(PRETRADE_WARN_DEBOUNCE_SEC))
+        if last_key == key and debounce > 0 and (now - last_ts) < debounce:
+            return
+        bot["_pretrade_warn_log"] = {"key": key, "ts": now}
+        await self.log_bot_event(bot_id, level, message)
+
+    async def _publish_pretrade_streak_event(
+        self,
+        bot: dict,
+        verdict: dict,
+        streak_action: dict,
+    ) -> None:
+        """Notify other agents when a loss streak escalates Pre-Trade action."""
+        if not self.agent_event_bus:
+            return
+        try:
+            from app.services.agent.agent_event_bus import AgentEvent
+            from app.services.agent.reasoning import AgentReasoning, Observation
+
+            streak = int(streak_action.get("streak") or 0)
+            obs = Observation(
+                "failures_streak",
+                "danger",
+                0.9,
+                streak_action.get("reason") or f"{streak} losses",
+                {"streak": streak, "verdict": verdict.get("verdict")},
+            )
+            reasoning = AgentReasoning(
+                observations=[obs],
+                synthesis=str(verdict.get("reasoning") or ""),
+                decision=str(verdict.get("verdict") or "REDUCE_SIZE"),
+                confidence=0.85,
+                recommendation_strength="moderate",
+            )
+            await self.agent_event_bus.publish(
+                AgentEvent(
+                    source_agent="PRETRADE_INTEL",
+                    event_type="STREAK_ESCALATE",
+                    payload={
+                        "bot_id": bot.get("id"),
+                        "symbol": bot.get("symbol"),
+                        "strategy": bot.get("strategy"),
+                        "streak": streak,
+                        "verdict": verdict.get("verdict"),
+                        "size_multiplier": verdict.get("size_multiplier"),
+                        "cool_until_ts": bot.get("_pretrade_streak_cool_until"),
+                    },
+                    timestamp=time.time(),
+                    reasoning=reasoning,
+                )
+            )
+        except Exception:
+            logger.debug("pretrade streak AgentEvent publish failed", exc_info=True)
+
     def get_account_balance(self):
         balances = self.oms.get_account_data().get("balances", {})
         usd = balances.get("USD", {}).get("balance")
@@ -559,6 +633,40 @@ class BotManagerService:
         await self._set_bot_status(bot_id, "ERROR")
         await self.log_bot_event(bot_id, "ERROR", reason)
 
+    async def _flatten_bot_for_ladder(
+        self, bot: dict, pos_size: float, price: float, reason: str
+    ) -> None:
+        """Phase 5 tier-2: close the bot's open position via the normal exit
+        path (mirrors weekend/stale-position flattening)."""
+        size = float(pos_size or 0)
+        if abs(size) < 1e-8:
+            return
+        bot_id = bot["id"]
+        symbol = bot["symbol"]
+        pos = bot_positions.get_bot_position(bot_id, symbol) or {}
+        avg = float(pos.get("avg_price") or price)
+        side = "SELL" if size > 0 else "BUY"
+        # Risk-driven flatten must execute immediately — force single-shot so
+        # execution slicing / adaptive pacing can't drip a de-risk exit out
+        # over minutes while the drawdown budget is blown.
+        cfg = bot.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg) if cfg else {}
+            except (json.JSONDecodeError, TypeError):
+                cfg = {}
+        flat_bot = {**bot, "config": {**cfg, "execution_algo": "single"}}
+        await self._execute_order(
+            flat_bot,
+            side,
+            abs(size),
+            price,
+            {"signal": "CLOSE", "reasons": [reason]},
+            is_exit=True,
+            bar_time=int(time.time()),
+            entry_price=avg or price,
+        )
+
     async def _maybe_auto_pause_on_entry_hold(self, bot_id: str) -> bool:
         """Pause immediately when a trade pushes the bot into streak or drawdown hold.
 
@@ -668,6 +776,8 @@ class BotManagerService:
     ) -> None:
         """LIVE_MASSIVE / LIVE_ALPACA: evaluate HT BAR_CLOSE bots from native REST/cache."""
         if not runs_live_feed_bot_ticks() or not ALLOW_LIVE_BOTS or feed is None:
+            return
+        if system_state.is_safe_mode_active():
             return
         if not self.active_bots:
             return
@@ -828,7 +938,21 @@ class BotManagerService:
                 if not hasattr(self, "_recent_bar_volumes"):
                     self._recent_bar_volumes = {}
                 # Keep last 50 bars — enough for POV to fill a typical parent order.
+                # Re-insert to maintain recency order for the eviction below.
+                self._recent_bar_volumes.pop(symbol, None)
                 self._recent_bar_volumes[symbol] = vols[-50:]
+                # MEMORY #32 — keys accumulate per symbol ever bar-closed in the
+                # session; bound them, protecting symbols with active bots (POV
+                # slicing reads this map at execution time).
+                if len(self._recent_bar_volumes) > 32:
+                    bot_symbols = {
+                        b.get("symbol") for b in self.active_bots.values()
+                    }
+                    for k in list(self._recent_bar_volumes.keys()):
+                        if len(self._recent_bar_volumes) <= 32:
+                            break
+                        if k != symbol and k not in bot_symbols:
+                            self._recent_bar_volumes.pop(k, None)
         except Exception:
             pass
 
@@ -891,6 +1015,30 @@ class BotManagerService:
                 eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
                 eval_row["_symbol"] = symbol
 
+                # Equity RTH: skip entry evaluation when flat outside the session.
+                # Use wall-clock (not bar time) so stale last-RTH candles after the
+                # close cannot keep the bot evaluating. Crypto is always "open".
+                # Open positions still run exits / time-stops below.
+                if pos_size == 0:
+                    import time as _time
+
+                    from app.services.altdata.event_policy import check_entry_gates
+
+                    sess_ok, sess_reason, sess_kind = check_entry_gates(
+                        symbol, _time.time(), bot_config, is_exit=False,
+                    )
+                    if not sess_ok and sess_kind == "calendar":
+                        day_key = int(_time.time()) // 86400
+                        if bot.get("_session_skip_day") != day_key:
+                            bot["_session_skip_day"] = day_key
+                            await self.log_bot_event(
+                                bot_id,
+                                "INFO",
+                                f"Equity session closed — skipping new entries ({sess_reason})",
+                                meta={"event_type": "session_skip", "gate": "calendar"},
+                            )
+                        continue
+
                 # Order-flow strategies need live L2; inject feed book when available.
                 if strat_key == "ORDERFLOW_IMBALANCE":
                     feed = getattr(self.oms, "feed", None)
@@ -899,6 +1047,24 @@ class BotManagerService:
                         ob = books.get(symbol) or books.get(str(symbol).upper())
                         if isinstance(ob, dict) and (ob.get("bids") or ob.get("asks")):
                             eval_row["_orderbook"] = ob
+
+                # Trade-state for ML v5 features / strategies that read df_row
+                # before post-signal PreTrade injection (must be pre-evaluate).
+                try:
+                    from app.services.bots.pretrade_context import build_trade_state_snapshot
+
+                    try:
+                        _streak_n = bot_analytics.get_recent_consecutive_losses(bot_id)
+                    except Exception:
+                        _streak_n = int(bot.get("_pretrade_streak_count") or 0)
+                    _trade_snap = build_trade_state_snapshot(
+                        consecutive_losses=_streak_n,
+                        cool_until_ts=bot.get("_pretrade_streak_cool_until"),
+                    )
+                    eval_row["trade_state"] = _trade_snap
+                    eval_row["pretrade_context"] = _trade_snap
+                except Exception:
+                    pass
 
                 # ── Time Stop Check ──
                 # opened_at and candle bar_time are both unix seconds; do not mix with ms.
@@ -1058,7 +1224,8 @@ class BotManagerService:
                         symbol, bar_time, bot_config, is_exit=False,
                     )
                     if not gate_ok and gate_reason:
-                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                        # Calendar/session (and other event) blocks are not strategy
+                        # filter decay — do not poison alpha-decay signal_history.
                         inc(
                             "bot_orders_blocked_total",
                             labels={"strategy": strat_key, "reason": gate_kind or "event"},
@@ -1083,6 +1250,53 @@ class BotManagerService:
                         apply_shared_signal_gates,
                         maybe_apply_llm_debate,
                     )
+                    from app.services.bots.pretrade_context import (
+                        build_trade_state_snapshot,
+                        prefer_hold_on_streak,
+                    )
+
+                    # Inject streak awareness before gates / LLM debate.
+                    try:
+                        streak_n = bot_analytics.get_recent_consecutive_losses(bot_id)
+                    except Exception:
+                        streak_n = int(bot.get("_pretrade_streak_count") or 0)
+                    trade_snap = build_trade_state_snapshot(
+                        consecutive_losses=streak_n,
+                        cool_until_ts=bot.get("_pretrade_streak_cool_until"),
+                        last_pretrade_verdict=None,
+                    )
+                    if isinstance(signal_data, dict):
+                        signal_data = dict(signal_data)
+                        signal_data["pretrade_context"] = trade_snap
+                        signal_data["trade_state"] = trade_snap
+                    signal, signal_data = prefer_hold_on_streak(
+                        signal,
+                        signal_data,
+                        bot_config=bot_config,
+                        consecutive_losses=streak_n,
+                        cool_until_ts=bot.get("_pretrade_streak_cool_until"),
+                    )
+                    if signal not in ("BUY", "SELL"):
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                        # Cool-down already armed — do not extend it here (that
+                        # would permanently freeze entries while the streak lasts).
+                        reject_telemetry.record_reject(
+                            bot_id=bot_id,
+                            reason_bucket="pretrade_streak",
+                            symbol=symbol,
+                            strategy=strat_key,
+                            signal_kind=getattr(strat, "signal_kind", None),
+                            reason_detail=(signal_data or {}).get("reject_detail"),
+                            bar_time=bar_time,
+                        )
+                        detail = (signal_data or {}).get("reject_detail") or "HOLD on streak cool-down"
+                        await self._log_pretrade_debounced(
+                            bot_id,
+                            bot,
+                            f"Pre-Trade aware: {detail}",
+                            level="INFO",
+                        )
+                        continue
 
                     hmm_feats = None
                     try:
@@ -1350,16 +1564,61 @@ class BotManagerService:
         inc("bot_signals_total", labels={"strategy": strat_key, "signal": signal_kind})
 
         if not is_exit:
+            from app.services.bots.pretrade_context import (
+                get_bot_streak_cooldown_hold,
+                set_bot_streak_cooldown,
+            )
+
+            # Brief cool-down after streak reduce/veto — stop re-entering every bar.
+            pt_hold = get_bot_streak_cooldown_hold(bot)
+            if pt_hold:
+                signal_ledger.release_signal(signal_id)
+                await self._log_pretrade_debounced(
+                    bot_id,
+                    bot,
+                    f"Pre-Trade streak cool-down: {pt_hold.get('block_reason')}",
+                    level="INFO",
+                )
+                _record_order_blocked(bot, pt_hold.get("block_reason") or "pretrade_streak_cooldown")
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                return
+
             # --- Pre-Trade Intelligence Gating ---
-            verdict = await self._pretrade_intel.evaluate(bot, side, current_price, signal_data, bar_time)
-            
+            verdict = await self._pretrade_intel.evaluate(
+                bot, side, current_price, signal_data, bar_time
+            )
+            trade_state = verdict.get("trade_state")
+            if isinstance(signal_data, dict) and isinstance(trade_state, dict):
+                signal_data["pretrade_context"] = trade_state
+                signal_data["trade_state"] = trade_state
+
+            streak_action = verdict.get("streak_action")
+            pending_cooldown_sec = 0
+            if isinstance(streak_action, dict):
+                cool_sec = int(streak_action.get("cooldown_sec") or 0)
+                bot["_pretrade_streak_count"] = int(streak_action.get("streak") or 0)
+                if cool_sec > 0 and verdict.get("verdict") == "VETO":
+                    until = set_bot_streak_cooldown(bot, cool_sec)
+                    if trade_state is not None:
+                        trade_state["cool_until_ts"] = until
+                    await self._publish_pretrade_streak_event(bot, verdict, streak_action)
+                elif cool_sec > 0 and verdict.get("verdict") == "REDUCE_SIZE":
+                    # Arm after this reduced entry fills so RiskGate does not
+                    # block the same bar; subsequent bars honor the cool-down.
+                    pending_cooldown_sec = cool_sec
+                    await self._publish_pretrade_streak_event(bot, verdict, streak_action)
+
             if verdict.get("verdict") == "VETO":
                 signal_ledger.release_signal(signal_id)
                 reason = f"Pre-Trade Intel VETO: {verdict.get('reasoning')}"
-                await self.log_bot_event(bot_id, "WARN", reason)
+                await self._log_pretrade_debounced(bot_id, bot, reason, level="WARN")
                 _record_order_blocked(bot, reason)
                 bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                 return
+
+            # Stash for post-submit cool-down (REDUCE_SIZE path).
+            if pending_cooldown_sec > 0:
+                bot["_pretrade_pending_cooldown_sec"] = pending_cooldown_sec
 
             account_balance = self.get_account_balance()
             risk_amount = account_balance * RISK_PCT
@@ -1399,14 +1658,22 @@ class BotManagerService:
             )
 
             if verdict.get("verdict") == "REDUCE_SIZE":
+                from app.services.bots.pretrade_context import apply_reduce_size_multiplier
+
                 size_mult = float(verdict.get("size_multiplier") or 0.5)
-                quantity *= size_mult
+                quantity, size_note = apply_reduce_size_multiplier(
+                    quantity,
+                    size_mult,
+                    vetoes=verdict.get("vetoes") or [],
+                    recent_closed_pnls=recent_pnls,
+                    use_regime_sizing=bool(bot_cfg.get("use_regime_sizing", True)),
+                )
                 reasoning = verdict.get("reasoning")
                 if reasoning:
                     await self.log_bot_event(
                         bot_id,
                         "INFO",
-                        f"Pre-trade reduce ×{size_mult:.2f}: {reasoning}",
+                        f"Pre-trade reduce {size_note}: {reasoning}",
                         meta={"reasoning_chain": verdict.get("reasoning_chain")},
                     )
             if (
@@ -1422,6 +1689,52 @@ class BotManagerService:
         pos_size = self._get_bot_position_size(bot_id, symbol)
         risk_stats = bot_analytics.get_bot_stats(bot_id)
         bot_for_risk = {**bot, "total_pnl": float(risk_stats.get("total_pnl") or 0)}
+
+        # ── Phase 5: drawdown budget ladder (opt-in via dd_budget_pct) ──────
+        # Runs BEFORE validate_trade so the tier-2/3 side effects (flatten /
+        # stop) fire here; get_bot_entry_hold surfaces the freeze for UI and
+        # also blocks via _check_streak_and_cooloff as a backstop. Exits
+        # always pass through.
+        from app.services.bots.risk_gate import evaluate_dd_ladder
+
+        ladder = evaluate_dd_ladder(bot_for_risk)
+        if ladder is not None:
+            if not hasattr(self, "_dd_ladder_tiers"):
+                self._dd_ladder_tiers = {}
+            tier = int(ladder["tier"])
+            prev_tier = self._dd_ladder_tiers.get(bot_id, 0)
+            if tier >= 3 and not is_exit:
+                self._dd_ladder_tiers[bot_id] = tier
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                signal_ledger.release_signal(signal_id)
+                _record_order_blocked(bot, ladder["reason"])
+                await self.log_bot_event(bot_id, "ERROR", ladder["reason"])
+                await self._set_bot_status(bot_id, "STOPPED")
+                await publish_bots_update(self.broadcast_cb, self.list_bots_public())
+                return
+            if tier >= 2 and not is_exit:
+                self._dd_ladder_tiers[bot_id] = tier
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                signal_ledger.release_signal(signal_id)
+                _record_order_blocked(bot, ladder["reason"])
+                await self.log_bot_event(bot_id, "WARN", ladder["reason"])
+                if tier > prev_tier and pos_size != 0:
+                    await self._flatten_bot_for_ladder(
+                        bot, pos_size, current_price, ladder["reason"]
+                    )
+                return
+            if tier == 1 and not is_exit:
+                quantity *= float(ladder["size_mult"])
+                if tier > prev_tier:
+                    await self.log_bot_event(bot_id, "WARN", ladder["reason"])
+            if tier < prev_tier:
+                await self.log_bot_event(
+                    bot_id, "INFO",
+                    f"DD budget de-escalated to tier {tier} "
+                    f"({ladder['consumed_pct']}% consumed).",
+                )
+            self._dd_ladder_tiers[bot_id] = tier
+
         decision = self._risk_gate.validate_trade(
             bot_for_risk,
             side,
@@ -1468,6 +1781,54 @@ class BotManagerService:
         quantity = decision.quantity if decision.quantity is not None else quantity
         if decision.reason not in ("OK",):
             await self.log_bot_event(bot_id, "INFO", decision.reason)
+
+        # ── Phase 4: contradictory-position blocker (opt-in per bot) ────────
+        if not is_exit:
+            from app.services.bots.risk_gate import (
+                check_contrary_position,
+                resolve_contrary_policy,
+            )
+
+            _contrary_cfg = bot.get("config") or {}
+            if isinstance(_contrary_cfg, str):
+                try:
+                    _contrary_cfg = json.loads(_contrary_cfg) if _contrary_cfg else {}
+                except json.JSONDecodeError:
+                    _contrary_cfg = {}
+            if resolve_contrary_policy(_contrary_cfg) != "allow":
+                fleet = []
+                sym_upper = str(symbol or "").upper()
+                for other_id, other in (self.active_bots or {}).items():
+                    if other_id == bot_id:
+                        continue
+                    if str(other.get("status") or "").upper() != "RUNNING":
+                        continue
+                    other_sym = str(other.get("symbol") or "")
+                    if other_sym.upper() != sym_upper:
+                        continue
+                    other_size = self._get_bot_position_size(other_id, other_sym)
+                    if not other_size:
+                        continue
+                    fleet.append({
+                        "bot_id": other_id,
+                        "symbol": other_sym,
+                        "status": other.get("status"),
+                        "config": other.get("config"),
+                        "position_size": other_size,
+                    })
+                contrary = check_contrary_position(
+                    bot=bot, side=side, quantity=quantity, fleet=fleet,
+                )
+                if contrary is not None:
+                    if not contrary.allowed:
+                        bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                        signal_ledger.release_signal(signal_id)
+                        _record_order_blocked(bot, contrary.reason)
+                        await self.log_bot_event(bot_id, "WARN", contrary.reason)
+                        return
+                    if contrary.quantity is not None and contrary.quantity < quantity:
+                        quantity = contrary.quantity
+                        await self.log_bot_event(bot_id, "INFO", contrary.reason)
 
         if not is_exit:
             bot_cfg = bot.get("config") or {}
@@ -1605,16 +1966,26 @@ class BotManagerService:
                 pass
 
         try:
+            # TCA (EXECUTION_RISK_INTELLIGENCE_PLAN Phase 1): snapshot the
+            # arrival benchmark (feed mark + quote) at order-decision time so
+            # fill attribution is measured against an honest reference.
+            arrival_snap = execution_tca.capture_arrival(
+                getattr(self.oms, "feed", None), symbol, current_price
+            )
+            exec_algo_name = "single"
             # Phase 4.10: VWAP/POV execution slicing for large orders.
             # Opt-in via execution_algo config; falls back to single-shot.
             # NOTE: use bot.get("config", {}) here, NOT bot_cfg — bot_cfg is
             # only assigned inside `if not is_exit:` blocks above, so it is
             # undefined for exit orders.
             result = None
+            sliced_result = None
             sliced_live_submitted = False
             try:
                 from app.services.bots.execution_algos import (
+                    AdaptivePacer,
                     build_slices,
+                    choose_adaptive_algo,
                     execute_sliced_order,
                     resolve_execution_algo,
                 )
@@ -1626,14 +1997,52 @@ class BotManagerService:
                     except Exception:
                         slice_config = {}
                 algo = resolve_execution_algo(slice_config)
+                adaptive_enabled = bool(slice_config.get("execution_adaptive", False))
+                # Phase 3: "adaptive" algo — pick VWAP vs POV from measured TCA
+                # impact for this symbol (high impact → participate via POV).
+                if algo == "adaptive":
+                    algo = choose_adaptive_algo(
+                        symbol,
+                        impact_threshold_bps=float(
+                            slice_config.get("adaptive_impact_threshold_bps", 10.0)
+                        ),
+                    )
+                    adaptive_enabled = True  # algo choice implies adaptive pacing
+                    await self.log_bot_event(
+                        bot_id, "INFO",
+                        f"Adaptive execution chose {algo.upper()} for {symbol}.",
+                    )
+                exec_algo_name = algo
                 if algo != "single" and quantity > 0:
                     slices = build_slices(
                         quantity, algo=algo, config=slice_config,
                         bar_volumes=getattr(self, "_recent_bar_volumes", {}).get(symbol),
                     )
+                    # Phase 3: arrival-anchored pacing — speed up on favourable
+                    # drift, slow on adverse drift (bounded ±50% of schedule).
+                    pacer = None
+                    mark_fn = None
+                    if adaptive_enabled and slices and len(slices) > 1:
+                        arrival_px = arrival_snap.get("arrival_price")
+                        if arrival_px:
+                            pacer = AdaptivePacer(
+                                side=side,
+                                arrival_price=float(arrival_px),
+                                drift_threshold_bps=float(
+                                    slice_config.get("adaptive_drift_threshold_bps", 15.0)
+                                ),
+                            )
+                            _feed_ref = getattr(self.oms, "feed", None)
+
+                            def mark_fn():
+                                return execution_tca.capture_arrival(
+                                    _feed_ref, symbol, None
+                                ).get("arrival_price")
+
                     if slices and len(slices) > 1:
                         sliced_result = await execute_sliced_order(
                             self.oms, order_req, slices=slices,
+                            pacer=pacer, mark_price_fn=mark_fn,
                         )
                         sliced_live_submitted = sliced_result.get("live_submitted", False)
                         # Adapt to the single-shot result shape expected below.
@@ -1652,12 +2061,36 @@ class BotManagerService:
             except Exception:
                 logger.debug("Execution slicing failed, falling back to single-shot", exc_info=True)
 
+            from app.services.bots.execution_algos import adopt_partial_sliced_result
+
             if result is None:
-                result = await self.oms.place_order(order_req)
+                adopted = adopt_partial_sliced_result(
+                    sliced_result, fallback_id=f"sliced-{signal_id}"
+                )
+                if adopted is not None:
+                    # Partial sliced fill without a clean broker-id outcome
+                    # (edge): adopt the sliced result. Re-submitting the full
+                    # parent here would DOUBLE the position — slices already
+                    # filled against the broker.
+                    result = adopted
+                else:
+                    # Genuine fallback (nothing filled / slicing raised) — the
+                    # order really was single-shot, so TCA attribution must say
+                    # so (keeps Phase 2 calibration honest).
+                    exec_algo_name = "single"
+                    result = await self.oms.place_order(order_req)
 
             if result.get("status") == "success":
                 if not is_exit:
                     bot.setdefault("signal_history", deque(maxlen=20)).append(True)
+                    pending_cool = bot.pop("_pretrade_pending_cooldown_sec", None)
+                    if pending_cool:
+                        try:
+                            from app.services.bots.pretrade_context import set_bot_streak_cooldown
+
+                            set_bot_streak_cooldown(bot, int(pending_cool))
+                        except Exception:
+                            pass
                 if bar_time is not None:
                     bot["last_signal_bar_time"] = bar_time
                 order_id = result.get("order_id")
@@ -1694,6 +2127,10 @@ class BotManagerService:
                         is_exit=is_exit,
                         entry_price=entry_price,
                         insight_snapshot=insight_snapshot,
+                        arrival_price=arrival_snap.get("arrival_price"),
+                        arrival_bid=arrival_snap.get("arrival_bid"),
+                        arrival_ask=arrival_snap.get("arrival_ask"),
+                        exec_algo=exec_algo_name,
                     )
                     await self.log_bot_event(
                         bot_id,
@@ -1722,6 +2159,32 @@ class BotManagerService:
                         signal_bar_time=_coerce_bar_time(bar_time),
                         is_exit=is_exit,
                         insight_snapshot=insight_snapshot,
+                    )
+                    # TCA: decompose implementation shortfall vs the arrival
+                    # benchmark captured before submission. Partial fills (e.g.
+                    # sliced orders with unfilled remainder) price the leftover
+                    # against the current mark as opportunity cost.
+                    _tca_unfilled = max(0.0, float(quantity or 0) - filled_qty)
+                    _tca_end_mark = None
+                    if _tca_unfilled > 0:
+                        _tca_end_mark = execution_tca.capture_arrival(
+                            getattr(self.oms, "feed", None), symbol, fill_price
+                        ).get("arrival_price")
+                    execution_tca.record_execution(
+                        bot_id=bot_id,
+                        symbol=symbol,
+                        strategy=bot.get("strategy"),
+                        side=side,
+                        is_exit=is_exit,
+                        exec_algo=exec_algo_name,
+                        order_id=order_id,
+                        signal_id=signal_id,
+                        decision_price=current_price,
+                        arrival=arrival_snap,
+                        requested_qty=quantity,
+                        filled_qty=filled_qty,
+                        avg_fill_price=fill_price,
+                        end_mark=_tca_end_mark,
                     )
                     if is_exit:
                         from app.services.bots.calibration import get_calibration_store
@@ -1780,6 +2243,7 @@ class BotManagerService:
                     insight_id=signal_data.get("insight_id"),
                 )
             else:
+                bot.pop("_pretrade_pending_cooldown_sec", None)
                 msg = result.get("message", "Unknown error")
                 status = result.get("status", "error")
                 if status == "ambiguous":
@@ -1808,6 +2272,7 @@ class BotManagerService:
                         "Live order not retried (at-most-once). Reconcile manually if needed.",
                     )
         except Exception as e:
+            bot.pop("_pretrade_pending_cooldown_sec", None)
             if not uses_paper_oms():
                 _record_ambiguous_outcome(
                     order_req,
@@ -1931,6 +2396,8 @@ class BotManagerService:
     async def stop_bot(self, bot_id: str):
         if bot_id in self.active_bots:
             del self.active_bots[bot_id]
+        if hasattr(self, "_dd_ladder_tiers"):
+            self._dd_ladder_tiers.pop(bot_id, None)
 
         conn = get_connection()
         cursor = conn.cursor()
@@ -2321,6 +2788,34 @@ class BotManagerService:
                 signal_bar_time=bot_analytics.signal_bar_time_from_id(p.get("signal_id")),
                 is_exit=is_exit,
                 insight_snapshot=p.get("insight_snapshot"),
+            )
+            # TCA: live fills are measured at reconciliation, against the
+            # arrival benchmark stored on the pending record at submission.
+            # Legacy rows without arrival degrade to decision-price reference.
+            _tca_unfilled = max(0.0, float(p.get("quantity") or 0) - filled_qty)
+            _tca_end_mark = None
+            if _tca_unfilled > 0:
+                _tca_end_mark = execution_tca.capture_arrival(
+                    getattr(self.oms, "feed", None), p["symbol"], fill_price
+                ).get("arrival_price")
+            _tca_bot = self.active_bots.get(p["bot_id"]) or {}
+            execution_tca.record_execution(
+                bot_id=p["bot_id"],
+                symbol=p["symbol"],
+                strategy=_tca_bot.get("strategy"),
+                side=p["side"],
+                is_exit=is_exit,
+                exec_algo=p.get("exec_algo") or "single",
+                order_id=resolved_order_id,
+                signal_id=p.get("signal_id"),
+                decision_price=p.get("signal_price"),
+                arrival_price=p.get("arrival_price") or p.get("signal_price"),
+                arrival_bid=p.get("arrival_bid"),
+                arrival_ask=p.get("arrival_ask"),
+                requested_qty=p.get("quantity"),
+                filled_qty=filled_qty,
+                avg_fill_price=fill_price,
+                end_mark=_tca_end_mark,
             )
             bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price, feed=getattr(self.oms, "feed", None))
             bot_analytics.delete_pending_fill(p["id"])

@@ -690,14 +690,32 @@ export default function MlAutoTunePanel({
     appendPoll,
   ]);
 
-  const applyRetrain = useCallback(() => {
-    const hp = result?.best_hyperparams;
-    if (!hp || !onApplyAndRetrain) {
+  const applyRetrain = useCallback(async () => {
+    if (!onApplyAndRetrain) {
       toast.error('No best hyperparams to apply');
       return;
     }
     if (disabled) {
       toast.message('Wait for the current ML job to finish before applying hyperparams');
+      return;
+    }
+    let hp = result?.best_hyperparams;
+    // After job-result offload, a stale poll can leave best_hyperparams missing
+    // even though the sweep saved them on the optimization run.
+    if ((!hp || typeof hp !== 'object' || !Object.keys(hp).length) && result?.optimization_run_id) {
+      try {
+        const body = await apiRequest(
+          `/api/v1/backtest/optimizations/${encodeURIComponent(result.optimization_run_id)}`,
+          { timeoutMs: 15_000 },
+        );
+        hp = body?.run?.best_config;
+      } catch (err) {
+        toast.error(err?.message || 'Failed to load best hyperparams from optimization run');
+        return;
+      }
+    }
+    if (!hp || typeof hp !== 'object' || !Object.keys(hp).length) {
+      toast.error('No best hyperparams to apply — re-run auto-tune');
       return;
     }
     // Only forward search-space knobs — never trial bookkeeping (skip_persist, etc.).
@@ -708,6 +726,11 @@ export default function MlAutoTunePanel({
     for (const [k, v] of Object.entries(hp)) {
       if (!allowed.has(k)) continue;
       if (v == null || typeof v === 'object') continue;
+      // Never forward trial flags even if a bad payload includes them.
+      if (String(k).startsWith('_') || k === 'skip_persist' || k === 'skip_snapshot'
+        || k === 'skip_refit' || k === 'wf_mode') {
+        continue;
+      }
       clean[k] = v;
     }
     if (!Object.keys(clean).length) {

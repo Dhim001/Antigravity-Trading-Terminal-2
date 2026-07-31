@@ -239,6 +239,12 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_bot_pending_fills_bot ON bot_pending_fills (bot_id)"
     )
     _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN insight_snapshot TEXT DEFAULT NULL")
+    # TCA (EXECUTION_RISK_INTELLIGENCE_PLAN Phase 1): arrival benchmark captured
+    # at submission time so reconciled live fills get honest IS attribution.
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN arrival_price REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN arrival_bid REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN arrival_ask REAL DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN exec_algo TEXT DEFAULT NULL")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_signal_ledger (
@@ -289,6 +295,74 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_bot_signal_reject_created ON bot_signal_reject_log (created_at)"
     )
+
+    # Daily rollup so long-term reject stats survive retention pruning (#29).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_signal_reject_rollup (
+            day TEXT NOT NULL,
+            bot_id TEXT NOT NULL,
+            reason_bucket TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, bot_id, reason_bucket)
+        )
+    """)
+
+    # Execution TCA (EXECUTION_RISK_INTELLIGENCE_PLAN Phase 1): one row per
+    # completed order (immediate fill) or reconciled live fill. All bps fields
+    # are measured against the arrival benchmark captured at order decision.
+    _tca_serial = _serial_type()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS execution_quality_log (
+            id {_tca_serial},
+            bot_id TEXT NOT NULL,
+            symbol TEXT,
+            strategy TEXT,
+            side TEXT,
+            is_exit INTEGER DEFAULT 0,
+            exec_algo TEXT,
+            order_id TEXT,
+            signal_id TEXT,
+            decision_price REAL,
+            arrival_price REAL,
+            arrival_bid REAL,
+            arrival_ask REAL,
+            requested_qty REAL,
+            filled_qty REAL,
+            avg_fill_price REAL,
+            is_bps REAL,
+            delay_bps REAL,
+            spread_bps REAL,
+            impact_bps REAL,
+            opp_bps REAL,
+            fees REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exec_quality_bot ON execution_quality_log (bot_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exec_quality_created ON execution_quality_log (created_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exec_quality_algo ON execution_quality_log (exec_algo)"
+    )
+
+    # Phase 2 — champion-challenger cost calibration: measured live exec cost →
+    # suggested backtest slippage per symbol. Suggestions are recomputed
+    # (nightly + on-demand); applied_at marks operator approval.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS execution_cost_calibration (
+            symbol TEXT PRIMARY KEY,
+            sample_size INTEGER,
+            measured_exec_bps REAL,
+            measured_delay_bps REAL,
+            suggested_slippage_bps REAL,
+            suggested_latency_bps REAL,
+            computed_at TEXT,
+            applied_at TEXT
+        )
+    """)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_runtime (
@@ -637,6 +711,9 @@ def reset_db():
     cursor.execute("DELETE FROM bot_logs;")
     cursor.execute("DELETE FROM bot_signal_ledger;")
     cursor.execute("DELETE FROM bot_signal_reject_log;")
+    cursor.execute("DELETE FROM bot_signal_reject_rollup;")
+    cursor.execute("DELETE FROM execution_quality_log;")
+    cursor.execute("DELETE FROM execution_cost_calibration;")
     cursor.execute("UPDATE bots SET status = 'STOPPED'")
     
     # Collect all unique base assets dynamically from config

@@ -25,7 +25,11 @@ from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
+    TRADE_STATE_FEATURE_VERSION,
     bar_to_signal_features,
+    merge_trade_state_features,
+    resolve_feature_names,
+    resolve_feature_version,
     signal_features_to_vector,
 )
 from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
@@ -97,7 +101,16 @@ def train_ml_signal_model(
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    # Apply & Retrain / Lab Trigger champion trains must never take the WF/trial path.
+    if cfg.get("champion_train") or raw_cfg.get("champion_train"):
+        cfg["champion_train"] = True
+        cfg.pop("_wf_mode", None)
+        cfg.pop("wf_mode", None)
+        cfg["skip_persist"] = False
+        cfg["skip_snapshot"] = False
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
+    if cfg.get("champion_train"):
+        wf_mode = False
     wf_parity = bool(cfg.get("wf_capacity_parity", True))
     # Strategy defaults always inject min_train_samples=200 via merge — that
     # crushed lean WF folds. Prefer an explicit Lab override, else WF floor.
@@ -129,6 +142,11 @@ def train_ml_signal_model(
     from app.services.bots.ml_training_window import skip_live_artifact_writes
 
     skip_persist = bool(wf_mode or skip_live_artifact_writes(cfg) or cfg.get("skip_persist"))
+    if cfg.get("champion_train"):
+        # Apply & Retrain / Lab Trigger must always write the live champion.
+        skip_persist = False
+        skip_snapshot = False
+        wf_mode = False
 
     # GBM architecture params — config-driven with sensible defaults
     gbm_max_depth = int(cfg.get("gbm_max_depth", 4 if (wf_mode and not wf_parity) else 5))
@@ -155,6 +173,9 @@ def train_ml_signal_model(
     # Build lookback window for rolling features
     lookback_size = 20
     rows: list[dict[str, Any]] = []
+    include_trade_state = bool(cfg.get("ml_include_trade_state"))
+    feat_names = resolve_feature_names(include_trade_state=include_trade_state)
+    feat_version = resolve_feature_version(include_trade_state=include_trade_state)
 
     for idx, label_info in enumerate(labels):
         if label_info.get("barrier_hit") == "invalid":
@@ -169,7 +190,16 @@ def train_ml_signal_model(
         candle = candles[idx]
         lookback = candles[max(0, idx - lookback_size):idx]
         features = bar_to_signal_features(candle, lookback_rows=lookback)
-        vector = signal_features_to_vector(features)
+        # Historical train: trade-state features are zeros unless a caller
+        # supplies per-bar trade_state on the candle (rare).
+        features = merge_trade_state_features(
+            features,
+            candle.get("trade_state") if isinstance(candle, dict) else None,
+            enabled=include_trade_state,
+        )
+        vector = signal_features_to_vector(
+            features, include_trade_state=include_trade_state, feature_names=feat_names,
+        )
 
         rows.append({
             "vector": vector,
@@ -288,9 +318,9 @@ def train_ml_signal_model(
     # Feature importances
     importances = getattr(model, "feature_importances_", None)
     top_features: list[dict[str, Any]] = []
-    if importances is not None and len(importances) == len(SIGNAL_FEATURE_NAMES):
+    if importances is not None and len(importances) == len(feat_names):
         pairs = sorted(
-            zip(SIGNAL_FEATURE_NAMES, importances),
+            zip(feat_names, importances),
             key=lambda p: p[1],
             reverse=True,
         )
@@ -306,8 +336,9 @@ def train_ml_signal_model(
         session_meta = {
             "symbol": symbol,
             "timeframe": tf,
-            "feature_schema_version": SIGNAL_FEATURE_VERSION,
-            "feature_names": list(SIGNAL_FEATURE_NAMES),
+            "feature_schema_version": feat_version,
+            "feature_names": list(feat_names),
+            "ml_include_trade_state": include_trade_state,
             "label_map": {str(k): v for k, v in label_map.items()},
             "reverse_map": {str(k): v for k, v in reverse_map.items()},
             "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -341,8 +372,9 @@ def train_ml_signal_model(
     metadata = {
         "symbol": symbol,
         "timeframe": tf,
-        "feature_schema_version": SIGNAL_FEATURE_VERSION,
-        "feature_names": list(SIGNAL_FEATURE_NAMES),
+        "feature_schema_version": feat_version,
+        "feature_names": list(feat_names),
+        "ml_include_trade_state": include_trade_state,
         "label_map": {str(k): v for k, v in label_map.items()},
         "reverse_map": {str(k): v for k, v in reverse_map.items()},
         "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -367,6 +399,7 @@ def train_ml_signal_model(
             "wf_capacity_parity": wf_parity,
             "timeframe": tf,
             "skip_refit": skip_refit,
+            "ml_include_trade_state": include_trade_state,
         },
     }
     cal = cfg.get("_data_calendar")
@@ -506,8 +539,9 @@ class MlSignalModelStore:
 
         meta = self._metadata.get(self._cache_key(symbol, model_version, timeframe)) or {}
         reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
+        feat_names = meta.get("feature_names") or list(SIGNAL_FEATURE_NAMES)
 
-        vec = signal_features_to_vector(features).reshape(1, -1)
+        vec = signal_features_to_vector(features, feature_names=feat_names).reshape(1, -1)
         try:
             proba = model.predict_proba(vec)[0]
             pred_idx = int(np.argmax(proba))
@@ -549,9 +583,12 @@ class MlSignalModelStore:
             _, _, _, joblib = _load_sklearn()
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
-            if int(meta.get("feature_schema_version", 0)) != SIGNAL_FEATURE_VERSION:
+            schema_ver = int(meta.get("feature_schema_version", 0))
+            if schema_ver not in (SIGNAL_FEATURE_VERSION, TRADE_STATE_FEATURE_VERSION):
                 logger.warning(
-                    "ML signal model schema mismatch for %s — retrain required", key
+                    "ML signal model schema mismatch for %s (got %s) — retrain required",
+                    key,
+                    schema_ver,
                 )
                 return None
             model = joblib.load(path)
@@ -642,14 +679,33 @@ class MlSignalBoostStrategy(BaseStrategy):
         lookback_list = list(self._lookback)[:-1]  # all except current
         features = bar_to_signal_features(df_row, lookback_rows=lookback_list)
 
+        # Align trade-state dims to the loaded model (not only bot config) so a
+        # v4 artifact never gets v5 keys in drift logs, and a v5 model gets
+        # live trade_state from eval_row when the manager injects it.
+        store = get_ml_signal_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        meta = store.get_metadata(symbol, pinned or None, timeframe=tf) or {}
+        include_ts = bool(meta.get("ml_include_trade_state"))
+        if not include_ts:
+            try:
+                include_ts = int(meta.get("feature_schema_version") or 0) >= TRADE_STATE_FEATURE_VERSION
+            except (TypeError, ValueError):
+                include_ts = False
+        if not meta:
+            include_ts = bool(self._cfg.get("ml_include_trade_state"))
+
+        trade_state = None
+        if isinstance(df_row, dict):
+            trade_state = df_row.get("trade_state") or df_row.get("pretrade_context")
+        features = merge_trade_state_features(
+            features, trade_state, enabled=include_ts,
+        )
+
         from app.services.bots.ml_feature_drift import record_ml_inference_features
 
         record_ml_inference_features(symbol, "ML_SIGNAL_BOOST", features)
 
-        # Predict
-        store = get_ml_signal_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         result = store.predict(
             symbol, features, model_version=pinned or None, timeframe=tf,
         )

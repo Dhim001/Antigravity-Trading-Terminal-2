@@ -181,6 +181,24 @@ def conformal_verdict(
 # ---------------------------------------------------------------------------
 
 _bot_cal: dict[str, ConformalCalibration] = {}
+_cache_lru = None
+
+
+def _get_cache_lru():
+    """MEMORY_CENTRIC_REVIEW #28 — bound LRU+TTL so a growing bot fleet cannot
+    retain every calibration for the life of the process. Disk stays the
+    source of truth; eviction only drops the hot copy."""
+    global _cache_lru
+    if _cache_lru is None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
+        _cache_lru = bind_dict_cache(
+            _bot_cal,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
+    return _cache_lru
 
 
 def _default_path(bot_id: str) -> str:
@@ -197,10 +215,12 @@ def save_conformal(bot_id: str, cal: ConformalCalibration, *, path: str | None =
         json.dump(cal.to_dict(), fh, indent=2)
     os.replace(tmp, target)
     _bot_cal[bot_id] = cal
+    _get_cache_lru().touch(bot_id)
 
 
 def load_conformal(bot_id: str, *, path: str | None = None) -> ConformalCalibration | None:
     if bot_id in _bot_cal:
+        _get_cache_lru().touch(bot_id)
         return _bot_cal[bot_id]
     target = path or _default_path(bot_id)
     try:
@@ -208,6 +228,7 @@ def load_conformal(bot_id: str, *, path: str | None = None) -> ConformalCalibrat
             cal = ConformalCalibration.from_dict(json.load(fh))
         if cal:
             _bot_cal[bot_id] = cal
+            _get_cache_lru().touch(bot_id)
         return cal
     except FileNotFoundError:
         return None
@@ -218,9 +239,11 @@ def load_conformal(bot_id: str, *, path: str | None = None) -> ConformalCalibrat
 
 def invalidate_conformal_cache(bot_id: str | None = None) -> None:
     if bot_id is None:
+        _get_cache_lru().clear()
         _bot_cal.clear()
     else:
         _bot_cal.pop(bot_id, None)
+        _get_cache_lru().discard(bot_id)
 
 
 # ---------------------------------------------------------------------------

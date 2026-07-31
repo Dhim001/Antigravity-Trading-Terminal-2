@@ -166,7 +166,12 @@ class AlphaDecayMonitor:
 
             # --- Metric 3: Regime Mismatch ---
             category = get_strategy_category(strategy)
-            ohlcv = get_bot_candles(symbol, self.bot_manager.oms.feed, timeframe=timeframe, min_bars=50)
+            try:
+                ohlcv = get_bot_candles(
+                    symbol, self.bot_manager.oms.feed, timeframe=timeframe, min_bars=50,
+                )
+            except Exception:
+                ohlcv = []
             if ohlcv and len(ohlcv) >= 30:
                 df = self.bot_manager.screener.process_candles(symbol, ohlcv, strategy="CHART_AGENT")
                 if not df.empty:
@@ -189,8 +194,18 @@ class AlphaDecayMonitor:
                                 )
 
             # --- Metric 4: Consecutive Filter Rejections ---
+            # Skip outside equity RTH — post-close event gates must not look like decay.
             signal_history = bot.get("signal_history")
-            if signal_history and len(signal_history) >= 10:
+            run_filter_stale = True
+            try:
+                from app.services.altdata.calendar import is_equity_rth_open
+                import time as _time
+
+                open_ok, _ = is_equity_rth_open(symbol, _time.time())
+                run_filter_stale = open_ok
+            except Exception:
+                run_filter_stale = True
+            if run_filter_stale and signal_history and len(signal_history) >= 10:
                 rejections = sum(1 for x in signal_history if x is False)
                 reject_ratio = rejections / len(signal_history)
                 if reject_ratio >= 0.8:

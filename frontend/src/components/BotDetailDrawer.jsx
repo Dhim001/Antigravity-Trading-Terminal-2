@@ -9,6 +9,7 @@ import TradeExplainCard from './TradeExplainCard';
 import BotSnapshotChart from './BotSnapshotChart';
 import BotConfigPanel from './BotConfigPanel';
 import BotCalibrationPanel from './BotCalibrationPanel';
+import ExecutionQualityPanel from './ExecutionQualityPanel';
 import { StatCard } from '@/components/StatCard';
 import { cn } from '@/lib/utils';
 import {
@@ -585,6 +586,19 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                         symbol={bot.symbol}
                         strategy={bot.strategy}
                         className="bot-calibration-panel"
+                      />
+                    </BotDrawerSection>
+
+                    <BotDrawerSection
+                      id="exec-quality"
+                      title="Execution quality"
+                      defaultOpen={false}
+                      scrollable
+                      className="bot-drawer-section--exec-quality"
+                    >
+                      <ExecutionQualityPanel
+                        botId={bot.id}
+                        symbol={bot.symbol}
                       />
                     </BotDrawerSection>
 

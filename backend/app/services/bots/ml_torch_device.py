@@ -58,9 +58,15 @@ def resolve_wf_torch_device(config: dict | None = None):
 
 
 def cap_wf_epochs(epochs: int, config: dict | None, *, default: int = 12) -> int:
-    """Clamp epoch count for interactive walk-forward folds."""
+    """Clamp epoch count for interactive walk-forward folds.
+
+    When ``wf_capacity_parity`` is enabled, folds keep the full epoch budget
+    so OOS metrics match production Train capacity.
+    """
     cfg = config if isinstance(config, dict) else {}
     if not bool(cfg.get("_wf_mode") or cfg.get("wf_mode")):
+        return max(1, int(epochs))
+    if bool(cfg.get("wf_capacity_parity", True)):
         return max(1, int(epochs))
     try:
         limit = int(cfg.get("wf_epochs", default))

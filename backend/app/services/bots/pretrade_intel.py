@@ -24,6 +24,11 @@ from app.services.altdata.store import get_aggregate_sentiment
 from app.services.bots.candle_source import get_bot_candles
 from app.services.bots.correlation import summarize_basket_correlation
 from app.services.bots.portfolio_risk import list_bot_exposures
+from app.services.bots.pretrade_context import (
+    apply_failures_streak,
+    build_trade_state_snapshot,
+    consecutive_loss_count,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +129,22 @@ class PreTradeIntel:
             uncertainty_sources.append(f"correlation_check_failed: {str(exc)}")
             observations.append(Observation("portfolio_correlation", "neutral", 0.0, "Check failed due to error."))
 
+        streak_action: dict[str, Any] | None = None
+        trade_state: dict[str, Any] | None = None
         try:
             conn = get_connection()
             cursor = conn.cursor()
             one_day_ago = time.time() - (PRETRADE_SETUP_LOOKBACK_HOURS * 3600.0)
+            # Fetch enough exits for severe-streak stepping (not just fail_limit).
+            fetch_n = max(PRETRADE_SETUP_FAIL_LIMIT, 10)
+            try:
+                fetch_n = max(
+                    fetch_n,
+                    int(bot_config.get("pretrade_streak_severe_limit") or 5),
+                    int(bot_config.get("max_consecutive_losses") or 5),
+                )
+            except (TypeError, ValueError):
+                pass
             try:
                 cursor.execute(
                     """
@@ -136,7 +153,7 @@ class PreTradeIntel:
                     WHERE t.symbol = ? AND b.strategy = ? AND t.timestamp >= datetime(?, 'unixepoch') AND t.is_exit = 1
                     ORDER BY t.timestamp DESC LIMIT ?
                     """,
-                    (symbol, strategy, one_day_ago, PRETRADE_SETUP_FAIL_LIMIT),
+                    (symbol, strategy, one_day_ago, fetch_n),
                 )
                 rows = cursor.fetchall()
             except Exception:
@@ -147,26 +164,89 @@ class PreTradeIntel:
                         WHERE bot_id = ? AND timestamp >= datetime(?, 'unixepoch') AND is_exit = 1
                         ORDER BY timestamp DESC LIMIT ?
                         """,
-                        (bot["id"], one_day_ago, PRETRADE_SETUP_FAIL_LIMIT),
+                        (bot["id"], one_day_ago, fetch_n),
                     )
                     rows = cursor.fetchall()
                 except Exception as fallback_exc:
                     logger.error("PreTradeIntel fallback query failed: %s", fallback_exc)
                     uncertainty_sources.append(f"trade_history_query_failed: {str(fallback_exc)}")
                     rows = []
+            # Win-rate in lookback (for ML / agent awareness).
+            wins = 0
+            losses = 0
+            try:
+                cursor.execute(
+                    """
+                    SELECT t.pnl FROM bot_trades t
+                    JOIN bots b ON t.bot_id = b.id
+                    WHERE t.symbol = ? AND b.strategy = ? AND t.timestamp >= datetime(?, 'unixepoch') AND t.is_exit = 1
+                    """,
+                    (symbol, strategy, one_day_ago),
+                )
+                for r in cursor.fetchall() or []:
+                    p = float(r[0] or 0.0)
+                    if p > 0:
+                        wins += 1
+                    elif p < 0:
+                        losses += 1
+            except Exception:
+                pass
             conn.close()
 
-            if len(rows) >= PRETRADE_SETUP_FAIL_LIMIT:
-                pnls = [float(r[0] or 0.0) for r in rows]
-                if all(p < 0.0 for p in pnls):
+            pnls = [float(r[0] or 0.0) for r in rows]
+            streak = consecutive_loss_count(pnls, newest_first=True)
+            total_closed = wins + losses
+            win_rate = (wins / total_closed) if total_closed > 0 else 0.5
+            hours_since_loss = PRETRADE_SETUP_LOOKBACK_HOURS
+            if pnls and pnls[0] < 0:
+                hours_since_loss = 0.0
+
+            fail_limit = int(
+                bot_config.get("pretrade_setup_fail_limit", PRETRADE_SETUP_FAIL_LIMIT)
+            )
+            streak_action = apply_failures_streak(
+                pnls,
+                bot_config=bot_config,
+                setup_fail_limit=fail_limit,
+                newest_first=True,
+            )
+            if streak_action:
+                if streak_action["verdict"] == "VETO":
                     verdict = "VETO"
-                    reason = f"{len(pnls)} losses in last {PRETRADE_SETUP_LOOKBACK_HOURS}h"
-                    vetoes.append(f"failures_streak: {reason}")
-                    observations.append(Observation("failures_streak", "danger", 0.90, reason))
-                else:
-                    observations.append(Observation("failures_streak", "positive", 0.90, "No sustained loss streak."))
+                elif verdict != "VETO":
+                    verdict = "REDUCE_SIZE"
+                vetoes.extend(streak_action.get("vetoes") or [])
+                size_multiplier = min(
+                    size_multiplier, float(streak_action.get("size_multiplier") or 0.5)
+                )
+                observations.append(
+                    Observation(
+                        "failures_streak",
+                        "danger",
+                        0.90,
+                        streak_action.get("reason") or "loss streak",
+                    )
+                )
             else:
-                observations.append(Observation("failures_streak", "positive", 0.90, "Sufficiently low recent failures."))
+                observations.append(
+                    Observation(
+                        "failures_streak",
+                        "positive",
+                        0.90,
+                        "No sustained loss streak.",
+                    )
+                )
+            trade_state = build_trade_state_snapshot(
+                consecutive_losses=streak,
+                losses_in_lookback=losses,
+                last_pretrade_verdict=None,
+                streak_size_mult=float(
+                    streak_action.get("size_multiplier") if streak_action else 1.0
+                ),
+                cool_until_ts=bot.get("_pretrade_streak_cool_until"),
+                win_rate_24h=win_rate,
+                hours_since_last_loss=hours_since_loss,
+            )
         except Exception as exc:
             logger.error("PreTradeIntel failure streak check failed: %s", exc)
             uncertainty_sources.append(f"failure_streak_check_failed: {str(exc)}")
@@ -331,28 +411,31 @@ class PreTradeIntel:
             uncertainty_sources.append(f"vae_regime_check_failed: {str(exc)}")
             observations.append(Observation("vae_regime", "neutral", 0.0, "Check failed due to error."))
 
-        # Resolve final verdict state logic: VETO overrides REDUCE_SIZE
-        if "VETO" in [verdict] or any(
+        # Resolve final verdict: structural risks stay hard VETO.
+        # failures_streak defaults to REDUCE_SIZE (adaptive); only VETO when
+        # streak_action escalates (explicit veto mode or sentinel max).
+        hard_hit = any(
             v.startswith(
-                (
-                    "event_policy",
-                    "failures_streak",
-                    "price_gap",
-                    "market_anomaly",
-                    "vae_regime_unstable",
-                )
+                ("event_policy", "price_gap", "market_anomaly", "vae_regime_unstable")
             )
             for v in vetoes
-        ):
+        )
+        streak_veto = bool(streak_action and streak_action.get("verdict") == "VETO")
+        if hard_hit or streak_veto:
             verdict = "VETO"
             size_multiplier = 0.0
         elif (
             "correlation_exposure" in str(vetoes)
             or "sentiment_divergence" in str(vetoes)
             or "vae_regime_caution" in str(vetoes)
+            or any(v.startswith("failures_streak") for v in vetoes)
         ):
             verdict = "REDUCE_SIZE"
-
+            if streak_action and streak_action.get("verdict") == "REDUCE_SIZE":
+                size_multiplier = min(
+                    size_multiplier,
+                    float(streak_action.get("size_multiplier") or 0.5),
+                )
         reasoning_str = "; ".join(vetoes) if vetoes else "Confirmation passed."
         confidence = 0.9 if verdict == "VETO" else (0.75 if verdict == "REDUCE_SIZE" else 0.85)
         
@@ -373,10 +456,16 @@ class PreTradeIntel:
             recommendation_strength=recommendation_strength,
         )
 
+        if trade_state is not None:
+            trade_state["last_pretrade_verdict"] = verdict
+            trade_state["streak_size_mult"] = float(size_multiplier)
+
         return {
             "verdict": verdict,
             "vetoes": vetoes,
             "size_multiplier": size_multiplier,
             "reasoning": reasoning_str,
             "reasoning_chain": agent_reasoning.to_dict(),
+            "trade_state": trade_state,
+            "streak_action": streak_action,
         }

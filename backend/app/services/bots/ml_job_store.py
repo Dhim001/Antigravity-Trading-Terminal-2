@@ -6,6 +6,8 @@ Statuses: queued | running | done | error | cancelled
 from __future__ import annotations
 
 import math
+import os
+import re
 import threading
 import time
 import uuid
@@ -20,6 +22,36 @@ _MAX_JOBS = 80
 _lock = threading.RLock()
 _jobs: dict[str, dict[str, Any]] = {}
 _futures: dict[str, Future] = {}
+
+# Headline keys kept in RAM when a large terminal result is offloaded (#31).
+# Include Lab Apply & Retrain / sweep fields so a failed disk hydrate still
+# leaves enough to retrain and show scores (trial_history stays on disk only).
+_SLIM_RESULT_KEYS = (
+    "ok", "error", "metrics", "aggregate", "mean_accuracy",
+    "n_folds", "pbo", "version_id", "trained_at",
+    "best_hyperparams", "best_score", "trials_completed", "max_trials",
+    "optimization_run_id", "importance_ranking", "objective_kind",
+    "multi_fidelity", "training_window", "timeframe", "symbol", "strategy",
+    "early_stopped", "epochs_trained", "epochs_budget",
+)
+
+
+def _result_dir() -> str:
+    from app.config import DATA_DIR
+
+    return os.path.join(DATA_DIR, "ml_job_results")
+
+
+def _result_path(job_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(job_id or "job"))
+    return os.path.join(_result_dir(), f"{safe}.json")
+
+
+def _delete_result_file(job_id: str) -> None:
+    try:
+        os.remove(_result_path(job_id))
+    except OSError:
+        pass
 
 
 def _now_iso() -> str:
@@ -41,6 +73,69 @@ def _prune_locked() -> None:
     for jid, _ in finished[: max(0, excess)]:
         _jobs.pop(jid, None)
         _futures.pop(jid, None)
+        _delete_result_file(jid)
+
+
+def _offload_terminal_result(job_id: str) -> None:
+    """Replace a large terminal ``result`` with a slim headline + disk file (#31).
+
+    Walk-forward bundles / metrics trees can be megabytes each; the store caps
+    at 80 jobs, so hot results alone could hold hundreds of MB. Results smaller
+    than ``ML_JOB_RESULT_OFFLOAD_BYTES`` stay in RAM (no disk churn for typical
+    validate jobs). If the file write fails the full result stays in RAM —
+    never worse than before.
+    """
+    from app.config import ML_JOB_RESULT_OFFLOAD_BYTES
+
+    with _lock:
+        job = _jobs.get(job_id)
+        result = job.get("result") if job else None
+        if not isinstance(result, dict) or result.get("_slimmed"):
+            return
+        safe = {k: v for k, v in result.items() if k != "_wf_bundle"}
+
+    try:
+        import json as _json
+
+        payload = _json_safe_ml_value(safe)
+        raw = _json.dumps(payload)
+    except Exception:
+        return
+    if len(raw) < ML_JOB_RESULT_OFFLOAD_BYTES:
+        return
+
+    try:
+        path = _result_path(job_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+        os.replace(tmp, path)
+    except OSError:
+        return
+
+    slim = {k: payload.get(k) for k in _SLIM_RESULT_KEYS if payload.get(k) is not None}
+    slim["_slimmed"] = True
+    slim["_result_file"] = path
+    with _lock:
+        job = _jobs.get(job_id)
+        if job and isinstance(job.get("result"), dict) and not job["result"].get("_slimmed"):
+            job["result"] = slim
+
+
+def _load_offloaded_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Read back a slimmed result's full payload from its disk file."""
+    path = result.get("_result_file")
+    if not path:
+        return None
+    try:
+        import json as _json
+
+        with open(path, "r", encoding="utf-8") as fh:
+            data = _json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def create_ml_job(
@@ -175,19 +270,19 @@ def finish_ml_job(
                 job["result"] = result
             if error is not None and not job.get("error"):
                 job["error"] = error
-            return
-        job["status"] = status
-        job["finished_at"] = _now_iso()
-        job["finished_at_epoch"] = time.time()
-        if result is not None:
-            job["result"] = result
-        if error is not None:
-            job["error"] = error
-        elif status == "error" and isinstance(result, dict) and result.get("error"):
-            job["error"] = str(result.get("error"))
-        _futures.pop(job_id, None)
-        snapshot = dict(job)
-        _prune_locked()
+        else:
+            job["status"] = status
+            job["finished_at"] = _now_iso()
+            job["finished_at_epoch"] = time.time()
+            if result is not None:
+                job["result"] = result
+            if error is not None:
+                job["error"] = error
+            elif status == "error" and isinstance(result, dict) and result.get("error"):
+                job["error"] = str(result.get("error"))
+            _futures.pop(job_id, None)
+            snapshot = dict(job)
+            _prune_locked()
 
     if snapshot is not None:
         try:
@@ -196,6 +291,10 @@ def finish_ml_job(
             record_ml_train_run_from_job(snapshot)
         except Exception:
             pass
+
+    # MEMORY_CENTRIC_REVIEW #31 — hot RAM holds a slim headline; the full
+    # payload moves to disk and is hydrated on demand by ``public_ml_job``.
+    _offload_terminal_result(job_id)
 
 
 def is_ml_job_cancelled(job_id: str) -> bool:
@@ -287,9 +386,22 @@ def public_ml_job(job: dict[str, Any] | None, *, include_result: bool = True) ->
     if include_result and job.get("status") in _TERMINAL:
         result = job.get("result")
         if isinstance(result, dict):
-            # Drop in-memory torch bundles — never belong in HTTP responses.
-            safe = {k: v for k, v in result.items() if k != "_wf_bundle"}
-            out["result"] = _json_safe_ml_value(safe)
+            if result.get("_slimmed"):
+                # Hydrate the offloaded payload from disk; fall back to the
+                # slim headline if the file is gone (never 500 the poll).
+                full = _load_offloaded_result(result)
+                if full is not None:
+                    out["result"] = _json_safe_ml_value(full)
+                else:
+                    slim = {
+                        k: v for k, v in result.items()
+                        if not str(k).startswith("_")
+                    }
+                    out["result"] = _json_safe_ml_value(slim)
+            else:
+                # Drop in-memory torch bundles — never belong in HTTP responses.
+                safe = {k: v for k, v in result.items() if k != "_wf_bundle"}
+                out["result"] = _json_safe_ml_value(safe)
         else:
             out["result"] = result
     return out

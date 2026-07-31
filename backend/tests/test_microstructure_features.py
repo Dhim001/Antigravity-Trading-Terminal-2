@@ -198,13 +198,16 @@ def test_compute_vpin_series_in_unit_range():
 
 
 def test_feature_schema_version_bumped():
-    assert SIGNAL_FEATURE_VERSION == 3
+    assert SIGNAL_FEATURE_VERSION == 4
 
 
 def test_feature_schema_includes_microstructure():
     assert "cvd_z" in SIGNAL_FEATURE_NAMES
     assert "cvd_slope" in SIGNAL_FEATURE_NAMES
     assert "vpin" in SIGNAL_FEATURE_NAMES
+    assert "is_rth" in SIGNAL_FEATURE_NAMES
+    assert "et_hour_sin" in SIGNAL_FEATURE_NAMES
+    assert "minutes_from_open_norm" in SIGNAL_FEATURE_NAMES
 
 
 def test_bar_to_signal_features_includes_cvd_vpin():

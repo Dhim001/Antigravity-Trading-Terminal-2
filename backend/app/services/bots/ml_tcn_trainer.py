@@ -24,8 +24,7 @@ from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
-    bar_to_signal_features,
-    signal_features_to_vector,
+    precompute_signal_feature_matrix,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,6 +142,9 @@ def build_tcn_sequences(
     n = len(candles)
     feature_lb = 20
     closes = [float(c.get("close") or 0) for c in candles]
+    feat_matrix = precompute_signal_feature_matrix(
+        candles, feature_lookback=feature_lb,
+    )
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[np.ndarray] = []
@@ -151,14 +153,7 @@ def build_tcn_sequences(
         returns = _compute_forward_returns(closes, i)
         if returns is None:
             continue
-
-        window: list[np.ndarray] = []
-        for j in range(i - lookback + 1, i + 1):
-            lb_start = max(0, j - feature_lb)
-            features = bar_to_signal_features(candles[j], lookback_rows=candles[lb_start:j])
-            window.append(signal_features_to_vector(features))
-
-        sequences_x.append(np.stack(window))
+        sequences_x.append(feat_matrix[i - lookback + 1 : i + 1])
         sequences_y.append(np.array(returns, dtype=np.float32))
 
     if not sequences_x:
@@ -183,9 +178,11 @@ def train_tcn_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("TCN_MULTI_HORIZON", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 120))
     hidden_dim = int(cfg.get("hidden_dim", 128))
@@ -203,7 +200,7 @@ def train_tcn_model(
         suggest_batch_size,
     )
 
-    if bool(cfg.get("_wf_mode")):
+    if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train"):
         epochs = cap_wf_epochs(epochs, cfg, default=10)
         device = resolve_wf_torch_device(cfg)
     else:

@@ -14,6 +14,10 @@ const MAX_BACKTEST_RUNS = 20;
 /** Max journal entries retained client-side. */
 const MAX_JOURNAL_ENTRIES = 200;
 
+/** #42 — analytics dashboard snapshots older than this are rebuilt from the
+ * next partial report instead of merged into (bounds merge accumulation). */
+const ANALYTICS_REPORT_TTL_MS = 30 * 60 * 1000;
+
 /** Only apply IDB restore when store still holds the same offloaded run. */
 function shouldApplyAsyncBacktestRestore(get, expectedRunId) {
   const cur = get().backtestResults;
@@ -104,13 +108,20 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
       return { analyticsBenchmarks: data.benchmarks, analyticsLoading: false };
     }
     if (data?.report === 'dashboard') {
-      return { analyticsReport: data, analyticsLoading: false };
+      return {
+        analyticsReport: { ...data, _updatedAt: Date.now() },
+        analyticsLoading: false,
+      };
     }
     // Partial reports (risk, equity, …) merge into the existing dashboard
     // snapshot — do not demote report identity to the partial kind.
+    // #42 — bound merge accumulation: if the previous snapshot is older than
+    // the TTL, rebuild from the incoming partial instead of merging into it.
     const prev = state.analyticsReport || {};
-    const next = { ...prev, ...data };
-    if (prev.report === 'dashboard' && data?.report && data.report !== 'dashboard') {
+    const stale = prev._updatedAt && (Date.now() - prev._updatedAt > ANALYTICS_REPORT_TTL_MS);
+    const base = stale ? {} : prev;
+    const next = { ...base, ...data, _updatedAt: Date.now() };
+    if (base.report === 'dashboard' && data?.report && data.report !== 'dashboard') {
       next.report = 'dashboard';
     }
     return { analyticsReport: next, analyticsLoading: false };
@@ -137,7 +148,12 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
     return { agentDeepReasoning: next };
   }),
 
-  setBacktestResults: (results) => set({ backtestResults: results }),
+  setBacktestResults: (results) => set((state) => (
+    // #42 — snapshot shares the results lifecycle: clearing results clears it.
+    results == null && state.backtestSnapshot != null
+      ? { backtestResults: results, backtestSnapshot: null }
+      : { backtestResults: results }
+  )),
   setBacktestRuns: (runs) => set({
     backtestRuns: Array.isArray(runs) ? runs.slice(0, MAX_BACKTEST_RUNS) : [],
   }),
@@ -263,12 +279,19 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
     };
   }),
 
-  setAgentInsightHistory: (symbol, insights) => set((state) => ({
-    agentInsightHistory: {
-      ...state.agentInsightHistory,
-      [symbol]: Array.isArray(insights) ? insights : [],
-    },
-  })),
+  setAgentInsightHistory: (symbol, insights) => set((state) => {
+    // MEMORY_CENTRIC_REVIEW #39 — wholesale replace must respect the same caps
+    // as setAgentInsight: 20 entries per symbol (newest first), 8 symbols max.
+    const sym = String(symbol || '').toUpperCase();
+    if (!sym) return {};
+    const list = Array.isArray(insights) ? insights.slice(0, 20) : [];
+    const nextHistoryMap = { ...state.agentInsightHistory, [sym]: list };
+    const hKeys = Object.keys(nextHistoryMap);
+    if (hKeys.length > 8) {
+      for (const k of hKeys.slice(0, hKeys.length - 8)) delete nextHistoryMap[k];
+    }
+    return { agentInsightHistory: nextHistoryMap };
+  }),
 
   setTradeExplain: (tradeId, data) => set((state) => {
     const key = String(tradeId);

@@ -55,6 +55,15 @@ class TestStartupRecovery(unittest.TestCase):
         self.assertTrue(result.get("cleared"))
         self.assertFalse(system_state.is_safe_mode_active())
 
+    def test_ht_bar_close_guards_safe_mode(self):
+        import inspect
+        from app.services.bots.manager import BotManagerService
+
+        src = inspect.getsource(BotManagerService.process_massive_ht_bar_close)
+        self.assertIn("is_safe_mode_active()", src)
+        tick = inspect.getsource(BotManagerService.process_market_tick)
+        self.assertIn("is_safe_mode_active()", tick)
+
 
 if __name__ == "__main__":
     unittest.main()

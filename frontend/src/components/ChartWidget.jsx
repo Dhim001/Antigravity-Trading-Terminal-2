@@ -1867,9 +1867,22 @@ export default function ChartWidget() {
             }
           }
         }
+        // MEMORY_CENTRIC_REVIEW #4 — patchLastTransformedMain mutates slots in
+        // place; ECharts needs a fresh outer reference to reliably re-read the
+        // series, so re-ref here (only the transformed path, ~1 slice/paint).
+        cache.main = cache.main.slice();
+        if (cache.volume) {
+          cache.volume = cache.volume.slice();
+        }
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
       } else {
-        updateLiveSeriesCache(cache, bars, liveChartType, active, indicatorTheme);
+        const liveChanged = updateLiveSeriesCache(cache, bars, liveChartType, active, indicatorTheme);
+        if (!liveChanged) {
+          // Quiet tick — slots unchanged, so no clone and no repaint
+          // (MEMORY_CENTRIC_REVIEW #4). Legend content derives from the same
+          // bars, so it is unchanged too.
+          return;
+        }
         patch.series = buildLightLiveSeriesPatchesFromCache(cache, liveChartType, active);
       }
 

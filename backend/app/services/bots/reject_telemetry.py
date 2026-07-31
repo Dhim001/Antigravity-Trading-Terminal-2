@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from app.db.connection import db_session, is_postgres
@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 KNOWN_BUCKETS = {
     "none", "low_confidence", "htf_gate", "meta_label", "conformal",
     "regime_gate", "stacking", "llm_firewall", "filter", "duplicate",
+    "pretrade_streak",
     "other",
 }
 
@@ -187,6 +188,86 @@ def clear_reject_log() -> int:
         return -1
 
 
+# ── Retention (#29) — rollup daily counts, then delete raw rows ───────────
+
+
+def _rollup_and_delete(conn, where_sql: str, params: Iterable[Any]) -> int:
+    """Aggregate matching rows into ``bot_signal_reject_rollup`` then delete them.
+
+    Keeps long-term reject statistics alive after raw-row retention pruning.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        INSERT INTO bot_signal_reject_rollup (day, bot_id, reason_bucket, count)
+        SELECT substr(created_at, 1, 10), bot_id, reason_bucket, COUNT(*)
+        FROM bot_signal_reject_log
+        WHERE {where_sql}
+        GROUP BY 1, 2, 3
+        ON CONFLICT (day, bot_id, reason_bucket)
+        DO UPDATE SET count = count + excluded.count
+        """,
+        params,
+    )
+    cursor.execute(f"DELETE FROM bot_signal_reject_log WHERE {where_sql}", params)
+    return cursor.rowcount or 0
+
+
+def prune_reject_log(retention_days: int, *, max_rows: int | None = None) -> int:
+    """Retention pass for ``bot_signal_reject_log`` (MEMORY_CENTRIC_REVIEW #29).
+
+    Rolls rows up into ``bot_signal_reject_rollup`` (day × bot × bucket counts)
+    before deleting, so long-term stats survive. Deletes rows older than
+    ``retention_days`` and, when ``max_rows`` is set, the oldest rows beyond
+    that cap. Returns total rows deleted (never raises).
+    """
+    deleted = 0
+    try:
+        with db_session() as conn:
+            if retention_days and retention_days > 0:
+                cutoff = (
+                    datetime.now(timezone.utc) - timedelta(days=int(retention_days))
+                ).isoformat().replace("+00:00", "Z")
+                deleted += _rollup_and_delete(conn, "created_at < ?", (cutoff,))
+            if max_rows and max_rows > 0:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id FROM bot_signal_reject_log ORDER BY id DESC LIMIT 1 OFFSET ?",
+                    (int(max_rows),),
+                )
+                row = cursor.fetchone()
+                threshold = row[0] if row else None
+                if threshold is not None:
+                    deleted += _rollup_and_delete(conn, "id <= ?", (threshold,))
+    except Exception:
+        logger.debug("prune_reject_log failed (non-fatal)", exc_info=True)
+    return deleted
+
+
+def reject_rollup(*, since_day: str | None = None) -> dict[str, dict[str, int]]:
+    """Long-term stats from the rollup table: ``{bot_id: {bucket: count}}``."""
+    where = "WHERE day >= ?" if since_day else ""
+    params: tuple[Any, ...] = (since_day,) if since_day else ()
+    try:
+        with db_session() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT bot_id, reason_bucket, SUM(count)
+                FROM bot_signal_reject_rollup {where}
+                GROUP BY bot_id, reason_bucket
+                """,
+                params,
+            )
+            out: dict[str, dict[str, int]] = defaultdict(dict)
+            for bot_id, bucket, cnt in cursor.fetchall():
+                out[bot_id][bucket] = int(cnt)
+            return dict(out)
+    except Exception:
+        logger.debug("reject_rollup failed (non-fatal)", exc_info=True)
+        return {}
+
+
 # ── Convenience: classify a strategy's reject_reason into a bucket ────────
 
 
@@ -219,6 +300,8 @@ def classify_reject(signal_data: dict, *, gate: str | None = None) -> str:
             return "llm_firewall"
         if "htf" in r or "bias" in r:
             return "htf_gate"
+        if "pretrade" in r or "streak" in r:
+            return "pretrade_streak"
         return "other"
     # No reject_reason → strategy simply returned NONE
     return "none"

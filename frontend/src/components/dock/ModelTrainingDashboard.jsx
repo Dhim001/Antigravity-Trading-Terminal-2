@@ -64,30 +64,29 @@ const DEEP_ML_STRATEGIES = new Set(
   ML_STRATEGY_IDS.filter((id) => isDeepMlStrategy(id)),
 );
 
-/** Defaults: Train uses GPU-era capacity; Validate stays interactive-sized. */
+/** Defaults: Train + Validate share production capacity (accuracy-first). */
 function defaultAdvancedKnobs(strategy, kind = 'validate') {
   const isRl = strategy === 'RL_PPO_AGENT';
-  const train = kind === 'train';
-  // Validate fold budgets (GPU) — not full production train schedules.
-  let epochs = train ? 100 : 12;
-  if (strategy === 'TCN_MULTI_HORIZON') epochs = train ? 100 : 10;
-  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = train ? 120 : 10;
-  else if (strategy === 'GNN_CROSS_ASSET') epochs = train ? 60 : 8;
-  else if (strategy === 'TRANSFORMER_SIGNAL') epochs = train ? 80 : 8;
-  else if (strategy === 'LSTM_DIRECTION') epochs = train ? 100 : 12;
+  // kind retained for callers; capacity knobs match Train either way.
+  void kind;
+  let epochs = 100;
+  if (strategy === 'TCN_MULTI_HORIZON') epochs = 100;
+  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = 120;
+  else if (strategy === 'GNN_CROSS_ASSET') epochs = 60;
+  else if (strategy === 'TRANSFORMER_SIGNAL') epochs = 80;
+  else if (strategy === 'LSTM_DIRECTION') epochs = 100;
   return {
     nFolds: isRl ? 2 : 3,
-    validateMaxBars: isRl ? 1200 : 2500,
+    validateMaxBars: isRl ? 4000 : 12_000,
     pboSegments: 4,
     pboMaxCombos: 4,
-    // Lab Train previously defaulted PPO to 2048 — that made models look weak.
-    totalTimesteps: train ? 200_000 : 2048,
+    totalTimesteps: 200_000,
     epochs,
     // Stop when val loss plateaus — budget epochs is a ceiling, not a requirement.
     earlyStopPatience: 10,
-    hiddenDim: train ? (isRl ? 256 : 128) : (isRl ? 64 : 64),
-    gbmMaxIter: train ? 300 : 40,
-    gbmMaxDepth: train ? 6 : 4,
+    hiddenDim: isRl ? 256 : 128,
+    gbmMaxIter: 300,
+    gbmMaxDepth: 6,
   };
 }
 
@@ -151,27 +150,17 @@ function estimateTrainingBars(monthsValue, tfValue) {
   return Math.max(500, Math.min(ideal, cap1m, hard));
 }
 
-/** Interactive Validate budget — mirrors backend HTF lean + Lab ceiling. */
+/**
+ * Validate bar budget at capacity parity — same calendar window as Train so
+ * walk-forward OOS reflects production data depth (not a lean smoke slice).
+ */
 function estimateValidateBars(monthsValue, tfValue, strategy) {
-  if (strategy === 'RL_PPO_AGENT') {
-    const months = Number(monthsValue) || 3;
-    // RL WF is heavier per bar — keep interactive, but scale with Lab window.
-    return Math.min(4000, Math.max(1200, months * 400));
-  }
   const trainBars = estimateTrainingBars(monthsValue, tfValue);
-  const months = Number(monthsValue) || 3;
-  const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
-  const secs = tf.secs || 60;
-  const leanCap = months <= 12 ? 12_000 : (months <= 24 ? 18_000 : 24_000);
-  if (secs > 60) {
-    const ideal = Math.floor(months * 30 * 86400 / secs);
-    return Math.max(500, Math.min(trainBars, Math.max(2_500, Math.floor(ideal / 3)), leanCap));
+  if (strategy === 'RL_PPO_AGENT') {
+    // RL env steps dominate wall-clock; still use a deep window, not 1.2k lean.
+    return Math.max(2_000, Math.min(trainBars, 20_000));
   }
-  const byMonth = {
-    1: 2_000, 3: 2_500, 6: 5_000, 12: 8_000, 18: 10_000, 24: 12_000, 36: 16_000,
-  };
-  const maxValidate = months <= 12 ? 8_000 : leanCap;
-  return Math.max(500, Math.min(byMonth[months] ?? 2_500, trainBars, maxValidate));
+  return trainBars;
 }
 
 function suggestedNFolds(monthsValue, strategy) {
@@ -1679,7 +1668,7 @@ export default function ModelTrainingDashboard({
     }
   }, [cancellingJob]);
 
-  const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null } = {}) => {
+  const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null, championTrain = false } = {}) => {
     if (training || validating || busyElsewhere || !symbol || !strat) return;
     const queueKey = `${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`;
     if (fromQueue) setRunNowKey(queueKey);
@@ -1690,12 +1679,15 @@ export default function ModelTrainingDashboard({
     const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
+    const isChampion = Boolean(championTrain || Object.keys(hp).length);
     localJobWaiterRef.current = true;
     let trainUiCompleted = false;
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
-          `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
+          isChampion
+            ? `Champion retrain ${strat} with tuned hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
+            : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
         );
       }
       const body = await apiRequest('/api/v1/ml/train', {
@@ -1707,6 +1699,11 @@ export default function ModelTrainingDashboard({
           config: {
             timeframe: trainingTimeframe,
             training_window_months: Number(trainingWindow),
+            // Force a real Lab champion write — never inherit Optuna trial
+            // skip_persist / _wf_mode that produce empty metrics + no artifact.
+            champion_train: isChampion,
+            skip_persist: false,
+            skip_snapshot: false,
             ...(strat === 'RL_PPO_AGENT'
               ? {
                   total_timesteps: parsePositiveInt(
@@ -1739,6 +1736,17 @@ export default function ModelTrainingDashboard({
                 }
               : {}),
             ...hp,
+            // Re-assert after hp spread — Optuna trial flags must never win.
+            skip_persist: false,
+            skip_snapshot: false,
+            ...(isChampion
+              ? { champion_train: true, use_optimized_hyperparams: true }
+              : (
+                typeof sessionStorage !== 'undefined'
+                && sessionStorage.getItem(`ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`) === '1'
+                  ? { use_optimized_hyperparams: true }
+                  : {}
+              )),
           },
         },
         // Candle fetch for long Lab windows; train itself is async + polled.
@@ -1778,8 +1786,36 @@ export default function ModelTrainingDashboard({
           ? ` · early stop ${m.epochs_trained ?? result.epochs_trained ?? '?'}`
             + `/${m.epochs_budget ?? advanced?.epochs ?? '?'}`
             + ' (val plateau)'
-          : '';
-        toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}`);
+          : (m.epochs_trained != null
+            ? ` · ${m.epochs_trained} epochs`
+            : '');
+        const metricBits = [];
+        const va = m.val_accuracy ?? m.accuracy ?? result.mean_accuracy;
+        if (va != null && Number.isFinite(Number(va))) {
+          metricBits.push(`val ${(Number(va) * 100).toFixed(1)}%`);
+        }
+        if (m.fit_samples != null) metricBits.push(`${Number(m.fit_samples).toLocaleString()} fits`);
+        if (m.train_samples != null && m.val_samples != null) {
+          metricBits.push(`${m.train_samples}/${m.val_samples} tv`);
+        }
+        const metricNote = metricBits.length ? ` · ${metricBits.join(' · ')}` : '';
+        const metricsMissing = !result.metrics
+          || (typeof result.metrics === 'object' && !Object.keys(result.metrics).length);
+        if (metricsMissing && !metricBits.length) {
+          toast.message(
+            `Training finished for ${strat} / ${symbol}${twNote} — metrics missing from job result; check Recent runs / model status.`,
+          );
+        } else {
+          toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}${metricNote}`);
+        }
+        if (isChampion) {
+          try {
+            sessionStorage.setItem(
+              `ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`,
+              '1',
+            );
+          } catch { /* ignore */ }
+        }
         invalidateMatchingMlBacktests(strat, symbol);
         // Drop from retrain audit immediately (backend also clears via record_retrain).
         setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
@@ -1844,12 +1880,12 @@ export default function ModelTrainingDashboard({
     setMlValidation(null);
     const isRl = strategy === 'RL_PPO_AGENT';
     const isDeep = DEEP_ML_STRATEGIES.has(strategy);
-    const defaults = defaultAdvancedKnobs(strategy, 'validate');
+    const defaults = defaultAdvancedKnobs(strategy, 'train');
     const nFolds = parsePositiveInt(advanced.nFolds, defaults.nFolds, { min: 2, max: 8 });
     const validateMaxBars = parsePositiveInt(
       advanced.validateMaxBars,
       defaults.validateMaxBars,
-      { min: 200, max: 24_000 },
+      { min: 200, max: 100_000 },
     );
     const pboSegments = parsePositiveInt(advanced.pboSegments, defaults.pboSegments, { min: 2, max: 8 });
     const pboMaxCombos = parsePositiveInt(advanced.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 });
@@ -1861,15 +1897,20 @@ export default function ModelTrainingDashboard({
     try {
       toast.message(
         isRl
-          ? `Running RL walk-forward (episode returns, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
+          ? `Running RL walk-forward at train capacity (no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
           : isDeep
-            ? `Running walk-forward (fast folds, no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
-            : `Running walk-forward + PBO… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`,
+            ? `Running walk-forward at train capacity (no PBO)… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`
+            : `Running walk-forward + PBO at train capacity… up to ${formatMlJobBudgetLabel(validateTimeoutMs)}`,
       );
-      // Do not reuse Train Advanced epochs (e.g. 80) — those interrupt WF before folds finish.
+      // Capacity parity: reuse Lab Advanced train knobs so OOS ≈ production Train.
       const wfEpochs = isDeep
-        ? parsePositiveInt(defaults.epochs, defaults.epochs, { min: 1, max: 40 })
+        ? parsePositiveInt(advanced.epochs, defaults.epochs, { min: 1, max: 500 })
         : null;
+      const earlyStop = parsePositiveInt(
+        advanced.earlyStopPatience,
+        defaults.earlyStopPatience,
+        { min: 1, max: 100 },
+      );
       const body = await apiRequest('/api/v1/ml/validate', {
         method: 'POST',
         body: {
@@ -1889,24 +1930,48 @@ export default function ModelTrainingDashboard({
             model_symbol: activeSymbol,
             _wf_mode: true,
             wf_use_gpu: true,
+            wf_capacity_parity: true,
             validate_max_bars: validateMaxBars,
             pbo_max_combos: pboMaxCombos,
+            early_stop_patience: earlyStop,
             ...(isRl
               ? {
-                  // Cap interactive WF timesteps; full Train still uses Advanced 200k.
-                  total_timesteps: Math.min(
-                    parsePositiveInt(advanced.totalTimesteps, defaults.totalTimesteps, {
-                      min: 512, max: 20_000,
-                    }),
-                    8192,
+                  total_timesteps: parsePositiveInt(
+                    advanced.totalTimesteps,
+                    defaults.totalTimesteps,
+                    { min: 512, max: 500_000 },
                   ),
-                  n_steps: 512,
-                  ppo_epochs: 2,
+                  n_steps: 2048,
+                  ppo_epochs: 10,
                   hidden_dim: parsePositiveInt(advanced.hiddenDim, defaults.hiddenDim, {
-                    min: 32, max: 256,
+                    min: 32, max: 512,
                   }),
                   skip_onnx_export: true,
-                  wf_capacity_parity: false,
+                }
+              : {}),
+            ...(isDeep
+              ? {
+                  hidden_dim: parsePositiveInt(advanced.hiddenDim, defaults.hiddenDim, {
+                    min: 32, max: 512,
+                  }),
+                  ...(strategy === 'TRANSFORMER_SIGNAL'
+                    ? {
+                        d_model: parsePositiveInt(advanced.hiddenDim, 128, {
+                          min: 32, max: 512,
+                        }),
+                      }
+                    : {}),
+                  ...(strategy === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
+                }
+              : {}),
+            ...(strategy === 'ML_SIGNAL_BOOST'
+              ? {
+                  gbm_max_iter: parsePositiveInt(advanced.gbmMaxIter, defaults.gbmMaxIter, {
+                    min: 40, max: 1000,
+                  }),
+                  gbm_max_depth: parsePositiveInt(advanced.gbmMaxDepth, defaults.gbmMaxDepth, {
+                    min: 3, max: 12,
+                  }),
                 }
               : {}),
             ...(wfEpochs != null ? { epochs: wfEpochs, wf_epochs: wfEpochs } : {}),
@@ -2402,9 +2467,9 @@ export default function ModelTrainingDashboard({
           </Button>
         </div>
         <p className="text-[10px] text-muted-foreground -mt-1">
-          Trigger retrain uses the Training window above. Walk-forward uses validate_max_bars
-          ({Number(advanced.validateMaxBars).toLocaleString()} bars) — both update when you
-          change months / timeframe.
+          Trigger retrain and Walk-forward Validate both use the Training window above
+          ({Number(advanced.validateMaxBars).toLocaleString()} bars at capacity parity)
+          so OOS metrics match production Train depth.
         </p>
       </section>
 
@@ -2561,8 +2626,35 @@ export default function ModelTrainingDashboard({
             toast.error('No active symbol');
             return;
           }
-          toast.message('Applying best hyperparams and starting retrain…');
-          runTrainJob(strategy, activeSymbol, { hyperparams: hp });
+          // Mirror tuned knobs into the Advanced UI so a later "Trigger retrain"
+          // keeps the same architecture (epochs / hidden_dim / GBM depth…).
+          // Non-UI knobs (learning_rate, lookback, …) are filled server-side
+          // from the persisted Optuna best_config.
+          if (hp && typeof hp === 'object') {
+            setAdvanced((prev) => {
+              const next = { ...prev };
+              if (hp.epochs != null) next.epochs = String(hp.epochs);
+              if (hp.hidden_dim != null) next.hiddenDim = String(hp.hidden_dim);
+              if (hp.early_stop_patience != null) {
+                next.earlyStopPatience = String(hp.early_stop_patience);
+              }
+              if (hp.total_timesteps != null) {
+                next.totalTimesteps = String(hp.total_timesteps);
+              }
+              if (hp.gbm_max_iter != null) next.gbmMaxIter = String(hp.gbm_max_iter);
+              if (hp.gbm_max_depth != null) next.gbmMaxDepth = String(hp.gbm_max_depth);
+              // Transformer Optuna tunes d_model separately; keep UI knob aligned.
+              if (hp.d_model != null && hp.hidden_dim == null) {
+                next.hiddenDim = String(hp.d_model);
+              }
+              return next;
+            });
+          }
+          toast.message('Applying best hyperparams — starting full champion retrain…');
+          void runTrainJob(strategy, activeSymbol, {
+            hyperparams: hp,
+            championTrain: true,
+          });
         }}
       />
 

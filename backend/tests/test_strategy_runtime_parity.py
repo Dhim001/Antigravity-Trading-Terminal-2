@@ -89,12 +89,25 @@ class TestScaleEntryQuantity(unittest.TestCase):
 
 
 class TestParityPretrade(unittest.TestCase):
-    def test_failures_streak_veto(self):
+    def test_failures_streak_reduce_by_default(self):
         out = evaluate_parity_pretrade(
             side="BUY",
             symbol="AAPL",
             bar_time=1,
             bot_config={},
+            recent_exit_pnls=[-10, -20, -30],
+            setup_fail_limit=3,
+        )
+        self.assertEqual(out["verdict"], "REDUCE_SIZE")
+        self.assertTrue(any("failures_streak" in v for v in out["vetoes"]))
+        self.assertAlmostEqual(out["size_multiplier"], 0.5)
+
+    def test_failures_streak_veto_mode(self):
+        out = evaluate_parity_pretrade(
+            side="BUY",
+            symbol="AAPL",
+            bar_time=1,
+            bot_config={"pretrade_streak_mode": "veto"},
             recent_exit_pnls=[-10, -20, -30],
             setup_fail_limit=3,
         )

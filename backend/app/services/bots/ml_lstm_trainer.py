@@ -24,8 +24,7 @@ from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
-    bar_to_signal_features,
-    signal_features_to_vector,
+    precompute_signal_feature_matrix,
 )
 from app.services.bots.ml_triple_barrier import label_distribution, label_triple_barrier
 
@@ -163,6 +162,7 @@ def build_sequences(
     *,
     lookback: int = 60,
     max_holding_bars: int = 30,
+    progress_path: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X, y) sliding window sequences from labelled candles.
 
@@ -173,26 +173,59 @@ def build_sequences(
     """
     n = len(candles)
     feature_lookback = 20  # for rolling features inside bar_to_signal_features
+    if n == 0:
+        return np.array([]), np.array([])
+
+    from app.services.bots.ml_job_progress import ml_cancel_requested, write_ml_progress
+
+    def _cancel() -> bool:
+        return ml_cancel_requested(progress_path)
+
+    def _on_feat_progress(done: int, total: int) -> None:
+        if not progress_path or total <= 0:
+            return
+        frac = min(1.0, done / total)
+        write_ml_progress(
+            progress_path,
+            pct=15 + int(frac * 4),
+            phase="sequences",
+            detail=f"features {done}/{total}",
+        )
+
+    # O(n) feature pass — then O(n) window slices (was O(n × lookback) feature calls).
+    feat_matrix = precompute_signal_feature_matrix(
+        candles,
+        feature_lookback=feature_lookback,
+        progress_cb=_on_feat_progress if progress_path else None,
+        cancel_cb=_cancel if progress_path else None,
+    )
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[int] = []
+    start_i = lookback + feature_lookback
+    end_i = n - max_holding_bars
+    report_every = max(2_000, max(1, (end_i - start_i) // 20))
 
-    for i in range(lookback + feature_lookback, n - max_holding_bars):
+    for i in range(start_i, end_i):
+        if progress_path and i % 512 == 0 and ml_cancel_requested(progress_path):
+            raise InterruptedError("ml_cancel_requested")
+        if i >= len(labels):
+            break
         label_info = labels[i]
         if label_info.get("barrier_hit") == "invalid":
             continue
-
-        # Build the sequence: features for bars [i-lookback .. i-1, i]
-        window_vectors: list[np.ndarray] = []
-        for j in range(i - lookback + 1, i + 1):
-            candle = candles[j]
-            lb_start = max(0, j - feature_lookback)
-            lb_rows = candles[lb_start:j]
-            features = bar_to_signal_features(candle, lookback_rows=lb_rows)
-            window_vectors.append(signal_features_to_vector(features))
-
-        sequences_x.append(np.stack(window_vectors))  # (lookback, N_FEATURES)
-        sequences_y.append(LABEL_MAP[label_info["label"]])
+        mapped = LABEL_MAP.get(label_info.get("label"))
+        if mapped is None:
+            continue
+        sequences_x.append(feat_matrix[i - lookback + 1 : i + 1])
+        sequences_y.append(mapped)
+        if progress_path and (i - start_i + 1) % report_every == 0:
+            write_ml_progress(
+                progress_path,
+                pct=19,
+                phase="sequences",
+                detail=f"windows {len(sequences_x)} @ i={i}",
+            )
 
     if not sequences_x:
         return np.array([]), np.array([])
@@ -237,6 +270,12 @@ def train_lstm_signal_model(
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    if cfg.get("champion_train") or raw_cfg.get("champion_train"):
+        cfg["champion_train"] = True
+        cfg.pop("_wf_mode", None)
+        cfg.pop("wf_mode", None)
+        cfg["skip_persist"] = False
+        cfg["skip_snapshot"] = False
     epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 90))
     # Interactive / walk-forward validation uses short fold windows — relax the
@@ -268,7 +307,8 @@ def train_lstm_signal_model(
     )
 
     # WF folds: CUDA when available; short epoch budget (not full Lab train).
-    if bool(cfg.get("_wf_mode")):
+    # Champion / Apply & Retrain must never take this path.
+    if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train"):
         epochs = cap_wf_epochs(epochs, cfg, default=12)
         device = resolve_wf_torch_device(cfg)
     else:
@@ -300,7 +340,15 @@ def train_lstm_signal_model(
 
     # Step 2: Build sliding window sequences
     write_ml_progress(progress_path, pct=15, phase="sequences", detail="build windows")
-    X, y = build_sequences(candles, labels, lookback=lookback, max_holding_bars=max_bars)
+    try:
+        X, y = build_sequences(
+            candles, labels,
+            lookback=lookback,
+            max_holding_bars=max_bars,
+            progress_path=progress_path,
+        )
+    except InterruptedError:
+        return cancelled_train_result(symbol, "LSTM_DIRECTION")
     n = len(y)
     if n < min_samples:
         return {

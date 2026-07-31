@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.db.connection import get_connection
@@ -64,9 +64,20 @@ def _extract_metrics(result: dict | None) -> dict[str, Any]:
         "total_timesteps",
         "train_samples",
         "val_samples",
+        "fit_samples",
+        "epochs_trained",
+        "epochs_budget",
+        "val_loss",
+        "train_accuracy",
     ):
         if src.get(key) is not None:
             metrics[key] = _finite_or_none(src.get(key))
+    if src.get("early_stopped") is not None:
+        metrics["early_stopped"] = bool(src.get("early_stopped"))
+    if result.get("early_stopped") is not None:
+        metrics.setdefault("early_stopped", bool(result.get("early_stopped")))
+    if result.get("epochs_trained") is not None:
+        metrics.setdefault("epochs_trained", _finite_or_none(result.get("epochs_trained")))
     if result.get("mean_accuracy") is not None:
         metrics["mean_accuracy"] = _finite_or_none(result.get("mean_accuracy"))
     agg = result.get("aggregate") if isinstance(result.get("aggregate"), dict) else {}
@@ -245,6 +256,32 @@ def list_ml_train_runs(
         return [_row_to_run(row) for row in rows]
     finally:
         conn.close()
+
+
+def prune_ml_train_runs(retention_days: int) -> int:
+    """Delete ``ml_train_runs`` rows older than ``retention_days`` (#30).
+
+    Same pattern as ``prune_optimization_runs`` / ``prune_backtest_jobs`` —
+    wired into the startup retention pass in ``server.py``. Returns rows
+    deleted (never raises).
+    """
+    if retention_days <= 0:
+        return 0
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=int(retention_days))
+    ).isoformat().replace("+00:00", "Z")
+    try:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ml_train_runs WHERE created_at < ?", (cutoff,))
+            conn.commit()
+            return cursor.rowcount or 0
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("Failed to prune ml_train_runs")
+        return 0
 
 
 def _parse_json(raw, default=None):

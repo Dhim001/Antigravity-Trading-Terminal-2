@@ -28,15 +28,20 @@ def robust_score(
 
 
 def stress_pnl_value(row: dict) -> float:
-    """PnL after doubling estimated slippage cost (stress scenario)."""
+    """PnL after doubling estimated slippage cost (stress scenario).
+
+    ``total_pnl`` is already net of commissions — the backtester deducts
+    entry/exit fees from equity — so fees must NOT be subtracted again here
+    (doing so double-counted them and biased the objective against
+    high-trade-count configs).
+    """
     summary = row.get("summary") or {}
     pnl = float(row.get("total_pnl") or summary.get("total_pnl") or 0)
-    fees = float(summary.get("total_fees") or 0)
     trades = row_trade_count(row)
     slip_bps = float(summary.get("slippage_bps") or (row.get("config") or {}).get("slippage_bps") or 5)
     alloc = float((row.get("config") or {}).get("allocation") or 10_000)
     extra_slip = trades * alloc * (slip_bps / 10_000.0)
-    return pnl - fees - extra_slip
+    return pnl - extra_slip
 
 
 def _extract_metric(row: dict, metric: str) -> float | None:

@@ -21,9 +21,10 @@ export const ML_TRAIN_TIMEOUT_MS = Object.freeze({
 });
 
 export const ML_VALIDATE_TIMEOUT_MS = Object.freeze({
-  RL_PPO_AGENT: 2_700_000, // 45 min — multi-fold PPO (still CPU-capped folds)
-  deep: 1_800_000, // 30 min
-  default: 900_000, // 15 min
+  // Capacity-parity folds ≈ full Train × n_folds — give multi-hour headroom.
+  RL_PPO_AGENT: 10_800_000, // 180 min — multi-fold PPO at train timesteps
+  deep: 7_200_000, // 120 min — LSTM/TCN/Transformer/VAE/GNN at train epochs
+  default: 3_600_000, // 60 min — HistGBM + PBO
 });
 
 /** Extra headroom after the nominal budget before the UI soft-budget toast. */
@@ -95,7 +96,7 @@ export function mlJobTimeoutMs(strategy, kind = 'validate', opts = {}) {
   else if (DEEP.has(id)) base = table.deep;
   const scale = mlJobWindowScale(opts?.months);
   // Cap absolute wall-clock so a 36mo deep train doesn't claim multi-day UI.
-  const hardCap = kind === 'train' ? 8 * 3_600_000 : 4 * 3_600_000; // 8h / 4h
+  const hardCap = kind === 'train' ? 8 * 3_600_000 : 12 * 3_600_000; // 8h train / 12h validate
   return Math.min(hardCap, Math.round(base * scale));
 }
 

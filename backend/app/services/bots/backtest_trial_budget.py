@@ -13,11 +13,26 @@ from app.config import (
 from app.services.bots.backtest_sweep import MAX_SWEEP_COMBOS, MAX_SWEEP_COMBOS_EXTENDED, SWEEP_MODES
 
 
+def _safe_float(raw, default: float) -> float:
+    """float() that never raises — sweep fields arrive from user JSON."""
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(raw, default: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def resolve_time_budget_sec(sweep: dict | None) -> float:
     sweep = sweep or {}
     raw = sweep.get("time_budget_sec")
     if raw is not None and str(raw).strip() != "":
-        return max(0.0, float(raw))
+        return max(0.0, _safe_float(raw, float(BACKTEST_SWEEP_TIME_BUDGET_SEC)))
     return float(BACKTEST_SWEEP_TIME_BUDGET_SEC)
 
 
@@ -35,10 +50,10 @@ def resolve_max_trials(sweep: dict | None, sweep_mode: str) -> int:
     )
     env_cap = BACKTEST_SWEEP_MAX_TRIALS if mode != "grid" else BACKTEST_SWEEP_MAX_GRID
 
-    requested = int(sweep.get("max_combos") or legacy_cap)
+    requested = _safe_int(sweep.get("max_combos"), 0) or legacy_cap
     has_budget = "max_trials" in sweep or "time_budget_sec" in sweep
     effective_cap = env_cap if has_budget else legacy_cap
-    max_trials = int(sweep.get("max_trials") or effective_cap)
+    max_trials = _safe_int(sweep.get("max_trials"), 0) or effective_cap
     return max(1, min(requested, max_trials, effective_cap))
 
 

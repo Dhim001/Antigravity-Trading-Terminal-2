@@ -15,12 +15,13 @@ from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
 
 class TestScaler:
     def test_compute_scaler_shape(self):
+        from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
         from app.services.bots.ml_lstm_trainer import compute_scaler
-        # 10 sequences of 60 timesteps × 34 features
-        X = np.random.randn(10, 60, 34).astype(np.float32)
+        n_feat = len(SIGNAL_FEATURE_NAMES)
+        X = np.random.randn(10, 60, n_feat).astype(np.float32)
         scaler = compute_scaler(X)
-        assert len(scaler["mean"]) == 34
-        assert len(scaler["std"]) == 34
+        assert len(scaler["mean"]) == n_feat
+        assert len(scaler["std"]) == n_feat
 
     def test_compute_scaler_prevents_zero_std(self):
         from app.services.bots.ml_lstm_trainer import compute_scaler

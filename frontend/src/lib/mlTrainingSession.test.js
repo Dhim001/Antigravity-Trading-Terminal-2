@@ -32,8 +32,7 @@ describe('mlTrainingSession', () => {
     expect(getCachedModelStatus('BNBUSDT', 'TRANSFORMER_SIGNAL', '1m')?.trained).toBe(true);
   });
 
-  it('keeps 1m and 15m model status separate', () => {
-    setCachedModelStatus('ETHUSDT', 'LSTM_DIRECTION', {
+  it('keeps 1m and 15m model status separate', () => {    setCachedModelStatus('ETHUSDT', 'LSTM_DIRECTION', {
       trained: true,
       trained_at: '2026-07-18T09:00:00Z',
       timeframe: '1m',
@@ -135,5 +134,25 @@ describe('mlTrainingSession', () => {
       phase: 'done',
     });
     expect(useResearchStore.getState().backtestResults).toBeNull();
+  });
+
+  it('statusCache evicts least-recently-used keys beyond 12 (#40)', () => {
+    for (let i = 0; i < 14; i++) {
+      setCachedModelStatus(`SYM${i}`, 'LSTM_DIRECTION', { trained: true, timeframe: '1m' }, '1m');
+    }
+    expect(getCachedModelStatus('SYM0', 'LSTM_DIRECTION', '1m')).toBeNull();
+    expect(getCachedModelStatus('SYM1', 'LSTM_DIRECTION', '1m')).toBeNull();
+    expect(getCachedModelStatus('SYM13', 'LSTM_DIRECTION', '1m')?.trained).toBe(true);
+  });
+
+  it('statusCache read refreshes LRU position (#40)', () => {
+    for (let i = 0; i < 12; i++) {
+      setCachedModelStatus(`R${i}`, 'S', { trained: true, timeframe: '1m' }, '1m');
+    }
+    // Read R0 → becomes most-recently-used, so it survives the next insert.
+    expect(getCachedModelStatus('R0', 'S', '1m')?.trained).toBe(true);
+    setCachedModelStatus('R12', 'S', { trained: true, timeframe: '1m' }, '1m');
+    expect(getCachedModelStatus('R0', 'S', '1m')?.trained).toBe(true);
+    expect(getCachedModelStatus('R1', 'S', '1m')).toBeNull();
   });
 });

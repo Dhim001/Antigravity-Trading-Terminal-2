@@ -21,6 +21,26 @@ def test_record_ml_inference_features_fills_buffer(monkeypatch, tmp_path):
     assert len(mon._buffers[key]) == 5
 
 
+def test_drift_buffer_drops_stale_schema_widths(monkeypatch, tmp_path):
+    """Schema bumps must not mix vector widths (numpy PSI would raise)."""
+    monkeypatch.setattr("app.services.bots.ml_feature_drift.DRIFT_DATA_DIR", str(tmp_path))
+    mon = FeatureDriftMonitor(window_size=50)
+    key = mon._key("AAPL", "ML_SIGNAL_BOOST")
+    mon._buffers[key] = [[0.0] * 34 for _ in range(40)]
+    mon._last_access[key] = 0.0
+
+    new_vec = [1.0] * len(SIGNAL_FEATURE_NAMES)
+    mon.record_inference("AAPL", "ML_SIGNAL_BOOST", new_vec)
+    assert all(len(v) == len(SIGNAL_FEATURE_NAMES) for v in mon._buffers[key])
+    assert len(mon._buffers[key]) == 1
+
+    # check_drift must not raise on leftover mixed disk data
+    mon._buffers[key] = [[0.0] * 34 for _ in range(20)] + [[1.0] * len(SIGNAL_FEATURE_NAMES) for _ in range(35)]
+    out = mon.check_drift("AAPL", "ML_SIGNAL_BOOST", training_features=np.ones((50, len(SIGNAL_FEATURE_NAMES)), dtype=np.float32))
+    assert out is not None
+    assert out["n_live"] >= 30
+
+
 def test_record_helper_accepts_dict_and_ndarray(monkeypatch):
     recorded: list[tuple] = []
 

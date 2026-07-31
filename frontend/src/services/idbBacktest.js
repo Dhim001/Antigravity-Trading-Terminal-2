@@ -110,18 +110,51 @@ export async function idbClearBacktest(runId) {
 /**
  * Keep newest runs for this profile; always retain keepRunId.
  * Uses key + savedAt only — does not materialize `results` blobs (MEMORY #17).
+ * The v2 `savedAt` index supports a *key-only* cursor (`cursor.key` = savedAt,
+ * `cursor.primaryKey` = record key), so the prune walk never deserializes a
+ * payload; the value-cursor path below is a legacy fallback only.
  */
 export async function idbPruneBacktests(keepRunId, maxRuns = MAX_IDB_RUNS) {
   const prefix = `${terminalProfile()}:`;
   const meta = await withStore('readonly', (store) => new Promise((resolve) => {
     const out = [];
+    const hasIndex = (() => {
+      try {
+        return store.indexNames.contains('savedAt');
+      } catch (_) {
+        return false;
+      }
+    })();
+
+    if (hasIndex) {
+      let req;
+      try {
+        req = store.index('savedAt').openKeyCursor(null, 'prev');
+      } catch (_) {
+        resolve([]);
+        return;
+      }
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          resolve(out);
+          return;
+        }
+        const rowKey = cursor.primaryKey;
+        if (typeof rowKey === 'string' && rowKey.startsWith(prefix)) {
+          out.push({ key: rowKey, savedAt: Number(cursor.key) || 0 });
+        }
+        cursor.continue();
+      };
+      req.onerror = () => resolve(out);
+      return;
+    }
+
+    // Legacy fallback (pre-v2 DB without the index) — reads savedAt from each
+    // record; the v2 upgrade adds the index, so this path should not run.
     let req;
     try {
-      if (store.indexNames.contains('savedAt')) {
-        req = store.index('savedAt').openCursor(null, 'prev');
-      } else {
-        req = store.openCursor();
-      }
+      req = store.openCursor();
     } catch (_) {
       resolve([]);
       return;
@@ -134,7 +167,6 @@ export async function idbPruneBacktests(keepRunId, maxRuns = MAX_IDB_RUNS) {
       }
       const row = cursor.value;
       if (row?.key?.startsWith(prefix)) {
-        // Only keep prune metadata — never retain results reference.
         out.push({ key: row.key, savedAt: row.savedAt ?? 0 });
       }
       cursor.continue();

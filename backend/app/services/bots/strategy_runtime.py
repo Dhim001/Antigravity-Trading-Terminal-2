@@ -322,6 +322,7 @@ def evaluate_parity_pretrade(
         PRETRADE_SENTIMENT_THRESHOLD,
         PRETRADE_SETUP_FAIL_LIMIT,
     )
+    from app.services.bots.pretrade_context import apply_failures_streak
 
     cfg = bot_config or {}
     verdict = "CONFIRM"
@@ -349,14 +350,25 @@ def evaluate_parity_pretrade(
         gap_veto_pct if gap_veto_pct is not None else PRETRADE_GAP_VETO_PCT
     )
 
+    streak_action = None
     # Failure streak from recent closed exits (newest last).
     if recent_exit_pnls is not None and fail_limit > 0:
-        pnls = [float(p) for p in recent_exit_pnls]
-        if len(pnls) >= fail_limit:
-            window = pnls[-fail_limit:]
-            if all(p < 0.0 for p in window):
+        streak_action = apply_failures_streak(
+            recent_exit_pnls,
+            bot_config=cfg,
+            setup_fail_limit=fail_limit,
+            newest_first=False,
+        )
+        if streak_action:
+            vetoes.extend(streak_action.get("vetoes") or [])
+            if streak_action["verdict"] == "VETO":
                 verdict = "VETO"
-                vetoes.append(f"failures_streak: {len(window)} consecutive losses")
+                size_multiplier = 0.0
+            else:
+                verdict = "REDUCE_SIZE"
+                size_multiplier = min(
+                    size_multiplier, float(streak_action.get("size_multiplier") or reduce)
+                )
 
     # Sentiment divergence (optional — primed cache or live store).
     # Accept both store keys (aggregate_score/mention_count) and legacy
@@ -403,7 +415,6 @@ def evaluate_parity_pretrade(
         size_multiplier = 0.0
 
     # cfg reserved for future bot-level overrides; silence unused lint.
-    _ = cfg
     _ = bar_time
     _ = symbol
 
@@ -412,6 +423,7 @@ def evaluate_parity_pretrade(
         "vetoes": vetoes,
         "size_multiplier": size_multiplier,
         "reasoning": "; ".join(vetoes) if vetoes else "Confirmation passed.",
+        "streak_action": streak_action,
     }
 
 
@@ -437,6 +449,11 @@ async def maybe_apply_llm_debate(
         from app.services.agent.debate import run_debate
 
         insight = data.get("insight_snapshot") or data
+        if isinstance(insight, dict):
+            insight = dict(insight)
+            pt = data.get("pretrade_context") or data.get("trade_state")
+            if isinstance(pt, dict):
+                insight.setdefault("pretrade_context", pt)
         verdict = await run_debate(sig, insight if isinstance(insight, dict) else {}, config=cfg)
     except Exception:
         return ParityGateOutcome(signal=sig, signal_data=data)

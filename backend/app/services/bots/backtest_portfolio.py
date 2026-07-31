@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -21,6 +22,10 @@ SPARKLINE_POINTS = 24
 # Cap trade samples so Lab Trades/Performance work without shipping full N×logs.
 PORTFOLIO_TRADES_PER_SYMBOL = 50
 PORTFOLIO_MAX_TRADES_TOTAL = 200
+# MEMORY_CENTRIC_REVIEW #8 — pre-materialized candles for more than this many
+# symbols (without a `resolve_candles` streaming resolver) keep every symbol
+# resident for the whole run; warn so callers switch to the streaming path.
+PORTFOLIO_PRELOAD_WARN_SYMBOLS = int(os.environ.get("PORTFOLIO_PRELOAD_WARN_SYMBOLS", "16"))
 
 
 def _sparkline_from_curve(curve: list | None, max_points: int = SPARKLINE_POINTS) -> list[float]:
@@ -508,6 +513,17 @@ def _run_portfolio(
     total_capital = cfg.total_capital
     per_symbol_results: dict[str, dict] = {}
     preloaded = candles_by_symbol if isinstance(candles_by_symbol, dict) else {}
+
+    # MEMORY #8 — a full pre-materialized dict keeps every symbol resident for
+    # the entire run; the streaming path (resolve_candles per batch) peaks at
+    # workers × 1 symbol. Warn loudly so large-universe callers switch.
+    if resolve_candles is None and len(preloaded) > PORTFOLIO_PRELOAD_WARN_SYMBOLS:
+        logger.warning(
+            "Portfolio backtest: %d symbols arrived with pre-materialized candles and no "
+            "resolve_candles resolver — all symbols stay resident for the run. Pass "
+            "resolve_candles to stream per batch (peak ≈ workers × 1 symbol).",
+            len(preloaded),
+        )
 
     total_weight = sum(s.get("weight", 1.0) for s in cfg.symbols)
     n_symbols = len(cfg.symbols)

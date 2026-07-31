@@ -135,9 +135,11 @@ def _warm_start_study(study, sweep: dict, axes: list[tuple[str, list[Any]]], bas
             if not params:
                 continue
             score = -1e18
-            # Prefer stored objective if present on matching result row
+            # Prefer stored objective if present on matching result row. Seeds
+            # come from row["config"] OR row["params"] — match both, otherwise
+            # params-sourced seeds never find their score and get dropped.
             for row in results:
-                if isinstance(row, dict) and row.get("config") == cfg:
+                if isinstance(row, dict) and (row.get("config") == cfg or row.get("params") == cfg):
                     try:
                         score = float(row_objective_value(row, "total_pnl") or -1e18)
                     except (TypeError, ValueError):

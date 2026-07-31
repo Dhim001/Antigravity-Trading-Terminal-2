@@ -1,6 +1,6 @@
 """ML feature engineering — expanded features for XGBoost signal classifier.
 
-Extracts 34 numeric features from a prepared indicator row (pandas Series or dict)
+Extracts numeric features from a prepared indicator row (pandas Series or dict)
 for use with the ML_SIGNAL_BOOST strategy.  Designed to work with the same df_row
 format that all BaseStrategy.evaluate() methods receive.
 """
@@ -16,7 +16,16 @@ import numpy as np
 
 # ── Feature schema ────────────────────────────────────────────────────────
 
-SIGNAL_FEATURE_VERSION = 3
+SIGNAL_FEATURE_VERSION = 4
+
+# Opt-in trade-state features (schema v5). Existing models keep v4 dims.
+# Enable with config ``ml_include_trade_state`` and retrain — do not mix dims.
+TRADE_STATE_FEATURE_VERSION = 5
+TRADE_STATE_FEATURE_NAMES: tuple[str, ...] = (
+    "bot_loss_streak",
+    "bot_win_rate_24h",
+    "hours_since_last_loss",
+)
 
 SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     # Price action (4)
@@ -46,11 +55,16 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     "atr_compressed",
     "trend_trending",
     "trend_ranging",
-    # Cyclical time (4)
+    # Cyclical time (4) — UTC
     "hour_sin",
     "hour_cos",
     "dow_sin",
     "dow_cos",
+    # Equity session (4) — crypto: is_rth=1, others neutral
+    "is_rth",
+    "minutes_from_open_norm",
+    "et_hour_sin",
+    "et_hour_cos",
     # Candle shape (5)
     "high_low_range",
     "body_ratio",
@@ -103,8 +117,13 @@ def _parse_bar_time(row: dict) -> datetime | None:
         return None
 
 
-def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict[str, float]:
-    """Extract 34 ML features from a single indicator-enriched bar row.
+def bar_to_signal_features(
+    df_row,
+    *,
+    lookback_rows: list | None = None,
+    symbol: str | None = None,
+) -> dict[str, float]:
+    """Extract ML features from a single indicator-enriched bar row.
 
     Parameters
     ----------
@@ -113,6 +132,9 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
     lookback_rows : list, optional
         Previous bar rows for computing rolling features.  If None, rolling/lag
         features default to 0.
+    symbol : str, optional
+        Instrument for equity session features. Falls back to ``_symbol`` / ``symbol``
+        on the row. Crypto → always-open session defaults.
 
     Returns
     -------
@@ -213,12 +235,30 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
     trend_trending = 1.0 if adx_raw >= 25.0 else 0.0
     trend_ranging = 1.0 if adx_raw < 20.0 else 0.0
 
-    # ── Cyclical time ─────────────────────────────────────────────────
+    # ── Cyclical time (UTC) + equity session (ET) ──────────────────────
     dt = _parse_bar_time(df_row)
     hour = dt.hour if dt else 12
     dow = dt.weekday() if dt else 2
     hour_sin, hour_cos = _cyclical(hour, 24.0)
     dow_sin, dow_cos = _cyclical(dow, 7.0)
+
+    sym = symbol or df_row.get("_symbol") or df_row.get("symbol") or ""
+    raw_ts = df_row.get("time")
+    try:
+        from app.services.altdata.calendar import session_features_for_bar
+
+        sess = session_features_for_bar(str(sym) if sym else None, raw_ts)
+    except Exception:
+        sess = {
+            "is_rth": 1.0,
+            "minutes_from_open_norm": 0.0,
+            "et_hour_sin": 0.0,
+            "et_hour_cos": 1.0,
+        }
+    is_rth = float(sess.get("is_rth", 1.0))
+    minutes_from_open_norm = float(sess.get("minutes_from_open_norm", 0.0))
+    et_hour_sin = float(sess.get("et_hour_sin", 0.0))
+    et_hour_cos = float(sess.get("et_hour_cos", 1.0))
 
     # ── Candle shape ──────────────────────────────────────────────────
     hl_range = high - low
@@ -335,6 +375,10 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
         "hour_cos": hour_cos,
         "dow_sin": dow_sin,
         "dow_cos": dow_cos,
+        "is_rth": is_rth,
+        "minutes_from_open_norm": minutes_from_open_norm,
+        "et_hour_sin": et_hour_sin,
+        "et_hour_cos": et_hour_cos,
         "high_low_range": high_low_range,
         "body_ratio": body_ratio,
         "upper_shadow": upper_shadow,
@@ -350,9 +394,90 @@ def bar_to_signal_features(df_row, *, lookback_rows: list | None = None) -> dict
     }
 
 
-def signal_features_to_vector(features: dict[str, float]) -> np.ndarray:
+def precompute_signal_feature_matrix(
+    candles: list[dict] | list,
+    *,
+    feature_lookback: int = 20,
+    progress_cb: Any | None = None,
+    cancel_cb: Any | None = None,
+) -> np.ndarray:
+    """Compute signal features once per bar (O(n)), not once per window cell.
+
+    Sequence builders used to call ``bar_to_signal_features`` inside nested
+    ``i × lookback`` loops — with Lab train bars that is millions of Python
+    feature passes and appears "stuck" at phase ``sequences``.
+    """
+    n = len(candles)
+    n_feat = len(SIGNAL_FEATURE_NAMES)
+    out = np.zeros((n, n_feat), dtype=np.float32)
+    if n == 0:
+        return out
+    flb = max(1, int(feature_lookback))
+    report_every = max(2_000, n // 20)
+    for j in range(n):
+        if cancel_cb is not None and j % 512 == 0 and cancel_cb():
+            raise InterruptedError("ml_cancel_requested")
+        lb_start = max(0, j - flb)
+        features = bar_to_signal_features(
+            candles[j], lookback_rows=candles[lb_start:j],
+        )
+        out[j] = signal_features_to_vector(features)
+        if progress_cb is not None and (j + 1) % report_every == 0:
+            try:
+                progress_cb(j + 1, n)
+            except Exception:
+                pass
+    if progress_cb is not None:
+        try:
+            progress_cb(n, n)
+        except Exception:
+            pass
+    return out
+
+
+def resolve_feature_names(*, include_trade_state: bool = False) -> tuple[str, ...]:
+    if include_trade_state:
+        return SIGNAL_FEATURE_NAMES + TRADE_STATE_FEATURE_NAMES
+    return SIGNAL_FEATURE_NAMES
+
+
+def resolve_feature_version(*, include_trade_state: bool = False) -> int:
+    return TRADE_STATE_FEATURE_VERSION if include_trade_state else SIGNAL_FEATURE_VERSION
+
+
+def merge_trade_state_features(
+    features: dict[str, float],
+    trade_state: dict | None = None,
+    *,
+    enabled: bool = False,
+) -> dict[str, float]:
+    """Append bounded trade-state features when ``ml_include_trade_state`` is on.
+
+    Historical train without live trade history should pass ``trade_state=None``
+    (zeros) so the schema is stable; live inference fills from Pre-Trade context.
+    Retrain is required after enabling — feature dim changes to schema v5.
+    """
+    out = dict(features or {})
+    if not enabled:
+        return out
+    from app.services.bots.pretrade_context import empty_trade_state
+
+    ts = trade_state if isinstance(trade_state, dict) else empty_trade_state()
+    out["bot_loss_streak"] = _safe_float(ts.get("bot_loss_streak"), 0.0)
+    out["bot_win_rate_24h"] = _safe_float(ts.get("bot_win_rate_24h"), 0.5)
+    out["hours_since_last_loss"] = _safe_float(ts.get("hours_since_last_loss"), 1.0)
+    return out
+
+
+def signal_features_to_vector(
+    features: dict[str, float],
+    *,
+    include_trade_state: bool = False,
+    feature_names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray:
     """Convert feature dict to a numpy vector in canonical order."""
+    names = feature_names or resolve_feature_names(include_trade_state=include_trade_state)
     return np.array(
-        [float(features.get(name, 0.0)) for name in SIGNAL_FEATURE_NAMES],
+        [float(features.get(name, 0.0)) for name in names],
         dtype=np.float64,
     )

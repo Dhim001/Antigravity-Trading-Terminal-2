@@ -586,7 +586,7 @@ export default function SystemControlPanel({ isOpen, onClose }) {
                       {' — '}
                       {safeMode.reason || 'Unclean shutdown or unresolved fills detected.'}
                       {' '}
-                      All bots are paused until you confirm system state.
+                      Bot evaluation is blocked until you confirm system state.
                     </span>
                     <Button
                       variant="outline"

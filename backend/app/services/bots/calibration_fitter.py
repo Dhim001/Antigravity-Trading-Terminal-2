@@ -248,25 +248,48 @@ def load_calibration(path: str) -> CalibrationBlob | None:
 # Per-bot in-memory cache of the last loaded blob — avoids disk reads on every
 # signal. Invalidate via ``invalidate_bot_cache`` after a retrain.
 _bot_cache: dict[str, CalibrationBlob] = {}
+_cache_lru = None
+
+
+def _get_cache_lru():
+    """MEMORY_CENTRIC_REVIEW #28 — bound LRU+TTL so a growing bot fleet cannot
+    retain every blob for the life of the process. Disk stays the source of
+    truth; eviction only drops the hot copy."""
+    global _cache_lru
+    if _cache_lru is None:
+        from app.config import ML_MODEL_CACHE_MAX, ML_MODEL_CACHE_TTL_SEC
+        from app.services.bots.model_store_lru import bind_dict_cache
+
+        _cache_lru = bind_dict_cache(
+            _bot_cache,
+            max_entries=ML_MODEL_CACHE_MAX,
+            ttl_sec=ML_MODEL_CACHE_TTL_SEC,
+        )
+    return _cache_lru
 
 
 def get_bot_calibration(bot_id: str, *, path: str | None = None) -> CalibrationBlob:
     if path and path in _bot_cache:
+        _get_cache_lru().touch(path)
         return _bot_cache[path]
     if bot_id in _bot_cache and not path:
+        _get_cache_lru().touch(bot_id)
         return _bot_cache[bot_id]
     blob = load_calibration(path or _default_path(bot_id)) or CalibrationBlob(
         temperature=DEFAULT_TEMPERATURE, kelly_fraction=DEFAULT_KELLY_FRACTION
     )
     _bot_cache[path or bot_id] = blob
+    _get_cache_lru().touch(path or bot_id)
     return blob
 
 
 def invalidate_bot_cache(bot_id: str | None = None) -> None:
     if bot_id is None:
+        _get_cache_lru().clear()
         _bot_cache.clear()
     else:
         _bot_cache.pop(bot_id, None)
+        _get_cache_lru().discard(bot_id)
 
 
 def _default_path(bot_id: str) -> str:

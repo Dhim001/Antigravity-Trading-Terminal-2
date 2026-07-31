@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 _pool: ProcessPoolExecutor | None = None
 _pool_lock = threading.Lock()
 
-# Deep / RL trainers — prefer in-process threads (see ML_TRAIN_TORCH_IN_PROCESS).
+# Deep / RL trainers — process pool by default (MEMORY #41); set
+# ML_TRAIN_TORCH_IN_PROCESS=1 to opt into in-process threads for debugging.
 TORCH_TRAIN_STRATEGIES = frozenset({
     "LSTM_DIRECTION",
     "RL_PPO_AGENT",
@@ -82,9 +83,10 @@ def _max_workers() -> int:
 def use_process_pool_for_strategy(strategy: str | None) -> bool:
     """Whether this strategy should run in ProcessPoolExecutor.
 
-    Torch/CUDA jobs default to ``asyncio.to_thread`` so we do not pickle huge
-    candle lists into a spawn worker (looks like a hang from pct=0) and avoid
-    Windows CUDA+ProcessPool fragility.
+    Default (MEMORY #41): everything pool-bound, including Torch/CUDA jobs, so
+    deep-train RSS spikes stay out of the live feed/OMS process. Operators can
+    opt Torch strategies back into in-process threads
+    (``ML_TRAIN_TORCH_IN_PROCESS=1``) for debugging.
     """
     from app.config import ML_TRAIN_PROCESS_ISOLATION, ML_TRAIN_TORCH_IN_PROCESS
 
@@ -113,8 +115,45 @@ def shutdown_ml_train_pool() -> None:
     global _pool
     with _pool_lock:
         if _pool is not None:
-            _pool.shutdown(wait=False, cancel_futures=True)
+            try:
+                _pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                logger.debug("ML train pool shutdown error", exc_info=True)
             _pool = None
+
+
+def reset_ml_train_pool(*, reason: str = "") -> None:
+    """Drop a broken ProcessPoolExecutor so the next job gets a fresh pool.
+
+    After an abrupt worker kill (OOM, Task Manager, admin cancel), Python marks
+    the pool unusable: \"A child process terminated abruptly, the process pool
+    is not usable anymore\". Clearing ``_pool`` lets ``get_ml_train_pool``
+    create a new executor without restarting the whole backend.
+    """
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            return
+        try:
+            _pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            logger.debug("ML train pool reset shutdown error", exc_info=True)
+        _pool = None
+        logger.warning(
+            "ML train process pool reset%s",
+            f" ({reason})" if reason else "",
+        )
+
+
+def _is_broken_pool_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    return (
+        name in ("BrokenProcessPool", "BrokenExecutor")
+        or "process pool is not usable" in msg
+        or "terminated abruptly" in msg
+        or ("child process" in msg and "abruptly" in msg)
+    )
 
 
 def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None) -> dict[str, Any]:
@@ -133,6 +172,30 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
         return {"ok": False, "cancelled": True, "error": "cancelled"}
 
     write_ml_progress(progress_path, pct=1, phase="start", detail=strat)
+
+    # Equity RTH filter for training — crypto untouched. Opt out with rth_only_training=false.
+    # Copy bars before stamping `_symbol` so caller-owned candle lists are not mutated.
+    bars = [dict(c) if isinstance(c, dict) else c for c in (candles or [])]
+    if cfg.get("rth_only_training", True):
+        try:
+            from app.services.altdata.calendar import filter_equity_rth_candles
+
+            before = len(bars)
+            bars = filter_equity_rth_candles(symbol, bars)
+            if len(bars) != before:
+                logger.info(
+                    "RTH filter %s: %s → %s bars",
+                    symbol,
+                    before,
+                    len(bars),
+                )
+        except Exception:
+            logger.debug("RTH candle filter skipped", exc_info=True)
+    for bar in bars:
+        if isinstance(bar, dict):
+            bar.setdefault("_symbol", symbol)
+    candles = bars
+    cfg.setdefault("symbol", symbol)
 
     trainers = {
         "ML_SIGNAL_BOOST": ("app.services.bots.strategies_ml", "train_ml_signal_model"),
@@ -240,15 +303,25 @@ def run_validate_job(
     cfg["_wf_mode"] = True
     cfg.setdefault("skip_refit", True)
     cfg.setdefault("skip_snapshot", True)
-    cfg.setdefault("max_iter", 40)
+    strat_u = str(strategy or "").upper()
+    # Lean GBM default only for fast Validate / Optuna on HistGBM.
+    if (
+        strat_u == "ML_SIGNAL_BOOST"
+        and not bool(cfg.get("wf_capacity_parity", True))
+    ):
+        cfg.setdefault("max_iter", 40)
     # Transformer OOS uses in-memory torch; other strategies still export fold
     # ONNX for strategy.evaluate — champion is restored after WF below.
-    if str(strategy or "").upper() == "TRANSFORMER_SIGNAL":
+    if strat_u == "TRANSFORMER_SIGNAL":
         cfg.setdefault("skip_onnx_export", True)
 
-    strat_u = str(strategy or "").upper()
     champion_snap = _backup_live_champion(strat_u, symbol, cfg.get("timeframe"))
-    # Deep fold trains: prefer GPU + short epoch budgets (Lab may send train epochs).
+    # Capacity parity (default True): folds use production-scale epochs /
+    # timesteps so OOS metrics reflect Lab Train. Fast mode only when the
+    # caller explicitly sets wf_capacity_parity=false (e.g. Optuna screen).
+    wf_parity = bool(cfg.get("wf_capacity_parity", True))
+    cfg["wf_capacity_parity"] = wf_parity
+
     _WF_EPOCH_CAPS = {
         "LSTM_DIRECTION": 12,
         "TRANSFORMER_SIGNAL": 8,
@@ -258,42 +331,54 @@ def run_validate_job(
     }
     if strat_u in _WF_EPOCH_CAPS:
         cfg.setdefault("wf_use_gpu", True)
-        cfg.setdefault("wf_epochs", _WF_EPOCH_CAPS[strat_u])
-        try:
-            ep = int(cfg.get("epochs", cfg["wf_epochs"]))
-        except (TypeError, ValueError):
-            ep = int(cfg["wf_epochs"])
-        cfg["epochs"] = min(max(1, ep), int(cfg["wf_epochs"]))
+        if wf_parity:
+            # Keep caller / Lab Advanced epochs — do not crush to fast-fold caps.
+            cfg.setdefault("wf_epochs", int(cfg.get("epochs") or _WF_EPOCH_CAPS[strat_u]))
+        else:
+            cfg.setdefault("wf_epochs", _WF_EPOCH_CAPS[strat_u])
+            try:
+                ep = int(cfg.get("epochs", cfg["wf_epochs"]))
+            except (TypeError, ValueError):
+                ep = int(cfg["wf_epochs"])
+            cfg["epochs"] = min(max(1, ep), int(cfg["wf_epochs"]))
         # CSCV PBO re-trains deep models many times — skip unless force_pbo.
         if run_pbo and not bool(cfg.get("force_pbo")):
             run_pbo = False
             cfg["_pbo_skipped"] = "deep_too_expensive"
 
     if strat_u == "RL_PPO_AGENT":
-        # Interactive Validate is intentionally lean vs full Train (200k steps).
-        cfg.setdefault("total_timesteps", 4096)
-        cfg.setdefault("n_steps", 512)
-        cfg.setdefault("ppo_epochs", 2)
-        cfg.setdefault("hidden_dim", 64)
-        # Scale with Lab window when provided; keep responsive for interactive UI.
-        try:
-            user_vmax = int(cfg.get("validate_max_bars") or 0)
-        except (TypeError, ValueError):
-            user_vmax = 0
-        if user_vmax <= 0:
-            cfg["validate_max_bars"] = 2000
         cfg.setdefault("wf_use_gpu", True)
-        cfg["wf_capacity_parity"] = False
         cfg.setdefault("skip_onnx_export", True)
         cfg.setdefault("skip_snapshot", True)
+        if wf_parity:
+            # Match Lab Train Advanced defaults unless the request already set them.
+            cfg.setdefault("total_timesteps", 200_000)
+            cfg.setdefault("n_steps", 2048)
+            cfg.setdefault("ppo_epochs", 10)
+            cfg.setdefault("hidden_dim", 256)
+        else:
+            # Legacy fast interactive Validate.
+            cfg.setdefault("total_timesteps", 4096)
+            cfg.setdefault("n_steps", 512)
+            cfg.setdefault("ppo_epochs", 2)
+            cfg.setdefault("hidden_dim", 64)
+            try:
+                user_vmax = int(cfg.get("validate_max_bars") or 0)
+            except (TypeError, ValueError):
+                user_vmax = 0
+            if user_vmax <= 0:
+                cfg["validate_max_bars"] = 2000
         if run_pbo and not bool(cfg.get("force_pbo")):
             run_pbo = False
             cfg["_pbo_skipped"] = "rl_too_expensive"
 
-    max_bars = int(cfg.get("validate_max_bars", 2500))
-    # Deep WF stays bounded, but HTF Lab windows may request more than the old 2.5k floor.
-    if strat_u in TORCH_TRAIN_STRATEGIES:
+    max_bars = int(cfg.get("validate_max_bars", 12_000 if wf_parity else 2500))
+    # Fast mode keeps a hard ceiling so interactive Validate stays responsive.
+    # Capacity parity honors Lab window depth up to the Train hard max.
+    if not wf_parity and strat_u in TORCH_TRAIN_STRATEGIES:
         max_bars = min(max_bars, 12_000)
+    elif wf_parity:
+        max_bars = min(max_bars, 100_000)
     if len(candles) > max_bars:
         candles = candles[-max_bars:]
 
@@ -377,6 +462,28 @@ def run_validate_job(
 
     write_ml_progress(progress_path, pct=100, phase="done", detail="complete")
     return result
+
+
+def _parent_trim_validate_candles(strategy: str | None, candles: list, cfg: dict) -> list:
+    """MEMORY #41 — mirror the worker's deep-WF bar cap in the parent so
+    pool-bound validate jobs pickle far fewer candles (Windows spawn concern).
+
+    Only applies when the job is actually pool-bound for a Torch strategy;
+    anything else passes through untouched.
+    """
+    if not use_process_pool_for_strategy(strategy):
+        return candles
+    if str(strategy or "").upper() not in TORCH_TRAIN_STRATEGIES:
+        return candles
+    parity = bool(cfg.get("wf_capacity_parity", True))
+    try:
+        requested = int(cfg.get("validate_max_bars", 12_000 if parity else 2500))
+    except (TypeError, ValueError):
+        requested = 12_000 if parity else 2500
+    max_bars = min(requested, 100_000 if parity else 12_000)
+    if len(candles or []) > max_bars:
+        return candles[-max_bars:]
+    return candles
 
 
 async def _publish_ml_progress(event_bus: Any, job_id: str, progress: dict) -> None:
@@ -524,9 +631,8 @@ def _with_training_window(cfg: dict, result: Any) -> dict[str, Any]:
 async def _run_in_pool(fn, *args, job_id: str | None = None, strategy: str | None = None):
     """Submit to process pool (or thread); track Future for cancel.
 
-    Torch/RL strategies default to ``asyncio.to_thread`` (see
-    ``use_process_pool_for_strategy``) so Lab Train does not hang while
-    pickling huge candle lists into a spawn worker.
+    All strategies default to the pool (MEMORY #41); Torch/RL only goes to
+    ``asyncio.to_thread`` when ``ML_TRAIN_TORCH_IN_PROCESS=1`` (debugging).
     """
     from app.services.bots.ml_job_store import (
         attach_ml_job_future,
@@ -540,26 +646,44 @@ async def _run_in_pool(fn, *args, job_id: str | None = None, strategy: str | Non
 
     use_pool = use_process_pool_for_strategy(strategy)
     if use_pool:
-        try:
-            pool = get_ml_train_pool()
-            if job_id and is_ml_job_cancelled(job_id):
-                return {"ok": False, "cancelled": True, "error": "cancelled"}
-            cfut = pool.submit(fn, *args)
-            if job_id:
-                attach_ml_job_future(job_id, cfut)
-                # Future may still be cancelled before the worker starts.
-                if is_ml_job_cancelled(job_id) and not cfut.running() and not cfut.done():
-                    cfut.cancel()
+        last_exc: BaseException | None = None
+        for attempt in range(2):
+            try:
+                pool = get_ml_train_pool()
+                if job_id and is_ml_job_cancelled(job_id):
                     return {"ok": False, "cancelled": True, "error": "cancelled"}
-            # Flip to running only once the future is accepted (may still wait in pool).
-            # Progress-file first write also promotes queued→running.
-            mark_ml_job_running(job_id)
-            return await asyncio.wrap_future(cfut)
-        except Exception as exc:
-            # Do not pull heavy torch/ONNX work into the live feed process after a
-            # BrokenProcessPool / RSS kill — fail the job instead (MEMORY #9/#27).
-            logger.error("ML process pool failed — not falling back to in-process thread: %s", exc)
-            raise
+                cfut = pool.submit(fn, *args)
+                if job_id:
+                    attach_ml_job_future(job_id, cfut)
+                    # Future may still be cancelled before the worker starts.
+                    if is_ml_job_cancelled(job_id) and not cfut.running() and not cfut.done():
+                        cfut.cancel()
+                        return {"ok": False, "cancelled": True, "error": "cancelled"}
+                # Flip to running only once the future is accepted (may still wait in pool).
+                # Progress-file first write also promotes queued→running.
+                mark_ml_job_running(job_id)
+                return await asyncio.wrap_future(cfut)
+            except Exception as exc:
+                last_exc = exc
+                # Broken pool after worker kill: recreate once. Never fall back to
+                # in-process torch (MEMORY #9/#27) — that would OOM the live feed.
+                if _is_broken_pool_error(exc):
+                    logger.error(
+                        "ML process pool broken%s: %s",
+                        " — recreating and retrying once" if attempt == 0 else " (after retry)",
+                        exc,
+                    )
+                    reset_ml_train_pool(reason=str(exc))
+                    if attempt == 0:
+                        continue
+                    raise
+                logger.error(
+                    "ML process pool failed — not falling back to in-process thread: %s",
+                    exc,
+                )
+                raise
+        assert last_exc is not None
+        raise last_exc
 
     mark_ml_job_running(job_id)
     # Isolation off or Torch-in-process — cooperative cancel still via progress file.
@@ -678,6 +802,10 @@ async def submit_validate_job(
         phase="dispatch",
         detail=f"{exec_mode} · validate · {len(candles or [])} bars",
     )
+
+    # MEMORY #41 — deep WF validates cap at ≤12k bars inside the worker; trim in
+    # the parent too so pool-bound jobs pickle far less (Windows spawn concern).
+    candles = _parent_trim_validate_candles(strategy, candles, cfg)
 
     stop = asyncio.Event()
     poll_task = asyncio.create_task(

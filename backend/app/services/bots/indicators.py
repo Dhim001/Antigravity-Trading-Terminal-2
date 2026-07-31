@@ -76,6 +76,15 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "vwap_slices": 5,
         "pov_rate": 0.10,
         "slice_interval_sec": 60,
+        # Phase 3: adaptive execution (arrival-anchored pacing + stats algo choice)
+        "execution_adaptive": False,
+        "adaptive_impact_threshold_bps": 10.0,
+        "adaptive_drift_threshold_bps": 15.0,
+        # Phase 4: contradictory-position blocker ("allow" | "block" | "net")
+        "contrary_position_policy": "allow",
+        # Phase 5: drawdown budget ladder (0 = disabled)
+        "dd_budget_pct": 0,
+        "dd_budget_size_mult": 0.5,
         "use_vol_sizing": True,
         "require_trend_alignment": False,
         "block_elevated_vol": False,

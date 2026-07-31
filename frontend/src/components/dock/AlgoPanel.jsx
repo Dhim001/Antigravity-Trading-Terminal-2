@@ -100,6 +100,7 @@ function ActiveBotRow({
   ownedPos,
   selected,
   agentInsights,
+  safeModeActive,
   onSelect,
   onPause,
   onResume,
@@ -109,7 +110,11 @@ function ActiveBotRow({
 }) {
   const inPosition = ownedPos && Math.abs(ownedPos.size) > 0;
   const { hold: riskHold, remaining } = useEffectiveRiskHold(bot.risk_hold);
-  const activity = botRuntimeActivityHint(bot, { hold: riskHold, remainingSec: remaining });
+  const activity = botRuntimeActivityHint(bot, {
+    hold: riskHold,
+    remainingSec: remaining,
+    safeModeActive,
+  });
 
   return (
     <DataTableRow
@@ -259,6 +264,7 @@ export function AlgoTab({ hideToolbar = false }) {
     setActiveSymbol,
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
     ambiguousOrders,
+    safeMode, setSafeMode,
   } = useStore(useShallow((s) => ({
     activeBots: s.activeBots,
     botStrategy: s.botStrategy,
@@ -290,6 +296,8 @@ export function AlgoTab({ hideToolbar = false }) {
     setBotDetail: s.setBotDetail,
     setBotDrawerOpen: s.setBotDrawerOpen,
     ambiguousOrders: s.ambiguousOrders,
+    safeMode: s.safeMode,
+    setSafeMode: s.setSafeMode,
   })));
   const {
     backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
@@ -325,6 +333,7 @@ export function AlgoTab({ hideToolbar = false }) {
   const massiveLive = isLiveMassiveMode(terminalMode);
   const nativeHtLive = usesNativeHtCharts(terminalMode);
   const alpacaLive = terminalMode === 'LIVE_ALPACA';
+  const safeModeActive = Boolean(safeMode?.active);
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
   const [deployOpen, setDeployOpen] = useState(false);
   const [forceDeploy, setForceDeploy] = useState(false);
@@ -373,11 +382,20 @@ export function AlgoTab({ hideToolbar = false }) {
 
   useEffect(() => {
     fetchBots(getStoreActions()).catch(() => {});
+    // Keep safe-mode flag fresh when the Algo panel mounts (session hydrate may be stale).
+    sendAction(Action.ADMIN_GET_STATS, {});
   }, []);
 
   useEffect(() => () => {
     clearBacktestClientTimeout();
   }, []);
+
+  const handleConfirmSafeMode = useCallback(() => {
+    sendAction(Action.ADMIN_CONFIRM_SAFE_MODE, {});
+    setSafeMode({ active: false });
+    toast.success('Safe mode cleared — resume bots when ready');
+    sendAction(Action.ADMIN_GET_STATS, {});
+  }, [setSafeMode]);
 
   useEffect(() => {
     if (backtestSimMode === 'research') {
@@ -777,6 +795,11 @@ export function AlgoTab({ hideToolbar = false }) {
                 SIM
               </Badge>
             )}
+            {safeModeActive && (
+              <Badge variant="destructive" className="px-2 py-0.5 text-xs font-extrabold tracking-wider">
+                SAFE MODE
+              </Badge>
+            )}
             {liveBotsBlocked && (
               <Badge variant="outline" className="algo-tab__toolbar-warn px-2 py-0.5 text-xs">
                 Exec locked
@@ -787,6 +810,32 @@ export function AlgoTab({ hideToolbar = false }) {
       ) : null}
 
       <div className="algo-tab__workspace">
+      {safeModeActive && (
+        <Alert
+          variant="destructive"
+          className="algo-tab__banner border-destructive/40 bg-destructive/10 xl:col-span-3"
+        >
+          <ShieldAlert aria-hidden />
+          <AlertDescription className="flex flex-wrap items-center gap-2 text-xs leading-relaxed">
+            <span>
+              <strong>Safe mode active</strong>
+              {' — '}
+              {safeMode?.reason || 'Unclean shutdown or unresolved fills detected.'}
+              {' '}
+              Bot evaluation is blocked (RUNNING bots will not trade) until you confirm.
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 border-destructive/50 text-xs"
+              onClick={handleConfirmSafeMode}
+            >
+              Confirm &amp; clear safe mode
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {liveBotsBlocked && (
         <Alert className="algo-tab__banner border-trading-warn/40 bg-trading-warn/10 text-trading-warn xl:col-span-3">
           <ShieldAlert aria-hidden />
@@ -1949,8 +1998,17 @@ export function AlgoTab({ hideToolbar = false }) {
               <Cpu size={13} className={runningCount > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
               Active Bots
               <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount}</Badge>
+              {safeModeActive && (
+                <Badge variant="destructive" className="text-[10px] font-bold tracking-wide">
+                  SAFE MODE
+                </Badge>
+              )}
             </div>
-            <span className="algo-tab__panel-subtitle">Pause · resume · stop · details</span>
+            <span className="algo-tab__panel-subtitle">
+              {safeModeActive
+                ? 'Evaluation blocked until safe mode is cleared'
+                : 'Pause · resume · stop · details'}
+            </span>
           </div>
           <div className="algo-tab__panel-actions">
             {activeBots.length > 0 && (
@@ -2000,6 +2058,7 @@ export function AlgoTab({ hideToolbar = false }) {
                     ownedPos={getBotOwnedPositionView(bot.id, bot.symbol, positions)}
                     selected={selectedBotId === bot.id}
                     agentInsights={agentInsights}
+                    safeModeActive={safeModeActive}
                     onSelect={selectBot}
                     onPause={handlePauseBot}
                     onResume={handleResumeBot}

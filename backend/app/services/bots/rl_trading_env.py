@@ -10,8 +10,8 @@ Action space (Discrete, 4):
     2 = SELL   — open short / close long
     3 = CLOSE  — flatten any position
 
-Observation space (Box, 37):
-    34 ML features + 3 position state features
+Observation space (Box):
+    SIGNAL_FEATURE_NAMES features + 3 position state features
 """
 
 from __future__ import annotations
@@ -61,6 +61,28 @@ def _safe_float(val, default=0.0):
     return f
 
 
+def _bar_allows_new_entries(symbol: str | None, bar: dict | None) -> bool:
+    """False when equity session is closed (crypto always True)."""
+    if not symbol:
+        return True
+    try:
+        from app.services.bots.time_windows import is_crypto_symbol
+
+        if is_crypto_symbol(symbol):
+            return True
+    except Exception:
+        pass
+    raw = (bar or {}).get("time")
+    if raw is None:
+        return True
+    try:
+        from app.services.altdata.calendar import session_features_for_bar
+
+        return float(session_features_for_bar(symbol, raw).get("is_rth", 1.0)) >= 0.5
+    except Exception:
+        return True
+
+
 class TradingEnv:
     """Simulated trading environment for RL agents.
 
@@ -69,7 +91,7 @@ class TradingEnv:
     candles : list[dict]
         OHLCV bars with indicators already computed.  Sorted oldest-first.
     config : dict, optional
-        Environment config overrides.
+        Environment config overrides. Set ``symbol`` for equity RTH action masking.
     feature_lookback : int
         Number of prior bars for feature rolling computations.
     """
@@ -87,22 +109,27 @@ class TradingEnv:
         self.config = config or {}
         self.feature_lookback = feature_lookback
         self.n_candles = len(candles)
+        self._symbol = str(self.config.get("symbol") or "").strip() or None
 
         # Pre-extract all feature vectors for speed
         self._feature_vectors: list[np.ndarray] = []
         self._closes: list[float] = []
         self._highs: list[float] = []
         self._lows: list[float] = []
+        self._allow_entry: list[bool] = []
 
         for i in range(self.n_candles):
             c = candles[i]
             self._closes.append(_safe_float(c.get("close")))
             self._highs.append(_safe_float(c.get("high")))
             self._lows.append(_safe_float(c.get("low")))
+            self._allow_entry.append(_bar_allows_new_entries(self._symbol, c))
 
             lb_start = max(0, i - feature_lookback)
             lb_rows = candles[lb_start:i]
-            features = bar_to_signal_features(c, lookback_rows=lb_rows)
+            features = bar_to_signal_features(
+                c, lookback_rows=lb_rows, symbol=self._symbol,
+            )
             self._feature_vectors.append(signal_features_to_vector(features))
 
         # Compute feature-wise mean/std for normalization
@@ -159,6 +186,18 @@ class TradingEnv:
         self._done = False
         return self._get_obs()
 
+    def _mask_entry_action(self, action: int) -> int:
+        """Outside equity RTH: block new entries; still allow closes/flattens."""
+        if self._step_idx >= len(self._allow_entry):
+            return action
+        if self._allow_entry[self._step_idx]:
+            return action
+        if action == ACTION_BUY and self._position_side == SIDE_FLAT:
+            return ACTION_HOLD
+        if action == ACTION_SELL and self._position_side == SIDE_FLAT:
+            return ACTION_HOLD
+        return action
+
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
         """Execute one step in the environment.
 
@@ -169,7 +208,7 @@ class TradingEnv:
 
         Returns
         -------
-        obs : np.ndarray (37,)
+        obs : np.ndarray
         reward : float
         done : bool
         info : dict
@@ -178,11 +217,17 @@ class TradingEnv:
             return self._get_obs(), 0.0, True, {"reason": "already_done"}
 
         close = self._closes[self._step_idx]
-        high = self._highs[self._step_idx]
-        low = self._lows[self._step_idx]
+
+        raw_action = int(action)
+        action = self._mask_entry_action(raw_action)
 
         reward = 0.0
-        info: dict[str, Any] = {"action": action, "step": self._step_idx}
+        info: dict[str, Any] = {
+            "action": action,
+            "raw_action": raw_action,
+            "step": self._step_idx,
+            "entry_masked": action != raw_action,
+        }
         traded = False
 
         # ── Execute action ────────────────────────────────────────────

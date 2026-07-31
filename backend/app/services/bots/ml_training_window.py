@@ -58,12 +58,17 @@ def bar_limit_for_training_window(
     *,
     timeframe: str = "1m",
     purpose: str = "train",
+    capacity_parity: bool | None = None,
 ) -> int:
     """Target number of bars to request for the selected window.
 
     ``1m`` keeps memory-safe soft caps. Higher timeframes honor the calendar
     window up to ``ML_TRAIN_CANDLE_MAX`` so a Lab ``6 months · 5m`` choice is
     not silently crushed to a few thousand bars.
+
+    For ``purpose="validate"``, ``capacity_parity`` defaults to **True**
+    (match Train depth). Pass ``capacity_parity=False`` for lean interactive /
+    Optuna-style fetches.
     """
     months = parse_training_window_months({"training_window_months": months})
     tf = str(timeframe or "1m").lower()
@@ -78,19 +83,27 @@ def bar_limit_for_training_window(
     ideal = int(training_window_seconds(months) / secs)
     hard = _hard_candle_max()
     if secs > 60:
-        # HTF: Lab window ≈ calendar coverage (subject to archive/REST depth).
-        target = min(ideal, hard)
-        if purpose == "validate":
-            # Interactive WF stays leaner than full Train, but still scales with window.
-            lean_cap = 12_000 if months <= 12 else (18_000 if months <= 24 else 24_000)
-            target = min(target, max(2_500, ideal // 3), lean_cap)
-        return max(500, target)
+        train_target = max(500, min(ideal, hard))
+    else:
+        cap_1m = _WINDOW_BAR_CAP_1M.get(months, 25_000)
+        train_target = max(500, min(ideal, cap_1m, hard))
 
+    if purpose != "validate":
+        return train_target
+
+    # Validate: default capacity parity with Train (accuracy-first Lab).
+    use_parity = True if capacity_parity is None else bool(capacity_parity)
+    if use_parity:
+        return train_target
+
+    # Lean Validate / Optuna screen — smaller HTF windows for speed.
+    if secs > 60:
+        lean_cap = 12_000 if months <= 12 else (18_000 if months <= 24 else 24_000)
+        return max(500, min(train_target, max(2_500, ideal // 3), lean_cap))
+
+    # 1m lean: historically allowed a slightly larger soft cap than Train.
     cap_1m = _WINDOW_BAR_CAP_1M.get(months, 25_000)
-    cap = cap_1m
-    if purpose == "validate":
-        cap = int(cap * 1.2)
-    return max(500, min(ideal, cap, hard))
+    return max(500, min(ideal, int(cap_1m * 1.2), hard))
 
 
 def _tf_seconds(timeframe: str = "1m") -> int:
@@ -175,6 +188,26 @@ def next_training_window_months(months: int) -> int | None:
     return None
 
 
+def apply_champion_train_overrides(cfg: dict, raw_cfg: dict | None = None) -> dict:
+    """Normalize config when Lab Apply & Retrain / Trigger sets ``champion_train``.
+
+    Clears walk-forward / trial markers so deep trainers cannot take the short
+    WF epoch path or skip artifact writes. Mutates and returns ``cfg``.
+    """
+    raw = raw_cfg if isinstance(raw_cfg, dict) else {}
+    if not (cfg.get("champion_train") or raw.get("champion_train")):
+        return cfg
+    cfg["champion_train"] = True
+    cfg.pop("_wf_mode", None)
+    cfg.pop("wf_mode", None)
+    cfg.pop("_hyperparam_screen", None)
+    cfg.pop("hyperparam_cv_max_bars", None)
+    cfg["skip_persist"] = False
+    cfg["skip_snapshot"] = False
+    cfg.pop("skip_onnx_export", None)
+    return cfg
+
+
 def skip_live_artifact_writes(config: dict | None) -> bool:
     """True when trainers must not overwrite the live Lab champion on disk.
 
@@ -183,11 +216,41 @@ def skip_live_artifact_writes(config: dict | None) -> bool:
     fold sample count after a full Train.
     """
     cfg = config if isinstance(config, dict) else {}
+    # Apply & Retrain / Trigger retrain always write the champion.
+    if cfg.get("champion_train"):
+        return False
     return bool(
         cfg.get("skip_onnx_export")
         or cfg.get("_wf_mode")
         or cfg.get("wf_mode")
     )
+
+
+def prepare_lab_champion_train_config(config: dict | None) -> dict:
+    """Strip Optuna trial / WF flags so Lab Train writes a real model + metrics.
+
+    Hyperparam sweeps force ``skip_persist`` and ``_wf_mode`` on trial configs.
+    Those must never bleed into Apply & Retrain or Trigger retrain — otherwise
+    the job finishes in minutes with no on-disk champion and empty Lab curves.
+    """
+    cfg = dict(config or {})
+    # Drop trial-only / walk-forward markers
+    for key in (
+        "_wf_mode",
+        "wf_mode",
+        "_hyperparam_screen",
+        "hyperparam_cv_max_bars",
+        "skip_onnx_export",
+        "skip_live_artifact_writes",
+    ):
+        cfg.pop(key, None)
+    # Explicit champion write (Apply & Retrain sets champion_train=true)
+    cfg["skip_persist"] = False
+    cfg["skip_snapshot"] = False
+    # skip_refit may be re-set by calendar holdout below the call site
+    if cfg.get("champion_train"):
+        cfg.pop("skip_refit", None)
+    return cfg
 
 
 def trim_candles_to_training_window(

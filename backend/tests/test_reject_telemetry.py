@@ -150,6 +150,7 @@ def test_classify_reject_infers_from_reason():
     assert reject_telemetry.classify_reject({"reject_reason": "stacking margin"}) == "stacking"
     assert reject_telemetry.classify_reject({"reject_reason": "llm firewall veto"}) == "llm_firewall"
     assert reject_telemetry.classify_reject({"reject_reason": "htf bias disagrees"}) == "htf_gate"
+    assert reject_telemetry.classify_reject({"reject_reason": "pretrade_streak_aware"}) == "pretrade_streak"
     assert reject_telemetry.classify_reject({"reject_reason": "something weird"}) == "other"
 
 
@@ -164,4 +165,6 @@ def test_classify_reject_no_reason_returns_none():
 def test_known_buckets_complete():
     assert "none" in reject_telemetry.KNOWN_BUCKETS
     assert "htf_gate" in reject_telemetry.KNOWN_BUCKETS
+    assert "pretrade_streak" in reject_telemetry.KNOWN_BUCKETS
     assert "other" in reject_telemetry.KNOWN_BUCKETS
+    assert reject_telemetry._normalize_bucket("pretrade_streak") == "pretrade_streak"

@@ -61,14 +61,40 @@ class PreTradeIntelTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("app.services.bots.pretrade_intel.get_connection")
     @patch("app.services.bots.pretrade_intel.check_entry_gates")
-    async def test_recent_failures_veto(self, mock_gates, mock_db):
-        """Veto entry if the strategy has 3 consecutive losses on the symbol in 24 hours."""
+    async def test_recent_failures_reduce_by_default(self, mock_gates, mock_db):
+        """Default streak mode reduces size (not hard VETO) after 3 losses."""
         mock_gates.return_value = (True, None, None)
 
-        # Mock database cursor to return 3 losses (PnL < 0)
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [(-100.0,), (-50.0,), (-250.0,)]
+        # First fetchall: streak rows; second: win-rate scan (empty ok).
+        mock_cursor.fetchall.side_effect = [
+            [(-100.0,), (-50.0,), (-250.0,)],
+            [(-100.0,), (-50.0,), (-250.0,)],
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+        mock_db.return_value = mock_conn
+
+        verdict = await self.intel.evaluate(self.bot, "BUY", 100.0, {}, 1783836763)
+
+        self.assertEqual(verdict["verdict"], "REDUCE_SIZE")
+        self.assertTrue(any("failures_streak" in v for v in verdict["vetoes"]))
+        self.assertAlmostEqual(verdict["size_multiplier"], 0.5)
+        self.assertIsNotNone(verdict.get("trade_state"))
+
+    @patch("app.services.bots.pretrade_intel.get_connection")
+    @patch("app.services.bots.pretrade_intel.check_entry_gates")
+    async def test_recent_failures_veto_mode(self, mock_gates, mock_db):
+        """Explicit pretrade_streak_mode=veto keeps hard block."""
+        mock_gates.return_value = (True, None, None)
+        self.bot["config"] = {"pretrade_streak_mode": "veto"}
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [
+            [(-100.0,), (-50.0,), (-250.0,)],
+            [(-100.0,), (-50.0,), (-250.0,)],
+        ]
         mock_conn.cursor.return_value = mock_cursor
         mock_db.return_value = mock_conn
 
@@ -77,7 +103,6 @@ class PreTradeIntelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict["verdict"], "VETO")
         self.assertTrue(any("failures_streak" in v for v in verdict["vetoes"]))
         self.assertEqual(verdict["size_multiplier"], 0.0)
-
     @patch("app.services.bots.pretrade_intel.get_aggregate_sentiment")
     @patch("app.services.bots.pretrade_intel.check_entry_gates")
     async def test_sentiment_divergence_reduction(self, mock_gates, mock_sentiment):

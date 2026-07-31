@@ -199,3 +199,166 @@ def test_fidelity_caps_do_not_inject_early_stop():
     assert capped["epochs"] <= 30
     with_patience = _apply_fidelity_caps({"early_stop_patience": 15}, screen=True)
     assert with_patience["early_stop_patience"] == 8
+
+
+def test_merge_optimized_requires_opt_in_on_lab_path(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda *a, **k: {"learning_rate": 0.002, "lookback": 90},
+    )
+    # Bare Trigger (no champion / use_optimized) must not inherit Optuna knobs.
+    bare = store.merge_optimized_train_hyperparams(
+        {"epochs": 60}, "AAPL", "LSTM_DIRECTION", require_opt_in=True,
+    )
+    assert "learning_rate" not in bare
+    assert bare["epochs"] == 60
+    # Apply & Retrain opts in.
+    opted = store.merge_optimized_train_hyperparams(
+        {"epochs": 60, "champion_train": True},
+        "AAPL",
+        "LSTM_DIRECTION",
+        require_opt_in=True,
+    )
+    assert opted["learning_rate"] == 0.002
+    assert opted["lookback"] == 90
+    # Scheduler drain keeps require_opt_in=False (always merge).
+    drained = store.merge_optimized_train_hyperparams(
+        {"epochs": 60}, "AAPL", "LSTM_DIRECTION", require_opt_in=False,
+    )
+    assert drained["learning_rate"] == 0.002
+
+
+def test_merge_optimized_train_hyperparams_fills_gaps_only(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda symbol, strategy, prefer_ml_sweep=True: {
+            "learning_rate": 0.002,
+            "lookback": 90,
+            "epochs": 120,
+            "gbm_learning_rate": 0.07,
+            "trailing_stop_percent": 99,  # risk key — must never be copied
+        },
+    )
+    merged = store.merge_optimized_train_hyperparams(
+        {"epochs": 60, "timeframe": "5m"},
+        "AAPL",
+        "LSTM_DIRECTION",
+    )
+    # Explicit client key wins
+    assert merged["epochs"] == 60
+    # Gaps filled from Optuna best
+    assert merged["learning_rate"] == 0.002
+    assert merged["lookback"] == 90
+    assert merged["retrain_from_optimized"] is True
+    assert "learning_rate" in merged["_optimized_hyperparams_applied"]
+    # Risk / non-train keys stay out
+    assert "trailing_stop_percent" not in merged
+    assert merged["timeframe"] == "5m"
+
+
+def test_apply_champion_train_overrides_clears_wf():
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
+
+    cfg = apply_champion_train_overrides(
+        {"_wf_mode": True, "skip_persist": True, "epochs": 40},
+        {"champion_train": True},
+    )
+    assert cfg["champion_train"] is True
+    assert "_wf_mode" not in cfg
+    assert cfg["skip_persist"] is False
+    assert apply_champion_train_overrides({"_wf_mode": True}, {})["_wf_mode"] is True
+
+
+
+def test_merge_optimized_skips_when_opted_out(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    called = {"n": 0}
+
+    def _boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("should not look up")
+
+    monkeypatch.setattr(store, "get_latest_optimized_hyperparams", _boom)
+    out = store.merge_optimized_train_hyperparams(
+        {"skip_optimized_hyperparams": True, "epochs": 10},
+        "AAPL",
+        "LSTM_DIRECTION",
+    )
+    assert out["epochs"] == 10
+    assert called["n"] == 0
+
+
+def test_merge_optimized_noop_without_store(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store, "get_latest_optimized_hyperparams", lambda *a, **k: None,
+    )
+    out = store.merge_optimized_train_hyperparams({}, "AAPL", "ML_SIGNAL_BOOST")
+    assert out == {}
+    assert "retrain_from_optimized" not in out
+
+
+def test_prepare_lab_champion_strips_trial_flags():
+    from app.services.bots.ml_training_window import (
+        prepare_lab_champion_train_config,
+        skip_live_artifact_writes,
+    )
+
+    dirty = {
+        "epochs": 80,
+        "learning_rate": 0.001,
+        "skip_persist": True,
+        "skip_snapshot": True,
+        "skip_refit": True,
+        "_wf_mode": True,
+        "wf_mode": True,
+        "_hyperparam_screen": True,
+        "hyperparam_cv_max_bars": 1200,
+        "skip_onnx_export": True,
+        "champion_train": True,
+    }
+    clean = prepare_lab_champion_train_config(dirty)
+    assert clean["skip_persist"] is False
+    assert clean["skip_snapshot"] is False
+    assert "_wf_mode" not in clean
+    assert "wf_mode" not in clean
+    assert "_hyperparam_screen" not in clean
+    assert "hyperparam_cv_max_bars" not in clean
+    assert "skip_onnx_export" not in clean
+    assert "skip_refit" not in clean  # popped so calendar can setdefault
+    assert clean["epochs"] == 80
+    assert skip_live_artifact_writes(clean) is False
+
+
+def test_slim_keys_keep_best_hyperparams_for_apply(tmp_path, monkeypatch):
+    """Offloaded sweep results must still expose best_hyperparams in the slim headline."""
+    from app.services.bots import ml_job_store as store
+
+    monkeypatch.setattr(store, "_result_dir", lambda: str(tmp_path))
+    monkeypatch.setattr("app.config.ML_JOB_RESULT_OFFLOAD_BYTES", 100)
+    store.reset_ml_job_store_for_tests()
+
+    jid = store.create_ml_job(kind="hyperparam_sweep", strategy="LSTM_DIRECTION", symbol="AAPL")
+    big = {
+        "ok": True,
+        "best_hyperparams": {"epochs": 90, "learning_rate": 0.001, "hidden_dim": 128},
+        "best_score": 0.61,
+        "trials_completed": 12,
+        "optimization_run_id": "run-abc",
+        "trial_history": [{"trial": i, "pad": "x" * 200} for i in range(40)],
+    }
+    store.finish_ml_job(jid, "done", result=big)
+    raw = store.get_ml_job(jid)["result"]
+    assert raw.get("_slimmed") is True
+    assert raw.get("best_hyperparams", {}).get("epochs") == 90
+    pub = store.public_ml_job(store.get_ml_job(jid))
+    assert pub["result"]["best_hyperparams"]["epochs"] == 90
+    assert pub["result"]["best_score"] == 0.61

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -34,6 +35,11 @@ PSI_MODERATE = 0.25
 
 # Sliding window: keep the last N inference feature vectors
 DEFAULT_WINDOW_SIZE = 500
+
+# MEMORY_CENTRIC_REVIEW #34 — symbol×strategy buffer keys grew unbounded.
+# Buffers persist to disk, so evicted keys lazily reload on next access.
+_MAX_BUFFER_KEYS = int(os.environ.get("FEATURE_DRIFT_MAX_BUFFER_KEYS", "64"))
+_IDLE_EVICT_SEC = float(os.environ.get("FEATURE_DRIFT_IDLE_EVICT_SEC", str(6 * 3600)))
 
 
 # ── PSI computation ──────────────────────────────────────────────────────
@@ -150,6 +156,7 @@ class FeatureDriftMonitor:
     def __init__(self, *, window_size: int = DEFAULT_WINDOW_SIZE):
         self._window_size = window_size
         self._buffers: dict[str, list[list[float]]] = {}  # key → recent feature vectors
+        self._last_access: dict[str, float] = {}  # key → monotonic timestamp (#34)
         self._lock = threading.Lock()
 
     def _key(self, symbol: str, strategy: str) -> str:
@@ -163,6 +170,7 @@ class FeatureDriftMonitor:
         """Lazy load persisted buffer from disk."""
         key = self._key(symbol, strategy)
         if key in self._buffers:
+            self._last_access[key] = time.monotonic()
             return self._buffers[key]
 
         path = self._snapshot_path(symbol, strategy)
@@ -176,7 +184,34 @@ class FeatureDriftMonitor:
         else:
             self._buffers[key] = []
 
+        self._last_access[key] = time.monotonic()
         return self._buffers[key]
+
+    def _maybe_evict_idle_keys(self) -> None:
+        """MEMORY #34 — bound symbol×strategy buffer keys (idle + LRU eviction).
+
+        Buffers persist to disk, so eviction loses nothing long-term: a later
+        access lazily reloads the snapshot. Save-before-drop keeps the tail
+        that has not hit the periodic-persist threshold yet.
+        """
+        if len(self._buffers) <= _MAX_BUFFER_KEYS:
+            return
+        now = time.monotonic()
+        victims = [
+            k for k in self._buffers
+            if now - self._last_access.get(k, 0.0) > _IDLE_EVICT_SEC
+        ]
+        excess = len(self._buffers) - len(victims) - _MAX_BUFFER_KEYS
+        if excess > 0:
+            remaining = [k for k in self._buffers if k not in victims]
+            remaining.sort(key=lambda k: self._last_access.get(k, 0.0))
+            victims.extend(remaining[:excess])
+        for key in victims:
+            parts = key.split(":", 1)
+            if len(parts) == 2 and self._buffers.get(key):
+                self._save_buffer(parts[0], parts[1])
+            self._buffers.pop(key, None)
+            self._last_access.pop(key, None)
 
     def _save_buffer(self, symbol: str, strategy: str) -> None:
         """Persist buffer to disk."""
@@ -192,6 +227,27 @@ class FeatureDriftMonitor:
         except Exception as exc:
             logger.debug("Failed to save drift buffer: %s", exc)
 
+    def _expected_feature_dim(self) -> int:
+        try:
+            from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
+
+            return len(SIGNAL_FEATURE_NAMES)
+        except Exception:
+            return 0
+
+    def _homogeneous_vectors(self, buf: list[list[float]], *, dim: int | None = None) -> list[list[float]]:
+        """Keep only vectors matching the current schema width (drop pre-bump rows)."""
+        if not buf:
+            return []
+        target = dim if dim and dim > 0 else self._expected_feature_dim()
+        if target <= 0:
+            # Fall back to majority length in the buffer.
+            lengths = [len(v) for v in buf if isinstance(v, (list, tuple))]
+            if not lengths:
+                return []
+            target = max(set(lengths), key=lengths.count)
+        return [list(v) for v in buf if isinstance(v, (list, tuple)) and len(v) == target]
+
     def record_inference(self, symbol: str, strategy: str, features: dict | list) -> None:
         """Record a single inference feature vector into the sliding window.
 
@@ -205,10 +261,18 @@ class FeatureDriftMonitor:
         if isinstance(features, dict):
             vec = list(features.values())
         else:
-            vec = list(features)
+            vec = [float(x) for x in features]
 
         with self._lock:
+            # Schema bumps (e.g. v3→v4) must not mix widths — numpy PSI would crash.
+            # Validate BEFORE _load_buffer so rejected vectors never create
+            # empty buffer entries that eviction would have to chase.
+            expected = self._expected_feature_dim()
+            if expected > 0 and len(vec) != expected:
+                return
             buf = self._load_buffer(symbol, strategy)
+            if buf and any(len(v) != len(vec) for v in buf if isinstance(v, (list, tuple))):
+                buf[:] = self._homogeneous_vectors(buf, dim=len(vec))
             buf.append(vec)
             # Trim to window size
             if len(buf) > self._window_size:
@@ -216,6 +280,7 @@ class FeatureDriftMonitor:
             # Persist every 50 new entries to avoid excessive I/O
             if len(buf) % 50 == 0:
                 self._save_buffer(symbol, strategy)
+            self._maybe_evict_idle_keys()
 
     def check_drift(
         self,
@@ -234,10 +299,11 @@ class FeatureDriftMonitor:
         """
         with self._lock:
             buf = self._load_buffer(symbol, strategy)
-            if len(buf) < 30:
+            homogeneous = self._homogeneous_vectors(buf)
+            if len(homogeneous) < 30:
                 return None
 
-            live_arr = np.array(buf[-self._window_size:], dtype=np.float32)
+            live_arr = np.array(homogeneous[-self._window_size:], dtype=np.float32)
 
         # Attempt to load training baseline if not provided
         if training_features is None:

@@ -219,11 +219,14 @@ def evaluate_oos_accuracy(
     total = 0
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
 
-    # Stride long OOS windows in WF/PBO to keep validation responsive.
-    # Sequential models must still *see* every bar so sliding windows stay causal;
-    # only accuracy accounting is sparsified.
+    # Stride long OOS windows only in lean WF so validation stays responsive.
+    # Capacity parity scores every bar (dense eval matches production intent).
     stride = 1
-    if bool((config or {}).get("_wf_mode")) and len(test_candles) > 400:
+    if (
+        bool((config or {}).get("_wf_mode"))
+        and not bool((config or {}).get("wf_capacity_parity", True))
+        and len(test_candles) > 400
+    ):
         stride = max(1, len(test_candles) // 400)
 
     for i, candle in enumerate(test_candles):
@@ -361,10 +364,7 @@ def _evaluate_oos_transformer_torch(
     config: dict,
 ) -> dict[str, Any]:
     """In-memory Transformer OOS eval — no ONNX reload between WF folds."""
-    from app.services.bots.ml_feature_engineering import (
-        bar_to_signal_features,
-        signal_features_to_vector,
-    )
+    from app.services.bots.ml_feature_engineering import precompute_signal_feature_matrix
 
     import torch
 
@@ -400,19 +400,15 @@ def _evaluate_oos_transformer_torch(
     correct = 0
     total = 0
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
+    feat_matrix = precompute_signal_feature_matrix(
+        test_candles, feature_lookback=feature_lb,
+    )
 
     with torch.no_grad():
         for i in range(lookback + feature_lb, len(test_candles)):
             if i % stride != 0:
                 continue
-            window = []
-            for j in range(i - lookback + 1, i + 1):
-                lb_start = max(0, j - feature_lb)
-                feat = bar_to_signal_features(
-                    test_candles[j], lookback_rows=test_candles[lb_start:j],
-                )
-                window.append(signal_features_to_vector(feat))
-            x = np.stack(window).astype(np.float32)
+            x = feat_matrix[i - lookback + 1 : i + 1].astype(np.float32, copy=True)
             x = (x - mean) / std
             logits = model(torch.from_numpy(x).unsqueeze(0))
             probs = torch.softmax(logits, dim=-1)[0]
@@ -549,8 +545,10 @@ def walk_forward_ml_train(
     cfg = dict(config or {})
     cfg.setdefault("symbol", symbol)
     cfg.setdefault("model_symbol", symbol)
-    # Fast training path for interactive Model Training panel validation.
+    # Walk-forward folds: skip live artifact writes. Capacity defaults to
+    # production parity unless the caller opts into lean/fast mode.
     cfg.setdefault("_wf_mode", True)
+    cfg.setdefault("wf_capacity_parity", True)
     trainer = get_trainer(strategy)
     if trainer is None:
         return {

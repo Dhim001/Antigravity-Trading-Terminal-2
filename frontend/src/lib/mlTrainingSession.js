@@ -8,6 +8,19 @@ import { useResearchStore } from '@/store/useResearchStore';
 const statusCache = new Map();
 const listeners = new Set();
 
+// MEMORY_CENTRIC_REVIEW #40 — bound the module-level status cache: LRU cap +
+// idle TTL (no timers; expiry is checked on access). Entries are stored as
+// { body, t } wrappers; the public getters return the body unchanged.
+const STATUS_CACHE_MAX = 12;
+const STATUS_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function statusCacheTrim() {
+  while (statusCache.size > STATUS_CACHE_MAX) {
+    const oldest = statusCache.keys().next().value;
+    statusCache.delete(oldest);
+  }
+}
+
 let session = {
   strategy: null,
   symbol: null,
@@ -82,7 +95,17 @@ export function statusCacheKey(symbol, strategy, timeframe = '1m') {
 }
 
 export function getCachedModelStatus(symbol, strategy, timeframe = '1m') {
-  return statusCache.get(statusCacheKey(symbol, strategy, timeframe)) ?? null;
+  const key = statusCacheKey(symbol, strategy, timeframe);
+  const entry = statusCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.t > STATUS_CACHE_TTL_MS) {
+    statusCache.delete(key);
+    return null;
+  }
+  // LRU touch — most-recently-read keys survive the cap.
+  statusCache.delete(key);
+  statusCache.set(key, entry);
+  return entry.body;
 }
 
 export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
@@ -92,7 +115,10 @@ export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
   if (body.error && !body.trained && getCachedModelStatus(symbol, strategy, tf)?.trained) {
     return;
   }
-  statusCache.set(statusCacheKey(symbol, strategy, tf), body);
+  const key = statusCacheKey(symbol, strategy, tf);
+  statusCache.delete(key);
+  statusCache.set(key, { body, t: Date.now() });
+  statusCacheTrim();
 }
 
 export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }) {

@@ -572,27 +572,14 @@ async def drain_one_pending_retrain(
     use_opt = bool(item.get("retrain_use_optimized_hyperparams", True))
     if use_opt:
         try:
-            from app.services.bots.optimization_store import get_latest_optimized_hyperparams
+            from app.services.bots.optimization_store import merge_optimized_train_hyperparams
 
-            best_hp = get_latest_optimized_hyperparams(symbol, strategy, prefer_ml_sweep=True)
-            if isinstance(best_hp, dict) and best_hp:
-                # Only pass known training knobs — avoid overwriting risk params accidentally
-                train_keys = {
-                    "gbm_max_depth", "gbm_learning_rate", "gbm_max_iter", "gbm_l2_reg",
-                    "max_iter", "val_fraction", "triple_barrier_atr_mult",
-                    "learning_rate", "hidden_dim", "epochs", "batch_size", "lookback",
-                    "num_layers", "early_stop_patience", "d_model", "n_heads",
-                    "clip_epsilon", "ent_coef", "n_steps", "total_timesteps",
-                    "latent_dim", "anomaly_threshold",
-                }
-                applied = {k: best_hp[k] for k in train_keys if k in best_hp}
-                if applied:
-                    train_cfg.update(applied)
-                    train_cfg["retrain_from_optimized"] = True
-                    logger.info(
-                        "Retrain drain using optimized hyperparams for %s/%s: %s",
-                        strategy, symbol, sorted(applied.keys()),
-                    )
+            train_cfg = merge_optimized_train_hyperparams(train_cfg, symbol, strategy)
+            if train_cfg.get("retrain_from_optimized"):
+                logger.info(
+                    "Retrain drain using optimized hyperparams for %s/%s: %s",
+                    strategy, symbol, train_cfg.get("_optimized_hyperparams_applied"),
+                )
         except Exception:
             logger.debug("Optimized hyperparam lookup failed", exc_info=True)
 

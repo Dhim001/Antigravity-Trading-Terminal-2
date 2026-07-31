@@ -33,12 +33,13 @@ def _make_candles(n=300, trend=0.1, atr=2.0):
 
 class TestTcnSequenceBuilding:
     def test_builds_correct_shape(self):
+        from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
         from app.services.bots.ml_tcn_trainer import build_tcn_sequences
         candles = _make_candles(300)
         X, y = build_tcn_sequences(candles, lookback=60)
         assert X.ndim == 3
         assert X.shape[1] == 60  # lookback
-        assert X.shape[2] == 34  # N_FEATURES
+        assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)
         assert y.ndim == 2
         assert y.shape[1] == 3  # 3 horizons
 

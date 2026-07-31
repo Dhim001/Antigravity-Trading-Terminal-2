@@ -522,6 +522,7 @@ function BacktestSummaryCards({ summary, results, isFull }) {
         label="Max loss streak"
         value={String(s.max_consecutive_losses ?? 0)}
         tone={s.max_consecutive_losses > 2 ? 'down' : 'neutral'}
+        sub="Use to set Pre-Trade reduce / Sentinel pause — streaks ≠ unprofitable"
       />
       <StatCard
         label="Fees"

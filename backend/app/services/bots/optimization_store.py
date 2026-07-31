@@ -326,6 +326,62 @@ def get_latest_optimized_hyperparams(
     return ml_match if (prefer_ml_sweep and ml_match) else (ml_match or any_match)
 
 
+# Training knobs Optuna / Apply & Retrain may produce. Used to fill gaps on
+# subsequent Trigger retrain / scheduler drain without overwriting risk keys.
+ML_TRAIN_HYPERPARAM_KEYS = frozenset({
+    "gbm_max_depth", "gbm_learning_rate", "gbm_max_iter", "gbm_l2_reg",
+    "max_iter", "val_fraction", "triple_barrier_atr_mult",
+    "learning_rate", "hidden_dim", "epochs", "batch_size", "lookback",
+    "num_layers", "early_stop_patience", "d_model", "n_heads", "dropout",
+    "clip_epsilon", "ent_coef", "n_steps", "total_timesteps",
+    "latent_dim", "anomaly_threshold",
+})
+
+
+def merge_optimized_train_hyperparams(
+    config: dict[str, Any] | None,
+    symbol: str,
+    strategy: str,
+    *,
+    prefer_ml_sweep: bool = True,
+    require_opt_in: bool = False,
+) -> dict[str, Any]:
+    """Fill missing train knobs from the latest Optuna / sweep best_config.
+
+    Explicit client keys always win (UI Advanced / Apply & Retrain overlays).
+    Opt-out with ``skip_optimized_hyperparams: true`` on the config.
+
+    When ``require_opt_in`` is True (Lab ``/ml/train``), only merge if the
+    caller set ``champion_train`` or ``use_optimized_hyperparams`` — a bare
+    Trigger after an exploratory sweep must not silently inherit Optuna
+    lookback/lr. Scheduled drain keeps ``require_opt_in=False``.
+    """
+    cfg = dict(config or {})
+    if cfg.get("skip_optimized_hyperparams"):
+        return cfg
+    if require_opt_in and not (
+        cfg.get("champion_train")
+        or cfg.get("use_optimized_hyperparams")
+        or cfg.get("retrain_from_optimized")
+    ):
+        return cfg
+    best = get_latest_optimized_hyperparams(
+        symbol, strategy, prefer_ml_sweep=prefer_ml_sweep,
+    )
+    if not isinstance(best, dict) or not best:
+        return cfg
+    applied: dict[str, Any] = {}
+    for key in ML_TRAIN_HYPERPARAM_KEYS:
+        if key in cfg or key not in best:
+            continue
+        applied[key] = best[key]
+    if applied:
+        cfg.update(applied)
+        cfg["retrain_from_optimized"] = True
+        cfg["_optimized_hyperparams_applied"] = sorted(applied.keys())
+    return cfg
+
+
 def get_param_importance(run_id: str) -> dict[str, float]:
     """Extract Optuna importance ranking stored on the run request/meta."""
     run = get_optimization_run(run_id)
