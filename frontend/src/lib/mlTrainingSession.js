@@ -7,18 +7,46 @@ import { useResearchStore } from '@/store/useResearchStore';
 
 const statusCache = new Map();
 const listeners = new Set();
+const statusCacheListeners = new Set();
+/** Survives invalidate briefly so late untrained fetches cannot undo Fresh. */
+const trainRaceGuards = new Map();
 
 // MEMORY_CENTRIC_REVIEW #40 — bound the module-level status cache: LRU cap +
 // idle TTL (no timers; expiry is checked on access). Entries are stored as
 // { body, t } wrappers; the public getters return the body unchanged.
-const STATUS_CACHE_MAX = 12;
+// Cap must cover Lab inventory (7 strategies) × several symbols/TFs plus Algo
+// template/bot badges — 12 was small enough that trained rows were evicted and
+// the UI looked "untrained" until a refetch completed (or forever on abort).
+export const STATUS_CACHE_MAX = 64;
 const STATUS_CACHE_TTL_MS = 30 * 60 * 1000;
+/** How long post-train to reject trained=false cache writes (ms). */
+export const TRAIN_RACE_GUARD_MS = 45_000;
+
+function emitStatusCache() {
+  statusCacheListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch {
+      /* ignore subscriber errors */
+    }
+  });
+}
 
 function statusCacheTrim() {
+  let trimmed = false;
   while (statusCache.size > STATUS_CACHE_MAX) {
     const oldest = statusCache.keys().next().value;
     statusCache.delete(oldest);
+    trimmed = true;
   }
+  if (trimmed) emitStatusCache();
+}
+
+/** Mirror backend normalize_model_timeframe for cache keys (tick → 1m). */
+export function normalizeStatusTimeframe(timeframe = '1m') {
+  const tf = String(timeframe || '1m').trim().toLowerCase();
+  if (!tf || tf === 'tick') return '1m';
+  return tf;
 }
 
 let session = {
@@ -26,6 +54,7 @@ let session = {
   symbol: null,
   training: false,
   validating: false,
+  tuning: false,
   jobProgress: null,
   validation: null,
   lastError: null,
@@ -90,8 +119,13 @@ export function subscribeMlTrainingSession(listener) {
 }
 
 export function statusCacheKey(symbol, strategy, timeframe = '1m') {
-  const tf = String(timeframe || '1m').toLowerCase();
+  const tf = normalizeStatusTimeframe(timeframe);
   return `${String(symbol || '').toUpperCase()}|${String(strategy || '').toUpperCase()}|${tf}`;
+}
+
+export function subscribeModelStatusCache(listener) {
+  statusCacheListeners.add(listener);
+  return () => statusCacheListeners.delete(listener);
 }
 
 export function getCachedModelStatus(symbol, strategy, timeframe = '1m') {
@@ -100,6 +134,8 @@ export function getCachedModelStatus(symbol, strategy, timeframe = '1m') {
   if (!entry) return null;
   if (Date.now() - entry.t > STATUS_CACHE_TTL_MS) {
     statusCache.delete(key);
+    // Defer emit — calling subscribers during React getSnapshot/render is unsafe.
+    queueMicrotask(() => emitStatusCache());
     return null;
   }
   // LRU touch — most-recently-read keys survive the cap.
@@ -108,33 +144,103 @@ export function getCachedModelStatus(symbol, strategy, timeframe = '1m') {
   return entry.body;
 }
 
-export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
-  if (!symbol || !strategy || !body || typeof body !== 'object') return;
-  const tf = body.timeframe || timeframe || '1m';
-  // Don't cache hard failures as the only truth — keep last good if present.
-  if (body.error && !body.trained && getCachedModelStatus(symbol, strategy, tf)?.trained) {
+function armTrainRaceGuard(key) {
+  trainRaceGuards.set(key, Date.now() + TRAIN_RACE_GUARD_MS);
+}
+
+function trainRaceGuardActive(key) {
+  const until = trainRaceGuards.get(key) || 0;
+  if (!until) return false;
+  if (Date.now() >= until) {
+    trainRaceGuards.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Drop cached status so the next fetch can write a fresh body (including
+ * untrained). Clears the post-train race guard — use only for intentional
+ * untrained (delete / force clear). After a successful train prefer
+ * {@link markModelFreshAfterTrain} so late untrained fetches cannot clobber Fresh.
+ */
+export function invalidateModelStatusCache(symbol, strategy, timeframe = '1m') {
+  if (!symbol || !strategy) return;
+  const key = statusCacheKey(symbol, strategy, timeframe);
+  trainRaceGuards.delete(key);
+  if (!statusCache.has(key)) {
+    emitStatusCache();
     return;
   }
+  statusCache.delete(key);
+  emitStatusCache();
+}
+
+/**
+ * Post-train: clear cached body (badges refetch) but keep a short race guard so
+ * in-flight pre-train `trained=false` responses cannot undo Fresh.
+ */
+export function markModelFreshAfterTrain(symbol, strategy, timeframe = '1m', seed = null) {
+  if (!symbol || !strategy) return;
+  const tf = normalizeStatusTimeframe(
+    (seed && seed.timeframe) || timeframe || '1m',
+  );
   const key = statusCacheKey(symbol, strategy, tf);
+  armTrainRaceGuard(key);
+  if (seed && typeof seed === 'object') {
+    setCachedModelStatus(symbol, strategy, { ...seed, trained: true }, tf);
+    return;
+  }
+  if (statusCache.has(key)) statusCache.delete(key);
+  emitStatusCache();
+}
+
+export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
+  if (!symbol || !strategy || !body || typeof body !== 'object') return;
+  const tf = normalizeStatusTimeframe(body.timeframe || timeframe || '1m');
+  const key = statusCacheKey(symbol, strategy, tf);
+  const existing = getCachedModelStatus(symbol, strategy, tf);
+  // Don't cache hard failures as the only truth — keep last good if present.
+  if (body.error && !body.trained && existing?.trained) {
+    return;
+  }
+  // Race guard: an in-flight pre-train status fetch must not clobber a post-train
+  // trained=true with trained=false. Survives markModelFreshAfterTrain invalidate
+  // window; use invalidateModelStatusCache to intentionally allow untrained.
+  if (!body.trained && (existing?.trained || trainRaceGuardActive(key))) {
+    return;
+  }
+  // Prefer the newer artifact when two trained payloads race.
+  if (existing?.trained && body.trained && existing.trained_at && body.trained_at) {
+    const prevTs = Date.parse(existing.trained_at);
+    const nextTs = Date.parse(body.trained_at);
+    if (Number.isFinite(prevTs) && Number.isFinite(nextTs) && nextTs < prevTs) {
+      return;
+    }
+  }
+  if (body.trained) armTrainRaceGuard(key);
   statusCache.delete(key);
   statusCache.set(key, { body, t: Date.now() });
   statusCacheTrim();
+  emitStatusCache();
 }
 
 export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }) {
   const jobToken = session.jobToken + 1;
+  const kindN = String(kind || 'train').toLowerCase();
   return patch({
     jobToken,
     strategy,
     symbol,
-    training: kind === 'train',
-    validating: kind === 'validate',
+    training: kindN === 'train',
+    validating: kindN === 'validate',
+    tuning: kindN === 'hyperparam_sweep' || kindN === 'tune' || kindN === 'autotune',
     jobProgress: jobProgress ? { ...jobProgress, token: jobToken, active: true } : null,
     lastError: null,
     jobId: jobId || null,
     serverProgress: null,
     pollLog: [],
-    ...(kind === 'validate' ? { validation: null } : {}),
+    ...(kindN === 'validate' ? { validation: null } : {}),
   });
 }
 
@@ -143,6 +249,7 @@ export function finishMlJob(token, { validation = undefined, error = null } = {}
   return patch({
     training: false,
     validating: false,
+    tuning: false,
     jobProgress: session.jobProgress
       ? { ...session.jobProgress, active: false }
       : null,
@@ -211,10 +318,60 @@ export function applyMlJobProgressMessage(data) {
   const strat = session.strategy;
   const sym = session.symbol;
   const next = setMlServerProgress(data);
-  if (status === 'done' && (wasTraining || kind === 'train') && strat && sym) {
-    invalidateMatchingMlBacktests(strat, sym);
+  if (['done', 'error', 'cancelled'].includes(status)) {
+    if (status === 'done' && (wasTraining || kind === 'train') && strat && sym) {
+      invalidateMatchingMlBacktests(strat, sym);
+      const tf = normalizeStatusTimeframe(
+        data.timeframe || session.jobProgress?.timeframe || '1m',
+      );
+      // Keep post-train race guard — bare invalidate would let late untrained land.
+      markModelFreshAfterTrain(sym, strat, tf);
+    }
+    // Keep jobId until the Lab panel finishes its own poll cleanup; only clear
+    // active flags so remounts don't look "busy forever".
+    if (status !== 'done' || kind === 'hyperparam_sweep') {
+      patch({
+        training: false,
+        validating: false,
+        tuning: status === 'done' ? false : session.tuning,
+      });
+    }
   }
   return next;
+}
+
+/**
+ * Rehydrate Lab session from bootstrap /api/v1/session active ML jobs.
+ * Picks the newest queued/running job so tab refresh can reattach polling.
+ */
+export function resumeActiveMlJobs(jobs) {
+  const list = Array.isArray(jobs) ? jobs : [];
+  const active = list.filter((j) => ['queued', 'running'].includes(String(j?.status || '').toLowerCase()));
+  if (!active.length) return session;
+  // Prefer an already-tracked job if still active.
+  if (session.jobId && active.some((j) => j.job_id === session.jobId || j.id === session.jobId)) {
+    return session;
+  }
+  const job = active[0];
+  const kind = String(job.kind || 'train').toLowerCase();
+  const progress = job.progress && typeof job.progress === 'object'
+    ? {
+      active: true,
+      kind,
+      startedAt: Date.now(),
+      label: `Resuming ${kind} · ${job.strategy || ''}`.trim(),
+      phases: [],
+    }
+    : null;
+  beginMlJob({
+    kind,
+    strategy: job.strategy,
+    symbol: job.symbol,
+    jobProgress: progress,
+    jobId: job.job_id || job.id,
+  });
+  if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
+  return session;
 }
 
 /** Clear matching Algo/Lab backtest results after train / activate. */
@@ -228,10 +385,22 @@ export function invalidateMatchingMlBacktests(strategy, symbol) {
 
 /** Prefer cached status over transient fetch errors / aborts. */
 export function resolveModelStatusFetch(symbol, strategy, { body, error, previous, timeframe = '1m' }) {
-  const tf = (body && body.timeframe) || timeframe || '1m';
+  const tf = normalizeStatusTimeframe((body && body.timeframe) || timeframe || '1m');
+  const key = statusCacheKey(symbol, strategy, tf);
   if (body && typeof body === 'object') {
     setCachedModelStatus(symbol, strategy, body, tf);
-    return body;
+    const cachedAfter = getCachedModelStatus(symbol, strategy, tf);
+    // If race guard rejected an untrained write, never surface trained=false to UI.
+    if (!body.trained && trainRaceGuardActive(key)) {
+      if (cachedAfter?.trained) return { ...cachedAfter, timeframe: cachedAfter.timeframe || tf };
+      if (previous?.trained && normalizeStatusTimeframe(previous.timeframe || '1m') === tf) {
+        return { ...previous, timeframe: tf };
+      }
+      return null;
+    }
+    return cachedAfter
+      ? { ...cachedAfter, timeframe: cachedAfter.timeframe || tf }
+      : { ...body, timeframe: body.timeframe || tf };
   }
   if (error && isAbortError(error)) {
     return previous ?? getCachedModelStatus(symbol, strategy, tf);
@@ -244,12 +413,16 @@ export function resolveModelStatusFetch(symbol, strategy, { body, error, previou
       fetch_error: error?.message || 'Status temporarily unavailable',
     };
   }
-  if (previous?.trained && (previous.timeframe || '1m') === String(tf).toLowerCase()) {
+  if (previous?.trained && normalizeStatusTimeframe(previous.timeframe || '1m') === tf) {
     return {
       ...previous,
       stale: true,
       fetch_error: error?.message || 'Status temporarily unavailable',
     };
+  }
+  // Post-train refetch window: prefer "checking" over false Untrained.
+  if (trainRaceGuardActive(key)) {
+    return null;
   }
   return {
     trained: false,

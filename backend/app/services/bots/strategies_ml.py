@@ -170,8 +170,11 @@ def train_ml_signal_model(
     dist = label_distribution(labels)
 
     # Step 2: Extract features for each labelled bar
-    # Build lookback window for rolling features
-    lookback_size = 20
+    # Match evaluate() deque(maxlen=25) → up to EVAL_FEATURE_LOOKBACK priors.
+    from app.services.bots.ml_feature_engineering import EVAL_FEATURE_LOOKBACK
+
+    feature_lookback = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20  # evaluate() starts emitting once hist length >= 20
     rows: list[dict[str, Any]] = []
     include_trade_state = bool(cfg.get("ml_include_trade_state"))
     feat_names = resolve_feature_names(include_trade_state=include_trade_state)
@@ -180,15 +183,15 @@ def train_ml_signal_model(
     for idx, label_info in enumerate(labels):
         if label_info.get("barrier_hit") == "invalid":
             continue
-        # Need at least lookback_size prior bars for features
-        if idx < lookback_size:
+        # Need at least feature_warmup prior bars (same gate as live evaluate)
+        if idx < feature_warmup:
             continue
         # Skip bars too close to the end (they can't have full barrier evaluation)
         if idx >= len(candles) - max_bars:
             continue
 
         candle = candles[idx]
-        lookback = candles[max(0, idx - lookback_size):idx]
+        lookback = candles[max(0, idx - feature_lookback):idx]
         features = bar_to_signal_features(candle, lookback_rows=lookback)
         # Historical train: trade-state features are zeros unless a caller
         # supplies per-bar trade_state on the candle (rare).
@@ -552,6 +555,51 @@ class MlSignalModelStore:
             logger.warning("ML signal predict failed for %s: %s", symbol, exc)
             return None
 
+    def predict_batch(
+        self,
+        symbol: str,
+        feature_matrix: np.ndarray,
+        *,
+        model_version: str | None = None,
+        timeframe: str | None = None,
+        batch_size: int = 512,
+        cancel_cb: Any | None = None,
+    ) -> list[tuple[str, float] | None]:
+        """Batched ``predict_proba`` for backtests — shape ``(N, F)`` → N results."""
+        n = int(feature_matrix.shape[0]) if feature_matrix is not None else 0
+        if n == 0:
+            return []
+        model = self._ensure_loaded(
+            symbol, model_version=model_version, timeframe=timeframe,
+        )
+        if model is None:
+            return [None] * n
+
+        meta = self._metadata.get(self._cache_key(symbol, model_version, timeframe)) or {}
+        reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
+        out: list[tuple[str, float] | None] = [None] * n
+        bs = max(32, int(batch_size or 512))
+        mat = np.asarray(feature_matrix, dtype=np.float64)
+        for start in range(0, n, bs):
+            if cancel_cb is not None and cancel_cb():
+                raise InterruptedError("ml_batch_cancel_requested")
+            end = min(start + bs, n)
+            try:
+                proba = model.predict_proba(mat[start:end])
+            except Exception as exc:
+                logger.warning(
+                    "ML signal batch predict failed for %s [%s:%s]: %s",
+                    symbol, start, end, exc,
+                )
+                continue
+            for j, row_proba in enumerate(proba):
+                pred_idx = int(np.argmax(row_proba))
+                out[start + j] = (
+                    reverse_map.get(str(pred_idx), "NONE"),
+                    float(row_proba[pred_idx]),
+                )
+        return out
+
     def _ensure_loaded(
         self,
         symbol: str,
@@ -653,36 +701,15 @@ class MlSignalBoostStrategy(BaseStrategy):
             self._cfg.get("timeframe") or self.config.get("timeframe")
         )
 
-    def evaluate(self, df_row) -> dict:
-        # Maintain lookback window for rolling features
-        self._lookback.append(dict(df_row))
-
-        # Need enough lookback bars for feature computation
-        if len(self._lookback) < 20:
-            return {
-                "signal": "NONE",
-                "reject_reason": "ml_warmup",
-                "reject_detail": "Need >= 20 bars of lookback for ML features",
-            }
-
+    def _resolve_symbol(self, df_row) -> str:
         symbol = str(self._cfg.get("model_symbol") or "").strip().upper()
-        if not symbol:
+        if not symbol and isinstance(df_row, dict):
             symbol = str(df_row.get("_symbol") or self.config.get("symbol") or "").strip().upper()
-        if not symbol:
-            return {
-                "signal": "NONE",
-                "reject_reason": "ml_symbol_missing",
-                "reject_detail": "No model_symbol / symbol for ML model lookup",
-            }
+        elif not symbol:
+            symbol = str(self.config.get("symbol") or "").strip().upper()
+        return symbol
 
-        # Extract features with lookback
-        lookback_list = list(self._lookback)[:-1]  # all except current
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_list)
-
-        # Align trade-state dims to the loaded model (not only bot config) so a
-        # v4 artifact never gets v5 keys in drift logs, and a v5 model gets
-        # live trade_state from eval_row when the manager injects it.
-        store = get_ml_signal_store()
+    def _include_trade_state(self, symbol: str, store: "MlSignalModelStore") -> bool:
         pinned = self._cfg.get("model_version") or None
         tf = self._model_timeframe()
         meta = store.get_metadata(symbol, pinned or None, timeframe=tf) or {}
@@ -694,35 +721,32 @@ class MlSignalBoostStrategy(BaseStrategy):
                 include_ts = False
         if not meta:
             include_ts = bool(self._cfg.get("ml_include_trade_state"))
+        return include_ts
 
-        trade_state = None
-        if isinstance(df_row, dict):
-            trade_state = df_row.get("trade_state") or df_row.get("pretrade_context")
-        features = merge_trade_state_features(
-            features, trade_state, enabled=include_ts,
-        )
-
-        from app.services.bots.ml_feature_drift import record_ml_inference_features
-
-        record_ml_inference_features(symbol, "ML_SIGNAL_BOOST", features)
-
-        result = store.predict(
-            symbol, features, model_version=pinned or None, timeframe=tf,
-        )
+    def _format_prediction(
+        self,
+        df_row,
+        result: tuple[str, float] | None,
+        *,
+        symbol: str,
+        timeframe: str,
+    ) -> dict:
         if result is None:
             return {
                 "signal": "NONE",
                 "reject_reason": "ml_model_missing",
-                "reject_detail": f"No trained ML_SIGNAL_BOOST model for {symbol} @ {tf}",
+                "reject_detail": f"No trained ML_SIGNAL_BOOST model for {symbol} @ {timeframe}",
             }
 
         signal, confidence = result
         threshold = float(self._cfg.get("min_confidence", 0.55))
         conf = round(float(confidence), 4)
 
-        atr = df_row.get("ATR_14") or df_row.get("ATRr_14") or 0
+        atr = df_row.get("ATR_14") if isinstance(df_row, dict) else None
+        if atr is None and isinstance(df_row, dict):
+            atr = df_row.get("ATRr_14")
         try:
-            atr = float(atr)
+            atr = float(atr or 0)
         except (TypeError, ValueError):
             atr = 0.0
 
@@ -749,3 +773,185 @@ class MlSignalBoostStrategy(BaseStrategy):
             "raw_signal": signal if signal in ("BUY", "SELL", "NONE") else "NONE",
             "confidence": conf,
         }
+
+    def precompute_backtest_signals(
+        self,
+        rows: list[dict],
+        *,
+        cancel_cb: Any | None = None,
+        progress_cb: Any | None = None,
+    ) -> list[dict]:
+        """Columnar feature matrix + batched predict for backtests.
+
+        Matches per-bar ``evaluate`` control flow for position-independent
+        features (trade_state zeros when absent — same as typical BT rows).
+        Uses ``BACKTEST_VECTORIZED_FEATURES`` (default on); live ``evaluate``
+        stays on per-bar ``bar_to_signal_features``.
+        """
+        from app.services.bots.ml_batch_inference import inference_batch_size
+        from app.services.bots.ml_feature_engineering import (
+            EVAL_FEATURE_LOOKBACK,
+            precompute_signal_feature_matrix,
+            vectorized_features_enabled,
+        )
+
+        n = len(rows)
+        out: list[dict] = [
+            {
+                "signal": "NONE",
+                "reject_reason": "ml_warmup",
+                "reject_detail": "Need >= 20 bars of lookback for ML features",
+            }
+            for _ in range(n)
+        ]
+        if n < 20:
+            return out
+
+        symbol = self._resolve_symbol(rows[-1] if rows else {})
+        if not symbol:
+            missing = {
+                "signal": "NONE",
+                "reject_reason": "ml_symbol_missing",
+                "reject_detail": "No model_symbol / symbol for ML model lookup",
+            }
+            return [dict(missing) for _ in range(n)]
+
+        store = get_ml_signal_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        include_ts = self._include_trade_state(symbol, store)
+        meta = store.get_metadata(symbol, pinned or None, timeframe=tf) or {}
+        feat_names = meta.get("feature_names") or list(
+            resolve_feature_names(include_trade_state=include_ts)
+        )
+        base_names = list(SIGNAL_FEATURE_NAMES)
+        # Columnar path covers SIGNAL_FEATURE_NAMES; trade-state dims appended after.
+        use_matrix = vectorized_features_enabled() and (
+            not include_ts
+            or list(feat_names[: len(base_names)]) == base_names
+        )
+
+        lookback: deque = deque(maxlen=25)
+        if use_matrix:
+            mat = precompute_signal_feature_matrix(
+                rows,
+                feature_lookback=EVAL_FEATURE_LOOKBACK,
+                cancel_cb=cancel_cb,
+                progress_cb=progress_cb,
+            )
+            vectors: list[np.ndarray | None] = [None] * n
+            for i in range(n):
+                if cancel_cb is not None and i % 512 == 0 and cancel_cb():
+                    raise InterruptedError("ml_batch_cancel_requested")
+                lookback.append(dict(rows[i]))
+                if i < 19:
+                    continue
+                vec = mat[i].astype(np.float64, copy=False)
+                if include_ts:
+                    trade_state = rows[i].get("trade_state") or rows[i].get("pretrade_context")
+                    features = {name: float(vec[j]) for j, name in enumerate(base_names)}
+                    features = merge_trade_state_features(
+                        features, trade_state, enabled=True,
+                    )
+                    vectors[i] = signal_features_to_vector(
+                        features, feature_names=feat_names,
+                    )
+                elif list(feat_names) == base_names:
+                    vectors[i] = vec
+                else:
+                    features = {name: float(vec[j]) for j, name in enumerate(base_names)}
+                    vectors[i] = signal_features_to_vector(
+                        features, feature_names=feat_names,
+                    )
+        else:
+            # Legacy deque path (flag off or exotic feature_names).
+            vectors = [None] * n
+            report_every = max(512, n // 20)
+            for i, row in enumerate(rows):
+                if cancel_cb is not None and i % 512 == 0 and cancel_cb():
+                    raise InterruptedError("ml_batch_cancel_requested")
+                if progress_cb is not None and (i + 1) % report_every == 0:
+                    try:
+                        progress_cb(i + 1, n)
+                    except Exception:
+                        pass
+                lookback.append(dict(row))
+                if len(lookback) < 20:
+                    continue
+                lookback_list = list(lookback)[:-1]
+                features = bar_to_signal_features(row, lookback_rows=lookback_list)
+                trade_state = row.get("trade_state") or row.get("pretrade_context")
+                features = merge_trade_state_features(
+                    features, trade_state, enabled=include_ts,
+                )
+                vectors[i] = signal_features_to_vector(features, feature_names=feat_names)
+
+        warm_idx = [i for i, v in enumerate(vectors) if v is not None]
+        if not warm_idx:
+            self._lookback = lookback
+            return out
+
+        feat_mat = np.stack([vectors[i] for i in warm_idx], axis=0)
+        batch_size = inference_batch_size(self._cfg)
+        preds = store.predict_batch(
+            symbol,
+            feat_mat,
+            model_version=pinned or None,
+            timeframe=tf,
+            batch_size=batch_size,
+            cancel_cb=cancel_cb,
+        )
+        for pred, i in zip(preds, warm_idx):
+            out[i] = self._format_prediction(
+                rows[i], pred, symbol=symbol, timeframe=tf,
+            )
+        self._lookback = lookback
+        return out
+
+    def evaluate(self, df_row) -> dict:
+        # Maintain lookback window for rolling features
+        self._lookback.append(dict(df_row))
+
+        # Need enough lookback bars for feature computation
+        if len(self._lookback) < 20:
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_warmup",
+                "reject_detail": "Need >= 20 bars of lookback for ML features",
+            }
+
+        symbol = self._resolve_symbol(df_row)
+        if not symbol:
+            return {
+                "signal": "NONE",
+                "reject_reason": "ml_symbol_missing",
+                "reject_detail": "No model_symbol / symbol for ML model lookup",
+            }
+
+        # Extract features with lookback
+        lookback_list = list(self._lookback)[:-1]  # all except current
+        features = bar_to_signal_features(df_row, lookback_rows=lookback_list)
+
+        # Align trade-state dims to the loaded model (not only bot config) so a
+        # v4 artifact never gets v5 keys in drift logs, and a v5 model gets
+        # live trade_state from eval_row when the manager injects it.
+        store = get_ml_signal_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        include_ts = self._include_trade_state(symbol, store)
+
+        trade_state = None
+        if isinstance(df_row, dict):
+            trade_state = df_row.get("trade_state") or df_row.get("pretrade_context")
+        features = merge_trade_state_features(
+            features, trade_state, enabled=include_ts,
+        )
+
+        from app.services.bots.ml_feature_drift import record_ml_inference_features
+
+        record_ml_inference_features(symbol, "ML_SIGNAL_BOOST", features)
+
+        result = store.predict(
+            symbol, features, model_version=pinned or None, timeframe=tf,
+        )
+        return self._format_prediction(df_row, result, symbol=symbol, timeframe=tf)

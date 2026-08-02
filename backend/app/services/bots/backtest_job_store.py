@@ -31,7 +31,12 @@ def create_backtest_job(request: dict, *, status: str = "running", client_key: s
                 job_id,
                 status if status in _STATUSES else "pending",
                 json.dumps(request or {}),
-                json.dumps({"pct": 0, "phase": "queued", "message": "Queued…"}),
+                json.dumps({
+                    "pct": 0,
+                    "phase": "queued",
+                    "message": "Queued…",
+                    "updated_at": _now_iso(),
+                }),
                 client_key,
                 _now_iso(),
                 _now_iso() if status == "running" else None,
@@ -66,7 +71,9 @@ def start_job_execution(job_id: str) -> None:
 def update_job_progress(job_id: str, progress: dict) -> None:
     if not job_id:
         return
-    payload = {**(progress or {}), "job_id": job_id}
+    # Always stamp updated_at so the FE stall detector can trust server freshness
+    # even when pct/bar are unchanged (heartbeat / long precompute).
+    payload = {**(progress or {}), "job_id": job_id, "updated_at": _now_iso()}
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -205,18 +212,32 @@ def claim_next_pending_job() -> dict[str, Any] | None:
         conn.close()
 
 
-def get_backtest_job(job_id: str) -> dict[str, Any] | None:
+def get_backtest_job(job_id: str, *, include_results: bool = True) -> dict[str, Any] | None:
+    """Load a job. Polling should use ``include_results=False`` — results payloads
+    can be multi‑MB and blow the FE's default 8s HTTP timeout, causing a false stall.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            """
-            SELECT id, status, request_json, progress_json, run_id, error,
-                   results_json, client_key, created_at, started_at, finished_at
-            FROM backtest_jobs WHERE id = ?
-            """,
-            (job_id,),
-        )
+        if include_results:
+            cursor.execute(
+                """
+                SELECT id, status, request_json, progress_json, run_id, error,
+                       results_json, client_key, created_at, started_at, finished_at
+                FROM backtest_jobs WHERE id = ?
+                """,
+                (job_id,),
+            )
+        else:
+            # Omit results_json from the row so SQLite does not materialize a huge blob.
+            cursor.execute(
+                """
+                SELECT id, status, request_json, progress_json, run_id, error,
+                       NULL AS results_json, client_key, created_at, started_at, finished_at
+                FROM backtest_jobs WHERE id = ?
+                """,
+                (job_id,),
+            )
         row = cursor.fetchone()
         return _row_to_job(row) if row else None
     finally:
@@ -230,7 +251,7 @@ def get_active_backtest_job() -> dict[str, Any] | None:
         cursor.execute(
             """
             SELECT id, status, request_json, progress_json, run_id, error,
-                   results_json, client_key, created_at, started_at, finished_at
+                   NULL AS results_json, client_key, created_at, started_at, finished_at
             FROM backtest_jobs
             WHERE status IN ('pending', 'running')
             ORDER BY created_at DESC
@@ -244,6 +265,7 @@ def get_active_backtest_job() -> dict[str, Any] | None:
 
 
 def list_backtest_jobs(*, limit: int = 20, status: str | None = None) -> list[dict[str, Any]]:
+    """List recent jobs without materializing results_json (Jobs tab / history)."""
     limit = max(1, min(limit, 100))
     conn = get_connection()
     cursor = conn.cursor()
@@ -252,7 +274,7 @@ def list_backtest_jobs(*, limit: int = 20, status: str | None = None) -> list[di
             cursor.execute(
                 """
                 SELECT id, status, request_json, progress_json, run_id, error,
-                       results_json, client_key, created_at, started_at, finished_at
+                       NULL AS results_json, client_key, created_at, started_at, finished_at
                 FROM backtest_jobs WHERE status = ?
                 ORDER BY created_at DESC LIMIT ?
                 """,
@@ -262,7 +284,7 @@ def list_backtest_jobs(*, limit: int = 20, status: str | None = None) -> list[di
             cursor.execute(
                 """
                 SELECT id, status, request_json, progress_json, run_id, error,
-                       results_json, client_key, created_at, started_at, finished_at
+                       NULL AS results_json, client_key, created_at, started_at, finished_at
                 FROM backtest_jobs
                 ORDER BY created_at DESC LIMIT ?
                 """,

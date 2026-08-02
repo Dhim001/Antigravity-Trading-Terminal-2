@@ -22,6 +22,7 @@ import numpy as np
 from app.config import BASE_DIR
 from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
+    EVAL_FEATURE_LOOKBACK,
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
     precompute_signal_feature_matrix,
@@ -140,7 +141,8 @@ def build_tcn_sequences(
     y: (N, 3) — forward returns at 5, 15, 60 bars
     """
     n = len(candles)
-    feature_lb = 20
+    feature_lb = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     closes = [float(c.get("close") or 0) for c in candles]
     feat_matrix = precompute_signal_feature_matrix(
         candles, feature_lookback=feature_lb,
@@ -149,7 +151,7 @@ def build_tcn_sequences(
     sequences_x: list[np.ndarray] = []
     sequences_y: list[np.ndarray] = []
 
-    for i in range(lookback + feature_lb, n - 60):
+    for i in range(lookback + feature_warmup, n - 60):
         returns = _compute_forward_returns(closes, i)
         if returns is None:
             continue
@@ -433,6 +435,20 @@ class TcnModelStore:
 
         return f"{model_storage_key(symbol, timeframe)}|{model_version or 'latest'}"
 
+    @staticmethod
+    def _session_key(
+        symbol: str,
+        model_version: str | None,
+        timeframe: str | None = None,
+        *,
+        research: bool = False,
+        config: dict | None = None,
+    ) -> str:
+        from app.services.bots.ml_onnx_runtime import ort_provider_cache_tag
+
+        base = TcnModelStore._cache_key(symbol, model_version, timeframe)
+        return f"{base}{ort_provider_cache_tag(research=research, config=config)}"
+
     def invalidate(self, symbol: str | None = None, *, timeframe: str | None = None):
         from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
 
@@ -463,11 +479,19 @@ class TcnModelStore:
         *,
         model_version: str | None = None,
         timeframe: str | None = None,
+        research: bool = False,
+        config: dict | None = None,
     ) -> np.ndarray | None:
         """Predict 3 forward returns from a (lookback, N_FEATURES) window."""
-        key = self._cache_key(symbol, model_version, timeframe)
+        key = self._session_key(
+            symbol, model_version, timeframe, research=research, config=config,
+        )
         session = self._ensure_loaded(
-            symbol, model_version=model_version, timeframe=timeframe,
+            symbol,
+            model_version=model_version,
+            timeframe=timeframe,
+            research=research,
+            config=config,
         )
         if session is None:
             return None
@@ -483,16 +507,81 @@ class TcnModelStore:
             logger.warning("TCN predict failed for %s: %s", symbol, exc)
             return None
 
+    def predict_batch(
+        self,
+        symbol: str,
+        windows: np.ndarray,
+        *,
+        model_version: str | None = None,
+        timeframe: str | None = None,
+        batch_size: int = 512,
+        cancel_cb=None,
+        research: bool = False,
+        config: dict | None = None,
+    ) -> list[np.ndarray | None]:
+        """Batched TCN inference — ``windows`` shape ``(N, seq, F)``.
+
+        Default ``research=False`` keeps live CPU sessions; research sim modes
+        pass ``research=True`` for optional CUDA.
+        """
+        n = int(windows.shape[0]) if windows is not None else 0
+        if n == 0:
+            return []
+        key = self._session_key(
+            symbol, model_version, timeframe, research=research, config=config,
+        )
+        session = self._ensure_loaded(
+            symbol,
+            model_version=model_version,
+            timeframe=timeframe,
+            research=research,
+            config=config,
+        )
+        if session is None:
+            return [None] * n
+        scaler = self._scalers.get(key)
+        out: list[np.ndarray | None] = [None] * n
+        bs = max(32, int(batch_size or 512))
+        mean = std = None
+        if scaler:
+            mean = np.array(scaler["mean"], dtype=np.float32)
+            std = np.array(scaler["std"], dtype=np.float32)
+        for start in range(0, n, bs):
+            if cancel_cb is not None and cancel_cb():
+                raise InterruptedError("ml_batch_cancel_requested")
+            end = min(start + bs, n)
+            chunk = windows[start:end].astype(np.float32)
+            if mean is not None and std is not None:
+                chunk = (chunk - mean) / std
+            try:
+                preds = session.run(None, {"input": chunk})[0]
+            except Exception as exc:
+                logger.warning(
+                    "TCN batch predict failed for %s [%s:%s]: %s",
+                    symbol, start, end, exc,
+                )
+                continue
+            for j, row in enumerate(preds):
+                out[start + j] = row
+        return out
+
     def _ensure_loaded(
         self,
         symbol: str,
         model_version: str | None = None,
         *,
         timeframe: str | None = None,
+        research: bool = False,
+        config: dict | None = None,
     ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(symbol, model_version, timeframe)
+        key = self._session_key(
+            symbol, model_version, timeframe, research=research, config=config,
+        )
+        if key in self._sessions and self._mtime.get(key) == -1.0:
+            self._lru.touch(key)
+            return self._sessions[key]
         load_dir = resolve_model_dir(_model_dir(symbol, timeframe), model_version)
         path = os.path.join(load_dir, "tcn_multi_horizon.onnx")
         if not os.path.isfile(path):
@@ -502,7 +591,7 @@ class TcnModelStore:
             self._lru.touch(key)
             return self._sessions[key]
         try:
-            import onnxruntime as ort
+            import onnxruntime as ort  # noqa: F401
         except ImportError:
             return None
         try:
@@ -514,7 +603,11 @@ class TcnModelStore:
             if os.path.isfile(scaler_p):
                 with open(scaler_p, encoding="utf-8") as fh:
                     self._scalers[key] = json.load(fh)
-            session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            from app.services.bots.ml_onnx_runtime import create_inference_session
+
+            session = create_inference_session(
+                path, research=research, config=config,
+            )
         except Exception as exc:
             logger.warning("TCN load failed for %s: %s", key, exc)
             return None

@@ -4,6 +4,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as echarts from 'echarts';
 import { initEcharts } from '@/lib/echartsInit';
+import ChartReplayControls from './chart/ChartReplayControls';
+import ChartOhlcLegend from './chart/ChartOhlcLegend';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import {
@@ -2133,56 +2135,20 @@ export default function ChartWidget() {
           <span className="font-normal opacity-80">(ESC to cancel)</span>
         </Badge>
       )}
-
-      {replayActive && (
-        <div className="absolute bottom-3 left-1/2 z-[100] flex -translate-x-1/2 items-center gap-1 rounded-md border border-border/60 bg-background/95 px-2 py-1 shadow-lg backdrop-blur">
-          <Button variant="ghost" size="icon-sm" title="Restart" onClick={() => { setReplayPlaying(false); setReplayIndex(2); }}>
-            <RotateCcw size={13} />
-          </Button>
-          <Button variant="ghost" size="icon-sm" title="Step back" onClick={() => { setReplayPlaying(false); setReplayIndex((i) => Math.max(2, i - 1)); }}>
-            <SkipBack size={13} />
-          </Button>
-          <Button variant="ghost" size="icon-sm" title={replayPlaying ? 'Pause' : 'Play'} onClick={() => setReplayPlaying((p) => !p)}>
-            {replayPlaying ? <Pause size={13} /> : <Play size={13} />}
-          </Button>
-          <Button variant="ghost" size="icon-sm" title="Step forward" onClick={() => { setReplayPlaying(false); setReplayIndex((i) => Math.min(aggregatedCandles.length, i + 1)); }}>
-            <SkipForward size={13} />
-          </Button>
-          <span className="px-1 font-mono text-[10px] text-muted-foreground tabular-nums">
-            {Math.min(replayIndex, aggregatedCandles.length)}/{aggregatedCandles.length}
-          </span>
-          <ToggleGroup type="single" value={String(replaySpeed)} onValueChange={(v) => v && setReplaySpeed(Number(v))} spacing={0}>
-            {[1, 2, 4].map((s) => (
-              <ToggleGroupItem key={s} value={String(s)} size="sm" className="px-1.5 text-[0.6rem] font-bold">
-                {s}x
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          <Button variant="ghost" size="icon-sm" title="Exit replay" onClick={exitReplay}>
-            <X size={13} />
-          </Button>
-        </div>
-      )}
+      <ChartReplayControls
+        replayActive={replayActive}
+        replayPlaying={replayPlaying}
+        replayIndex={replayIndex}
+        totalCandles={aggregatedCandles.length}
+        replaySpeed={replaySpeed}
+        setReplayPlaying={setReplayPlaying}
+        setReplayIndex={setReplayIndex}
+        setReplaySpeed={setReplaySpeed}
+        exitReplay={exitReplay}
+      />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute top-1.5 left-2.5 z-10 flex select-none items-center gap-[var(--icon-gap-loose)] font-mono text-[11px]">
-          {[
-            ['O', 'o'],
-            ['H', 'h'],
-            ['L', 'l'],
-            ['C', 'c'],
-          ].map(([label, id]) => (
-            <span key={label} className="icon-label-tight">
-              <span className="font-normal text-muted-foreground">{label}</span>
-              <span id={`chart-legend-${id}`} className="font-bold">—</span>
-            </span>
-          ))}
-          <span className="icon-label-tight">
-            <span className="font-normal text-muted-foreground">V</span>
-            <span id="chart-legend-v" className="font-bold text-trading-accent">—</span>
-          </span>
-          <span id="chart-legend-pct" className="text-[10px] font-bold opacity-90">—</span>
-        </div>
+        <ChartOhlcLegend />
 
         <div
           ref={containerRef}

@@ -22,6 +22,7 @@ import numpy as np
 from app.config import BASE_DIR
 from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
+    EVAL_FEATURE_LOOKBACK,
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
     precompute_signal_feature_matrix,
@@ -125,13 +126,14 @@ def build_transformer_sequences(
     candles: list[dict], labels: list[dict], *, lookback: int = 90, max_holding_bars: int = 30,
 ) -> tuple[np.ndarray, np.ndarray]:
     n = len(candles)
-    feature_lb = 20
+    feature_lb = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     feat_matrix = precompute_signal_feature_matrix(
         candles, feature_lookback=feature_lb,
     )
     seqs_x, seqs_y = [], []
 
-    for i in range(lookback + feature_lb, n - max_holding_bars):
+    for i in range(lookback + feature_warmup, n - max_holding_bars):
         if i >= len(labels):
             break
         lbl = labels[i]
@@ -491,6 +493,20 @@ class TransformerModelStore:
 
         return f"{model_storage_key(symbol, timeframe)}|{model_version or 'latest'}"
 
+    @staticmethod
+    def _session_key(
+        symbol,
+        model_version,
+        timeframe=None,
+        *,
+        research: bool = False,
+        config: dict | None = None,
+    ) -> str:
+        from app.services.bots.ml_onnx_runtime import ort_provider_cache_tag
+
+        base = TransformerModelStore._cache_key(symbol, model_version, timeframe)
+        return f"{base}{ort_provider_cache_tag(research=research, config=config)}"
+
     def invalidate(self, symbol=None, *, timeframe: str | None = None):
         from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
 
@@ -513,7 +529,7 @@ class TransformerModelStore:
                 d.clear()
 
     def predict(self, symbol, window, *, model_version=None, timeframe=None):
-        key = self._cache_key(symbol, model_version, timeframe)
+        key = self._session_key(symbol, model_version, timeframe)
         session = self._ensure_loaded(
             symbol, model_version=model_version, timeframe=timeframe,
         )
@@ -535,10 +551,87 @@ class TransformerModelStore:
             logger.warning("Transformer predict failed for %s: %s", symbol, e)
             return None
 
-    def _ensure_loaded(self, symbol, model_version=None, *, timeframe=None):
+    def predict_batch(
+        self,
+        symbol,
+        windows: np.ndarray,
+        *,
+        model_version=None,
+        timeframe=None,
+        batch_size: int = 512,
+        cancel_cb=None,
+        research: bool = False,
+        config: dict | None = None,
+    ) -> list:
+        """Batched ONNX inference — ``windows`` shape ``(N, seq, F)``.
+
+        Default ``research=False`` keeps live CPU sessions; research sim modes
+        pass ``research=True`` for optional CUDA.
+        """
+        n = int(windows.shape[0]) if windows is not None else 0
+        if n == 0:
+            return []
+        key = self._session_key(
+            symbol, model_version, timeframe, research=research, config=config,
+        )
+        session = self._ensure_loaded(
+            symbol,
+            model_version=model_version,
+            timeframe=timeframe,
+            research=research,
+            config=config,
+        )
+        if session is None:
+            return [None] * n
+        scaler = self._scalers.get(key)
+        meta = self._metadata.get(key) or {}
+        rmap = meta.get("reverse_map") or REVERSE_MAP
+        out: list = [None] * n
+        bs = max(32, int(batch_size or 512))
+        mean = std = None
+        if scaler:
+            mean = np.array(scaler["mean"], dtype=np.float32)
+            std = np.array(scaler["std"], dtype=np.float32)
+        for start in range(0, n, bs):
+            if cancel_cb is not None and cancel_cb():
+                raise InterruptedError("ml_batch_cancel_requested")
+            end = min(start + bs, n)
+            chunk = windows[start:end].astype(np.float32)
+            if mean is not None and std is not None:
+                chunk = (chunk - mean) / std
+            try:
+                logits = session.run(None, {"input": chunk})[0]
+            except Exception as exc:
+                logger.warning(
+                    "Transformer batch predict failed for %s [%s:%s]: %s",
+                    symbol, start, end, exc,
+                )
+                continue
+            for j, row in enumerate(logits):
+                x = row - row.max()
+                proba = np.exp(x) / np.exp(x).sum()
+                idx = int(np.argmax(proba))
+                out[start + j] = (rmap.get(str(idx), "NONE"), float(proba[idx]))
+        return out
+
+    def _ensure_loaded(
+        self,
+        symbol,
+        model_version=None,
+        *,
+        timeframe=None,
+        research: bool = False,
+        config: dict | None = None,
+    ):
         from app.services.bots.ml_model_artifacts import resolve_model_dir
 
-        key = self._cache_key(symbol, model_version, timeframe)
+        key = self._session_key(
+            symbol, model_version, timeframe, research=research, config=config,
+        )
+        if key in self._sessions and self._mtime.get(key) == -1.0:
+            self._lru.touch(key)
+            return self._sessions[key]
+
         load_dir = resolve_model_dir(_model_dir(symbol, timeframe), model_version)
         path = os.path.join(load_dir, "transformer_signal.onnx")
         if not os.path.isfile(path):
@@ -548,7 +641,7 @@ class TransformerModelStore:
             self._lru.touch(key)
             return self._sessions[key]
         try:
-            import onnxruntime as ort
+            import onnxruntime  # noqa: F401
         except ImportError:
             return None
         try:
@@ -560,7 +653,9 @@ class TransformerModelStore:
             if os.path.isfile(sp):
                 with open(sp) as f:
                     self._scalers[key] = json.load(f)
-            s = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            from app.services.bots.ml_onnx_runtime import create_inference_session
+
+            s = create_inference_session(path, research=research, config=config)
         except Exception:
             return None
         self._sessions[key] = s

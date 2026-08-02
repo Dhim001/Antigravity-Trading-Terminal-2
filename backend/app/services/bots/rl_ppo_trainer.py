@@ -704,7 +704,9 @@ class PpoModelStore:
                 logger.warning("PPO model schema mismatch for %s", key)
                 return None
 
-            session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+            from app.services.bots.ml_onnx_runtime import create_inference_session
+
+            session = create_inference_session(onnx_path, research=False)
 
             scaler = None
             scaler_p = os.path.join(load_dir, "scaler.json")

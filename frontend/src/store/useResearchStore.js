@@ -13,6 +13,8 @@ const MAX_SCAN_ROWS = 200;
 const MAX_BACKTEST_RUNS = 20;
 /** Max journal entries retained client-side. */
 const MAX_JOURNAL_ENTRIES = 200;
+/** Max concurrent backtest job slots tracked in the UI. */
+const MAX_BACKTEST_JOB_SLOTS = 12;
 
 /** #42 — analytics dashboard snapshots older than this are rebuilt from the
  * next partial report instead of merged into (bounds merge accumulation). */
@@ -56,6 +58,8 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
   backtestRunning: false,
   backtestProgress: null,
   backtestJobId: null,
+  /** Secondary job slots keyed by job_id — isolates progress from other clients/jobs. */
+  backtestJobsById: {},
   backtestLabOpen: false,
   backtestLabTab: 'results',
   backtestDays: '7',
@@ -158,8 +162,71 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
     backtestRuns: Array.isArray(runs) ? runs.slice(0, MAX_BACKTEST_RUNS) : [],
   }),
   setBacktestRunning: (running) => set({ backtestRunning: Boolean(running) }),
-  setBacktestProgress: (progress) => set({ backtestProgress: progress ?? null }),
-  setBacktestJobId: (jobId) => set({ backtestJobId: jobId ?? null }),
+  setBacktestProgress: (progress) => set((state) => {
+    const next = progress ?? null;
+    const jobId = next?.job_id || state.backtestJobId;
+    if (!jobId) return { backtestProgress: next };
+    const prev = state.backtestJobsById[jobId] || {};
+    const slot = {
+      ...prev,
+      jobId,
+      progress: next,
+      updatedAt: Date.now(),
+    };
+    const byId = { ...state.backtestJobsById, [jobId]: slot };
+    const ids = Object.keys(byId);
+    if (ids.length > MAX_BACKTEST_JOB_SLOTS) {
+      const ranked = ids
+        .map((id) => ({ id, t: byId[id]?.updatedAt || 0 }))
+        .sort((a, b) => a.t - b.t);
+      for (const { id } of ranked.slice(0, ids.length - MAX_BACKTEST_JOB_SLOTS)) {
+        if (id !== state.backtestJobId) delete byId[id];
+      }
+    }
+    const watched = !state.backtestJobId || state.backtestJobId === jobId;
+    return {
+      backtestJobsById: byId,
+      ...(watched ? { backtestProgress: next } : {}),
+    };
+  }),
+  /**
+   * Release the watched job slot so the next run's job_id is adopted.
+   * Without this a new run's progress looks "foreign" and is filtered out,
+   * and Cancel would target the previous run's job_id.
+   */
+  beginBacktestRun: () => set({ backtestJobId: null }),
+
+  setBacktestJobId: (jobId) => set((state) => {
+    const id = jobId ?? null;
+    if (!id) return { backtestJobId: null };
+    const prev = state.backtestJobsById[id] || {};
+    return {
+      backtestJobId: id,
+      backtestJobsById: {
+        ...state.backtestJobsById,
+        [id]: { ...prev, jobId: id, updatedAt: Date.now() },
+      },
+    };
+  }),
+  /** Upsert a job slot; only mirrors into primary progress when job is watched. */
+  upsertBacktestJobSlot: (jobId, patch = {}) => set((state) => {
+    if (!jobId) return {};
+    const prev = state.backtestJobsById[jobId] || {};
+    const slot = {
+      ...prev,
+      ...patch,
+      jobId,
+      updatedAt: Date.now(),
+    };
+    const byId = { ...state.backtestJobsById, [jobId]: slot };
+    const watched = !state.backtestJobId || state.backtestJobId === jobId;
+    const out = { backtestJobsById: byId };
+    if (watched) {
+      if (patch.progress !== undefined) out.backtestProgress = patch.progress ?? null;
+      if (patch.running !== undefined) out.backtestRunning = Boolean(patch.running);
+    }
+    return out;
+  }),
 
   setBacktestLabOpen: (open) => {
     const nextOpen = Boolean(open);

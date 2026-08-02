@@ -8,12 +8,14 @@
  */
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { CheckCircle2, XCircle, AlertCircle, Pin } from 'lucide-react';
-import { apiRequest, isAbortError } from '@/api/client';
+import { apiRequest } from '@/api/client';
 import { cn } from '@/lib/utils';
 import { isMlStrategy } from '@/config/strategies';
 import {
   getCachedModelStatus,
+  normalizeStatusTimeframe,
   resolveModelStatusFetch,
+  subscribeModelStatusCache,
 } from '@/lib/mlTrainingSession';
 import { openModelTrainingDock } from '@/lib/workspaceNav';
 
@@ -70,7 +72,7 @@ export default function MlModelStatusBadge({
   /** When false, status-only (safe inside parent <button> cards). */
   showCta = true,
 }) {
-  const tf = String(timeframe || '1m').toLowerCase();
+  const tf = normalizeStatusTimeframe(timeframe);
   const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy, tf));
   const statusRef = useRef(status);
   statusRef.current = status;
@@ -88,13 +90,13 @@ export default function MlModelStatusBadge({
       });
       setStatus(next);
     } catch (err) {
-      if (isAbortError(err)) return;
+      // Aborts used to leave status=null → badge returned null ("vanished").
       const next = resolveModelStatusFetch(symbol, strategy, {
         error: err,
         previous: statusRef.current,
         timeframe: tf,
       });
-      setStatus(next);
+      if (next != null) setStatus(next);
     }
   }, [symbol, strategy, tf]);
 
@@ -104,6 +106,19 @@ export default function MlModelStatusBadge({
     fetchStatus();
   }, [fetchStatus, symbol, strategy, tf]);
 
+  // Lab / ActiveBotRow share the status cache — stay in sync after train
+  // completes (invalidate + refetch) instead of freezing a pre-train snapshot.
+  useEffect(() => {
+    return subscribeModelStatusCache(() => {
+      const cached = getCachedModelStatus(symbol, strategy, tf);
+      if (cached) {
+        setStatus(cached);
+      } else if (symbol && strategy && isMlStrategy(strategy)) {
+        fetchStatus();
+      }
+    });
+  }, [symbol, strategy, tf, fetchStatus]);
+
   const openTraining = useCallback((e) => {
     e.stopPropagation();
     e.preventDefault?.();
@@ -111,7 +126,17 @@ export default function MlModelStatusBadge({
   }, []);
 
   if (!isMlStrategy(strategy)) return null;
-  if (status === null) return null;
+  if (status === null) {
+    return (
+      <span
+        className="ml-model-badge ml-model-badge--loading"
+        title={`Checking ${tf} model status…`}
+      >
+        <AlertCircle size={10} />
+        {!compact && <span>…</span>}
+      </span>
+    );
+  }
 
   if (status?.trained) {
     const pin = String(modelVersion || '').trim();

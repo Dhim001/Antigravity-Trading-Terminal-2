@@ -5,6 +5,8 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { defaultPortfolioSymbols } from '@/lib/portfolioBacktest';
+import { getAutoDeployMode, startPipeline } from '@/lib/mlPipeline';
+import { postMlLabRequest } from '@/lib/mlLabRequests';
 
 export const WORKFLOW_PRESETS = [
   {
@@ -47,6 +49,21 @@ export const WORKFLOW_PRESETS = [
     label: 'Meta-label WF',
     hint: 'CHART_AGENT classifier validation',
   },
+  {
+    id: 'ml_full_pipeline',
+    label: 'ML Pipeline',
+    hint: 'Full Train → Validate → Backtest → Gate cycle',
+  },
+  {
+    id: 'ml_retrain_validate',
+    label: 'Retrain + Validate',
+    hint: 'Train then walk-forward (no backtest)',
+  },
+  {
+    id: 'ml_batch_train',
+    label: 'Batch Train All',
+    hint: 'Train multiple strategies for current symbol',
+  },
 ];
 
 export function applyWorkflowPreset(
@@ -55,6 +72,8 @@ export function applyWorkflowPreset(
     activeSymbol,
     symbolsList,
     botStrategy,
+    botTimeframe,
+    trainingWindow,
     setBacktestDays,
     setBacktestOos,
     setBacktestReasoning,
@@ -66,9 +85,64 @@ export function applyWorkflowPreset(
     openBacktestLab,
     setBacktestLabTab,
     setOptimizerPreset,
-  },
+    startPipeline: startPipelineCb,
+    getAutoDeployMode: getAutoDeployModeCb,
+    openBatchTrainDialog,
+    onMlPipelineTrain,
+  } = {},
 ) {
+  const start = startPipelineCb || startPipeline;
+  const deployMode = getAutoDeployModeCb || getAutoDeployMode;
+
   switch (presetId) {
+    case 'ml_full_pipeline': {
+      const pipelineId = start({
+        strategy: botStrategy,
+        symbol: activeSymbol,
+        timeframe: botTimeframe,
+        trainingWindow,
+        autoAdvance: true,
+        autoDeployMode: deployMode(),
+        presetId: 'ml_full_pipeline',
+      });
+      onMlPipelineTrain?.({
+        pipelineId,
+        strategy: botStrategy,
+        symbol: activeSymbol,
+        timeframe: botTimeframe,
+        trainingWindow,
+        mode: 'full',
+      });
+      return true;
+    }
+    case 'ml_retrain_validate': {
+      const pipelineId = start({
+        strategy: botStrategy,
+        symbol: activeSymbol,
+        timeframe: botTimeframe,
+        trainingWindow,
+        autoAdvance: true,
+        autoDeployMode: 'approval',
+        presetId: 'ml_retrain_validate',
+        stopAfterValidate: true,
+      });
+      onMlPipelineTrain?.({
+        pipelineId,
+        strategy: botStrategy,
+        symbol: activeSymbol,
+        timeframe: botTimeframe,
+        trainingWindow,
+        mode: 'retrain_validate',
+      });
+      return true;
+    }
+    case 'ml_batch_train':
+      // Callback opens the Lab dock; the mailbox request survives the remount.
+      openBatchTrainDialog?.();
+      postMlLabRequest('ml-lab-open-batch', {
+        scope: 'all', symbol: activeSymbol, timeframe: botTimeframe,
+      });
+      return true;
     case 'wf_rigorous':
       setBacktestDays('30');
       setBacktestOos(false);

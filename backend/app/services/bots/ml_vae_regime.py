@@ -173,10 +173,13 @@ def train_vae_regime_model(
     if len(candles) < 100:
         return {"ok": False, "error": "insufficient candles", "symbol": symbol}
 
-    # Extract features for every bar
-    feature_lb = 20
+    # Extract features for every bar — match evaluate lookback (24 priors).
+    from app.services.bots.ml_feature_engineering import EVAL_FEATURE_LOOKBACK
+
+    feature_lb = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     vectors: list[np.ndarray] = []
-    for i in range(feature_lb, len(candles)):
+    for i in range(feature_warmup, len(candles)):
         c = candles[i]
         lb = candles[max(0, i - feature_lb):i]
         features = bar_to_signal_features(c, lookback_rows=lb)

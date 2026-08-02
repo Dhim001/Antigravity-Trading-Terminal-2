@@ -61,6 +61,19 @@ async def session_handler(request: Request) -> JSONResponse:
     except Exception:
         pass
 
+    active_ml_jobs = []
+    ml_queue = {"active": 0, "queued": 0}
+    try:
+        from app.services.bots.ml_job_store import list_ml_jobs, ml_job_counts, public_ml_job
+
+        ml_queue = ml_job_counts()
+        active_ml_jobs = [
+            public_ml_job(j, include_result=False)
+            for j in list_ml_jobs(limit=10, active_only=True)
+        ]
+    except Exception:
+        pass
+
     return JSONResponse({
         "ok": True,
         "session": {
@@ -88,9 +101,13 @@ async def session_handler(request: Request) -> JSONResponse:
             "bots": state.bot_manager.list_bots_public(),
             "strategies": list_strategy_catalog(),
             "active_backtest_job": active_job,
+            "active_ml_jobs": active_ml_jobs,
+            "ml_queue": ml_queue,
             "metrics": {
                 "open_positions": stats.get("positions_count", 0),
                 "pending_orders": stats.get("pending_orders_count", 0),
+                "ml_jobs_active": ml_queue.get("active", 0),
+                "ml_jobs_queued": ml_queue.get("queued", 0),
             },
         },
     })

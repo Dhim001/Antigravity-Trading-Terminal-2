@@ -7,10 +7,14 @@ import {
   finishMlJob,
   getCachedModelStatus,
   getMlTrainingSession,
+  invalidateModelStatusCache,
+  markModelFreshAfterTrain,
+  normalizeStatusTimeframe,
   resolveModelStatusFetch,
   setCachedModelStatus,
   setMlJobId,
   setMlServerProgress,
+  STATUS_CACHE_MAX,
   statusCacheKey,
 } from './mlTrainingSession';
 import { useResearchStore } from '@/store/useResearchStore';
@@ -30,6 +34,36 @@ describe('mlTrainingSession', () => {
       'BNBUSDT|TRANSFORMER_SIGNAL|1m',
     );
     expect(getCachedModelStatus('BNBUSDT', 'TRANSFORMER_SIGNAL', '1m')?.trained).toBe(true);
+  });
+
+  it('maps tick timeframe to 1m for cache keys (matches backend storage)', () => {
+    expect(normalizeStatusTimeframe('tick')).toBe('1m');
+    expect(statusCacheKey('ETHUSDT', 'TCN_MULTI_HORIZON', 'tick')).toBe(
+      'ETHUSDT|TCN_MULTI_HORIZON|1m',
+    );
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: true,
+      trained_at: '2026-08-01T09:33:33Z',
+      timeframe: '1m',
+    }, 'tick');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', 'tick')?.trained).toBe(true);
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')?.trained).toBe(true);
+  });
+
+  it('keeps last good status when AbortError resolves via resolveModelStatusFetch', () => {
+    setCachedModelStatus('AAPL', 'RL_PPO_AGENT', {
+      trained: true,
+      trained_at: '2026-08-01T12:00:00Z',
+      timeframe: '1m',
+    }, '1m');
+    const abortErr = new Error('aborted');
+    abortErr.name = 'AbortError';
+    const next = resolveModelStatusFetch('AAPL', 'RL_PPO_AGENT', {
+      error: abortErr,
+      previous: null,
+      timeframe: '1m',
+    });
+    expect(next?.trained).toBe(true);
   });
 
   it('keeps 1m and 15m model status separate', () => {    setCachedModelStatus('ETHUSDT', 'LSTM_DIRECTION', {
@@ -89,6 +123,21 @@ describe('mlTrainingSession', () => {
     expect(getMlTrainingSession().training).toBe(false);
   });
 
+  it('tracks hyperparam sweep as tuning', () => {
+    const { jobToken } = beginMlJob({
+      kind: 'hyperparam_sweep',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+      jobId: 'job-tune-1',
+      jobProgress: { active: true, kind: 'hyperparam_sweep', label: 'Auto-tune' },
+    });
+    expect(getMlTrainingSession().tuning).toBe(true);
+    expect(getMlTrainingSession().training).toBe(false);
+    expect(getMlTrainingSession().jobId).toBe('job-tune-1');
+    finishMlJob(jobToken, {});
+    expect(getMlTrainingSession().tuning).toBe(false);
+  });
+
   it('records poll log snapshots from server progress', () => {
     beginMlJob({
       kind: 'train',
@@ -136,22 +185,121 @@ describe('mlTrainingSession', () => {
     expect(useResearchStore.getState().backtestResults).toBeNull();
   });
 
-  it('statusCache evicts least-recently-used keys beyond 12 (#40)', () => {
-    for (let i = 0; i < 14; i++) {
+  it('does not let a late untrained fetch clobber a trained cache entry', () => {
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: true,
+      trained_at: '2026-08-01T16:00:00Z',
+      timeframe: '1m',
+    }, '1m');
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')?.trained).toBe(true);
+  });
+
+  it('invalidateModelStatusCache clears entry so untrained can be written again', () => {
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: true,
+      trained_at: '2026-08-01T16:00:00Z',
+      timeframe: '1m',
+    }, '1m');
+    invalidateModelStatusCache('ETHUSDT', 'TCN_MULTI_HORIZON', '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')).toBeNull();
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')?.trained).toBe(false);
+  });
+
+  it('clears model status cache when train job completes via WS but keeps race guard', () => {
+    setCachedModelStatus('BTCUSDT', 'LSTM_DIRECTION', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    beginMlJob({
+      kind: 'train',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'BTCUSDT',
+      jobId: 'job-status-1',
+      jobProgress: { active: true, kind: 'train', label: 'Retraining' },
+    });
+    setMlJobId('job-status-1');
+    // Post-train refresh wrote trained=true…
+    setCachedModelStatus('BTCUSDT', 'LSTM_DIRECTION', {
+      trained: true,
+      trained_at: '2026-08-01T17:00:00Z',
+      timeframe: '1m',
+    }, '1m');
+    applyMlJobProgressMessage({
+      job_id: 'job-status-1',
+      status: 'done',
+      kind: 'train',
+      pct: 100,
+      phase: 'done',
+      timeframe: '1m',
+    });
+    // Body cleared so badges refetch…
+    expect(getCachedModelStatus('BTCUSDT', 'LSTM_DIRECTION', '1m')).toBeNull();
+    // …but late untrained must not undo Fresh during the guard window.
+    setCachedModelStatus('BTCUSDT', 'LSTM_DIRECTION', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    expect(getCachedModelStatus('BTCUSDT', 'LSTM_DIRECTION', '1m')).toBeNull();
+  });
+
+  it('markModelFreshAfterTrain blocks untrained until invalidate clears the guard', () => {
+    markModelFreshAfterTrain('ETHUSDT', 'TCN_MULTI_HORIZON', '1m', {
+      trained: true,
+      trained_at: '2026-08-01T18:00:00Z',
+      timeframe: '1m',
+    });
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')?.trained).toBe(true);
+    markModelFreshAfterTrain('ETHUSDT', 'TCN_MULTI_HORIZON', '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')).toBeNull();
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')).toBeNull();
+    invalidateModelStatusCache('ETHUSDT', 'TCN_MULTI_HORIZON', '1m');
+    setCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', {
+      trained: false,
+      timeframe: '1m',
+    }, '1m');
+    expect(getCachedModelStatus('ETHUSDT', 'TCN_MULTI_HORIZON', '1m')?.trained).toBe(false);
+  });
+
+  it('resolveModelStatusFetch does not surface untrained during post-train guard', () => {
+    markModelFreshAfterTrain('BNBUSDT', 'TRANSFORMER_SIGNAL', '1m');
+    const next = resolveModelStatusFetch('BNBUSDT', 'TRANSFORMER_SIGNAL', {
+      body: { trained: false, timeframe: '1m' },
+      previous: { trained: true, trained_at: '2026-08-01T18:30:00Z', timeframe: '1m' },
+      timeframe: '1m',
+    });
+    expect(next?.trained).toBe(true);
+    expect(getCachedModelStatus('BNBUSDT', 'TRANSFORMER_SIGNAL', '1m')).toBeNull();
+  });
+
+  it(`statusCache evicts least-recently-used keys beyond ${STATUS_CACHE_MAX} (#40)`, () => {
+    const n = STATUS_CACHE_MAX + 2;
+    for (let i = 0; i < n; i++) {
       setCachedModelStatus(`SYM${i}`, 'LSTM_DIRECTION', { trained: true, timeframe: '1m' }, '1m');
     }
     expect(getCachedModelStatus('SYM0', 'LSTM_DIRECTION', '1m')).toBeNull();
     expect(getCachedModelStatus('SYM1', 'LSTM_DIRECTION', '1m')).toBeNull();
-    expect(getCachedModelStatus('SYM13', 'LSTM_DIRECTION', '1m')?.trained).toBe(true);
+    expect(getCachedModelStatus(`SYM${n - 1}`, 'LSTM_DIRECTION', '1m')?.trained).toBe(true);
   });
 
   it('statusCache read refreshes LRU position (#40)', () => {
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < STATUS_CACHE_MAX; i++) {
       setCachedModelStatus(`R${i}`, 'S', { trained: true, timeframe: '1m' }, '1m');
     }
     // Read R0 → becomes most-recently-used, so it survives the next insert.
     expect(getCachedModelStatus('R0', 'S', '1m')?.trained).toBe(true);
-    setCachedModelStatus('R12', 'S', { trained: true, timeframe: '1m' }, '1m');
+    setCachedModelStatus(`R${STATUS_CACHE_MAX}`, 'S', { trained: true, timeframe: '1m' }, '1m');
     expect(getCachedModelStatus('R0', 'S', '1m')?.trained).toBe(true);
     expect(getCachedModelStatus('R1', 'S', '1m')).toBeNull();
   });

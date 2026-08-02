@@ -382,8 +382,11 @@ def _evaluate_oos_transformer_torch(
             return str(reverse_map[cls_idx])
         return str(reverse_map.get(str(cls_idx), "NONE"))
 
+    from app.services.bots.ml_feature_engineering import EVAL_FEATURE_LOOKBACK
+
     threshold = float(bundle.get("min_confidence") or config.get("min_confidence") or 0.55)
-    feature_lb = 20
+    feature_lb = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     max_bars = int(config.get("triple_barrier_max_bars", 30))
     labels = label_triple_barrier(
         test_candles,
@@ -405,7 +408,7 @@ def _evaluate_oos_transformer_torch(
     )
 
     with torch.no_grad():
-        for i in range(lookback + feature_lb, len(test_candles)):
+        for i in range(lookback + feature_warmup, len(test_candles)):
             if i % stride != 0:
                 continue
             x = feat_matrix[i - lookback + 1 : i + 1].astype(np.float32, copy=True)
@@ -439,7 +442,10 @@ def _evaluate_oos_transformer_torch(
 
 def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dict[str, Any]:
     """Vectorized OOS accuracy for ML_SIGNAL_BOOST using the on-disk model."""
-    from app.services.bots.ml_feature_engineering import bar_to_signal_features
+    from app.services.bots.ml_feature_engineering import (
+        EVAL_FEATURE_LOOKBACK,
+        bar_to_signal_features,
+    )
     from app.services.bots.strategies_ml import get_ml_signal_store
 
     symbol = str(config.get("model_symbol") or config.get("symbol") or "").upper()
@@ -448,7 +454,8 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
 
     store = get_ml_signal_store()
     threshold = float(config.get("min_confidence", 0.55))
-    lookback_size = 20
+    feature_lookback = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
 
     tf = normalize_model_timeframe(config.get("timeframe"))
@@ -464,10 +471,10 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
 
     for i, candle in enumerate(test_candles):
-        if i < lookback_size:
+        if i < feature_warmup:
             counts["NONE"] += 1
             continue
-        lookback = test_candles[max(0, i - lookback_size):i]
+        lookback = test_candles[max(0, i - feature_lookback):i]
         features = bar_to_signal_features(candle, lookback_rows=lookback)
         pred = store.predict(
             symbol,

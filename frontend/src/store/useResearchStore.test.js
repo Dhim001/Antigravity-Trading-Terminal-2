@@ -52,6 +52,44 @@ describe('useResearchStore openBacktestLab', () => {
   });
 });
 
+describe('backtest job slots', () => {
+  beforeEach(() => {
+    useResearchStore.setState({
+      backtestJobId: null,
+      backtestJobsById: {},
+      backtestProgress: null,
+      backtestRunning: false,
+    });
+  });
+
+  it('keeps foreign job progress out of the watched slot', () => {
+    const s = useResearchStore.getState();
+    s.setBacktestJobId('job-a');
+    s.setBacktestProgress({ pct: 30, job_id: 'job-a' });
+    s.upsertBacktestJobSlot('job-b', { progress: { pct: 90 }, status: 'running' });
+
+    const next = useResearchStore.getState();
+    expect(next.backtestProgress.pct).toBe(30);
+    expect(next.backtestJobsById['job-b'].progress.pct).toBe(90);
+  });
+
+  it('releases the watched job so the next run is adopted', () => {
+    const s = useResearchStore.getState();
+    s.setBacktestJobId('job-a');
+    expect(useResearchStore.getState().backtestJobId).toBe('job-a');
+
+    s.beginBacktestRun();
+    expect(useResearchStore.getState().backtestJobId).toBeNull();
+
+    // The new run's first progress message claims the slot.
+    s.setBacktestJobId('job-b');
+    s.setBacktestProgress({ pct: 5, job_id: 'job-b' });
+    const next = useResearchStore.getState();
+    expect(next.backtestJobId).toBe('job-b');
+    expect(next.backtestProgress.pct).toBe(5);
+  });
+});
+
 describe('invalidateMlBacktests', () => {
   beforeEach(() => {
     useResearchStore.setState({

@@ -189,8 +189,32 @@ EXEC_CAL_MIN_SAMPLES = int(os.environ.get("EXEC_CAL_MIN_SAMPLES", "10"))
 EXEC_CAL_SAFETY_FACTOR = float(os.environ.get("EXEC_CAL_SAFETY_FACTOR", "1.25"))
 EXEC_CAL_MIN_BPS = float(os.environ.get("EXEC_CAL_MIN_BPS", "0.5"))
 EXEC_CAL_MAX_BPS = float(os.environ.get("EXEC_CAL_MAX_BPS", "200"))
-# Parallel symbol/sweep workers (memory-bound — default 4).
-BACKTEST_PARALLEL_WORKERS = int(os.environ.get("BACKTEST_PARALLEL_WORKERS", "4"))
+# Parallel symbol/sweep workers. Default tracks CPU count (capped) — each worker
+# holds a DF / model copy so raise carefully on low-RAM hosts.
+_bt_cpu = os.cpu_count() or 4
+_bt_workers_default = str(min(max(2, _bt_cpu), 8))
+BACKTEST_PARALLEL_WORKERS = int(os.environ.get("BACKTEST_PARALLEL_WORKERS", _bt_workers_default))
+# Hard safety cap for parallel_worker_count (ProcessPool may use up to this).
+BACKTEST_PARALLEL_MAX = int(os.environ.get("BACKTEST_PARALLEL_MAX", "16"))
+# auto (default) | thread | process — ``auto`` uses ProcessPool for GIL-bound
+# ML sweeps when CUDA EP is not loaded in-process; otherwise threads (spawn +
+# CUDA is fragile). Falls back to threads on spawn errors.
+BACKTEST_PARALLEL_BACKEND = os.environ.get("BACKTEST_PARALLEL_BACKEND", "auto").strip().lower()
+# Backtest-only batched ML inference (sklearn/ONNX chunks). Live bots unchanged.
+BACKTEST_BATCH_INFERENCE = os.environ.get("BACKTEST_BATCH_INFERENCE", "true").lower() in (
+    "1", "true", "yes",
+)
+BACKTEST_INFERENCE_BATCH_SIZE = int(os.environ.get("BACKTEST_INFERENCE_BATCH_SIZE", "512"))
+# Columnar NumPy ML feature matrix for research/backtest (live evaluate stays per-bar).
+BACKTEST_VECTORIZED_FEATURES = os.environ.get("BACKTEST_VECTORIZED_FEATURES", "true").lower() in (
+    "1", "true", "yes",
+)
+# Research backtests only: auto (prefer CUDA EP) | cpu | cuda — live deploy stays CPU ONNX.
+BACKTEST_INFERENCE_DEVICE = os.environ.get("BACKTEST_INFERENCE_DEVICE", "auto").strip().lower()
+# ORT SessionOptions thread caps (empty = library default). Helps single-run matmul.
+# When using ProcessPool, prefer workers × ORT_INTRA_OP_THREADS ≈ cpu_count.
+ORT_INTRA_OP_THREADS = os.environ.get("ORT_INTRA_OP_THREADS", "").strip()
+ORT_INTER_OP_THREADS = os.environ.get("ORT_INTER_OP_THREADS", "").strip()
 # Run portfolio / sweep / WF / reasoning in a background asyncio task.
 BACKTEST_DEFER_HEAVY = os.environ.get("BACKTEST_DEFER_HEAVY", "true").lower() in ("1", "true", "yes")
 # Always queue sweep / walk-forward optimization (never inline on WS handler).

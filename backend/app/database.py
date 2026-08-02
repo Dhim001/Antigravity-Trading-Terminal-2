@@ -428,6 +428,28 @@ def init_db():
     )
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ml_jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            progress_json TEXT,
+            result_json TEXT,
+            error TEXT,
+            progress_path TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at_epoch REAL,
+            finished_at_epoch REAL
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ml_jobs_status ON ml_jobs (status, created_at DESC)"
+    )
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS ml_train_runs (
             id TEXT PRIMARY KEY,
             kind TEXT NOT NULL,

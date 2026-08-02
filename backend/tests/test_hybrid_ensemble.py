@@ -123,7 +123,7 @@ class TestDeployGateEnsemble:
 
         results = {"total_pnl": 100, "trade_count": 20, "summary": {"total_pnl": 100, "total_trades": 20}}
 
-        def age(strategy, symbol):
+        def age(strategy, symbol, timeframe=None):
             return None
 
         with patch("app.services.bots.ml_retrain_scheduler.get_model_age_hours", side_effect=age), \

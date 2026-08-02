@@ -1,0 +1,339 @@
+/* ═══════════════════════════════════════════════════════════════════
+   RESET & BASE
+═══════════════════════════════════════════════════════════════════ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  accent-color: var(--color-accent);
+  caret-color: var(--color-accent);
+}
+
+/* Text caret selection — must contrast with light and dark surfaces */
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
+
+::-moz-selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SCROLLBARS
+═══════════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --scrollbar-thumb: rgba(15, 23, 42, 0.45);
+    --scrollbar-thumb-hover: rgba(15, 23, 42, 0.62);
+  }
+  .dark {
+    --scrollbar-thumb: rgba(255, 255, 255, 0.38);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.55);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   LAYOUT & ICON UTILITIES
+═══════════════════════════════════════════════════════════════════ */
+
+/** Default icon + label row — use on headers, tabs, badges */
+.icon-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--icon-gap);
+}
+
+.icon-label-tight {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--icon-gap-tight);
+}
+
+.icon-label-loose {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--icon-gap-loose);
+}
+
+/** Scrollable panel — vertical + horizontal when needed */
+.scroll-panel {
+  min-height: 0;
+  flex: 1 1 0%;
+  overflow: auto;
+  padding: var(--scroll-pad);
+  scrollbar-gutter: stable;
+}
+
+/** Scrollable panel — vertical only */
+.scroll-panel-y {
+  min-height: 0;
+  flex: 1 1 0%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--scroll-pad);
+  scrollbar-gutter: stable;
+}
+
+.scroll-panel-y-0 {
+  padding: 0;
+}
+
+/** Scrollable panel — horizontal only (tab bars, toolbars) */
+.scroll-panel-x {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+}
+
+/** Hide scrollbar visually but keep scroll (mouse wheel / touch) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/** Fade hint at scroll edges — add to wrapper with position:relative */
+.scroll-fade-x {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--scroll-pad),
+    #000 calc(100% - var(--scroll-pad)),
+    transparent
+  );
+}
+
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   DATA TABLE (Phase C — shadcn Table + terminal primitive)
+═══════════════════════════════════════════════════════════════════ */
+.data-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-2xs);
+}
+
+.data-table__th,
+.data-table__td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-table__td {
+  padding-block: var(--sp-2);
+  padding-inline: var(--sp-1);
+}
+
+.data-table:not(.data-table--watchlist) tbody tr:hover td,
+.data-table--dock tbody tr.data-table-row--dock:hover td {
+  background: var(--surface-hover);
+}
+
+/* Watchlist rows — single hover path on cells; preserve active tint */
+.data-table--watchlist thead .data-table__th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--background) 95%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist:hover td {
+  background: var(--surface-hover);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"] td {
+  background: color-mix(in oklab, var(--primary) 16%, transparent);
+}
+
+.data-table--watchlist tbody tr.data-table-row--watchlist[aria-selected="true"]:hover td {
+  background: color-mix(in oklab, var(--primary) 22%, transparent);
+}
+
+.data-table-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28px;
+}
+
+.data-table-section-row__label {
+  position: sticky;
+  top: var(--watchlist-sticky-header-h);
+  z-index: 1;
+  padding: var(--sp-1) var(--sp-2);
+  text-align: left;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--background) 92%, var(--muted));
+  border-block: 1px solid var(--border);
+}
+
+.data-table-section-row__count {
+  margin-left: var(--sp-2);
+  font-weight: 500;
+  opacity: 0.7;
+}
+
+.dashboard-container[data-density="comfortable"] .data-table__td {
+  padding-block: var(--sp-3);
+  font-size: var(--fs-xs);
+}
+
+.dashboard-container[data-density="comfortable"] .data-table__th {
+  padding-block: var(--sp-3);
+  font-size: var(--fs-xs);
+}
+
+.bottom-dock .terminal-table tbody tr.data-table-row-deferred,
+.bottom-dock .data-table--dock tbody tr.data-table-row-deferred {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 32px;
+}
+
+/* Legacy watchlist alias — shares data-table watchlist variant */
+.data-table--watchlist.watchlist-table th,
+.data-table--watchlist.watchlist-table td,
+.watchlist-table th,
+.watchlist-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TABLES
+═══════════════════════════════════════════════════════════════════ */
+.terminal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.terminal-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 8px var(--sp-4);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--surface-2);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.terminal-table td {
+  padding: 8px var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+/* Dock tables — tighter rhythm than full-page tables */
+.bottom-dock .terminal-table th {
+  padding: 6px var(--sp-3);
+}
+
+.bottom-dock .terminal-table td {
+  padding: 6px var(--sp-3);
+}
+
+.bottom-dock[data-compact] .terminal-table th,
+.bottom-dock[data-compact] .terminal-table td {
+  padding-block: 4px;
+  padding-inline: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.bottom-dock[data-compact] .terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table th:nth-child(9),
+.bottom-dock[data-compact] .terminal-table.algo-bots-table,
+.data-table--dock.algo-bots-table td:nth-child(9) {
+  padding-inline: var(--sp-1);
+}
+
+.terminal-table tr:hover > td {
+  background: var(--surface-hover);
+}
+
+.terminal-table tr.row-active > td {
+  background: color-mix(in oklab, var(--primary) 8%, transparent);
+}
+
+.terminal-table th.text-right,
+.terminal-table td.text-right {
+  text-align: right;
+}
+
+.terminal-table th.text-center,
+.terminal-table td.text-center {
+  text-align: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   UTILITY CLASSES
+═══════════════════════════════════════════════════════════════════ */
+.num-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+.text-muted  { color: var(--text-muted); }
+.text-accent { color: var(--color-accent-light); }
+
+/* Spacing helpers — pair with icon-label in JSX */
+.gap-icon       { gap: var(--icon-gap); }
+.gap-icon-tight { gap: var(--icon-gap-tight); }
+.gap-icon-loose { gap: var(--icon-gap-loose); }
+
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   RSI ZONE HELPERS
+═══════════════════════════════════════════════════════════════════ */
+.rsi-overbought { color: var(--color-down); }
+.rsi-oversold   { color: var(--color-up);   }
+.rsi-neutral    { color: #fbbf24; }
+

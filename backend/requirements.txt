@@ -38,6 +38,8 @@ pywebpush>=2.0.0
 ib_async>=2.0.0
 # Meta-label classifier (HistGradientBoosting)
 scikit-learn>=1.3.0
+# JIT kernels for ML backtest feature matrices (optional; falls back to NumPy)
+numba>=0.59.0
 # Bayesian parameter search (optimizer Tier 2)
 # Bayesian parameter search (optimizer Tier 2)
 optuna>=3.6.0

@@ -1,0 +1,260 @@
+/* ═══════════════════════════════════════════════════════════════════
+   BACKTEST LAB (right resizable sheet — matches Automation Studio)
+═══════════════════════════════════════════════════════════════════ */
+.backtest-lab {
+  border-left: 1px solid var(--border-color);
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.32);
+}
+
+.backtest-lab--resizing {
+  transition: none !important;
+  user-select: none;
+}
+
+/* ═ Shared resize handle — all 3 sheet panels use identical styles ──────── */
+/* Audit fix: 3 identical ×20-line blocks collapsed into one combined selector */
+.automation-studio__resize,
+.insights-hub__resize,
+.backtest-lab__resize {
+  position: absolute;
+  top: 0;
+  left: -6px;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  width: 10px;
+  align-items: center;
+  justify-content: center;
+  cursor: ew-resize;
+  background: transparent;
+  touch-action: none;
+  transition: background 0.15s ease;
+}
+
+.automation-studio__resize:hover, .automation-studio__resize.dragging,
+.insights-hub__resize:hover,      .insights-hub__resize.dragging,
+.backtest-lab__resize:hover,      .backtest-lab__resize.dragging {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in oklab, var(--primary) 38%, transparent),
+    transparent
+  );
+}
+
+.automation-studio__resize-grip,
+.insights-hub__resize-grip,
+.backtest-lab__resize-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklab, var(--border-color) 90%, transparent);
+  background: color-mix(in oklab, var(--background) 88%, var(--muted));
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.automation-studio__resize:hover .automation-studio__resize-grip,
+.automation-studio__resize.dragging .automation-studio__resize-grip,
+.insights-hub__resize:hover .insights-hub__resize-grip,
+.insights-hub__resize.dragging .insights-hub__resize-grip,
+.backtest-lab__resize:hover .backtest-lab__resize-grip,
+.backtest-lab__resize.dragging .backtest-lab__resize-grip {
+  opacity: 1;
+  color: var(--color-accent-light);
+  border-color: color-mix(in oklab, var(--primary) 42%, var(--border-color));
+}
+
+.backtest-lab [data-slot="sheet-close"] {
+  top: 0.85rem;
+  right: 0.85rem;
+  z-index: 2;
+  color: var(--text-muted);
+}
+
+.backtest-lab [data-slot="sheet-header"].backtest-lab__header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 1.15rem 3.25rem 0.95rem 1.15rem !important;
+}
+
+.backtest-lab__header-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.backtest-lab__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--fs-base) !important;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.backtest-lab__title svg {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-up);
+}
+
+.backtest-lab__description {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.backtest-lab__header-tools {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.05rem;
+}
+
+.backtest-lab__expand-btn {
+  color: var(--text-muted);
+}
+
+.backtest-lab__expand-btn:hover {
+  color: var(--text-primary);
+}
+
+.backtest-lab--fullscreen {
+  width: 100vw !important;
+  min-width: 100vw !important;
+  max-width: 100vw !important;
+  border-left: none;
+}
+
+.backtest-lab--fullscreen .backtest-lab__resize {
+  display: none;
+}
+
+.algo-backtest-lab__section--advisor {
+  margin-top: 0;
+}
+
+.strategy-advisor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.strategy-advisor--compact {
+  gap: 0.5rem;
+}
+
+.strategy-advisor__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+}
+
+.strategy-advisor__title {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.strategy-advisor__subtitle {
+  margin: 0.15rem 0 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.strategy-advisor__setup,
+.strategy-advisor__results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.strategy-advisor__rationale {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.strategy-advisor__tables {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  container-type: inline-size;
+  container-name: strategy-advisor;
+}
+
+@container strategy-advisor (min-width: 520px) {
+  .strategy-advisor__tables--split {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: start;
+  }
+}
+
+.strategy-advisor__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.strategy-advisor__panel-title {
+  position: static;
+  padding: 0 0.1rem;
+  border-bottom: none;
+  background: transparent;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.strategy-advisor__hint,
+.strategy-advisor__warnings,
+.strategy-advisor__empty {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.strategy-advisor__table {
+  width: 100%;
+  min-width: 100%;
+}
+
+.algo-backtest-table-scroll--advisor-params,
+.algo-backtest-table-scroll--advisor-compare {
+  max-height: min(14rem, 38vh);
+}
+
+.strategy-advisor__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Automation Studio / pipeline / batch / health → styles/components/pipeline.css */
+

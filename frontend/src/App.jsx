@@ -57,20 +57,40 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 
+import { useShallow } from 'zustand/react/shallow';
+
 export default function App() {
-  const connectionStatus = useStore(state => state.connectionStatus);
-  const apiStatus          = useStore(state => state.apiStatus);
-  const viewMode         = useStore(state => state.viewMode);
-  const setViewMode      = useStore(state => state.setViewMode);
-  const isLive           = useStore(state => state.isLive);
-  const terminalMode     = useStore(state => state.terminalMode);
-  const isBotRunning     = useStore(state => state.isBotRunning);
-  const selectedBotId    = useStore(state => state.selectedBotId);
-  const botDrawerOpen    = useStore(state => state.botDrawerOpen);
-  const setBotDrawerOpen = useStore(state => state.setBotDrawerOpen);
-  const distributed      = useStore(state => state.distributed);
-  const workerAlive      = useStore(state => state.workerAlive);
-  const workerHeartbeatAge = useStore(state => state.workerHeartbeatAge);
+  const {
+    connectionStatus,
+    apiStatus,
+    viewMode,
+    setViewMode,
+    isLive,
+    terminalMode,
+    isBotRunning,
+    selectedBotId,
+    botDrawerOpen,
+    setBotDrawerOpen,
+    distributed,
+    workerAlive,
+    workerHeartbeatAge,
+  } = useStore(
+    useShallow((state) => ({
+      connectionStatus: state.connectionStatus,
+      apiStatus: state.apiStatus,
+      viewMode: state.viewMode,
+      setViewMode: state.setViewMode,
+      isLive: state.isLive,
+      terminalMode: state.terminalMode,
+      isBotRunning: state.isBotRunning,
+      selectedBotId: state.selectedBotId,
+      botDrawerOpen: state.botDrawerOpen,
+      setBotDrawerOpen: state.setBotDrawerOpen,
+      distributed: state.distributed,
+      workerAlive: state.workerAlive,
+      workerHeartbeatAge: state.workerHeartbeatAge,
+    })),
+  );
   const workspace = useSettingsStore(state => state.settings.workspace);
   const updateWorkspace = useSettingsStore(state => state.updateWorkspace);
   const setSettingsOpen = useSettingsStore(state => state.setPanelOpen);

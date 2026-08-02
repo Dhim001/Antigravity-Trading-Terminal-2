@@ -3,6 +3,9 @@
 Training prefers CUDA when available; live inference stays on CPU ONNX
 (``CPUExecutionProvider``) so deploy remains portable without ``onnxruntime-gpu``.
 
+Research/backtest ONNX can opt into CUDA via ``BACKTEST_INFERENCE_DEVICE=cuda``
+or config ``backtest_use_gpu=true`` (see ``ml_onnx_runtime``).
+
 Env overrides:
   ``ML_TRAIN_DEVICE=cpu|cuda|cuda:0`` — force a device
   config ``force_cpu=true`` — per-job override (validate / CI)

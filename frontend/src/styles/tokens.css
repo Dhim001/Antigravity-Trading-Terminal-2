@@ -1,0 +1,324 @@
+/* ═══════════════════════════════════════════════════════════════════
+   DESIGN SYSTEM TOKENS
+═══════════════════════════════════════════════════════════════════ */
+:root {
+  /* Surface palette — light (default) */
+  --bg-primary:   #f1f5f9;
+  --bg-secondary: #e2e8f0;
+  --bg-tertiary:  #f8fafc;
+  --bg-card:      #ffffff;
+  --bg-elevated:  #f8fafc;
+  /* Hover / press — must read clearly on card & list surfaces */
+  --bg-hover:     rgba(15, 23, 42, 0.08);
+  --bg-active:    rgba(37, 99, 235, 0.14);
+
+  /* Borders */
+  --border-subtle: rgba(15,23,42,0.04);
+  --border-color:  rgba(15,23,42,0.10);
+  --border-strong: rgba(15,23,42,0.16);
+  --border-focus:  #3b82f6;
+
+  /* Text */
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
+  --text-muted:     #64748b;
+  --text-disabled:  #94a3b8;
+
+  /* Trading colors */
+  --color-up:       #10b981;
+  --color-down:     #ef4444;
+  --color-up-bg:    rgba(16,185,129,0.12);
+  --color-down-bg:  rgba(239,68,68,0.12);
+  --color-up-dim:   rgba(16,185,129,0.06);
+  --color-down-dim: rgba(239,68,68,0.06);
+
+  /* Accent */
+  --color-accent:       #2563eb;
+  --color-accent-light: #3b82f6;
+  --color-accent-bg:    rgba(37,99,235,0.14);
+
+  /* Asset category colors */
+  --color-crypto: #f59e0b;
+  --color-equity: #3b82f6;
+  --color-etf:    #8b5cf6;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Font size scale — minimum 0.72rem for readable UI chrome */
+  --fs-2xs:  0.72rem;
+  --fs-xs:   0.8125rem;
+  --fs-sm:   0.875rem;
+  --fs-base: 0.9375rem;
+  --fs-md:   1rem;
+  --fs-lg:   1.125rem;
+  --fs-xl:   1.25rem;
+  --fs-2xl:  1.5rem;
+
+  /* Spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* Icon + label gaps (semantic spacing tier) */
+  --icon-gap-tight: 4px;
+  --icon-gap:       6px;
+  --icon-gap-loose: 8px;
+
+  /* Scroll region inner padding */
+  --scroll-pad: 8px;
+
+  /* Scrollbar sizing */
+  --scrollbar-size: 6px;
+
+  /* Border radius */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-full: 9999px;
+
+  /* Layout dimensions */
+  --header-h:  52px;
+  --command-h: 40px;
+  --strip-h:   34px;
+  --sidebar-w: 320px;
+  --panel-w:   316px;
+  --dock-h:    320px;
+  --dock-min:  200px;
+
+  /* Surface elevation (UX-8) — light defaults; dark overrides in .dark */
+  --surface-0: var(--bg-primary);
+  --surface-1: var(--bg-secondary);
+  --surface-2: var(--bg-tertiary);
+  --surface-3: var(--bg-card);
+
+  /* Theme-aware scrollbars */
+  --scrollbar-thumb: rgba(15, 23, 42, 0.22);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.38);
+
+  /* Effects */
+  --shadow-sm:   0 2px 8px rgba(15,23,42,0.08);
+  --shadow-md:   0 8px 24px rgba(15,23,42,0.10);
+  --shadow-lg:   0 16px 48px rgba(15,23,42,0.14);
+  --glass:       blur(14px);
+  --transition:  all 0.15s ease;
+
+  /* Compact terminal control sizing */
+  --control-h:        28px;
+  --btn-h-xs:         24px;
+  --btn-h-sm:         var(--control-h);
+  --btn-h-md:         32px;
+  --btn-pad-x-xs:     8px;
+  --btn-pad-x-sm:     10px;
+  --btn-pad-x-md:     12px;
+  --cluster-pad:      var(--sp-1);
+  --cluster-gap:      var(--sp-2);
+  --toolbar-pad-inline: var(--sp-3);
+  --toolbar-pad-block:  var(--sp-1);
+  --widget-header-h:  36px;
+  --panel-header-h:   32px;
+  --dock-tab-h:       var(--widget-header-h);
+
+  /* Stacking order — sheets < dialogs < popovers < tour */
+  --z-dock-chrome:    90;
+  --z-header:         100;
+  --z-sheet-overlay:  140;
+  --z-sheet:          150;
+  --z-sheet-nested:   160;
+  --z-sheet-bottom:   155;
+  --z-dialog:         170;
+  --z-popover:        180;
+  --z-tour-spotlight: 190;
+  --z-tour-dialog:    200;
+
+  /* shadcn tokens — light */
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-card);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--color-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg-elevated);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-secondary);
+  --muted-foreground: var(--text-secondary);
+  /* Menu / select / command highlight — primary tint, not elevated (was invisible on cards) */
+  --accent: var(--color-accent-bg);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--color-down);
+  --border: var(--border-color);
+  --input: var(--border-color);
+  --ring: var(--color-accent-light);
+  --radius: var(--r-md);
+  /* Token bridge — prefer shadcn semantic tokens in new table/UI code */
+  --surface-hover: color-mix(in oklab, var(--color-accent) 12%, transparent);
+  --watchlist-sticky-header-h: 1.875rem;
+
+  /* Text selection + native control accents */
+  --selection-bg: color-mix(in oklab, var(--color-accent) 32%, transparent);
+  --selection-fg: var(--text-primary);
+
+  /* ─── Audit fixes: missing / unified tokens ────────────────────── */
+  /* --color-primary was undefined → every active-tab glow & badge was transparent */
+  --color-primary:      var(--color-accent);
+  --color-warn:         #f59e0b;   /* amber warning surface */
+  --color-trading-warn: #d97706;   /* slightly darker for legible text */
+  --radius-sm:          var(--r-sm); /* bridge the --r-* and --radius-* naming families */
+}
+
+
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --color-trading-up: var(--color-up);
+  --color-trading-down: var(--color-down);
+  --color-trading-up-muted: var(--color-up-bg);
+  --color-trading-down-muted: var(--color-down-bg);
+  --color-trading-warn: var(--color-crypto);
+  --color-trading-accent: var(--color-accent-light);
+  --color-sidebar-ring:   var(--sidebar-ring);
+  --color-sidebar-border:   var(--sidebar-border);
+  --color-sidebar-accent-foreground:   var(--sidebar-accent-foreground);
+  --color-sidebar-accent:   var(--sidebar-accent);
+  --color-sidebar-primary-foreground:   var(--sidebar-primary-foreground);
+  --color-sidebar-primary:   var(--sidebar-primary);
+  --color-sidebar-foreground:   var(--sidebar-foreground);
+  --color-sidebar:   var(--sidebar);
+  --color-chart-5:   var(--chart-5);
+  --color-chart-4:   var(--chart-4);
+  --color-chart-3:   var(--chart-3);
+  --color-chart-2:   var(--chart-2);
+  --color-chart-1:   var(--chart-1);
+  --color-ring:   var(--ring);
+  --color-input:   var(--input);
+  --color-border:   var(--border);
+  --color-destructive:   var(--destructive);
+  --color-accent-foreground:   var(--accent-foreground);
+  --color-accent:   var(--accent);
+  --color-muted-foreground:   var(--muted-foreground);
+  --color-muted:   var(--muted);
+  --color-secondary-foreground:   var(--secondary-foreground);
+  --color-secondary:   var(--secondary);
+  --color-primary-foreground:   var(--primary-foreground);
+  --color-primary:   var(--primary);
+  --color-popover-foreground:   var(--popover-foreground);
+  --color-popover:   var(--popover);
+  --color-card-foreground:   var(--card-foreground);
+  --color-card:   var(--card);
+  --color-foreground:   var(--foreground);
+  --color-background:   var(--background);
+  --radius-sm:   calc(var(--radius) * 0.6);
+  --radius-md:   calc(var(--radius) * 0.8);
+  --radius-lg:   var(--radius);
+  --radius-xl:   calc(var(--radius) * 1.4);
+  --radius-2xl:   calc(var(--radius) * 1.8);
+  --radius-3xl:   calc(var(--radius) * 2.2);
+  --radius-4xl:   calc(var(--radius) * 2.6);
+}
+
+.dark {
+  /* Surface palette — dark navy spectrum */
+  --bg-primary:   #070b14;
+  --bg-secondary: #0a0f1e;
+  --bg-tertiary:  #0f1629;
+  --bg-card:      #111827;
+  --bg-elevated:  #1a2744;
+  --bg-hover:     rgba(255, 255, 255, 0.10);
+  --bg-active:    rgba(59, 130, 246, 0.22);
+  --color-accent-bg: rgba(59, 130, 246, 0.22);
+
+  --border-subtle: rgba(255,255,255,0.06);
+  --border-color:  rgba(255,255,255,0.10);
+  --border-strong: rgba(255,255,255,0.16);
+
+  --text-primary:   #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted:     #94a3b8;
+  --text-disabled:  #64748b;
+
+  /* Surface elevation — dark */
+  --surface-0: #060a12;
+  --surface-1: rgba(8, 12, 22, 0.98);
+  --surface-2: rgba(10, 15, 30, 0.97);
+  --surface-3: rgba(14, 20, 36, 0.99);
+
+  /* Theme-aware scrollbars — dark */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+
+  --shadow-sm:   0 2px 8px rgba(0,0,0,0.3);
+  --shadow-md:   0 8px 24px rgba(0,0,0,0.4);
+  --shadow-lg:   0 16px 48px rgba(0,0,0,0.55);
+
+  /* shadcn tokens ← legacy terminal palette */
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-card);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--color-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--bg-elevated);
+  --secondary-foreground: var(--text-primary);
+  /* Distinct from card/background so hover:bg-muted/* is visible */
+  --muted: #1a2338;
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--color-accent-bg);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--color-down);
+  --border: var(--border-color);
+  --input: var(--border-color);
+  --ring: var(--color-accent-light);
+  --radius: var(--r-md);
+  --surface-hover: color-mix(in oklab, var(--color-accent) 18%, transparent);
+  --selection-bg: color-mix(in oklab, var(--color-accent) 42%, transparent);
+  --selection-fg: #f8fafc;
+  --chart-1: var(--color-up);
+  --chart-2: var(--color-accent-light);
+  --chart-3: var(--color-crypto);
+  --chart-4: var(--color-etf);
+  --chart-5: var(--color-down);
+  --sidebar: var(--bg-secondary);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--color-accent);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--color-accent-bg);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border-color);
+  --sidebar-ring: var(--color-accent-light);
+}
+
+:root .terminal-header {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(241, 245, 249, 0.98) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.dark .terminal-header {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.035) 0%,
+    rgba(10, 15, 30, 0.97) 22%,
+    rgba(7, 11, 20, 0.99) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 10px 28px rgba(0, 0, 0, 0.22);
+}
+

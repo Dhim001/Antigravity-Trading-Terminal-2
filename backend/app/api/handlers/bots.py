@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from functools import partial
 
 from app.api.context import RequestContext
@@ -188,7 +189,7 @@ async def _maybe_defer_backtest(ctx: RequestContext, req: dict) -> bool:
     client_key = str(id(ctx.websocket)) if ctx.websocket is not None else None
     job_req = {**req, "tier": tier, "estimated_sec": tier_meta.get("estimated_sec")}
     job_id = create_backtest_job(job_req, status="pending", client_key=client_key)
-    start_job(ctx.websocket, job_id)
+    start_job(ctx.websocket, job_id, deferred=True)
     progress = {
         "pct": 0,
         "phase": "queued",
@@ -292,6 +293,9 @@ async def _execute_backtest(
         "auto_deploy_skip_existing": auto_deploy_skip_existing,
     }
     client_key = str(id(ctx.websocket)) if ctx.websocket is not None else None
+    # A job_id supplied by the caller means the deferred path (or restart worker)
+    # already queued this run — it must survive a client disconnect.
+    deferred_run = bool(job_id)
     if not job_id:
         job_id = create_backtest_job(
             request_payload,
@@ -301,12 +305,17 @@ async def _execute_backtest(
     else:
         start_job_execution(job_id)
 
-    job = start_job(ctx.websocket, job_id)
+    job = start_job(ctx.websocket, job_id, deferred=deferred_run)
     progress_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
     drain_task = asyncio.create_task(_drain_backtest_progress(ctx, progress_queue))
 
     def enqueue_progress(data: dict) -> None:
-        payload = {**data, "job_id": job_id}
+        payload = {
+            **data,
+            "job_id": job_id,
+            "symbol": symbol,
+            "strategy": strategy,
+        }
         update_job_progress(job_id, payload)
         try:
             progress_queue.put_nowait(payload)
@@ -1182,23 +1191,40 @@ async def _execute_backtest(
                             if trial_budget.should_stop():
                                 break
 
-                            def progress_cb(done: int, total: int, *, _run=run_idx, _runs=len(configs)) -> None:
+                            _sim_t0 = time.monotonic()
+
+                            def progress_cb(done: int, total: int, *, _run=run_idx, _runs=len(configs), _t0=_sim_t0) -> None:
+                                from app.services.bots.backtest_progress import enrich_bar_progress
+                                from app.services.bots.ml_walk_forward_validator import is_ml_strategy
+
                                 run_span = 85 / max(_runs, 1)
                                 base = 10 + _run * run_span
-                                pct = base + int((done / max(total, 1)) * run_span)
-                                enqueue_progress({
-                                    "pct": min(int(pct), 95),
-                                    "phase": "sweep" if is_sweep else "simulate",
-                                    "message": (
-                                        f"Sweep {run_idx + 1}/{len(configs)}: bar {done}/{total}…"
-                                        if is_sweep
-                                        else f"Simulating bar {done}/{total}…"
-                                    ),
-                                    "bar": done,
-                                    "bars": total,
-                                    "run": run_idx + 1,
-                                    "total_runs": len(configs),
-                                })
+                                tot = max(1, int(total or 1))
+                                d = max(0, int(done))
+                                pct = base + (d / tot) * run_span
+                                frac = d / tot
+                                if is_sweep:
+                                    phase = "sweep"
+                                    prefix = f"Sweep {run_idx + 1}/{len(configs)}"
+                                    msg = f"{prefix}: bar {d}/{tot}…"
+                                elif is_ml_strategy(str(strategy or "")) and frac < 0.12:
+                                    # Batch ML feature/precompute occupies the first ~10% of the bar span.
+                                    phase = "features"
+                                    msg = f"Building ML features… {d}/{tot}"
+                                else:
+                                    phase = "simulate"
+                                    msg = f"Running simulation… bar {d}/{tot}"
+                                payload = enrich_bar_progress(
+                                    d,
+                                    tot,
+                                    elapsed_sec=max(0.001, time.monotonic() - _t0),
+                                    phase=phase,
+                                    message=msg,
+                                    run=run_idx + 1,
+                                    total_runs=len(configs),
+                                )
+                                payload["pct"] = min(int(pct), 95)
+                                enqueue_progress(payload)
 
                             results = await asyncio.to_thread(
                                 partial(
@@ -1692,7 +1718,12 @@ async def cancel_backtest(ctx: RequestContext) -> None:
     job_id = ctx.message.get("job_id")
     if job_id:
         from app.services.bots.backtest_job_store import request_cancel_job
-        if request_cancel_job(job_id):
+        from app.services.bots.backtest_jobs import cancel_job_by_id
+
+        # Stop the in-process run too — a client may hold a stale job_id, in
+        # which case only the websocket fallback below can reach the live run.
+        token_cancelled = cancel_job_by_id(job_id)
+        if request_cancel_job(job_id) or token_cancelled:
             await send_order_result(ctx, {"status": "success", "message": "Backtest cancel requested"})
             return
     if cancel_job(ctx.websocket):

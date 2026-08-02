@@ -49,6 +49,20 @@ export function errorAffectsBacktestRun(message) {
   return !BACKTEST_UNRELATED_ERROR_PATTERNS.some((re) => re.test(msg));
 }
 
+/**
+ * The job_id the UI is currently following, or null when the previous run is
+ * already finished. A terminal slot must not keep ownership, otherwise a new
+ * run's messages are discarded as belonging to a foreign job.
+ */
+function watchedBacktestJobId() {
+  const state = useResearchStore.getState();
+  const id = state.backtestJobId;
+  if (!id) return null;
+  const status = state.backtestJobsById?.[id]?.status;
+  if (status && !['pending', 'running'].includes(status)) return null;
+  return id;
+}
+
 /** Clear running backtest UI state after error, cancel, timeout, or completion. */
 export function resetBacktestRunState(storeActions, { errorMessage = null, request = null } = {}) {
   stopBacktestJobPolling();
@@ -84,6 +98,7 @@ export function getStoreActions() {
     setBacktestRunning: r.setBacktestRunning,
     setBacktestProgress: r.setBacktestProgress,
     setBacktestJobId: r.setBacktestJobId,
+    upsertBacktestJobSlot: r.upsertBacktestJobSlot,
     setBacktestLabOpen: r.setBacktestLabOpen,
     setBacktestSnapshot: r.setBacktestSnapshot,
     setBacktestLastError: r.setBacktestLastError,
@@ -226,27 +241,53 @@ export function applyServerMessage(type, data, storeActions, meta) {
     case MessageType.SYSTEM_STATS:
       storeActions.setSystemStats(data);
       break;
-    case MessageType.BACKTEST_PROGRESS:
-      if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
+    case MessageType.BACKTEST_PROGRESS: {
+      const progressJobId = data?.job_id || null;
+      const watchedId = watchedBacktestJobId();
+      // Multi-job isolation: ignore foreign progress for the focused UI slot.
+      if (progressJobId && watchedId && progressJobId !== watchedId) {
+        storeActions.upsertBacktestJobSlot?.(progressJobId, {
+          progress: data,
+          status: data?.phase || 'running',
+        });
+        break;
+      }
+      if (progressJobId) storeActions.setBacktestJobId(progressJobId);
       storeActions.setBacktestProgress(data);
-      if (data?.phase === 'queued' && data?.job_id) {
+      if (data?.phase === 'queued' && progressJobId) {
         storeActions.setBacktestRunning(true);
         import('./endpoints').then(({ startBacktestJobPolling }) => {
-          startBacktestJobPolling(data.job_id, storeActions);
+          startBacktestJobPolling(progressJobId, storeActions);
         });
       }
       break;
+    }
     case MessageType.ML_JOB_PROGRESS:
       import('@/lib/mlTrainingSession').then(({ applyMlJobProgressMessage }) => {
         applyMlJobProgressMessage(data);
       });
       break;
-    case MessageType.BACKTEST_RESULT:
+    case MessageType.BACKTEST_RESULT: {
+      const resultJobId = data?.job_id || null;
+      const watchedId = watchedBacktestJobId();
+      if (resultJobId && watchedId && resultJobId !== watchedId) {
+        storeActions.upsertBacktestJobSlot?.(resultJobId, {
+          status: data?.status || 'completed',
+          running: false,
+        });
+        break;
+      }
       stopBacktestJobPolling();
       clearBacktestClientTimeout();
       storeActions.setBacktestRunning(false);
       storeActions.setBacktestProgress(null);
-      if (data?.job_id) storeActions.setBacktestJobId(data.job_id);
+      if (resultJobId) {
+        storeActions.setBacktestJobId(resultJobId);
+        storeActions.upsertBacktestJobSlot?.(resultJobId, {
+          status: data?.status || 'completed',
+          running: false,
+        });
+      }
       if (data?.status === 'cancelled') {
         toast.info(data?.message || 'Backtest cancelled');
         break;
@@ -320,6 +361,7 @@ export function applyServerMessage(type, data, storeActions, meta) {
         });
       }
       break;
+    }
     case MessageType.TICKS_UPDATE:
       storeActions.setTickData(data, meta);
       break;

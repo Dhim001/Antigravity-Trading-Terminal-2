@@ -19,7 +19,9 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
       : 'no TP';
   const activeSymbol = useStore((s) => s.activeSymbol);
   const botTimeframe = useStore((s) => s.botTimeframe);
+  const botExecutionMode = useStore((s) => s.botExecutionMode);
   const isMl = isMlStrategy(template.strategy);
+  const modelTf = botExecutionMode === 'TICK' ? '1m' : (botTimeframe || '1m');
 
   return (
     <button
@@ -49,7 +51,7 @@ export default function StrategyTemplateCard({ template, active, onSelect }) {
             <MlModelStatusBadge
               strategy={template.strategy}
               symbol={activeSymbol}
-              timeframe={botTimeframe || '1m'}
+              timeframe={modelTf}
               compact
               showCta={false}
             />

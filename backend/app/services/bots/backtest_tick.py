@@ -10,6 +10,7 @@ from app.services.bots.backtest_costs import (
     trade_fee,
 )
 from app.services.bots.backtest_analytics import drawdown_curve, enrich_summary
+from app.services.bots.backtest_progress import ProgressThrottle
 from app.services.bots.backtester import (
     BacktesterService,
     _check_long_sl_tp,
@@ -225,8 +226,14 @@ class TickBacktester:
         warmup_bars = min(30, len(candles_1m) // 4)
         start_bar = max(warmup_bars, 1)
         total_ticks_est = max((len(candles_1m) - start_bar) * _TICKS_PER_BAR, 1)
-        progress_stride = max(1, total_ticks_est // 40)
+        progress_stride = max(1, min(200, total_ticks_est // 100))
         sample_stride = max(1, (len(candles_1m) - start_bar) // 200)
+        progress_emit = ProgressThrottle(
+            progress_cb,
+            total=total_ticks_est,
+            stride=progress_stride,
+            min_interval_sec=2.0,
+        )
 
         for bar_idx, bar in enumerate(candles_1m[start_bar:], start=start_bar):
             if cancel_cb and cancel_cb():
@@ -254,14 +261,14 @@ class TickBacktester:
                         _close_position(ts_sec, exit_px, trigger)
 
                 if last_tick_signal_at and (time_ms - last_tick_signal_at) < cooldown_ms:
-                    if progress_cb and eval_ticks % progress_stride == 0:
-                        progress_cb(eval_ticks, total_ticks_est)
+                    if progress_cb:
+                        progress_emit(eval_ticks, total_ticks_est)
                     continue
 
                 ctx = screener.context(symbol, price, time_ms, lookback)
                 if ctx is None:
-                    if progress_cb and eval_ticks % progress_stride == 0:
-                        progress_cb(eval_ticks, total_ticks_est)
+                    if progress_cb:
+                        progress_emit(eval_ticks, total_ticks_est)
                     continue
 
                 signal_data = strategy.evaluate(ctx, price)
@@ -282,8 +289,8 @@ class TickBacktester:
                 drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity else 0
                 max_drawdown = max(max_drawdown, drawdown)
 
-                if progress_cb and eval_ticks % progress_stride == 0:
-                    progress_cb(eval_ticks, total_ticks_est)
+                if progress_cb:
+                    progress_emit(eval_ticks, total_ticks_est)
 
             if bar_idx % sample_stride == 0 or bar_idx == len(candles_1m) - 1:
                 bar_time = int(bar.get("time") or 0)
@@ -291,7 +298,7 @@ class TickBacktester:
                     equity_curve.append({"time": bar_time, "equity": round(equity, 2)})
 
         if progress_cb:
-            progress_cb(total_ticks_est, total_ticks_est)
+            progress_emit(total_ticks_est, total_ticks_est)
 
         closed = [t for t in trade_log if t.get("is_exit")]
         winning_trades = sum(1 for t in closed if (t.get("pnl") or 0) > 0)

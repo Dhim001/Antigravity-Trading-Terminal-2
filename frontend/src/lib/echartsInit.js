@@ -3,8 +3,65 @@
  * Retina (DPR 2–3) otherwise allocates 4–9× canvas pixel buffers.
  * Under memory warn/critical, force DPR 1.0 (MEMORY #26).
  */
-import * as echarts from 'echarts';
+import * as echarts from 'echarts/core';
+import {
+  BarChart,
+  LineChart,
+  CandlestickChart,
+  PieChart,
+  HeatmapChart,
+  ScatterChart,
+  CustomChart,
+  GaugeChart,
+} from 'echarts/charts';
+import {
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  DatasetComponent,
+  TransformComponent,
+  LegendComponent,
+  DataZoomComponent,
+  MarkPointComponent,
+  MarkLineComponent,
+  MarkAreaComponent,
+  ToolboxComponent,
+  VisualMapComponent,
+  CalendarComponent,
+  GraphicComponent,
+  AxisPointerComponent,
+} from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
 import { getMemoryPressureState } from '../services/memoryPressureSignals';
+
+echarts.use([
+  BarChart,
+  LineChart,
+  CandlestickChart,
+  PieChart,
+  HeatmapChart,
+  ScatterChart,
+  CustomChart,
+  GaugeChart,
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  DatasetComponent,
+  TransformComponent,
+  LegendComponent,
+  DataZoomComponent,
+  MarkPointComponent,
+  MarkLineComponent,
+  MarkAreaComponent,
+  ToolboxComponent,
+  VisualMapComponent,
+  CalendarComponent,
+  GraphicComponent,
+  AxisPointerComponent,
+  CanvasRenderer,
+]);
+
+export { echarts };
 
 let liveInstanceCount = 0;
 

@@ -8,7 +8,13 @@ import { normalizeAnalystTimeframe } from '../lib/agentInsights';
 import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 import { buildBacktestOverlay } from '../lib/backtestSlim';
 import { trimBacktestPayloadAsync } from '../lib/backtestSlimAsync';
-import { stopBacktestJobPolling, scheduleBacktestJobPoll, claimBacktestJobCompletion } from '../lib/backtestPolling';
+import {
+  stopBacktestJobPolling,
+  scheduleBacktestJobPoll,
+  claimBacktestJobCompletion,
+  backtestJobProgressFingerprint,
+  isBacktestJobProgressStalled,
+} from '../lib/backtestPolling';
 import { toast } from 'sonner';
 import { normalizeOrderCapabilities } from '../lib/positionActions';
 
@@ -62,10 +68,22 @@ export function applySessionToStore(session, storeActions) {
   if (session.history) storeActions.setTradeHistory(session.history);
   if (session.bots) storeActions.setBots(session.bots);
   if (session.strategies) storeActions.setStrategyCatalog(session.strategies);
-  if (session.metrics) storeActions.setSystemStats(session.metrics);
+  if (session.metrics || session.ml_queue) {
+    const q = session.ml_queue || {};
+    storeActions.setSystemStats({
+      ...(session.metrics || {}),
+      ml_jobs_active: q.active ?? session.metrics?.ml_jobs_active ?? 0,
+      ml_jobs_queued: q.queued ?? session.metrics?.ml_jobs_queued ?? 0,
+    });
+  }
   const job = session.active_backtest_job;
   if (job && ['pending', 'running'].includes(job.status)) {
     watchBacktestJob(job.id, storeActions, { progress: job.progress });
+  }
+  if (session.active_ml_jobs?.length) {
+    import('../lib/mlTrainingSession').then(({ resumeActiveMlJobs }) => {
+      resumeActiveMlJobs(session.active_ml_jobs);
+    }).catch(() => {});
   }
 }
 
@@ -347,8 +365,18 @@ export async function fetchActiveBacktestJob() {
   return body?.job ?? null;
 }
 
-export async function fetchBacktestJob(jobId) {
-  const body = await apiRequest(`/api/v1/backtest/jobs/${encodeURIComponent(jobId)}`);
+/**
+ * @param {string} jobId
+ * @param {{ includeResults?: boolean, timeoutMs?: number }} [opts]
+ *   Polling must use ``includeResults: false`` — full results can exceed the
+ *   default 8s HTTP timeout and false-trigger the stall detector.
+ */
+export async function fetchBacktestJob(jobId, { includeResults = true, timeoutMs } = {}) {
+  const qs = includeResults ? '' : '?include_results=0';
+  const body = await apiRequest(
+    `/api/v1/backtest/jobs/${encodeURIComponent(jobId)}${qs}`,
+    { timeoutMs: timeoutMs ?? (includeResults ? 120_000 : 30_000) },
+  );
   if (!body?.ok) throw new Error(body?.error || 'Job not found');
   return body.job;
 }
@@ -670,74 +698,155 @@ export async function fetchPipelineStatus({ strategy, timeframe } = {}) {
   return body;
 }
 
-export { stopBacktestJobPolling } from '../lib/backtestPolling';
+export { stopBacktestJobPolling, backtestJobProgressFingerprint } from '../lib/backtestPolling';
 
 export function startBacktestJobPolling(jobId, storeActions) {
   stopBacktestJobPolling();
   storeActions.setBacktestJobId(jobId);
   storeActions.setBacktestRunning(true);
+  storeActions.upsertBacktestJobSlot?.(jobId, { running: true, status: 'running' });
   const pollStartedAt = Date.now();
-  const pollMaxMs = 45 * 60 * 1000;
-  const poll = () => {
-    if (Date.now() - pollStartedAt > pollMaxMs) {
-      stopBacktestJobPolling();
-      clearBacktestClientTimeout();
+  // Long ML/RL replays legitimately run for over an hour. Fail only when:
+  //  - server progress.updated_at (or fingerprint) is frozen for STALL_MS after a
+  //    successful poll, OR
+  //  - we cannot contact the job API for CONTACT_STALL_MS (backend down / GIL storm),
+  //  - or the hard poll cap elapses.
+  // Failed polls must NOT count as "no progress" — heavy feature precompute can
+  // starve the event loop briefly while the worker is still writing progress.
+  const pollMaxMs = 6 * 60 * 60 * 1000;
+  const stallMs = 15 * 60 * 1000;
+  const contactStallMs = 45 * 60 * 1000;
+  let lastAdvanceAt = Date.now();
+  let lastFingerprint = '';
+  let lastSuccessfulPollAt = Date.now();
+
+  const failStall = () => {
+    stopBacktestJobPolling();
+    clearBacktestClientTimeout();
+    storeActions.setBacktestRunning(false);
+    storeActions.setBacktestProgress(null);
+    storeActions.upsertBacktestJobSlot?.(jobId, { running: false, status: 'timeout' });
+    const msg = 'Background backtest stopped responding — check Jobs tab or retry';
+    storeActions.setBacktestLastError?.(msg, null);
+    toast.error(msg);
+  };
+
+  const applyCompletedResults = (fresh) => {
+    stopBacktestJobPolling();
+    clearBacktestClientTimeout();
+    const claimed = claimBacktestJobCompletion(jobId);
+    return trimBacktestPayloadAsync({
+      ...fresh.results,
+      run_id: fresh.run_id ?? fresh.results.run_id,
+    }).then((wire) => {
+      storeBacktestResultsAware(storeActions, wire);
       storeActions.setBacktestRunning(false);
       storeActions.setBacktestProgress(null);
-      const msg = 'Background backtest stopped responding — check Jobs tab or retry';
-      storeActions.setBacktestLastError?.(msg, null);
-      toast.error(msg);
+      storeActions.upsertBacktestJobSlot?.(jobId, { running: false, status: 'completed' });
+      storeActions.clearBacktestLastError?.();
+      const overlay = buildBacktestOverlay(wire);
+      if (overlay) storeActions.setBacktestOverlay(overlay);
+      if (!claimed) return;
+      const pnl = wire?.total_pnl;
+      const trades = wire?.trade_count ?? 0;
+      const pnlLabel = pnl != null
+        ? `${Number(pnl) >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
+        : '—';
+      const openLab = {
+        label: 'Open Lab',
+        onClick: () => useResearchStore.getState().openBacktestLab('results'),
+      };
+      if (wire?.sweep) {
+        const comboCount = wire?.sweep?.configs?.length
+          || wire?.sweep?.sweep_rows?.length
+          || '?';
+        toast.success(
+          `Sweep complete · best of ${comboCount} combos · ${pnlLabel} · ${trades} trades`,
+          { action: openLab },
+        );
+      } else {
+        toast.success(
+          `Background backtest complete · ${pnlLabel} · ${trades} trades`,
+          { action: openLab },
+        );
+      }
+    });
+  };
+
+  const poll = () => {
+    const now = Date.now();
+    if (now - pollStartedAt > pollMaxMs || now - lastSuccessfulPollAt > contactStallMs) {
+      failStall();
       return;
     }
-    fetchBacktestJob(jobId)
+    // Slim poll — never download results_json while watching progress.
+    fetchBacktestJob(jobId, { includeResults: false, timeoutMs: 30_000 })
       .then((fresh) => {
-        if (!fresh) return;
-        if (fresh.progress) storeActions.setBacktestProgress(fresh.progress);
-        if (fresh.status === 'completed' && fresh.results) {
-          stopBacktestJobPolling();
-          clearBacktestClientTimeout();
-          const claimed = claimBacktestJobCompletion(jobId);
-          return trimBacktestPayloadAsync({
-            ...fresh.results,
-            run_id: fresh.run_id ?? fresh.results.run_id,
-          }).then((wire) => {
-            storeBacktestResultsAware(storeActions, wire);
-            storeActions.setBacktestRunning(false);
-            storeActions.setBacktestProgress(null);
-            storeActions.clearBacktestLastError?.();
-            const overlay = buildBacktestOverlay(wire);
-            if (overlay) storeActions.setBacktestOverlay(overlay);
-            if (!claimed) return;
-            const pnl = wire?.total_pnl;
-            const trades = wire?.trade_count ?? 0;
-            const pnlLabel = pnl != null
-              ? `${Number(pnl) >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}`
-              : '—';
-            const openLab = {
-              label: 'Open Lab',
-              onClick: () => useResearchStore.getState().openBacktestLab('results'),
-            };
-            if (wire?.sweep) {
-              const comboCount = wire?.sweep?.configs?.length
-                || wire?.sweep?.sweep_rows?.length
-                || '?';
-              toast.success(
-                `Sweep complete · best of ${comboCount} combos · ${pnlLabel} · ${trades} trades`,
-                { action: openLab },
-              );
-            } else {
-              toast.success(
-                `Background backtest complete · ${pnlLabel} · ${trades} trades`,
-                { action: openLab },
-              );
-            }
+        if (!fresh) {
+          scheduleBacktestJobPoll(poll, 3000);
+          return;
+        }
+        lastSuccessfulPollAt = Date.now();
+
+        const fp = backtestJobProgressFingerprint(fresh);
+        if (fp !== lastFingerprint) {
+          lastFingerprint = fp;
+          lastAdvanceAt = Date.now();
+        }
+
+        if (isBacktestJobProgressStalled(fresh, {
+          nowMs: Date.now(),
+          stallMs,
+          lastFingerprint,
+          lastAdvanceAtMs: lastAdvanceAt,
+        })) {
+          failStall();
+          return;
+        }
+
+        // Drop stale polls if the user started a different watched job.
+        const watched = useResearchStore.getState().backtestJobId;
+        if (watched && watched !== jobId) {
+          storeActions.upsertBacktestJobSlot?.(jobId, {
+            progress: fresh.progress || null,
+            status: fresh.status,
           });
+          return;
+        }
+        if (fresh.progress) {
+          storeActions.setBacktestProgress({ ...fresh.progress, job_id: jobId });
+        }
+        storeActions.upsertBacktestJobSlot?.(jobId, {
+          progress: fresh.progress || null,
+          status: fresh.status,
+          running: ['pending', 'running'].includes(fresh.status),
+        });
+        if (fresh.status === 'completed') {
+          // Results were omitted from the slim poll — fetch the full payload once.
+          return fetchBacktestJob(jobId, { includeResults: true, timeoutMs: 120_000 })
+            .then((full) => {
+              if (full?.status === 'completed' && full.results) {
+                return applyCompletedResults(full);
+              }
+              // Completed but results missing — still clear running UI.
+              stopBacktestJobPolling();
+              clearBacktestClientTimeout();
+              storeActions.setBacktestRunning(false);
+              storeActions.setBacktestProgress(null);
+              storeActions.upsertBacktestJobSlot?.(jobId, { running: false, status: 'completed' });
+              toast.success('Background backtest complete');
+            })
+            .catch(() => {
+              // Keep polling briefly; completion blob can be slow under load.
+              scheduleBacktestJobPoll(poll, 3000);
+            });
         }
         if (fresh.status === 'failed' || fresh.status === 'cancelled') {
           stopBacktestJobPolling();
           clearBacktestClientTimeout();
           storeActions.setBacktestRunning(false);
           storeActions.setBacktestProgress(null);
+          storeActions.upsertBacktestJobSlot?.(jobId, { running: false, status: fresh.status });
           if (fresh.status === 'failed') {
             const msg = fresh.error || 'Background backtest failed';
             storeActions.setBacktestLastError?.(msg, fresh.request ?? null);
@@ -752,6 +861,8 @@ export function startBacktestJobPolling(jobId, storeActions) {
         }
       })
       .catch(() => {
+        // Network / 8–30s timeout during GIL-heavy precompute — retry; contact
+        // stall (above) is the safety net if the API stays unreachable.
         scheduleBacktestJobPoll(poll, 3000);
       });
   };

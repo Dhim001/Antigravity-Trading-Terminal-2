@@ -22,6 +22,7 @@ import numpy as np
 from app.config import BASE_DIR
 from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
+    EVAL_FEATURE_LOOKBACK,
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
     precompute_signal_feature_matrix,
@@ -172,7 +173,10 @@ def build_sequences(
     y : np.ndarray of shape (N,) with values in {0, 1, 2}
     """
     n = len(candles)
-    feature_lookback = 20  # for rolling features inside bar_to_signal_features
+    # Match evaluate()/batch: up to 24 priors (deque maxlen=25). Keep sequence
+    # start at lookback+20 so sample counts stay aligned with feature warmup.
+    feature_lookback = EVAL_FEATURE_LOOKBACK
+    feature_warmup = 20
     if n == 0:
         return np.array([]), np.array([])
 
@@ -202,7 +206,7 @@ def build_sequences(
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[int] = []
-    start_i = lookback + feature_lookback
+    start_i = lookback + feature_warmup
     end_i = n - max_holding_bars
     report_every = max(2_000, max(1, (end_i - start_i) // 20))
 

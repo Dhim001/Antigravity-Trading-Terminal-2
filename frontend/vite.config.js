@@ -126,5 +126,31 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy,
     },
+    build: {
+      chunkSizeWarningLimit: 1000,
+      cssCodeSplit: true,
+      sourcemap: false,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/echarts')) {
+              return 'vendor-echarts';
+            }
+            if (id.includes('node_modules/jspdf') || id.includes('node_modules/html2canvas')) {
+              return 'vendor-pdf-export';
+            }
+            if (id.includes('node_modules/flexlayout-react')) {
+              return 'vendor-flexlayout';
+            }
+            if (id.includes('node_modules/lucide-react')) {
+              return 'vendor-icons';
+            }
+            if (id.includes('node_modules/dompurify') || id.includes('node_modules/marked')) {
+              return 'vendor-markdown';
+            }
+          },
+        },
+      },
+    },
   }
 })

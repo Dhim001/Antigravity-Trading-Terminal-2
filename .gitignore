@@ -155,6 +155,8 @@ playwright/.cache/
 .playwright/
 **/.last-run.json
 *.trace.zip
+*.heapsnapshot
+*.log
 
 # ─── Cursor IDE (local debug logs, agent state; keep rules + plans) ───────────
 .cursor/*

@@ -1,7 +1,7 @@
 /**
  * AlgoPanel.jsx — Algo Bot dock tab (extracted from ResizableDock).
  */
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../../store/useStore';
 import { useResearchStore } from '../../store/useResearchStore';
@@ -68,7 +68,20 @@ import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfi
 import { isLiveMassiveMode, isPaperExecutionMode, usesNativeHtCharts } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
 import { buildDeployPayload } from '@/lib/deployGate';
+import { evaluateAndMaybeDeploy } from '@/lib/pipelineAutoGate';
+import {
+  advancePipeline,
+  completePipeline,
+  failPipeline,
+  getMlPipeline,
+  setPipelineBacktestResult,
+  setPipelineGateResult,
+  subscribeMlPipeline,
+} from '@/lib/mlPipeline';
+import { postMlLabRequest } from '@/lib/mlLabRequests';
+import { ALGO_OPEN_DEPLOY_EVENT } from '@/lib/pipelineNav';
 import DeployGatePanel from '../DeployGatePanel';
+import ActiveBotRow from './ActiveBotRow';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
 import { getCachedModelStatus } from '@/lib/mlTrainingSession';
@@ -95,163 +108,6 @@ function activityHintVariant(kind) {
   return 'outline';
 }
 
-function ActiveBotRow({
-  bot,
-  ownedPos,
-  selected,
-  agentInsights,
-  safeModeActive,
-  onSelect,
-  onPause,
-  onResume,
-  onStop,
-  onSetStopLoss,
-  onSetTakeProfit,
-}) {
-  const inPosition = ownedPos && Math.abs(ownedPos.size) > 0;
-  const { hold: riskHold, remaining } = useEffectiveRiskHold(bot.risk_hold);
-  const activity = botRuntimeActivityHint(bot, {
-    hold: riskHold,
-    remainingSec: remaining,
-    safeModeActive,
-  });
-
-  return (
-    <DataTableRow
-      rowVariant="dock"
-      deferred
-      className={cn(
-        'algo-bot-row cursor-pointer',
-        selected && 'row-active',
-        riskHold?.kind === 'cooloff' && 'algo-bot-row--cooloff',
-        riskHold?.kind === 'streak_limit' && 'algo-bot-row--streak-hold',
-        riskHold?.kind === 'drawdown' && 'algo-bot-row--drawdown-hold',
-      )}
-      onClick={() => onSelect(bot.id)}
-    >
-      <DataTableCell className="font-bold">{bot.symbol}</DataTableCell>
-      <DataTableCell className="text-xs">
-        <div className="flex flex-col items-start gap-0.5">
-          <span className="inline-flex items-center gap-1 flex-wrap">
-            <StrategyBadge strategy={bot.strategy} compact />
-            {bot.execution_mode === 'TICK' && (
-              <Badge variant="outline" className="h-4 px-1 text-[0.65rem]">TICK</Badge>
-            )}
-          </span>
-          {isMlStrategy(bot.strategy) && (
-            <MlModelStatusBadge
-              strategy={bot.strategy}
-              symbol={bot.symbol}
-              timeframe={bot.timeframe || bot.config?.timeframe || '1m'}
-              modelVersion={bot.config?.model_version}
-              compact
-            />
-          )}
-        </div>
-      </DataTableCell>
-      <DataTableCell align="center" className="text-xs num-mono text-muted-foreground">
-        {bot.execution_mode === 'TICK' ? 'tick' : formatBarTimeframeLabel(bot.timeframe)}
-      </DataTableCell>
-      <DataTableCell align="center">
-        {inPosition ? (
-          <Badge
-            variant={ownedPos.size > 0 ? 'buy' : 'sell'}
-            title={`Bot size ${Math.abs(ownedPos.size).toFixed(4)}`}
-          >
-            {ownedPos.label}
-          </Badge>
-        ) : (
-          <span className="text-secondary-foreground text-xs">FLAT</span>
-        )}
-      </DataTableCell>
-      <DataTableCell numeric align="right">${bot.allocation.toLocaleString()}</DataTableCell>
-      <DataTableCell
-        numeric
-        align="right"
-        className={cn(
-          'font-semibold',
-          (bot.daily_pnl ?? 0) >= 0 ? 'text-trading-up' : 'text-trading-down',
-        )}
-      >
-        {(bot.daily_pnl ?? 0) >= 0 ? '+' : ''}{(bot.daily_pnl ?? 0).toFixed(2)}
-      </DataTableCell>
-      <DataTableCell className="algo-last-signal">
-        <span title={bot.last_signal_at || undefined}>{formatLastSignal(bot.last_signal_at)}</span>
-        {bot.strategy === 'CHART_AGENT' && (() => {
-          const insight = selectAgentInsight(
-            agentInsights,
-            bot.symbol,
-            bot.execution_mode === 'TICK' ? '1m' : bot.timeframe,
-          );
-          return insight?.confidence != null ? (
-            <span className="ml-1 text-xs text-muted-foreground">
-              ({Math.round(insight.confidence * 100)}% conf)
-            </span>
-          ) : null;
-        })()}
-      </DataTableCell>
-      <DataTableCell align="center">
-        <div className="algo-bot-status-cell">
-          <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
-          {activity && (
-            <Badge
-              variant={activityHintVariant(activity.kind)}
-              className={cn(
-                'algo-bot-activity-hint',
-                activity.kind === 'cooling_off' && 'algo-bot-activity-hint--cooloff',
-                activity.kind === 'held' && 'algo-bot-activity-hint--held',
-                activity.kind === 'no_signal' && 'algo-bot-activity-hint--no-signal',
-              )}
-              title={activity.title || activity.label}
-            >
-              {activity.label}
-            </Badge>
-          )}
-        </div>
-      </DataTableCell>
-      <DataTableCell align="center" onClick={(e) => e.stopPropagation()}>
-        <div className="algo-bot-actions">
-          {bot.status === 'RUNNING' && (
-            <Button variant="outline" size="xs" onClick={() => onPause(bot.id)} title="Pause bot">
-              <Pause />
-            </Button>
-          )}
-          {bot.status === 'PAUSED' && (
-            <Button variant="outline" size="xs" onClick={() => onResume(bot.id)} title="Resume bot">
-              <PlayCircle />
-            </Button>
-          )}
-          {bot.status !== 'STOPPED' && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onSetStopLoss(bot)}
-              title="Set stop loss on chart"
-            >
-              SL
-            </Button>
-          )}
-          {bot.status !== 'STOPPED' && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onSetTakeProfit(bot)}
-              title="Set take profit on chart"
-            >
-              TP
-            </Button>
-          )}
-          {bot.status !== 'STOPPED' && (
-            <Button variant="destructive" size="xs" onClick={() => onStop(bot.id)} title="Stop bot">
-              STOP
-            </Button>
-          )}
-        </div>
-      </DataTableCell>
-    </DataTableRow>
-  );
-}
-
 // ── Algo Bot Tab ──────────────────────────────────────────────────
 export function AlgoTab({ hideToolbar = false }) {
   const {
@@ -265,6 +121,7 @@ export function AlgoTab({ hideToolbar = false }) {
     selectedBotId, setSelectedBotId, setBotDetail, setBotDrawerOpen,
     ambiguousOrders,
     safeMode, setSafeMode,
+    systemStats,
   } = useStore(useShallow((s) => ({
     activeBots: s.activeBots,
     botStrategy: s.botStrategy,
@@ -298,11 +155,13 @@ export function AlgoTab({ hideToolbar = false }) {
     ambiguousOrders: s.ambiguousOrders,
     safeMode: s.safeMode,
     setSafeMode: s.setSafeMode,
+    systemStats: s.systemStats,
   })));
   const {
     backtestResults, backtestRuns, backtestRunning, backtestSnapshot,
     backtestLabOpen, backtestLastError, backtestLastRequest, backtestJobId,
-    setBacktestRunning, setBacktestProgress, setBacktestSnapshot,
+    setBacktestRunning, setBacktestProgress, setBacktestSnapshot, beginBacktestRun,
+    upsertBacktestJobSlot,
     openBacktestLab, setStoreBacktestDays, setStoreBacktestOos,
     clearBacktestLastError, setBacktestLastError,
   } = useResearchStore(useShallow((s) => ({
@@ -317,6 +176,8 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestRunning: s.setBacktestRunning,
     setBacktestProgress: s.setBacktestProgress,
     setBacktestSnapshot: s.setBacktestSnapshot,
+    beginBacktestRun: s.beginBacktestRun,
+    upsertBacktestJobSlot: s.upsertBacktestJobSlot,
     openBacktestLab: s.openBacktestLab,
     setStoreBacktestDays: s.setBacktestDays,
     setStoreBacktestOos: s.setBacktestOos,
@@ -335,9 +196,19 @@ export function AlgoTab({ hideToolbar = false }) {
   const alpacaLive = terminalMode === 'LIVE_ALPACA';
   const safeModeActive = Boolean(safeMode?.active);
   const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
+  const mlPipeline = useSyncExternalStore(
+    subscribeMlPipeline,
+    getMlPipeline,
+    getMlPipeline,
+  );
+  const pipelineBtStartedRef = useRef(null);
+  /** Set only after a pipeline-kicked backtest actually enters running. */
+  const pipelineBtSawRunningRef = useRef(null);
+  const pipelineGateDoneRef = useRef(null);
   const [deployOpen, setDeployOpen] = useState(false);
   const [forceDeploy, setForceDeploy] = useState(false);
   const [deployGate, setDeployGate] = useState(null);
+  const [pipelineDeployPending, setPipelineDeployPending] = useState(null);
   const [stopAllOpen, setStopAllOpen] = useState(false);
   const [backtestDays, setBacktestDaysLocal] = useState('7');
   const [backtestOos, setBacktestOosLocal] = useState(false);
@@ -386,8 +257,21 @@ export function AlgoTab({ hideToolbar = false }) {
     sendAction(Action.ADMIN_GET_STATS, {});
   }, []);
 
+  useEffect(() => {
+    const onOpenDeploy = () => {
+      setForceDeploy(false);
+      setDeployOpen(true);
+    };
+    window.addEventListener(ALGO_OPEN_DEPLOY_EVENT, onOpenDeploy);
+    return () => window.removeEventListener(ALGO_OPEN_DEPLOY_EVENT, onOpenDeploy);
+  }, []);
+
   useEffect(() => () => {
-    clearBacktestClientTimeout();
+    // Keep the client timeout alive across Algo tab unmounts while a job runs
+    // (workspace remounts / flexlayout). Completion paths clear it explicitly.
+    if (!useResearchStore.getState().backtestRunning) {
+      clearBacktestClientTimeout();
+    }
   }, []);
 
   const handleConfirmSafeMode = useCallback(() => {
@@ -413,9 +297,13 @@ export function AlgoTab({ hideToolbar = false }) {
   const mlStrategySelected = isMlStrategy(botStrategy);
   const mlHoldoutDays = useMemo(() => {
     if (!mlStrategySelected) return 14;
-    const status = getCachedModelStatus(activeSymbol, botStrategy, botTimeframe || '1m');
+    const status = getCachedModelStatus(
+      activeSymbol,
+      botStrategy,
+      botExecutionMode === 'TICK' ? '1m' : (botTimeframe || '1m'),
+    );
     return resolveHoldoutDaysFromStatus(status, botConfig);
-  }, [mlStrategySelected, activeSymbol, botStrategy, botTimeframe, botConfig]);
+  }, [mlStrategySelected, activeSymbol, botStrategy, botTimeframe, botExecutionMode, botConfig]);
 
   useEffect(() => {
     const next = coerceBacktestDaysForStrategy(backtestDays, { isMl: mlStrategySelected });
@@ -473,6 +361,7 @@ export function AlgoTab({ hideToolbar = false }) {
       activeSymbol,
       symbolsList,
       botStrategy,
+      botTimeframe,
       setBacktestDays,
       setBacktestOos,
       setBacktestReasoning,
@@ -483,12 +372,25 @@ export function AlgoTab({ hideToolbar = false }) {
       setMetaLabelWalkForward,
       openBacktestLab,
       setOptimizerPreset: useResearchStore.getState().setOptimizerPreset,
+      onMlPipelineTrain: ({ pipelineId, strategy, symbol, timeframe, mode }) => {
+        openModelTrainingDock();
+        // Forward pipelineId so the Lab reuses the preset-started run instead
+        // of starting (and orphaning) a second one.
+        postMlLabRequest('ml-lab-run-pipeline', { pipelineId, strategy, symbol, timeframe, mode });
+      },
+      openBatchTrainDialog: () => {
+        // applyWorkflowPreset posts the ml-lab-open-batch request itself.
+        openModelTrainingDock();
+      },
     });
     if (ok) {
       setActiveWorkflowPreset(presetId);
-      const opensLabOnly = ['wf_optimize', 'wf_rigorous', 'meta_label_sweep', 'portfolio_optimize'].includes(presetId);
+      const mlPresets = ['ml_full_pipeline', 'ml_retrain_validate', 'ml_batch_train'];
+      const opensLabOnly = ['wf_optimize', 'wf_rigorous', 'meta_label_sweep', 'portfolio_optimize', ...mlPresets].includes(presetId);
       if (!opensLabOnly) {
         toast.message('Preset applied — review settings then RUN');
+      } else if (mlPresets.includes(presetId)) {
+        toast.message(presetId === 'ml_batch_train' ? 'Batch train opened' : 'ML pipeline started');
       }
     } else {
       toast.error('Preset not available for this strategy');
@@ -548,6 +450,7 @@ export function AlgoTab({ hideToolbar = false }) {
     if (request?.portfolio_symbols === undefined && portfolioBacktest) {
       setPortfolioBacktest(false);
     }
+    beginBacktestRun();
     setBacktestRunning(true);
     setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Retrying backtest…' });
     scheduleBacktestClientTimeout({
@@ -592,8 +495,15 @@ export function AlgoTab({ hideToolbar = false }) {
       simMode: backtestSimMode,
     });
 
+    beginBacktestRun();
     setBacktestRunning(true);
-    setBacktestProgress({ pct: 0, phase: 'resolve', message: 'Starting backtest…' });
+    setBacktestProgress({
+      pct: 0,
+      phase: 'resolve',
+      message: 'Starting backtest — contacting server…',
+      symbol: activeSymbol,
+      strategy: botStrategy,
+    });
     setBacktestSnapshot(snapshot);
     clearBacktestLastError();
 
@@ -604,20 +514,33 @@ export function AlgoTab({ hideToolbar = false }) {
       days,
       portfolioSymbolCount,
       onTimeout: (timeoutMs) => {
-        if (useResearchStore.getState().backtestRunning) {
-          stopBacktestJobPolling();
-          setBacktestRunning(false);
-          setBacktestProgress(null);
-          toast.error(
-            backtestTimeoutHint({
-              reasoning: backtestReasoning,
-              metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
-              strategy: botStrategy,
-              portfolioSymbolCount,
-              timeoutMs,
-            }),
-          );
+        const state = useResearchStore.getState();
+        if (!state.backtestRunning) return;
+        // A deferred job owns its own lifecycle (poller + Jobs tab). Exceeding
+        // the client estimate is not a failure — keep watching instead of
+        // dropping a run that is still making progress server-side.
+        const slot = state.backtestJobId ? state.backtestJobsById?.[state.backtestJobId] : null;
+        if (slot && ['pending', 'running'].includes(slot.status)) {
+          toast.warning('Backtest is slower than estimated — still running in the background.', {
+            action: {
+              label: 'Open Jobs',
+              onClick: () => useResearchStore.getState().openBacktestLab('jobs'),
+            },
+          });
+          return;
         }
+        stopBacktestJobPolling();
+        setBacktestRunning(false);
+        setBacktestProgress(null);
+        toast.error(
+          backtestTimeoutHint({
+            reasoning: backtestReasoning,
+            metaLabelWalkForward: botStrategy === 'CHART_AGENT' && metaLabelWalkForward,
+            strategy: botStrategy,
+            portfolioSymbolCount,
+            timeoutMs,
+          }),
+        );
       },
     });
 
@@ -633,13 +556,19 @@ export function AlgoTab({ hideToolbar = false }) {
     }
   };
 
-  const handleCancelBacktest = () => {
+  const handleCancelBacktest = async () => {
     stopBacktestJobPolling();
     clearBacktestClientTimeout();
     setBacktestRunning(false);
     setBacktestProgress(null);
     const jobId = useResearchStore.getState().backtestJobId;
-    sendAction(Action.CANCEL_BACKTEST, jobId ? { job_id: jobId } : {});
+    if (jobId) {
+      upsertBacktestJobSlot(jobId, { status: 'cancelled', running: false });
+    }
+    const { ok, error } = await sendAction(Action.CANCEL_BACKTEST, jobId ? { job_id: jobId } : {});
+    if (!ok) {
+      toast.error(error || 'Cancel request could not be delivered — the run may still be going');
+    }
   };
 
   const confirmDeploy = () => {
@@ -651,7 +580,7 @@ export function AlgoTab({ hideToolbar = false }) {
     handleCreateBot();
   };
 
-  const handleCreateBot = () => {
+  const handleCreateBot = (opts = {}) => {
     if (liveBotsBlocked) {
       toast.error('Live bot trading is disabled. Set ALLOW_LIVE_BOTS=true on the server.');
       return;
@@ -661,6 +590,8 @@ export function AlgoTab({ hideToolbar = false }) {
       return;
     }
 
+    // Auto-deploy must never inherit a prior manual force-deploy bypass.
+    const force = opts.forceDeploy != null ? Boolean(opts.forceDeploy) : forceDeploy;
     const days = backtestDays;
     const payload = buildDeployPayload({
       strategy: botStrategy,
@@ -672,10 +603,142 @@ export function AlgoTab({ hideToolbar = false }) {
       results: useResearchStore.getState().backtestResults,
       snapshot: backtestSnapshot,
       days,
-      forceDeploy,
+      forceDeploy: force,
     });
     sendAction(Action.BOT_CREATE, payload);
+    const pipe = getMlPipeline();
+    if (pipe.pipelineId && (pipe.stage === 'READY_TO_DEPLOY' || pipe.stage === 'GATE_CHECK')) {
+      if (pipe.stage === 'GATE_CHECK') advancePipeline(pipe.pipelineId);
+      advancePipeline(pipe.pipelineId);
+      completePipeline(pipe.pipelineId);
+      setPipelineDeployPending(null);
+      toast.success('Deployed from pipeline');
+    }
   };
+
+  // Pipeline: when stage hits BACKTESTING, align config and run holdout BT.
+  useEffect(() => {
+    if (mlPipeline.stage !== 'BACKTESTING' || !mlPipeline.pipelineId) return;
+    if (pipelineBtStartedRef.current === mlPipeline.pipelineId) return;
+    if (backtestRunning) return;
+
+    const strat = mlPipeline.strategy;
+    const sym = mlPipeline.symbol;
+    const tf = mlPipeline.timeframe;
+    if (!strat || !sym) return;
+
+    pipelineBtStartedRef.current = mlPipeline.pipelineId;
+    pipelineBtSawRunningRef.current = null;
+    if (strat !== botStrategy) setBotStrategy(strat);
+    if (sym !== activeSymbol) setActiveSymbol(sym);
+    if (tf && tf !== 'tick' && tf !== botTimeframe) setBotTimeframe(tf);
+    setBacktestDays(ML_BACKTEST_RANGE_HOLDOUT);
+
+    if (!botConfig?.allocation || botConfig.allocation <= 0) {
+      failPipeline(mlPipeline.pipelineId, {
+        stage: 'BACKTESTING',
+        error: 'Set a valid max notional cap before backtesting',
+      });
+      toast.error('Pipeline backtest blocked — set a valid max notional cap');
+      return;
+    }
+
+    const t = window.setTimeout(() => {
+      void handleRunBacktest();
+    }, 100);
+    return () => window.clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional pipeline kickoff
+  }, [mlPipeline.stage, mlPipeline.pipelineId, backtestRunning]);
+
+  // Mark that the pipeline-initiated backtest actually started (blocks stale gate/deploy).
+  useEffect(() => {
+    if (mlPipeline.stage !== 'BACKTESTING' || !mlPipeline.pipelineId) return;
+    if (!backtestRunning) return;
+    if (pipelineBtStartedRef.current !== mlPipeline.pipelineId) return;
+    pipelineBtSawRunningRef.current = mlPipeline.pipelineId;
+  }, [mlPipeline.stage, mlPipeline.pipelineId, backtestRunning]);
+
+  // Pipeline: after backtest finishes during BACKTESTING → gate → maybe deploy.
+  useEffect(() => {
+    if (mlPipeline.stage !== 'BACKTESTING' || !mlPipeline.pipelineId) return;
+    if (backtestRunning) return;
+    if (!backtestResults) return;
+    if (pipelineGateDoneRef.current === mlPipeline.pipelineId) return;
+    // Require a run that started after this pipeline entered BACKTESTING.
+    // Without this, stale store results (often lacking finished_at) auto-gate/deploy.
+    if (pipelineBtSawRunningRef.current !== mlPipeline.pipelineId) return;
+
+    pipelineGateDoneRef.current = mlPipeline.pipelineId;
+    setPipelineBacktestResult(mlPipeline.pipelineId, backtestResults);
+    advancePipeline(mlPipeline.pipelineId, { result: backtestResults });
+
+    const pipeId = mlPipeline.pipelineId;
+    const outcome = evaluateAndMaybeDeploy({
+      backtestResults,
+      config: botConfig,
+      autoDeployMode: mlPipeline.autoDeployMode || 'paper',
+      executionMode,
+      terminalMode,
+      symbol: mlPipeline.symbol || activeSymbol,
+      strategy: mlPipeline.strategy || botStrategy,
+      timeframe: mlPipeline.timeframe || botTimeframe,
+      days: backtestDays,
+      snapshot: backtestSnapshot,
+      onGatePassed: (gate) => {
+        setPipelineGateResult(pipeId, gate);
+        setDeployGate(gate);
+        advancePipeline(pipeId, { result: gate });
+      },
+      onGateFailed: (gate) => {
+        setPipelineGateResult(pipeId, gate);
+        setDeployGate(gate);
+        failPipeline(pipeId, { stage: 'GATE_CHECK', error: gate.block_reason || 'Gate blocked' });
+        toast.error(gate.block_reason || 'Pipeline deploy gate blocked');
+      },
+      onApprovalNeeded: (gate) => {
+        setPipelineGateResult(pipeId, gate);
+        setDeployGate(gate);
+        setPipelineDeployPending({ pipelineId: pipeId, gate });
+        toast.message('Pipeline ready — approve deploy to continue', {
+          action: {
+            label: 'Deploy Now',
+            onClick: () => {
+              setForceDeploy(false);
+              setDeployOpen(true);
+            },
+          },
+          duration: 20_000,
+        });
+      },
+      onAutoDeploy: (gate) => {
+        setPipelineGateResult(pipeId, gate);
+        setDeployGate(gate);
+        handleCreateBot({ forceDeploy: false });
+      },
+    });
+
+    if (outcome.deployed) {
+      toast.success(outcome.reason);
+    } else if (outcome.reason && mlPipeline.autoDeployMode === 'paper' && !outcome.gateResult?.blocking) {
+      toast.message(outcome.reason, {
+        action: {
+          label: 'Deploy',
+          onClick: () => setDeployOpen(true),
+        },
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mlPipeline.stage, mlPipeline.pipelineId, backtestRunning, backtestResults]);
+
+  // Drop approval-pending state tied to a pipeline that ended or was replaced.
+  useEffect(() => {
+    if (!pipelineDeployPending) return;
+    if (pipelineDeployPending.pipelineId !== mlPipeline.pipelineId) {
+      setPipelineDeployPending(null);
+      return;
+    }
+    if (mlPipeline.stage !== 'READY_TO_DEPLOY') setPipelineDeployPending(null);
+  }, [pipelineDeployPending, mlPipeline.pipelineId, mlPipeline.stage]);
 
   const filteredTemplates = useMemo(() => {
     const list = strategyTemplates.filter(
@@ -1817,7 +1880,18 @@ export function AlgoTab({ hideToolbar = false }) {
 
             {backtestRunning && backtestJobId && (
               <p className="text-[0.58rem] text-muted-foreground mb-2">
-                Background job active — safe to switch tabs. Toast on completion.
+                Background job {String(backtestJobId).slice(0, 8)} — safe to switch tabs;
+                open Jobs for status. Toast on completion.
+              </p>
+            )}
+
+            {!backtestRunning && (Number(systemStats?.ml_jobs_queued) > 0 || Number(systemStats?.ml_jobs_active) > 0) && (
+              <p className="text-[0.58rem] text-amber-600/90 dark:text-amber-400/90 mb-2">
+                ML Lab busy: {Number(systemStats?.ml_jobs_active) || 0} running
+                {Number(systemStats?.ml_jobs_queued) > 0
+                  ? ` · ${Number(systemStats.ml_jobs_queued)} queued`
+                  : ''}
+                {' '}— heavy backtests may wait for a free worker.
               </p>
             )}
 
@@ -1964,6 +2038,20 @@ export function AlgoTab({ hideToolbar = false }) {
           />
           <DialogFooter showCloseButton={false}>
             <Button variant="outline" size="sm" onClick={() => setDeployOpen(false)}>Cancel</Button>
+            {(pipelineDeployPending || mlPipeline.stage === 'READY_TO_DEPLOY') && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setForceDeploy(false);
+                  confirmDeploy();
+                }}
+                disabled={liveBotsBlocked || (deployGate?.blocking && !forceDeploy)}
+                title="Deploy using pipeline metadata"
+              >
+                Deploy from Pipeline
+              </Button>
+            )}
             <Button
               variant="buy"
               size="sm"

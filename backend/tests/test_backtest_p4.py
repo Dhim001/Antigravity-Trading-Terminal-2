@@ -169,7 +169,6 @@ class TestWalkForward(unittest.TestCase):
         self.assertAlmostEqual(agg["stability_score"], 2 / 3, places=2)
 
     def test_rolling_walk_forward_mock(self):
-        from unittest.mock import MagicMock
         from app.services.bots.backtest_walk_forward import run_walk_forward
 
         candles = _make_candles(500)
@@ -187,6 +186,8 @@ class TestWalkForward(unittest.TestCase):
                 "trade_count": 35,
             }
 
+        # Two configs → parallel_worker_count > 1. Must still honor injected
+        # run_backtest (regression: ProcessPool path ignored the callback).
         result = run_walk_forward(
             run_backtest=mock_backtest,
             symbol="TEST",

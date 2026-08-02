@@ -6,7 +6,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { apiRequest, isAbortError } from '@/api/client';
+import { apiRequest } from '@/api/client';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -19,6 +19,7 @@ import { formatPinnedVersionShort, isMlStrategy } from '@/components/MlModelStat
 import { cn } from '@/lib/utils';
 import {
   getCachedModelStatus,
+  normalizeStatusTimeframe,
   resolveModelStatusFetch,
 } from '@/lib/mlTrainingSession';
 
@@ -46,7 +47,7 @@ export default function MlModelVersionSelect({
   compact = false,
   showLabel = true,
 }) {
-  const tf = String(timeframe || '1m').toLowerCase();
+  const tf = normalizeStatusTimeframe(timeframe);
   const [status, setStatus] = useState(() => getCachedModelStatus(symbol, strategy, tf));
   const [loading, setLoading] = useState(false);
   const statusRef = useRef(status);
@@ -68,13 +69,12 @@ export default function MlModelVersionSelect({
         timeframe: tf,
       }));
     } catch (err) {
-      if (!isAbortError(err)) {
-        setStatus(resolveModelStatusFetch(symbol, strategy, {
-          error: err,
-          previous: statusRef.current,
-          timeframe: tf,
-        }));
-      }
+      const next = resolveModelStatusFetch(symbol, strategy, {
+        error: err,
+        previous: statusRef.current,
+        timeframe: tf,
+      });
+      if (next != null) setStatus(next);
     } finally {
       setLoading(false);
     }

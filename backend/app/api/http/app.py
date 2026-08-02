@@ -1798,7 +1798,7 @@ async def get_backtest_trades_handler(request: Request) -> JSONResponse:
 
 
 async def get_active_backtest_job_handler(request: Request) -> JSONResponse:
-    job = get_active_backtest_job()
+    job = await asyncio.to_thread(get_active_backtest_job)
     if not job:
         return JSONResponse({"ok": True, "job": None})
     return JSONResponse({"ok": True, "job": job})
@@ -1808,7 +1808,10 @@ async def get_backtest_job_handler(request: Request) -> JSONResponse:
     job_id = request.path_params.get("job_id")
     if not job_id:
         return JSONResponse({"ok": False, "error": "job_id is required"}, status_code=400)
-    job = get_backtest_job(job_id)
+    # Polling uses include_results=0 so multi-MB result blobs do not trip FE timeouts.
+    include_raw = (request.query_params.get("include_results") or "1").strip().lower()
+    include_results = include_raw not in ("0", "false", "no")
+    job = await asyncio.to_thread(get_backtest_job, job_id, include_results=include_results)
     if not job:
         return JSONResponse({"ok": False, "error": "Backtest job not found"}, status_code=404)
     return JSONResponse({"ok": True, "job": job})
@@ -1820,7 +1823,7 @@ async def list_backtest_jobs_handler(request: Request) -> JSONResponse:
         limit = int(request.query_params.get("limit", "20"))
     except (TypeError, ValueError):
         limit = 20
-    jobs = list_backtest_jobs(limit=limit, status=status or None)
+    jobs = await asyncio.to_thread(list_backtest_jobs, limit=limit, status=status or None)
     return JSONResponse({"ok": True, "jobs": jobs, "count": len(jobs)})
 
 

@@ -957,7 +957,11 @@ def _run_in_sample_sweep(
 
     workers = parallel_worker_count(len(configs))
     if workers > 1:
-        rows_by_idx: dict[int, dict] = {}
+        # ThreadPool only — must call the injected ``run_backtest`` (cancel_cb,
+        # thread_local BacktesterService, tests). A ProcessPool shortcut that
+        # rebuilt a fresh backtester was both wrong (imported non-existent
+        # ``Backtester``) and silently dropped cancel/progress wiring.
+        rows_by_idx = {}
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bt-wf-sweep") as pool:
             futures = [pool.submit(_run_one, idx, cfg) for idx, cfg in enumerate(configs)]
             for fut in as_completed(futures):

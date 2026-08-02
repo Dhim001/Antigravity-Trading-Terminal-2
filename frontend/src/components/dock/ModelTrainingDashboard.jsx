@@ -1,21 +1,22 @@
 /**
- * Model Training Dashboard — inventory, train, validate, retrain queue.
+ * Model Training Dashboard — layout orchestrator for ML Lab.
+ * State/fetchers live in useMlLabState; UI pieces in components/ml-lab/*.
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BrainCircuit,
   CheckCircle2,
   ExternalLink,
   FlaskConical,
+  Layers,
   Loader2,
   PanelLeft,
   Play,
   RefreshCw,
-  Trash2,
+  Workflow,
   XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -24,1476 +25,144 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import FeatureImportanceChart from '@/components/FeatureImportanceChart';
 import MlAutoTunePanel from '@/components/MlAutoTunePanel';
-import { useStore } from '@/store/useStore';
-import { apiRequest, isAbortError } from '@/api/client';
-import { getStrategyMeta, isDeepMlStrategy, isMlStrategy, ML_STRATEGY_IDS } from '@/config/strategies';
+import PipelineStatusBar from '@/components/PipelineStatusBar';
+import PipelineAutoDeploySettings from '@/components/PipelineAutoDeploySettings';
+import BatchTrainDialog from '@/components/ml-lab/BatchTrainDialog';
+import { MetricChips } from '@/components/ml-lab/MlMetricChips';
+import { LossHistoryChart } from '@/components/ml-lab/MlLossChart';
+import { DeployReadinessStrip, DataCalendarStrip } from '@/components/ml-lab/MlDeployReadiness';
+import { JobProgressBar, JobPollLog, POLL_LOG_PREF_KEY } from '@/components/ml-lab/MlJobProgress';
+import { DatasetBrowser } from '@/components/ml-lab/MlDatasetBrowser';
+import { MlRetrainQueue } from '@/components/ml-lab/MlRetrainQueue';
+import { MlTrainRunsTable } from '@/components/ml-lab/MlTrainRunsTable';
+import { MlAdvancedKnobs } from '@/components/ml-lab/MlAdvancedKnobs';
+import {
+  ML_STRATEGIES,
+  DEEP_ML_STRATEGIES,
+  TRAINING_WINDOWS,
+  TRAINING_TIMEFRAMES,
+  defaultAdvancedKnobs,
+  parsePositiveInt,
+  estimateTrainingBars,
+  estimateValidateBars,
+  suggestedNFolds,
+  fmtMetric,
+} from '@/components/ml-lab/MlLabConstants';
+import { isAbortError } from '@/api/client';
+import { getStrategyMeta, isMlStrategy } from '@/config/strategies';
 import { buildChallengerHint } from '@/lib/mlChallengerHint';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { useVirtualRows, VirtualTablePadding } from '@/components/VirtualTableBody';
 import {
-  beginMlJob,
-  clearMlJobProgress,
+  appendMlPollLog,
   clearMlPollLog,
-  finishMlJob,
-  getCachedModelStatus,
   getMlTrainingSession,
-  resolveModelStatusFetch,
+  invalidateMatchingMlBacktests,
+  markModelFreshAfterTrain,
   setCachedModelStatus,
   setMlJobId,
-  setMlServerProgress,
   setMlValidation,
-  subscribeMlTrainingSession,
-  appendMlPollLog,
-  invalidateMatchingMlBacktests,
 } from '@/lib/mlTrainingSession';
 import {
+  matchesRetrainTarget,
+  retrainQueueKey,
+} from '@/hooks/mlLabStateHelpers';
+import {
+  advancePipeline,
+  failPipeline,
+  getAutoAdvance,
+  getAutoDeployMode,
+  getMlPipeline,
+  setAutoAdvance,
+  startPipeline,
+  subscribeMlPipeline,
+} from '@/lib/mlPipeline';
+import {
   formatMlJobBudgetLabel,
-  isTransientMlPollError,
-  ML_JOB_STATUS_POLL_TIMEOUT_MS,
-  ML_JOB_SUBMIT_TIMEOUT_MS,
-  mlJobPollDeadlineMs,
-  mlJobPollIntervalMs,
   mlJobTimeoutMs,
 } from '@/lib/mlJobTimeouts';
-
-const ML_STRATEGIES = ML_STRATEGY_IDS;
-const DEEP_ML_STRATEGIES = new Set(
-  ML_STRATEGY_IDS.filter((id) => isDeepMlStrategy(id)),
-);
-
-/** Defaults: Train + Validate share production capacity (accuracy-first). */
-function defaultAdvancedKnobs(strategy, kind = 'validate') {
-  const isRl = strategy === 'RL_PPO_AGENT';
-  // kind retained for callers; capacity knobs match Train either way.
-  void kind;
-  let epochs = 100;
-  if (strategy === 'TCN_MULTI_HORIZON') epochs = 100;
-  else if (strategy === 'VAE_REGIME_DETECTOR') epochs = 120;
-  else if (strategy === 'GNN_CROSS_ASSET') epochs = 60;
-  else if (strategy === 'TRANSFORMER_SIGNAL') epochs = 80;
-  else if (strategy === 'LSTM_DIRECTION') epochs = 100;
-  return {
-    nFolds: isRl ? 2 : 3,
-    validateMaxBars: isRl ? 4000 : 12_000,
-    pboSegments: 4,
-    pboMaxCombos: 4,
-    totalTimesteps: 200_000,
-    epochs,
-    // Stop when val loss plateaus — budget epochs is a ceiling, not a requirement.
-    earlyStopPatience: 10,
-    hiddenDim: isRl ? 256 : 128,
-    gbmMaxIter: 300,
-    gbmMaxDepth: 6,
-  };
-}
-
-function normalizeTopFeatures(top) {
-  if (!Array.isArray(top)) return [];
-  return top
-    .map((f) => {
-      if (typeof f === 'string') return { name: f, importance: 1 };
-      const name = f?.name || f?.feature;
-      if (!name) return null;
-      const importance = Number(f.importance ?? f.gain ?? f.weight ?? 0);
-      return {
-        name: String(name),
-        importance: Number.isFinite(importance) ? importance : 0,
-        category: f.category,
-      };
-    })
-    .filter(Boolean);
-}
-
-function parsePositiveInt(value, fallback, { min = 1, max = 1_000_000 } = {}) {
-  const n = Number.parseInt(String(value), 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-const TRAINING_WINDOWS = [
-  { value: '1', label: '1 month', targetBars1m: 12000 },
-  { value: '3', label: '3 months', targetBars1m: 25000 },
-  { value: '6', label: '6 months', targetBars1m: 40000 },
-  { value: '12', label: '12 months', targetBars1m: 50000 },
-  { value: '18', label: '18 months', targetBars1m: 65000 },
-  { value: '24', label: '24 months', targetBars1m: 80000 },
-  { value: '36', label: '36 months', targetBars1m: 100000 },
-];
-
-const TRAINING_TIMEFRAMES = [
-  { value: '1m', label: '1 minute', secs: 60 },
-  { value: '5m', label: '5 minutes', secs: 300 },
-  { value: '15m', label: '15 minutes', secs: 900 },
-  { value: '1h', label: '1 hour', secs: 3600 },
-  { value: '4h', label: '4 hours', secs: 14400 },
-];
-
-const ML_LAB_WINDOW_KEY = 'ml-lab-training-window';
-const ML_LAB_TF_KEY = 'ml-lab-training-timeframe';
-
-function estimateTrainingBars(monthsValue, tfValue) {
-  // Mirror backend ``bar_limit_for_training_window`` (train purpose).
-  const months = Number(monthsValue) || 3;
-  const tf = TRAINING_TIMEFRAMES.find((t) => t.value === tfValue) || TRAINING_TIMEFRAMES[0];
-  const secs = tf.secs || 60;
-  const hard = 100_000;
-  const ideal = Math.floor(months * 30 * 86400 / secs);
-  if (secs > 60) {
-    // HTF: honor calendar window up to hard max (do not scale-crush from 1m caps).
-    return Math.max(500, Math.min(ideal, hard));
-  }
-  const win = TRAINING_WINDOWS.find((w) => w.value === String(monthsValue));
-  const cap1m = win?.targetBars1m ?? 25000;
-  return Math.max(500, Math.min(ideal, cap1m, hard));
-}
-
-/**
- * Validate bar budget at capacity parity — same calendar window as Train so
- * walk-forward OOS reflects production data depth (not a lean smoke slice).
- */
-function estimateValidateBars(monthsValue, tfValue, strategy) {
-  const trainBars = estimateTrainingBars(monthsValue, tfValue);
-  if (strategy === 'RL_PPO_AGENT') {
-    // RL env steps dominate wall-clock; still use a deep window, not 1.2k lean.
-    return Math.max(2_000, Math.min(trainBars, 20_000));
-  }
-  return trainBars;
-}
-
-function suggestedNFolds(monthsValue, strategy) {
-  if (strategy === 'RL_PPO_AGENT') return 2;
-  const months = Number(monthsValue) || 3;
-  if (months >= 24) return 5;
-  if (months >= 12) return 4;
-  if (months >= 6) return 3;
-  return 3;
-}
-
-function suggestedPboSegments(monthsValue, strategy) {
-  if (strategy === 'RL_PPO_AGENT') return 4;
-  const months = Number(monthsValue) || 3;
-  if (months >= 24) return 8;
-  if (months >= 12) return 6;
-  if (months >= 6) return 5;
-  return 4;
-}
-
-/** Apply window/TF-driven defaults onto Advanced knobs (keeps architecture fields). */
-function syncAdvancedForWindow(prev, strategy, monthsValue, tfValue) {
-  const base = defaultAdvancedKnobs(strategy, 'train');
-  return {
-    ...base,
-    ...prev,
-    // Always re-derive data-budget knobs from the Lab window pick.
-    nFolds: String(suggestedNFolds(monthsValue, strategy)),
-    validateMaxBars: String(estimateValidateBars(monthsValue, tfValue, strategy)),
-    pboSegments: String(suggestedPboSegments(monthsValue, strategy)),
-    // Keep user architecture / epochs if they already edited them this session.
-    epochs: prev?.epochs ?? base.epochs,
-    earlyStopPatience: prev?.earlyStopPatience ?? base.earlyStopPatience,
-    hiddenDim: prev?.hiddenDim ?? base.hiddenDim,
-    totalTimesteps: prev?.totalTimesteps ?? base.totalTimesteps,
-    gbmMaxIter: prev?.gbmMaxIter ?? base.gbmMaxIter,
-    gbmMaxDepth: prev?.gbmMaxDepth ?? base.gbmMaxDepth,
-    pboMaxCombos: prev?.pboMaxCombos ?? base.pboMaxCombos,
-  };
-}
-
-function readStoredTrainingWindow() {
-  try {
-    const v = window.localStorage.getItem(ML_LAB_WINDOW_KEY);
-    if (TRAINING_WINDOWS.some((w) => w.value === v)) return v;
-  } catch {
-    /* ignore */
-  }
-  return '3';
-}
-
-function readStoredTrainingTimeframe(fallback) {
-  try {
-    const v = window.localStorage.getItem(ML_LAB_TF_KEY);
-    if (TRAINING_TIMEFRAMES.some((t) => t.value === v)) return v;
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
-const METRIC_LABELS = {
-  total_timesteps: 'Timesteps',
-  episodes: 'Episodes',
-  mean_return_pct: 'Mean return',
-  best_mean_return: 'Best return',
-  mean_trades_per_episode: 'Trades / ep',
-  hidden_dim: 'Hidden dim',
-  val_accuracy: 'Val accuracy',
-  accuracy: 'Accuracy',
-  auc_roc: 'AUC-ROC',
-  val_loss: 'Val loss',
-  train_loss: 'Train loss',
-  log_loss: 'Log loss',
-  sharpe: 'Sharpe',
-  pbo: 'PBO',
-  mean_oos_accuracy: 'Mean OOS acc',
-  epochs_trained: 'Epochs trained',
-  epochs_budget: 'Epoch budget',
-  early_stop_patience: 'Early-stop patience',
-};
-
-const INT_METRIC_KEYS = new Set([
-  'total_timesteps',
-  'episodes',
-  'hidden_dim',
-  'n_folds',
-  'successful_folds',
-  'sample_count',
-  'train_samples',
-  'val_samples',
-  'n_samples',
-  'epochs_trained',
-  'epochs_budget',
-  'early_stop_patience',
-]);
-
-const PCT_METRIC_KEYS = new Set([
-  'val_accuracy',
-  'accuracy',
-  'auc_roc',
-  'pbo',
-  'mean_oos_accuracy',
-  'mean_return_pct',
-  'best_mean_return',
-]);
-
-function fmtMetric(v, digits = 3, key = '') {
-  if (v == null || Number.isNaN(Number(v))) return null;
-  const n = Number(v);
-  if (INT_METRIC_KEYS.has(key) || Number.isInteger(n)) {
-    return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n));
-  }
-  if (PCT_METRIC_KEYS.has(key)) {
-    // RL returns are stored as percent points (e.g. -0.086 = -0.086%);
-    // classifier probs are 0–1 fractions.
-    if (key === 'mean_return_pct' || key === 'best_mean_return') {
-      if (Math.abs(n) <= 1) return `${n.toFixed(3)}%`;
-      return `${n.toFixed(2)}%`;
-    }
-    if (n >= 0 && n <= 1) return `${(n * 100).toFixed(1)}%`;
-  }
-  if (Math.abs(n) >= 100) return n.toFixed(1);
-  if (Math.abs(n) >= 10) return n.toFixed(2);
-  return n.toFixed(digits);
-}
-
-function metricLabel(key) {
-  return METRIC_LABELS[key] || key.replace(/_/g, ' ');
-}
-
-function pickMetricEntries(metrics) {
-  if (!metrics || typeof metrics !== 'object') return [];
-  const preferred = [
-    'train_accuracy',
-    'val_accuracy',
-    'overfitting_gap',
-    'signal_rate',
-    'total_timesteps',
-    'episodes',
-    'mean_return_pct',
-    'best_mean_return',
-    'mean_trades_per_episode',
-    'hidden_dim',
-    'accuracy',
-    'auc_roc',
-    'val_loss',
-    'epochs_trained',
-    'epochs_budget',
-    'sharpe',
-    'pbo',
-  ];
-  const entries = preferred
-    .filter((k) => metrics[k] != null && typeof metrics[k] !== 'object')
-    .map((k) => [k, metrics[k]]);
-  Object.entries(metrics).forEach(([k, v]) => {
-    if (
-      typeof v === 'number'
-      && Number.isFinite(v)
-      && !preferred.includes(k)
-      && !k.startsWith('last_')
-      && entries.length < 10
-    ) {
-      entries.push([k, v]);
-    }
-  });
-  return entries;
-}
-
-function MetricChips({ metrics }) {
-  const entries = pickMetricEntries(metrics);
-  if (!entries.length) return null;
-
-  const trainAcc = metrics?.train_accuracy != null ? Number(metrics.train_accuracy) : null;
-  const valAcc = metrics?.val_accuracy != null ? Number(metrics.val_accuracy) : (metrics?.accuracy != null ? Number(metrics.accuracy) : null);
-  const gap = metrics?.overfitting_gap != null
-    ? Number(metrics.overfitting_gap)
-    : (trainAcc != null && valAcc != null ? Math.max(0, trainAcc - valAcc) : null);
-  const risk = gap == null ? null : gap > 0.20 ? 'HIGH' : gap > 0.10 ? 'MEDIUM' : 'LOW';
-
-  const hasClassAcc = metrics?.val_acc_buy != null || metrics?.val_acc_sell != null || metrics?.val_acc_none != null;
-
-  return (
-    <div className="ml-training__metrics-block">
-      <div className="ml-training__metrics-head flex items-center justify-between">
-        <h4 className="ml-training__section-title">Latest model metrics</h4>
-        <div className="flex items-center gap-2">
-          {metrics?.early_stopped && (
-            <span
-              className="px-2 py-0.5 rounded text-[10px] font-semibold num-mono bg-amber-500/15 text-amber-600 border border-amber-500/30"
-              title={metrics.early_stop_reason || 'Validation loss stopped improving'}
-            >
-              Early stop
-              {metrics.epochs_trained != null && metrics.epochs_budget != null
-                ? ` ${metrics.epochs_trained}/${metrics.epochs_budget}`
-                : ''}
-            </span>
-          )}
-          {risk && (
-          <span
-            className={cn(
-              'px-2 py-0.5 rounded text-[10px] font-semibold num-mono flex items-center gap-1',
-              risk === 'HIGH' && 'bg-destructive/20 text-destructive border border-destructive/30',
-              risk === 'MEDIUM' && 'bg-amber-500/20 text-amber-500 border border-amber-500/30',
-              risk === 'LOW' && 'bg-emerald-500/20 text-emerald-500 border border-emerald-500/30',
-            )}
-            title="Overfitting risk calculated from train vs val accuracy gap"
-          >
-            Overfit risk: {risk} {gap != null ? `(${(gap * 100).toFixed(1)}% gap)` : ''}
-          </span>
-          )}
-        </div>
-      </div>
-
-      {trainAcc != null && valAcc != null && (
-        <div className="my-2 p-2 bg-muted/30 rounded border text-xs space-y-1">
-          <div className="flex justify-between items-center text-[11px]">
-            <span className="text-muted-foreground">Train vs Val Accuracy</span>
-            <span className="num-mono font-medium">
-              Train: {(trainAcc * 100).toFixed(1)}% | Val: {(valAcc * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden flex">
-            <div
-              className="bg-primary h-full transition-all"
-              style={{ width: `${Math.min(100, trainAcc * 100)}%` }}
-              title={`Train accuracy: ${(trainAcc * 100).toFixed(1)}%`}
-            />
-            <div
-              className="bg-emerald-500 h-full transition-all -ml-full opacity-80"
-              style={{ width: `${Math.min(100, valAcc * 100)}%` }}
-              title={`Val accuracy: ${(valAcc * 100).toFixed(1)}%`}
-            />
-          </div>
-        </div>
-      )}
-
-      {hasClassAcc && (
-        <div className="my-2 grid grid-cols-3 gap-1.5 text-center text-[10px] num-mono">
-          <div className="p-1 rounded bg-muted/40 border">
-            <div className="text-muted-foreground">BUY Acc</div>
-            <div className="font-semibold text-emerald-500">
-              {metrics?.val_acc_buy != null ? `${(metrics.val_acc_buy * 100).toFixed(1)}%` : '—'}
-            </div>
-          </div>
-          <div className="p-1 rounded bg-muted/40 border">
-            <div className="text-muted-foreground">NONE Acc</div>
-            <div className="font-semibold text-slate-400">
-              {metrics?.val_acc_none != null ? `${(metrics.val_acc_none * 100).toFixed(1)}%` : '—'}
-            </div>
-          </div>
-          <div className="p-1 rounded bg-muted/40 border">
-            <div className="text-muted-foreground">SELL Acc</div>
-            <div className="font-semibold text-rose-500">
-              {metrics?.val_acc_sell != null ? `${(metrics.val_acc_sell * 100).toFixed(1)}%` : '—'}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="ml-training__metrics">
-        {entries.map(([k, v], i) => (
-          <span
-            key={k}
-            className={cn('ml-training__metric-chip', i === 0 && 'ml-training__metric-chip--primary')}
-            title={k}
-          >
-            <span className="ml-training__metric-key">{metricLabel(k)}</span>
-            <strong className="num-mono">{fmtMetric(v, 3, k) ?? String(v)}</strong>
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function normalizeCurveHistory(history, trainHistory, metrics) {
-  const trainRows = Array.isArray(trainHistory) ? trainHistory : [];
-  if (trainRows.some((h) => h && h.return_pct != null)) {
-    return {
-      mode: 'returns',
-      title: 'Episode returns',
-      rows: trainRows
-        .filter((h) => h && h.return_pct != null)
-        .map((h, i) => ({
-          i: h.episode ?? i + 1,
-          primary: Number(h.return_pct),
-        })),
-      primaryLabel: 'return',
-      secondaryLabel: null,
-    };
-  }
-
-  const lossRows = Array.isArray(history)
-    ? history.filter((h) => h && (h.val_loss != null || h.train_loss != null || h.return_pct != null))
-    : [];
-  if (lossRows.some((h) => h.return_pct != null) && !lossRows.some((h) => h.train_loss != null)) {
-    return {
-      mode: 'returns',
-      title: 'Episode returns',
-      rows: lossRows.map((h, i) => ({
-        i: h.episode ?? h.epoch ?? i + 1,
-        primary: Number(h.return_pct),
-      })),
-      primaryLabel: 'return',
-      secondaryLabel: null,
-    };
-  }
-  if (lossRows.length >= 2) {
-    return {
-      mode: 'loss',
-      title: 'Training curve',
-      rows: lossRows.map((h, i) => ({
-        i: h.epoch ?? i + 1,
-        primary: h.train_loss != null ? Number(h.train_loss) : null,
-        secondary: h.val_loss != null ? Number(h.val_loss) : null,
-      })),
-      primaryLabel: 'train',
-      secondaryLabel: 'val',
-    };
-  }
-
-  const last10 = Array.isArray(metrics?.last_10_returns) ? metrics.last_10_returns : [];
-  if (last10.length >= 2) {
-    return {
-      mode: 'returns',
-      title: 'Recent episode returns',
-      rows: last10.map((v, i) => ({ i: i + 1, primary: Number(v) })),
-      primaryLabel: 'return',
-      secondaryLabel: null,
-    };
-  }
-  return null;
-}
-
-/** Deploy-gate mirror: trained / walk-forward / PBO from model-status enrich. */
-function DeployReadinessStrip({ status, strategy }) {
-  if (!status?.trained) return null;
-
-  const strat = String(strategy || status?.strategy || '').toUpperCase();
-  const isRl = strat === 'RL_PPO_AGENT';
-  const wf = status.walk_forward && typeof status.walk_forward === 'object'
-    ? status.walk_forward
-    : null;
-  const pbo = status.pbo && typeof status.pbo === 'object' ? status.pbo : null;
-  const validatedAt = status.validated_at || wf?.validated_at || null;
-  const cal = status.data_calendar && typeof status.data_calendar === 'object'
-    ? status.data_calendar
-    : null;
-
-  const trainedOk = true;
-  const wfOk = Boolean(wf?.ok && validatedAt);
-  const wfMissing = !validatedAt || !wf?.ok;
-  const pboSkipped = Boolean(pbo?.skipped);
-  const pboPresent = pbo != null && pbo.pbo != null && !pboSkipped;
-  const pboOk = pboPresent && pbo.ok === true;
-  const pboWarn = pboPresent && pbo.ok === false;
-  const holdoutOk = Boolean(cal?.holdout_days && cal?.fit_end_ts);
-
-  const ageLabel = (() => {
-    if (!validatedAt) return null;
-    try {
-      const d = new Date(validatedAt);
-      if (Number.isNaN(d.getTime())) return null;
-      return d.toLocaleString();
-    } catch {
-      return null;
-    }
-  })();
-
-  const chip = (ok, warn, label, title) => (
-    <span
-      className={cn(
-        'ml-training__ready-chip',
-        ok && 'ml-training__ready-chip--ok',
-        warn && 'ml-training__ready-chip--warn',
-        !ok && !warn && 'ml-training__ready-chip--fail',
-      )}
-      title={title}
-    >
-      {ok ? <CheckCircle2 size={11} aria-hidden /> : warn ? <FlaskConical size={11} aria-hidden /> : <XCircle size={11} aria-hidden />}
-      {label}
-    </span>
-  );
-
-  return (
-    <section className="ml-training__ready" aria-label="Deploy readiness">
-      <div className="ml-training__ready-head">
-        <h4 className="ml-training__section-title">Deploy readiness</h4>
-        {ageLabel && (
-          <span className="ml-training__header-meta num-mono">
-            validated {ageLabel}
-          </span>
-        )}
-      </div>
-      <div className="ml-training__ready-chips">
-        {chip(trainedOk, false, 'Trained', 'Model artifact on disk')}
-        {chip(
-          wfOk,
-          false,
-          wfOk
-            ? `Walk-forward${
-              wf?.mean_oos_return_pct != null
-                ? ` · ${Number(wf.mean_oos_return_pct) >= 0 ? '+' : ''}${Number(wf.mean_oos_return_pct).toFixed(2)}%`
-                : (wf?.mean_oos_accuracy != null ? ` · ${fmtMetric(wf.mean_oos_accuracy, 3, 'mean_oos_accuracy')}` : '')
-            }`
-            : 'Walk-forward',
-          wfMissing
-            ? (isRl
-              ? 'Run Walk-forward (RL episode returns) before deploy — gate will block without it'
-              : 'Run Walk-forward before deploy — gate will block without it')
-            : (wf?.recommendation || 'Walk-forward validation passed'),
-        )}
-        {pboSkipped
-          ? chip(false, true, 'PBO skipped', pbo?.error || 'PBO skipped for RL/deep interactive validate')
-          : pboPresent
-            ? chip(
-              pboOk,
-              pboWarn,
-              `PBO ${fmtMetric(pbo.pbo, 3, 'pbo') ?? '—'}`,
-              pboOk
-                ? 'PBO under 50% — acceptable overfitting risk'
-                : 'PBO ≥ 50% — elevated overfitting risk for deploy',
-            )
-            : chip(false, true, 'PBO', isRl
-              ? 'RL Lab Validate skips PBO (set force_pbo for overnight CSCV)'
-              : 'No PBO result yet — run Walk-forward + PBO')}
-        {cal && chip(
-          holdoutOk,
-          false,
-          holdoutOk ? `Holdout · ${cal.holdout_days}d` : 'Holdout',
-          holdoutOk
-            ? 'Champion FIT ends before locked holdout — use Algo BT on holdout only'
-            : 'Train with ML_CALENDAR_HOLDOUT=1 to stamp FIT / holdout',
-        )}
-      </div>
-    </section>
-  );
-}
-
-function DataCalendarStrip({ calendar, trainingWindow }) {
-  const cal = calendar && typeof calendar === 'object' ? calendar : null;
-  if (!cal?.fit_end_ts && !cal?.holdout_days) {
-    const months = Number(trainingWindow) || 3;
-    const holdout = months <= 1 ? 7 : Math.min(60, Math.max(14, Math.round(months * 30 * 0.15)));
-    return (
-      <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
-        Calendar (when <span className="font-mono">ML_CALENDAR_HOLDOUT=1</span>): FIT → embargo → HOLDOUT (~{holdout}d).
-        Train/Validate use FIT only; Algo ML BT defaults to holdout.
-      </p>
-    );
-  }
-  const fitDays = cal.fit_days != null ? `${cal.fit_days}d` : '—';
-  const embargo = cal.embargo_bars != null ? `${cal.embargo_bars} bars` : '—';
-  const holdout = cal.holdout_days != null ? `${cal.holdout_days}d` : '—';
-  return (
-    <p className="text-[10px] text-muted-foreground mt-1 leading-snug" title="Locked OOS holdout after FIT">
-      <span className="text-foreground/80">FIT</span> ~{fitDays}
-      {' · '}
-      <span className="text-foreground/80">EMBARGO</span> {embargo}
-      {' · '}
-      <span className="text-foreground/80">HOLDOUT</span> {holdout}
-    </p>
-  );
-}
-
-function LossHistoryChart({ history, trainHistory, metrics }) {
-  const curve = normalizeCurveHistory(history, trainHistory, metrics);
-  if (!curve || curve.rows.length < 2) {
-    return (
-      <div className="ml-training__loss ml-training__loss--empty">
-        <p className="ml-training__subsection-label">Training curve</p>
-        <p className="text-[0.65rem] text-muted-foreground">
-          No epoch / episode history yet. Run Trigger retrain to populate the curve.
-        </p>
-      </div>
-    );
-  }
-
-  const vals = curve.rows.flatMap((r) => [r.primary, r.secondary].filter((n) => Number.isFinite(n)));
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const pad = Math.max(Math.abs(max - min) * 0.08, 1e-6);
-  const yMin = min - pad;
-  const yMax = max + pad;
-  const span = Math.max(yMax - yMin, 1e-9);
-  const w = 360;
-  const h = 72;
-  const left = 2;
-  const right = w - 2;
-
-  const toPath = (key) => {
-    const pts = curve.rows
-      .map((r, i) => {
-        const v = Number(r[key]);
-        if (!Number.isFinite(v)) return null;
-        const x = left + (i / Math.max(curve.rows.length - 1, 1)) * (right - left);
-        const y = h - ((v - yMin) / span) * (h - 10) - 5;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .filter(Boolean);
-    if (pts.length < 2) return null;
-    return pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p}`).join(' ');
-  };
-
-  const primaryD = toPath('primary');
-  const secondaryD = curve.secondaryLabel ? toPath('secondary') : null;
-  const last = curve.rows[curve.rows.length - 1];
-  const fmtY = (n) => (curve.mode === 'returns'
-    ? `${Number(n).toFixed(2)}%`
-    : Number(n).toFixed(4));
-
-  return (
-    <div className="ml-training__loss">
-      <div className="ml-training__loss-head">
-        <p className="ml-training__subsection-label">{curve.title}</p>
-        <span className="text-[0.5rem] text-muted-foreground">
-          {curve.primaryLabel && (
-            <span className="ml-training__loss-legend ml-training__loss-legend--train">
-              {curve.primaryLabel}
-            </span>
-          )}
-          {curve.secondaryLabel && (
-            <>
-              {' · '}
-              <span className="ml-training__loss-legend ml-training__loss-legend--val">
-                {curve.secondaryLabel}
-              </span>
-            </>
-          )}
-        </span>
-      </div>
-      <div className="ml-training__loss-plot">
-        <div className="ml-training__loss-ylabels num-mono" aria-hidden>
-          <span>{fmtY(yMax)}</span>
-          <span>{fmtY(yMin)}</span>
-        </div>
-        <svg viewBox={`0 0 ${w} ${h}`} className="ml-training__loss-svg" aria-label={curve.title}>
-          <line x1={left} y1={h / 2} x2={right} y2={h / 2} className="ml-training__loss-grid" />
-          {primaryD && (
-            <path d={primaryD} className="ml-training__loss-path ml-training__loss-path--train" fill="none" />
-          )}
-          {secondaryD && (
-            <path d={secondaryD} className="ml-training__loss-path ml-training__loss-path--val" fill="none" />
-          )}
-        </svg>
-      </div>
-      <p className="ml-training__loss-footer num-mono">
-        {curve.rows.length} {curve.mode === 'returns' ? 'episodes' : 'epochs'}
-        {Number.isFinite(last?.primary) ? ` · last ${fmtY(last.primary)}` : ''}
-        {Number.isFinite(last?.secondary) ? ` · val ${fmtY(last.secondary)}` : ''}
-      </p>
-    </div>
-  );
-}
-
-function formatElapsed(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = s % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
-  return m > 0 ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
-}
-
-function formatDurationMs(ms) {
-  if (ms == null || Number.isNaN(Number(ms))) return '—';
-  return formatElapsed(Number(ms));
-}
-
-function formatPollLogTime(ts) {
-  try {
-    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
-  } catch {
-    return '—';
-  }
-}
-
-function formatPollLogLine(entry) {
-  const bits = [formatPollLogTime(entry.t)];
-  if (entry.status) bits.push(`status=${entry.status}`);
-  if (entry.pct != null) bits.push(`pct=${Math.round(entry.pct)}`);
-  if (entry.phase) bits.push(`phase=${entry.phase}`);
-  if (entry.detail) bits.push(`detail=${entry.detail}`);
-  if (entry.note) bits.push(entry.note);
-  return bits.join(' ');
-}
-
-const POLL_LOG_PREF_KEY = 'ml-lab-show-poll-log';
-
-function JobPollLog({ entries, enabled, onEnabledChange, onClear }) {
-  const logRef = useRef(null);
-  const lines = Array.isArray(entries) ? entries : [];
-
-  useEffect(() => {
-    if (!enabled || !logRef.current) return;
-    logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [enabled, lines.length, lines[lines.length - 1]?.t]);
-
-  return (
-    <div className="ml-training__poll-log">
-      <div className="ml-training__poll-log-head">
-        <label className="ml-training__poll-log-toggle">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => onEnabledChange(Boolean(e.target.checked))}
-          />
-          <span>Show poll log</span>
-        </label>
-        {enabled && (
-          <div className="ml-training__poll-log-actions">
-            <span className="ml-training__header-meta num-mono">{lines.length} lines</span>
-            {lines.length > 0 && typeof onClear === 'function' && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-[0.6rem]"
-                onClick={onClear}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-      {enabled && (
-        <pre
-          ref={logRef}
-          className="ml-training__poll-log-body num-mono"
-          aria-label="Training job poll log"
-        >
-          {lines.length === 0
-            ? '# Poll snapshots appear while Train / Validate runs…'
-            : lines.map(formatPollLogLine).join('\n')}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-function JobProgressBar({ job, serverProgress, onCancel, cancelling }) {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!job?.active) return undefined;
-    const id = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(id);
-  }, [job?.active, job?.startedAt]);
-
-  if (!job?.active) return null;
-
-  const elapsed = Math.max(0, now - (job.startedAt || now));
-  const timeoutMs = Math.max(job.timeoutMs || 60_000, 15_000);
-  const hasServerPct = serverProgress?.pct != null && Number(serverProgress.pct) > 0;
-  // Asymptotic estimate — never claims 100% until the request finishes.
-  const ratio = Math.min(0.94, 1 - Math.exp(-elapsed / (timeoutMs * 0.45)));
-  const estPct = Math.max(2, Math.round(ratio * 100));
-  const pct = hasServerPct
-    ? Math.max(1, Math.min(99, Math.round(Number(serverProgress.pct))))
-    : estPct;
-  const phases = job.phases || [];
-  const phaseIdx = phases.findIndex((p) => pct < p.until);
-  const phase = phases[phaseIdx >= 0 ? phaseIdx : Math.max(phases.length - 1, 0)];
-  const phaseLabel = hasServerPct
-    ? [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
-      || phase?.label
-    : phase?.label;
-
-  return (
-    <div className="ml-training__progress" role="status" aria-live="polite">
-      <div className="ml-training__progress-head">
-        <span className="ml-training__progress-label">
-          <Loader2 size={12} className="animate-spin" aria-hidden />
-          {job.label}
-        </span>
-        <span className="ml-training__progress-meta num-mono">
-          {pct}% · {formatElapsed(elapsed)}
-          {timeoutMs >= 60_000 ? ` / ~${formatMlJobBudgetLabel(timeoutMs)}` : ''}
-          {hasServerPct ? ' · live' : ''}
-        </span>
-      </div>
-      <div
-        className="ml-training__progress-track"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={pct}
-        aria-label={job.label}
-      >
-        <div className="ml-training__progress-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="ml-training__progress-foot">
-        {phaseLabel && (
-          <p className="ml-training__progress-phase">{phaseLabel}</p>
-        )}
-        {typeof onCancel === 'function' && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 text-[0.65rem] shrink-0"
-            disabled={cancelling}
-            onClick={onCancel}
-          >
-            {cancelling ? <Loader2 size={12} className="animate-spin" /> : null}
-            Cancel
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function trainJobPhases(strategy) {
-  if (strategy === 'RL_PPO_AGENT') {
-    return [
-      { until: 12, label: 'Fetching & enriching candles…' },
-      { until: 88, label: 'Running PPO rollouts / policy updates…' },
-      { until: 96, label: 'Exporting ONNX policy…' },
-      { until: 100, label: 'Saving model artifacts…' },
-    ];
-  }
-  if (DEEP_ML_STRATEGIES.has(strategy)) {
-    return [
-      { until: 15, label: 'Fetching & enriching candles…' },
-      { until: 85, label: 'Training neural network…' },
-      { until: 100, label: 'Exporting & saving artifacts…' },
-    ];
-  }
-  return [
-    { until: 20, label: 'Fetching & enriching candles…' },
-    { until: 80, label: 'Fitting model…' },
-    { until: 100, label: 'Saving artifacts…' },
-  ];
-}
-
-function validateJobPhases(strategy) {
-  if (strategy === 'RL_PPO_AGENT') {
-    return [
-      { until: 10, label: 'Loading candles for validation…' },
-      { until: 90, label: 'Walk-forward folds (RL episode returns)…' },
-      { until: 100, label: 'Aggregating fold returns…' },
-    ];
-  }
-  return [
-    { until: 12, label: 'Loading candles for validation…' },
-    { until: 70, label: 'Walk-forward folds…' },
-    { until: 92, label: 'Computing PBO…' },
-    { until: 100, label: 'Aggregating results…' },
-  ];
-}
-
-function DatasetBrowser({
-  dataset,
-  versions,
-  activatingVersionId,
-  deletingVersionId,
-  onActivateVersion,
-  onDeleteVersion,
-  onCopyPin,
-}) {
-  if (!dataset && !(versions && versions.length)) return null;
-  const labels = dataset?.label_distribution;
-  const features = Array.isArray(dataset?.feature_names) ? dataset.feature_names : [];
-  const topFeatures = normalizeTopFeatures(dataset?.top_features).slice(0, 10);
-  const versionBusy = Boolean(activatingVersionId || deletingVersionId);
-  return (
-    <section className="ml-training__dataset">
-      <div className="ml-training__card-head">
-        <h4 className="ml-training__section-title">Dataset & versions</h4>
-        <span className="ml-training__header-meta">
-          Activate sets the live root · Delete removes a non-active snapshot · pin via Model version pin
-        </span>
-      </div>
-      <div className="ml-training__dataset-grid">
-        <div className="ml-training__dataset-main">
-          {dataset && (
-            <div className="ml-training__dataset-stats">
-              <div>
-                <span className="text-muted-foreground">Seq. samples</span>
-                <p className="num-mono font-medium">
-                  {dataset.sample_count ?? dataset.train_samples ?? '—'}
-                  {dataset.val_samples != null ? ` / val ${dataset.val_samples}` : ''}
-                </p>
-                {(dataset.candle_bars != null || dataset.bar_target != null) && (
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    {dataset.candle_bars != null ? `${dataset.candle_bars} bars` : null}
-                    {dataset.bar_target != null ? ` · target ${dataset.bar_target}` : null}
-                  </p>
-                )}
-              </div>
-              <div>
-                <span className="text-muted-foreground">Schema</span>
-                <p className="num-mono font-medium">
-                  {dataset.feature_schema_version != null
-                    ? `v${dataset.feature_schema_version}`
-                    : '—'}
-                  {dataset.lookback != null ? ` · lb ${dataset.lookback}` : ''}
-                </p>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Type</span>
-                <p className="num-mono font-medium">{dataset.model_type || '—'}</p>
-              </div>
-            </div>
-          )}
-          {labels && typeof labels === 'object' && (
-            <div>
-              <p className="ml-training__subsection-label">Label distribution</p>
-              <div className="ml-training__label-dist">
-                {Object.entries(labels).map(([k, v]) => (
-                  <span key={k}>
-                    <span className="ml-training__metric-key">{k}</span>
-                    <strong className="num-mono">{v}</strong>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {features.length > 0 && (
-            <p className="ml-training__feature-line">
-              Features ({features.length}):{' '}
-              <span className="num-mono">
-                {features.slice(0, 12).join(', ')}
-                {features.length > 12 ? ` +${features.length - 12}` : ''}
-              </span>
-            </p>
-          )}
-          {topFeatures.length > 0 && (
-            <div className="ml-training__feature-importance">
-              <p className="ml-training__subsection-label">Feature importance</p>
-              <FeatureImportanceChart features={topFeatures} maxBars={10} compact />
-            </div>
-          )}
-        </div>
-        {Array.isArray(versions) && versions.length > 0 && (
-          <div className="ml-training__dataset-versions">
-            <p className="ml-training__subsection-label">Version history</p>
-            <ul className="ml-training__version-list">
-              {versions.slice(0, 12).map((v) => {
-                const id = v.version_id || v.trained_at;
-                const activating = activatingVersionId && (
-                  activatingVersionId === v.version_id
-                  || activatingVersionId === v.trained_at
-                );
-                const deleting = deletingVersionId && (
-                  deletingVersionId === v.version_id
-                  || deletingVersionId === v.trained_at
-                );
-                const pinValue = v.trained_at || v.version_id || '';
-                return (
-                  <li
-                    key={id}
-                    className={cn(
-                      'ml-training__version-row',
-                      v.is_current && 'ml-training__version-row--current',
-                    )}
-                  >
-                    <div className="ml-training__version-meta num-mono">
-                      <span className="ml-training__version-id">{v.version_id || '—'}</span>
-                      <span className="text-muted-foreground">
-                        {v.trained_at ? new Date(v.trained_at).toLocaleString() : '—'}
-                        {v.is_current ? ' · current' : ''}
-                        {v.sample_count != null ? ` · n=${v.sample_count}` : ''}
-                      </span>
-                    </div>
-                    <div className="ml-training__version-actions">
-                      {pinValue && onCopyPin && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-[0.6rem]"
-                          title="Copy pin value for bot config model_version"
-                          onClick={() => onCopyPin(pinValue)}
-                        >
-                          Copy pin
-                        </Button>
-                      )}
-                      {v.is_current ? (
-                        <span className="ml-training__version-badge">Active</span>
-                      ) : (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-1.5 text-[0.6rem] gap-1"
-                          disabled={versionBusy || !onActivateVersion}
-                          onClick={() => onActivateVersion?.(v)}
-                        >
-                          {activating ? <Loader2 size={10} className="animate-spin" /> : null}
-                          Use this
-                        </Button>
-                      )}
-                      {!v.is_current && onDeleteVersion && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-[0.6rem] gap-1 text-destructive hover:text-destructive"
-                          disabled={versionBusy}
-                          title="Delete this snapshot from disk (cannot undo)"
-                          onClick={() => onDeleteVersion(v)}
-                        >
-                          {deleting ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
-                          Delete
-                        </Button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
+import {
+  activateMlVersion,
+  deleteMlVersion,
+  submitMlTrainJob,
+  submitMlValidateJob,
+} from '@/lib/mlLabApi';
+import { clearMlLabRequest, takeMlLabRequest } from '@/lib/mlLabRequests';
+import {
+  isMlLabStandaloneLocation,
+  subscribeMlLabEvents,
+} from '@/lib/standalonePanels';
+import { useMlLabState } from '@/hooks/useMlLabState';
 
 export default function ModelTrainingDashboard({
   detached = false,
   onDetach,
   onAttach,
 } = {}) {
-  const activeSymbol = useStore((s) => s.activeSymbol);
-  const botStrategy = useStore((s) => s.botStrategy);
-  const botTimeframe = useStore((s) => s.botTimeframe);
-  const mlSession = useSyncExternalStore(
-    subscribeMlTrainingSession,
-    getMlTrainingSession,
-    getMlTrainingSession,
-  );
+  // Re-render when pipeline stage changes (status bar + action enablement).
+  useSyncExternalStore(subscribeMlPipeline, getMlPipeline, getMlPipeline);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchScope, setBatchScope] = useState('untrained');
+  const [autoAdvanceOn, setAutoAdvanceOn] = useState(() => getAutoAdvance());
+  const pipelineValidateRef = useRef(null);
+  const {
 
-  const [strategy, setStrategy] = useState(
-    () => (isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST'),
-  );
-  const [trainingWindow, setTrainingWindow] = useState(readStoredTrainingWindow);
-  const [trainingTimeframe, setTrainingTimeframe] = useState(() => {
-    const tf = String(botTimeframe || '1m').toLowerCase();
-    const botTf = tf === 'tick' ? '1m' : (tf || '1m');
-    return readStoredTrainingTimeframe(botTf);
-  });
-  const [advanced, setAdvanced] = useState(() => {
-    const strat = isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST';
-    const win = readStoredTrainingWindow();
-    const tf = String(botTimeframe || '1m').toLowerCase();
-    const botTf = tf === 'tick' ? '1m' : (tf || '1m');
-    const timeframe = readStoredTrainingTimeframe(botTf);
-    return syncAdvancedForWindow(
-      defaultAdvancedKnobs(strat, 'train'),
-      strat,
-      win,
-      timeframe,
-    );
-  });
-  const [status, setStatus] = useState(null);
-  const championOosRef = useRef(null);
-  const [inventory, setInventory] = useState([]);
-  const [retrainActions, setRetrainActions] = useState([]);
-  const [retrainPending, setRetrainPending] = useState([]);
-  const [retrainHistory, setRetrainHistory] = useState([]);
-  const [runNowKey, setRunNowKey] = useState(null);
-  const [cancellingJob, setCancellingJob] = useState(false);
-  const [queueTelemetry, setQueueTelemetry] = useState({ active: 0, queued: 0 });
-  const [trainRuns, setTrainRuns] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const panelScrollRef = useRef(null);
-  const [activatingVersionId, setActivatingVersionId] = useState(null);
-  const [deletingVersionId, setDeletingVersionId] = useState(null);
-  const [challengerDismissed, setChallengerDismissed] = useState(false);
-  const [showPollLog, setShowPollLog] = useState(() => {
-    try {
-      return window.localStorage.getItem(POLL_LOG_PREF_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const statusRef = useRef(status);
-  statusRef.current = status;
-
-  const jobMatches = mlSession.symbol === activeSymbol && mlSession.strategy === strategy;
-  const training = Boolean(jobMatches && mlSession.training);
-  const validating = Boolean(jobMatches && mlSession.validating);
-  const jobProgress = jobMatches ? mlSession.jobProgress : null;
-  const serverProgress = jobMatches ? mlSession.serverProgress : null;
-  const pollLog = jobMatches ? (mlSession.pollLog || []) : [];
-  const activeJobId = jobMatches ? mlSession.jobId : null;
-  const validation = jobMatches ? mlSession.validation : null;
-  const busyElsewhere = Boolean(
-    (mlSession.training || mlSession.validating)
-    && !jobMatches
-    && (mlSession.symbol || mlSession.strategy),
-  );
-
-  const meta = getStrategyMeta(strategy);
-
-  const startJobProgress = useCallback((kind, strat, symbol, months) => {
-    const timeoutMs = mlJobTimeoutMs(strat, kind === 'train' ? 'train' : 'validate', {
-      months,
-    });
-    const progress = {
-      active: true,
-      kind,
-      startedAt: Date.now(),
-      timeoutMs,
-      label: kind === 'train'
-        ? `Retraining ${getStrategyMeta(strat).shortLabel || strat}`
-        : `Walk-forward${strat === 'RL_PPO_AGENT' ? '' : ' + PBO'} · ${getStrategyMeta(strat).shortLabel || strat}`,
-      phases: kind === 'train' ? trainJobPhases(strat) : validateJobPhases(strat),
-    };
-    const next = beginMlJob({ kind, strategy: strat, symbol, jobProgress: progress });
-    return next.jobToken;
-  }, []);
-
-  const finishTimersRef = useRef(new Set());
-
-  useEffect(() => () => {
-    for (const t of finishTimersRef.current) clearTimeout(t);
-    finishTimersRef.current.clear();
-  }, []);
-
-  const finishJobProgress = useCallback((token, extras = {}) => {
-    finishMlJob(token, extras);
-    const t = window.setTimeout(() => {
-      finishTimersRef.current.delete(t);
-      clearMlJobProgress(token);
-    }, 600);
-    finishTimersRef.current.add(t);
-  }, []);
-
-  const fetchInventory = useCallback(async () => {
-    if (!activeSymbol) {
-      setInventory([]);
-      return;
-    }
-    const rows = await Promise.all(
-      ML_STRATEGIES.map(async (id) => {
-        try {
-          const body = await apiRequest(
-            `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(id)}&timeframe=${encodeURIComponent(trainingTimeframe)}`,
-          );
-          if (body) setCachedModelStatus(activeSymbol, id, body, trainingTimeframe);
-          return {
-            strategy: id,
-            trained: Boolean(body?.trained),
-            trained_at: body?.trained_at,
-            metrics: body?.metrics || {},
-            error: body?.error,
-            timeframe: body?.timeframe || trainingTimeframe,
-          };
-        } catch (err) {
-          if (isAbortError(err)) {
-            const cached = getCachedModelStatus(activeSymbol, id, trainingTimeframe);
-            if (cached) {
-              return {
-                strategy: id,
-                trained: Boolean(cached.trained),
-                trained_at: cached.trained_at,
-                metrics: cached.metrics || {},
-                timeframe: trainingTimeframe,
-              };
-            }
-          }
-          const cached = getCachedModelStatus(activeSymbol, id, trainingTimeframe);
-          if (cached?.trained) {
-            return {
-              strategy: id,
-              trained: true,
-              trained_at: cached.trained_at,
-              metrics: cached.metrics || {},
-              stale: true,
-              timeframe: trainingTimeframe,
-            };
-          }
-          return { strategy: id, trained: false, error: err.message, timeframe: trainingTimeframe };
-        }
-      }),
-    );
-    setInventory(rows);
-  }, [activeSymbol, trainingTimeframe]);
-
-  const fetchRetrainQueue = useCallback(async () => {
-    try {
-      const body = await apiRequest('/api/v1/ml/retrain-status');
-      const actions = Array.isArray(body?.retrain_actions) ? body.retrain_actions : [];
-      setRetrainActions(actions.filter((a) => isMlStrategy(a?.strategy)));
-      const pendingMap = body?.pending && typeof body.pending === 'object' ? body.pending : {};
-      setRetrainPending(
-        Object.entries(pendingMap)
-          .map(([key, info]) => ({
-            key,
-            strategy: info?.strategy,
-            symbol: info?.symbol,
-            reasons: Array.isArray(info?.reasons) ? info.reasons : [],
-            requested_at: info?.requested_at,
-          }))
-          .filter((p) => isMlStrategy(p.strategy)),
-      );
-      setRetrainHistory(Array.isArray(body?.history) ? body.history : []);
-    } catch (err) {
-      if (!isAbortError(err)) {
-        setRetrainActions([]);
-        setRetrainPending([]);
-        setRetrainHistory([]);
-      }
-    }
-  }, []);
-
-  const fetchQueueTelemetry = useCallback(async () => {
-    try {
-      const body = await apiRequest('/api/v1/ml/jobs?limit=5');
-      setQueueTelemetry({
-        active: Number(body?.active) || 0,
-        queued: Number(body?.queued) || 0,
-      });
-    } catch (err) {
-      if (!isAbortError(err)) {
-        /* keep last known */
-      }
-    }
-  }, []);
-
-  const fetchTrainRuns = useCallback(async () => {
-    if (!activeSymbol) {
-      setTrainRuns([]);
-      return;
-    }
-    try {
-      const qs = new URLSearchParams({
-        symbol: activeSymbol,
-        limit: '15',
-        timeframe: trainingTimeframe,
-      });
-      if (strategy) qs.set('strategy', strategy);
-      const body = await apiRequest(`/api/v1/ml/runs?${qs.toString()}`);
-      setTrainRuns(Array.isArray(body?.runs) ? body.runs : []);
-    } catch (err) {
-      if (!isAbortError(err)) setTrainRuns([]);
-    }
-  }, [activeSymbol, strategy, trainingTimeframe]);
-
-  const fetchStatus = useCallback(async ({ quiet = false } = {}) => {
-    if (!activeSymbol || !strategy) return;
-    if (!quiet) setLoading(true);
-    try {
-      const body = await apiRequest(
-        `/api/v1/ml/model-status?symbol=${encodeURIComponent(activeSymbol)}&strategy=${encodeURIComponent(strategy)}&timeframe=${encodeURIComponent(trainingTimeframe)}`,
-      );
-      const next = resolveModelStatusFetch(activeSymbol, strategy, {
-        body,
-        previous: statusRef.current,
-        timeframe: trainingTimeframe,
-      });
-      setStatus(next);
-    } catch (err) {
-      const next = resolveModelStatusFetch(activeSymbol, strategy, {
-        error: err,
-        previous: statusRef.current,
-        timeframe: trainingTimeframe,
-      });
-      setStatus(next);
-    } finally {
-      if (!quiet) setLoading(false);
-    }
-  }, [activeSymbol, strategy, trainingTimeframe]);
-
-  const refreshAll = useCallback(async ({
-    clearSessionValidation = false,
-    quiet = false,
-    preserveScroll = false,
-  } = {}) => {
-    const scroller = panelScrollRef.current;
-    const scrollTop = preserveScroll && scroller ? scroller.scrollTop : null;
-    if (clearSessionValidation) {
-      setMlValidation(null);
-      setChallengerDismissed(true);
-      championOosRef.current = null;
-    }
-    await Promise.all([
-      fetchStatus({ quiet }),
-      fetchInventory(),
-      fetchRetrainQueue(),
-      fetchQueueTelemetry(),
-      fetchTrainRuns(),
-    ]);
-    if (scrollTop != null && scroller) {
-      requestAnimationFrame(() => {
-        scroller.scrollTop = scrollTop;
-      });
-    }
-  }, [fetchStatus, fetchInventory, fetchRetrainQueue, fetchQueueTelemetry, fetchTrainRuns]);
-
-  const handleManualRefresh = useCallback(async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      // Soft refresh: keep validation block + scroll position; do not jump the panel.
-      await refreshAll({
-        clearSessionValidation: false,
-        quiet: true,
-        preserveScroll: true,
-      });
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshAll, refreshing]);
-
-  useEffect(() => {
-    if (isMlStrategy(botStrategy) && botStrategy !== strategy) {
-      setStrategy(botStrategy);
-    }
-  }, [botStrategy]); // eslint-disable-line react-hooks/exhaustive-deps -- sync bot picker → dashboard
-
-  const lastBotTfRef = useRef(null);
-  useEffect(() => {
-    const tf = String(botTimeframe || '1m').toLowerCase();
-    if (!tf || tf === 'tick') return;
-    // First mount: keep Lab TF from localStorage (already in state). Only follow
-    // the bot picker when the bot timeframe itself changes afterward.
-    if (lastBotTfRef.current === null) {
-      lastBotTfRef.current = tf;
-      return;
-    }
-    if (lastBotTfRef.current === tf) return;
-    lastBotTfRef.current = tf;
-    setTrainingTimeframe(tf);
-  }, [botTimeframe]);
-
-  // Strategy change: reset architecture defaults, then re-apply window budgets.
-  useEffect(() => {
-    setAdvanced((prev) => syncAdvancedForWindow(
-      defaultAdvancedKnobs(strategy, 'train'),
-      strategy,
-      trainingWindow,
-      trainingTimeframe,
-    ));
-    // trainingWindow/TF intentionally omitted — window effect owns those syncs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategy]);
-
-  // Training window / bar TF: immediately retarget Validate bars, folds, PBO.
-  useEffect(() => {
-    setAdvanced((prev) => syncAdvancedForWindow(
-      prev,
-      strategy,
-      trainingWindow,
-      trainingTimeframe,
-    ));
-    try {
-      window.localStorage.setItem(ML_LAB_WINDOW_KEY, String(trainingWindow));
-      window.localStorage.setItem(ML_LAB_TF_KEY, String(trainingTimeframe));
-    } catch {
-      /* ignore */
-    }
-  }, [trainingWindow, trainingTimeframe, strategy]);
-
-  useEffect(() => {
-    // Clear previous TF's status immediately so we never flash the wrong model.
-    const cached = getCachedModelStatus(activeSymbol, strategy, trainingTimeframe);
-    setStatus(cached);
-    // Quiet background refresh — avoid freezing the controls spinner on every pick.
-    refreshAll({ quiet: true, preserveScroll: true });
-  }, [refreshAll, trainingTimeframe, activeSymbol, strategy]);
-
-  // Poll queue depth while the panel is open (cheap).
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      fetchQueueTelemetry();
-    }, 5_000);
-    return () => window.clearInterval(id);
-  }, [fetchQueueTelemetry]);
-
-  // Re-attach only when the panel remounts mid-job *without* a local waiter
-  // (pollMlJobUntilDone owns the submit path — avoid double finishMlJob).
-  const localJobWaiterRef = useRef(false);
-  useEffect(() => {
-    if (!jobMatches) return undefined;
-    if (!mlSession.training && !mlSession.validating) return undefined;
-    const jobId = mlSession.jobId;
-    if (!jobId) {
-      const id = window.setInterval(() => {
-        fetchStatus();
-      }, 15_000);
-      return () => window.clearInterval(id);
-    }
-    if (localJobWaiterRef.current) return undefined;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`, {
-          timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
-        });
-        const job = body?.job;
-        if (cancelled || !job) return;
-        if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
-        if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
-          if (job.kind === 'validate' && job.result) setMlValidation(job.result);
-          if (job.status === 'done' && job.kind === 'train') {
-            invalidateMatchingMlBacktests(job.strategy || mlSession.strategy, job.symbol || mlSession.symbol);
-          }
-          finishMlJob(mlSession.jobToken, {
-            validation: job.kind === 'validate' ? job.result : undefined,
-            error: job.status === 'error' ? (job.error || 'failed') : null,
-          });
-          fetchStatus();
-        }
-      } catch {
-        appendMlPollLog({
-          status: 'running',
-          phase: 'waiting',
-          detail: 'server busy — still polling…',
-          note: 'poll_err',
-        });
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [
-    jobMatches,
-    mlSession.training,
-    mlSession.validating,
-    mlSession.jobId,
-    mlSession.jobToken,
-    fetchStatus,
-  ]);
+    activeSymbol,
+    symbolOptions,
+    setActiveSymbol,
+    mlSession,
+    strategy,
+    setStrategy,
+    trainingWindow,
+    setTrainingWindow,
+    trainingTimeframe,
+    setTrainingTimeframe,
+    advanced,
+    setAdvanced,
+    status,
+    setStatus,
+    inventory,
+    retrainActions,
+    setRetrainActions,
+    retrainPending,
+    setRetrainPending,
+    retrainHistory,
+    trainRuns,
+    queueTelemetry,
+    loading,
+    refreshing,
+    activatingVersionId,
+    setActivatingVersionId,
+    deletingVersionId,
+    setDeletingVersionId,
+    showPollLog,
+    setShowPollLog,
+    challengerDismissed,
+    setChallengerDismissed,
+    runNowKey,
+    setRunNowKey,
+    cancellingJob,
+    championOosRef,
+    panelScrollRef,
+    localJobWaiterRef,
+    training,
+    validating,
+    jobProgress,
+    serverProgress,
+    pollLog,
+    activeJobId,
+    validation,
+    busyElsewhere,
+    sessionTuningHint,
+    meta,
+    startJobProgress,
+    finishJobProgress,
+    refreshAll,
+    handleManualRefresh,
+    pollMlJobUntilDone,
+    handleCancelJob,
+  } = useMlLabState();
 
   const handleActivateVersion = async (version) => {
     if (!activeSymbol || !strategy || !version || activatingVersionId) return;
@@ -1504,16 +173,12 @@ export default function ModelTrainingDashboard({
     }
     setActivatingVersionId(version.version_id || pin);
     try {
-      const body = await apiRequest('/api/v1/ml/activate-version', {
-        method: 'POST',
-        body: {
-          symbol: activeSymbol,
-          strategy,
-          timeframe: trainingTimeframe,
-          model_version: pin,
-          version_id: version.version_id,
-        },
-        timeoutMs: 60_000,
+      const body = await activateMlVersion({
+        symbol: activeSymbol,
+        strategy,
+        timeframe: trainingTimeframe,
+        model_version: pin,
+        version_id: version.version_id,
       });
       if (body?.ok) {
         setCachedModelStatus(activeSymbol, strategy, body, trainingTimeframe);
@@ -1564,16 +229,12 @@ export default function ModelTrainingDashboard({
     }
     setDeletingVersionId(version.version_id || pin);
     try {
-      const body = await apiRequest('/api/v1/ml/delete-version', {
-        method: 'POST',
-        body: {
-          symbol: activeSymbol,
-          strategy,
-          timeframe: trainingTimeframe,
-          model_version: pin,
-          version_id: version.version_id,
-        },
-        timeoutMs: 60_000,
+      const body = await deleteMlVersion({
+        symbol: activeSymbol,
+        strategy,
+        timeframe: trainingTimeframe,
+        model_version: pin,
+        version_id: version.version_id,
       });
       if (body?.ok) {
         setCachedModelStatus(activeSymbol, strategy, body, trainingTimeframe);
@@ -1590,87 +251,24 @@ export default function ModelTrainingDashboard({
     }
   };
 
-  const pollMlJobUntilDone = useCallback(async (jobId, { strategy: strat, kind = 'train', months } = {}) => {
-    const terminal = new Set(['done', 'error', 'cancelled']);
-    const winMonths = months ?? trainingWindow;
-    const budgetMs = mlJobPollDeadlineMs(strat || strategy, kind, { months: winMonths });
-    const started = Date.now();
-    const deadline = started + budgetMs;
-    let transientStreak = 0;
-    let warnedTransient = false;
-    let warnedPastBudget = false;
-    // Keep polling until the job reaches a terminal status. Transient HTTP
-    // timeouts and even the soft budget must not clear the progress bar.
-    for (;;) {
-      const pastBudget = Date.now() >= deadline;
-      if (pastBudget && !warnedPastBudget) {
-        warnedPastBudget = true;
-        toast.message(
-          `Still ${kind === 'train' ? 'training' : 'validating'} past ${formatMlJobBudgetLabel(budgetMs)} — progress stays open`,
-        );
-      }
-      try {
-        const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`, {
-          timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
-        });
-        transientStreak = 0;
-        const job = body?.job;
-        if (!job) throw new Error('ML job not found');
-        if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
-        if (terminal.has(job.status)) return job;
-      } catch (err) {
-        // Single GET timeouts must not kill the progress bar — GPU trains can
-        // starve the event loop briefly; the job is usually still running.
-        if (!isTransientMlPollError(err)) throw err;
-        transientStreak += 1;
-        const prev = getMlTrainingSession().serverProgress || {};
-        setMlServerProgress({
-          pct: Number(prev.pct) || 0,
-          phase: prev.phase || 'waiting',
-          detail: 'server busy — still polling…',
-          status: prev.status || 'running',
-          note: 'poll_err',
-        });
-        if (!warnedTransient) {
-          warnedTransient = true;
-          toast.message('Job status briefly unreachable — keeping progress open and retrying…');
-        }
-        const backoff = Math.min(15_000, 2_000 * transientStreak);
-        await new Promise((r) => setTimeout(r, backoff));
-        continue;
-      }
-      const elapsed = Date.now() - started;
-      const interval = pastBudget
-        ? Math.max(8_000, mlJobPollIntervalMs(elapsed, budgetMs))
-        : mlJobPollIntervalMs(elapsed, budgetMs);
-      await new Promise((r) => setTimeout(r, interval));
+  // Fail the pipeline when a stage's job cannot even start, so the run never
+  // parks at TRAINING/VALIDATING forever (status bar + quick actions unblock).
+  const failPipelineAtStage = (stage, strat, symbol, error) => {
+    const pipe = getMlPipeline();
+    if (
+      pipe.pipelineId
+      && pipe.stage === stage
+      && String(pipe.strategy || '').toUpperCase() === String(strat || '').toUpperCase()
+      && String(pipe.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()
+    ) {
+      failPipeline(pipe.pipelineId, { stage, error });
     }
-  }, [strategy, trainingWindow]);
-
-  const handleCancelJob = useCallback(async () => {
-    const jobId = getMlTrainingSession().jobId;
-    if (!jobId || cancellingJob) return;
-    setCancellingJob(true);
-    try {
-      const body = await apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}/cancel`, {
-        method: 'POST',
-        timeoutMs: 30_000,
-      });
-      if (body?.ok) {
-        toast.message(body.immediate ? 'Job cancelled' : 'Cancel requested — finishing current step…');
-      } else {
-        toast.error(body?.error || 'Cancel failed');
-      }
-    } catch (err) {
-      if (!isAbortError(err)) toast.error(err.message || 'Cancel failed');
-    } finally {
-      setCancellingJob(false);
-    }
-  }, [cancellingJob]);
+  };
 
   const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null, championTrain = false } = {}) => {
-    if (training || validating || busyElsewhere || !symbol || !strat) return;
-    const queueKey = `${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`;
+    if (training || validating || busyElsewhere || !symbol || !strat) return false;
+    // Must match backend pending key SYMBOL:STRATEGY:TF (not SYMBOL:STRATEGY).
+    const queueKey = retrainQueueKey(symbol, strat, trainingTimeframe);
     if (fromQueue) setRunNowKey(queueKey);
     setMlValidation(null);
     if (strat !== strategy) setStrategy(strat);
@@ -1682,6 +280,7 @@ export default function ModelTrainingDashboard({
     const isChampion = Boolean(championTrain || Object.keys(hp).length);
     localJobWaiterRef.current = true;
     let trainUiCompleted = false;
+    let trainOk = false;
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
@@ -1690,75 +289,72 @@ export default function ModelTrainingDashboard({
             : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
         );
       }
-      const body = await apiRequest('/api/v1/ml/train', {
-        method: 'POST',
-        body: {
-          symbol,
-          strategy: strat,
-          async: true,
-          config: {
-            timeframe: trainingTimeframe,
-            training_window_months: Number(trainingWindow),
-            // Force a real Lab champion write — never inherit Optuna trial
-            // skip_persist / _wf_mode that produce empty metrics + no artifact.
-            champion_train: isChampion,
-            skip_persist: false,
-            skip_snapshot: false,
-            ...(strat === 'RL_PPO_AGENT'
-              ? {
-                  total_timesteps: parsePositiveInt(
-                    knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
-                  ),
-                  hidden_dim: parsePositiveInt(
-                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                  ),
-                }
-              : {}),
-            ...(DEEP_ML_STRATEGIES.has(strat)
-              ? {
-                  epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
-                  early_stop_patience: parsePositiveInt(
-                    knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
-                  ),
-                  hidden_dim: parsePositiveInt(
-                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                  ),
-                  ...(strat === 'TRANSFORMER_SIGNAL'
-                    ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
-                    : {}),
-                  ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
-                }
-              : {}),
-            ...(strat === 'ML_SIGNAL_BOOST'
-              ? {
-                  gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
-                  gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
-                }
-              : {}),
-            ...hp,
-            // Re-assert after hp spread — Optuna trial flags must never win.
-            skip_persist: false,
-            skip_snapshot: false,
-            ...(isChampion
-              ? { champion_train: true, use_optimized_hyperparams: true }
-              : (
-                typeof sessionStorage !== 'undefined'
-                && sessionStorage.getItem(`ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`) === '1'
-                  ? { use_optimized_hyperparams: true }
-                  : {}
-              )),
-          },
+      const body = await submitMlTrainJob({
+        symbol,
+        strategy: strat,
+        async: true,
+        config: {
+          timeframe: trainingTimeframe,
+          training_window_months: Number(trainingWindow),
+          // Force a real Lab champion write — never inherit Optuna trial
+          // skip_persist / _wf_mode that produce empty metrics + no artifact.
+          champion_train: isChampion,
+          skip_persist: false,
+          skip_snapshot: false,
+          ...(strat === 'RL_PPO_AGENT'
+            ? {
+                total_timesteps: parsePositiveInt(
+                  knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
+                ),
+                hidden_dim: parsePositiveInt(
+                  knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                ),
+              }
+            : {}),
+          ...(DEEP_ML_STRATEGIES.has(strat)
+            ? {
+                epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
+                early_stop_patience: parsePositiveInt(
+                  knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
+                ),
+                hidden_dim: parsePositiveInt(
+                  knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                ),
+                ...(strat === 'TRANSFORMER_SIGNAL'
+                  ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
+                  : {}),
+                ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
+              }
+            : {}),
+          ...(strat === 'ML_SIGNAL_BOOST'
+            ? {
+                gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
+                gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
+              }
+            : {}),
+          ...hp,
+          // Re-assert after hp spread — Optuna trial flags must never win.
+          skip_persist: false,
+          skip_snapshot: false,
+          ...(isChampion
+            ? { champion_train: true, use_optimized_hyperparams: true }
+            : (
+              typeof sessionStorage !== 'undefined'
+              && sessionStorage.getItem(`ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`) === '1'
+                ? { use_optimized_hyperparams: true }
+                : {}
+            )),
         },
-        // Candle fetch for long Lab windows; train itself is async + polled.
-        timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
       });
       if (!body?.ok) {
         toast.error(body?.error || 'Training failed to start');
+        failPipelineAtStage('TRAINING', strat, symbol, body?.error || 'Training failed to start');
         return;
       }
       const jobId = body.job_id;
       if (!jobId) {
         toast.error('Server did not return a job_id');
+        failPipelineAtStage('TRAINING', strat, symbol, 'Server did not return a job_id');
         return;
       }
       setMlJobId(jobId);
@@ -1771,9 +367,8 @@ export default function ModelTrainingDashboard({
       const result = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Training cancelled');
-        return;
-      }
-      if (job.status === 'done' && result.ok !== false) {
+      } else if (job.status === 'done' && result.ok !== false) {
+        trainOk = true;
         const tw = result.training_window;
         const twNote = tw?.bars != null
           ? ` · ${Number(tw.bars).toLocaleString()} bars`
@@ -1817,13 +412,36 @@ export default function ModelTrainingDashboard({
           } catch { /* ignore */ }
         }
         invalidateMatchingMlBacktests(strat, symbol);
+        // Refetch badges but keep race guard so late untrained cannot undo Fresh.
+        markModelFreshAfterTrain(symbol, strat, trainingTimeframe);
         // Drop from retrain audit immediately (backend also clears via record_retrain).
-        setRetrainPending((prev) => prev.filter((p) => p.key !== queueKey));
-        setRetrainActions((prev) => prev.filter((a) => (
-          `${String(a.symbol || '').toUpperCase()}:${String(a.strategy || '').toUpperCase()}` !== queueKey
+        setRetrainPending((prev) => prev.filter((p) => (
+          !matchesRetrainTarget(p, symbol, strat, trainingTimeframe)
         )));
+        setRetrainActions((prev) => prev.filter((a) => (
+          !matchesRetrainTarget(a, symbol, strat, trainingTimeframe)
+        )));
+        const pipe = getMlPipeline();
+        if (
+          pipe.pipelineId
+          && pipe.stage === 'TRAINING'
+          && pipe.autoAdvance
+          && String(pipe.strategy || '').toUpperCase() === String(strat).toUpperCase()
+          && String(pipe.symbol || '').toUpperCase() === String(symbol).toUpperCase()
+        ) {
+          advancePipeline(pipe.pipelineId, { result });
+          // Chain validate after refresh in finally.
+          pipelineValidateRef.current = true;
+        }
       } else {
         toast.error(job.error || result.error || 'Training failed');
+        const pipe = getMlPipeline();
+        if (pipe.pipelineId && pipe.stage === 'TRAINING') {
+          failPipeline(pipe.pipelineId, {
+            stage: 'TRAINING',
+            error: job.error || result.error || 'Training failed',
+          });
+        }
       }
     } catch (err) {
       if (!isAbortError(err)) {
@@ -1834,6 +452,13 @@ export default function ModelTrainingDashboard({
           );
         } else {
           toast.error(err.message || 'Training request failed');
+        }
+        const pipe = getMlPipeline();
+        if (pipe.pipelineId && pipe.stage === 'TRAINING') {
+          failPipeline(pipe.pipelineId, {
+            stage: 'TRAINING',
+            error: err.message || 'Training request failed',
+          });
         }
       }
     } finally {
@@ -1854,7 +479,26 @@ export default function ModelTrainingDashboard({
       if (fromQueue) setRunNowKey(null);
       // Always refresh enriched status — never cache thin train payloads as status.
       await refreshAll();
+      if (pipelineValidateRef.current) {
+        pipelineValidateRef.current = false;
+        const chainedPipeId = getMlPipeline().pipelineId;
+        queueMicrotask(() => {
+          void pipelineValidateRef.currentHandleValidate?.().then((ok) => {
+            // Guard-blocked validate (busy Lab) would otherwise park at VALIDATING.
+            if (ok === false) {
+              const p = getMlPipeline();
+              if (p.pipelineId && p.pipelineId === chainedPipeId && p.stage === 'VALIDATING') {
+                failPipeline(p.pipelineId, {
+                  stage: 'VALIDATING',
+                  error: 'Validate could not start — ML Lab busy',
+                });
+              }
+            }
+          });
+        });
+      }
     }
+    return trainOk;
   };
 
   const handleTrain = async () => {
@@ -1875,25 +519,29 @@ export default function ModelTrainingDashboard({
     await runTrainJob(strat, symbol, { fromQueue: true });
   };
 
-  const handleValidate = async () => {
-    if (validating || training || busyElsewhere || !activeSymbol) return;
+  const handleValidate = async (opts = {}) => {
+    const strat = opts.strategy || strategy;
+    if (validating || training || busyElsewhere || !activeSymbol) return false;
+    if (strat !== strategy) setStrategy(strat);
     setMlValidation(null);
-    const isRl = strategy === 'RL_PPO_AGENT';
-    const isDeep = DEEP_ML_STRATEGIES.has(strategy);
-    const defaults = defaultAdvancedKnobs(strategy, 'train');
-    const nFolds = parsePositiveInt(advanced.nFolds, defaults.nFolds, { min: 2, max: 8 });
+    const isRl = strat === 'RL_PPO_AGENT';
+    const isDeep = DEEP_ML_STRATEGIES.has(strat);
+    const defaults = defaultAdvancedKnobs(strat, 'train');
+    const knobs = strat === strategy ? advanced : defaults;
+    const nFolds = parsePositiveInt(knobs.nFolds, defaults.nFolds, { min: 2, max: 8 });
     const validateMaxBars = parsePositiveInt(
-      advanced.validateMaxBars,
+      knobs.validateMaxBars,
       defaults.validateMaxBars,
       { min: 200, max: 100_000 },
     );
-    const pboSegments = parsePositiveInt(advanced.pboSegments, defaults.pboSegments, { min: 2, max: 8 });
-    const pboMaxCombos = parsePositiveInt(advanced.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 });
+    const pboSegments = parsePositiveInt(knobs.pboSegments, defaults.pboSegments, { min: 2, max: 8 });
+    const pboMaxCombos = parsePositiveInt(knobs.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 });
     championOosRef.current = status?.walk_forward?.mean_oos_accuracy ?? null;
     setChallengerDismissed(false);
-    const validateTimeoutMs = mlJobTimeoutMs(strategy, 'validate', { months: trainingWindow });
-    const token = startJobProgress('validate', strategy, activeSymbol, trainingWindow);
+    const validateTimeoutMs = mlJobTimeoutMs(strat, 'validate', { months: trainingWindow });
+    const token = startJobProgress('validate', strat, activeSymbol, trainingWindow);
     localJobWaiterRef.current = true;
+    let validateOk = false;
     try {
       toast.message(
         isRl
@@ -1904,80 +552,76 @@ export default function ModelTrainingDashboard({
       );
       // Capacity parity: reuse Lab Advanced train knobs so OOS ≈ production Train.
       const wfEpochs = isDeep
-        ? parsePositiveInt(advanced.epochs, defaults.epochs, { min: 1, max: 500 })
+        ? parsePositiveInt(knobs.epochs, defaults.epochs, { min: 1, max: 500 })
         : null;
       const earlyStop = parsePositiveInt(
-        advanced.earlyStopPatience,
+        knobs.earlyStopPatience,
         defaults.earlyStopPatience,
         { min: 1, max: 100 },
       );
-      const body = await apiRequest('/api/v1/ml/validate', {
-        method: 'POST',
-        body: {
-          symbol: activeSymbol,
-          strategy,
-          async: true,
-          n_folds: nFolds,
-          mode: 'rolling',
-          // Deep/RL fold PBO re-trains every combo — too heavy for Lab Validate.
-          pbo: !isRl && !isDeep,
-          pbo_segments: pboSegments,
+      const body = await submitMlValidateJob({
+        symbol: activeSymbol,
+        strategy: strat,
+        async: true,
+        n_folds: nFolds,
+        mode: 'rolling',
+        // Deep/RL fold PBO re-trains every combo — too heavy for Lab Validate.
+        pbo: !isRl && !isDeep,
+        pbo_segments: pboSegments,
+        timeframe: trainingTimeframe,
+        config: {
           timeframe: trainingTimeframe,
-          config: {
-            timeframe: trainingTimeframe,
-            training_window_months: Number(trainingWindow),
-            symbol: activeSymbol,
-            model_symbol: activeSymbol,
-            _wf_mode: true,
-            wf_use_gpu: true,
-            wf_capacity_parity: true,
-            validate_max_bars: validateMaxBars,
-            pbo_max_combos: pboMaxCombos,
-            early_stop_patience: earlyStop,
-            ...(isRl
-              ? {
-                  total_timesteps: parsePositiveInt(
-                    advanced.totalTimesteps,
-                    defaults.totalTimesteps,
-                    { min: 512, max: 500_000 },
-                  ),
-                  n_steps: 2048,
-                  ppo_epochs: 10,
-                  hidden_dim: parsePositiveInt(advanced.hiddenDim, defaults.hiddenDim, {
-                    min: 32, max: 512,
-                  }),
-                  skip_onnx_export: true,
-                }
-              : {}),
-            ...(isDeep
-              ? {
-                  hidden_dim: parsePositiveInt(advanced.hiddenDim, defaults.hiddenDim, {
-                    min: 32, max: 512,
-                  }),
-                  ...(strategy === 'TRANSFORMER_SIGNAL'
-                    ? {
-                        d_model: parsePositiveInt(advanced.hiddenDim, 128, {
-                          min: 32, max: 512,
-                        }),
-                      }
-                    : {}),
-                  ...(strategy === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
-                }
-              : {}),
-            ...(strategy === 'ML_SIGNAL_BOOST'
-              ? {
-                  gbm_max_iter: parsePositiveInt(advanced.gbmMaxIter, defaults.gbmMaxIter, {
-                    min: 40, max: 1000,
-                  }),
-                  gbm_max_depth: parsePositiveInt(advanced.gbmMaxDepth, defaults.gbmMaxDepth, {
-                    min: 3, max: 12,
-                  }),
-                }
-              : {}),
-            ...(wfEpochs != null ? { epochs: wfEpochs, wf_epochs: wfEpochs } : {}),
-          },
+          training_window_months: Number(trainingWindow),
+          symbol: activeSymbol,
+          model_symbol: activeSymbol,
+          _wf_mode: true,
+          wf_use_gpu: true,
+          wf_capacity_parity: true,
+          validate_max_bars: validateMaxBars,
+          pbo_max_combos: pboMaxCombos,
+          early_stop_patience: earlyStop,
+          ...(isRl
+            ? {
+                total_timesteps: parsePositiveInt(
+                  knobs.totalTimesteps,
+                  defaults.totalTimesteps,
+                  { min: 512, max: 500_000 },
+                ),
+                n_steps: 2048,
+                ppo_epochs: 10,
+                hidden_dim: parsePositiveInt(knobs.hiddenDim, defaults.hiddenDim, {
+                  min: 32, max: 512,
+                }),
+                skip_onnx_export: true,
+              }
+            : {}),
+          ...(isDeep
+            ? {
+                hidden_dim: parsePositiveInt(knobs.hiddenDim, defaults.hiddenDim, {
+                  min: 32, max: 512,
+                }),
+                ...(strat === 'TRANSFORMER_SIGNAL'
+                  ? {
+                      d_model: parsePositiveInt(knobs.hiddenDim, 128, {
+                        min: 32, max: 512,
+                      }),
+                    }
+                  : {}),
+                ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
+              }
+            : {}),
+          ...(strat === 'ML_SIGNAL_BOOST'
+            ? {
+                gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, defaults.gbmMaxIter, {
+                  min: 40, max: 1000,
+                }),
+                gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, defaults.gbmMaxDepth, {
+                  min: 3, max: 12,
+                }),
+              }
+            : {}),
+          ...(wfEpochs != null ? { epochs: wfEpochs, wf_epochs: wfEpochs } : {}),
         },
-        timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
       });
       if (!body?.ok) {
         const foldErr = Array.isArray(body?.folds)
@@ -1985,16 +629,20 @@ export default function ModelTrainingDashboard({
           : null;
         toast.error(body?.error || foldErr || 'Validation failed to start');
         setMlValidation(body || { ok: false, error: 'Validation failed' });
-        return;
+        failPipelineAtStage(
+          'VALIDATING', strat, activeSymbol, body?.error || foldErr || 'Validation failed to start',
+        );
+        return false;
       }
       const jobId = body.job_id;
       if (!jobId) {
         toast.error('Server did not return a job_id');
-        return;
+        failPipelineAtStage('VALIDATING', strat, activeSymbol, 'Server did not return a job_id');
+        return false;
       }
       setMlJobId(jobId);
       const job = await pollMlJobUntilDone(jobId, {
-        strategy,
+        strategy: strat,
         kind: 'validate',
         months: trainingWindow,
       });
@@ -2004,7 +652,12 @@ export default function ModelTrainingDashboard({
       setMlValidation(result);
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Validation cancelled');
+        const pipe = getMlPipeline();
+        if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+          failPipeline(pipe.pipelineId, { stage: 'VALIDATING', error: 'cancelled' });
+        }
       } else if (job.status === 'done' && result.ok) {
+        validateOk = true;
         const tw = result.training_window;
         const twNote = tw?.bars != null
           ? ` · ${Number(tw.bars).toLocaleString()} bars`
@@ -2019,11 +672,23 @@ export default function ModelTrainingDashboard({
         } else {
           toast.success(`Walk-forward validation finished${twNote}`);
         }
+        const pipe = getMlPipeline();
+        if (pipe.pipelineId && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
+          advancePipeline(pipe.pipelineId, { result });
+          // AlgoPanel listens for BACKTESTING and kicks off holdout BT.
+        }
       } else {
         const foldErr = Array.isArray(result?.folds)
           ? result.folds.find((f) => f?.error)?.error
           : null;
         toast.error(job.error || result.error || foldErr || 'Validation failed');
+        const pipe = getMlPipeline();
+        if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+          failPipeline(pipe.pipelineId, {
+            stage: 'VALIDATING',
+            error: job.error || result.error || foldErr || 'Validation failed',
+          });
+        }
       }
     } catch (err) {
       const msg = err?.message || String(err) || 'Validation request failed';
@@ -2035,12 +700,141 @@ export default function ModelTrainingDashboard({
       if (!isAbortError(err)) {
         toast.error(badJson ? 'Validation failed — recycle backend and retry' : msg);
       }
+      const pipe = getMlPipeline();
+      if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+        failPipeline(pipe.pipelineId, { stage: 'VALIDATING', error: friendly });
+      }
     } finally {
       localJobWaiterRef.current = false;
       finishJobProgress(token);
       await refreshAll();
     }
+    return validateOk;
   };
+
+  // Keep a stable handle for pipeline auto-advance → validate.
+  pipelineValidateRef.currentHandleValidate = handleValidate;
+
+  const handleFullPipeline = () => {
+    if (!activeSymbol || !strategy) {
+      toast.error('Select a symbol and ML strategy first');
+      return;
+    }
+    if (training || validating || busyElsewhere) {
+      toast.message('Wait for the current ML job to finish');
+      return;
+    }
+    startPipeline({
+      strategy,
+      symbol: activeSymbol,
+      timeframe: trainingTimeframe,
+      trainingWindow,
+      autoAdvance: autoAdvanceOn,
+      autoDeployMode: getAutoDeployMode(),
+    });
+    toast.message('Full pipeline started — Train → Validate → Backtest → Gate');
+    void runTrainJob(strategy, activeSymbol);
+  };
+
+  useEffect(() => {
+    const onRunPipeline = (e) => {
+      clearMlLabRequest('ml-lab-run-pipeline');
+      const d = e?.detail || {};
+      const strat = d.strategy || strategy;
+      const sym = d.symbol || activeSymbol;
+      const tf = d.timeframe || trainingTimeframe;
+      const mode = d.mode || 'full';
+      if (!sym || !strat) return;
+      // Live session check (closure state may be stale in this long-lived effect).
+      const sess = getMlTrainingSession();
+      if (sess.training || sess.validating || sess.tuning) {
+        toast.message(
+          `ML job already running for ${sess.strategy} / ${sess.symbol} — wait for it before starting a pipeline`,
+        );
+        const existing = getMlPipeline();
+        if (d.pipelineId && existing.pipelineId === d.pipelineId) {
+          failPipeline(d.pipelineId, { stage: 'TRAINING', error: 'ML Lab busy — pipeline not started' });
+        }
+        return;
+      }
+      if (strat !== strategy) setStrategy(strat);
+      if (tf && tf !== trainingTimeframe) setTrainingTimeframe(tf);
+      // Presets may already have started the pipeline — reuse that id.
+      const existing = getMlPipeline();
+      if (!(d.pipelineId && existing.pipelineId === d.pipelineId)) {
+        startPipeline({
+          strategy: strat,
+          symbol: sym,
+          timeframe: tf,
+          trainingWindow,
+          autoAdvance: true,
+          autoDeployMode: mode === 'retrain_validate' ? 'approval' : getAutoDeployMode(),
+          stopAfterValidate: mode === 'retrain_validate',
+          presetId: mode === 'retrain_validate' ? 'ml_retrain_validate' : 'ml_full_pipeline',
+        });
+      }
+      setTimeout(() => {
+        void runTrainJob(strat, sym);
+      }, 50);
+    };
+    const onOpenBatch = (e) => {
+      clearMlLabRequest('ml-lab-open-batch');
+      setBatchScope(e?.detail?.scope || 'untrained');
+      setBatchOpen(true);
+    };
+    const onRetrain = (e) => {
+      clearMlLabRequest('ml-lab-retrain');
+      const d = e?.detail || {};
+      if (d.strategy && d.strategy !== strategy) setStrategy(d.strategy);
+      if (d.timeframe && d.timeframe !== trainingTimeframe) setTrainingTimeframe(d.timeframe);
+      if (d.strategy && (d.symbol || activeSymbol) && d.autoStart !== false) {
+        const sess = getMlTrainingSession();
+        if (sess.training || sess.validating || sess.tuning) {
+          toast.message(
+            `Retrain queued behind active ML job (${sess.strategy} / ${sess.symbol}) — start it when the job finishes`,
+          );
+          return;
+        }
+        setTimeout(() => {
+          void runTrainJob(d.strategy, d.symbol || activeSymbol);
+        }, 50);
+      }
+    };
+    window.addEventListener('ml-lab-run-pipeline', onRunPipeline);
+    window.addEventListener('ml-lab-open-batch', onOpenBatch);
+    window.addEventListener('ml-lab-retrain', onRetrain);
+    // Detached Lab lives in another window — requests arrive via BroadcastChannel.
+    // Gate on standalone location so a second full-terminal tab never double-runs.
+    const isStandaloneLab = isMlLabStandaloneLocation(window.location.search);
+    const unsubscribeStandalone = isStandaloneLab
+      ? subscribeMlLabEvents((msg) => {
+        if (msg?.type !== 'ml-lab-request' || !msg.requestType) return;
+        const evt = { detail: msg.detail || {} };
+        if (msg.requestType === 'ml-lab-run-pipeline') onRunPipeline(evt);
+        else if (msg.requestType === 'ml-lab-open-batch') onOpenBatch(evt);
+        else if (msg.requestType === 'ml-lab-retrain') onRetrain(evt);
+      })
+      : null;
+    // Drain a request posted while the Lab was unmounted (dock keep-alive expiry).
+    const pendingReq = takeMlLabRequest([
+      'ml-lab-run-pipeline',
+      'ml-lab-open-batch',
+      'ml-lab-retrain',
+    ]);
+    if (pendingReq) {
+      const evt = { detail: pendingReq.detail };
+      if (pendingReq.type === 'ml-lab-run-pipeline') onRunPipeline(evt);
+      else if (pendingReq.type === 'ml-lab-open-batch') onOpenBatch(evt);
+      else onRetrain(evt);
+    }
+    return () => {
+      window.removeEventListener('ml-lab-run-pipeline', onRunPipeline);
+      window.removeEventListener('ml-lab-open-batch', onOpenBatch);
+      window.removeEventListener('ml-lab-retrain', onRetrain);
+      unsubscribeStandalone?.();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers use latest closures via runTrainJob
+  }, [activeSymbol, strategy, trainingTimeframe, trainingWindow]);
 
   const statusLabel = training
     ? 'Training'
@@ -2056,11 +850,6 @@ export default function ModelTrainingDashboard({
   const queueBadge = (queueTelemetry.active > 0 || queueTelemetry.queued > 0)
     ? `${queueTelemetry.active} running · ${queueTelemetry.queued} queued`
     : null;
-
-  const { onScroll: onRunsScroll, window: runsWindow } = useVirtualRows(trainRuns, {
-    rowHeight: 32,
-    overscan: 6,
-  });
 
   const displayValidation = validation || (
     status?.walk_forward || status?.pbo
@@ -2121,6 +910,19 @@ export default function ModelTrainingDashboard({
               no {trainingTimeframe} model
             </span>
           )}
+          <label className="ml-training__header-meta flex items-center gap-1 cursor-pointer" title="Auto-advance pipeline stages">
+            <input
+              type="checkbox"
+              checked={autoAdvanceOn}
+              onChange={(e) => {
+                const on = Boolean(e.target.checked);
+                setAutoAdvanceOn(on);
+                setAutoAdvance(on);
+              }}
+            />
+            Auto-advance
+          </label>
+          <PipelineAutoDeploySettings compact />
           {(onDetach || onAttach) && (
             <Button
               type="button"
@@ -2150,11 +952,27 @@ export default function ModelTrainingDashboard({
         </div>
       </header>
 
+      <PipelineStatusBar className="mx-3 mt-2" />
+
       <section className="ml-training__controls">
         <div className="ml-training__controls-grid">
           <div className="ml-training__field">
             <Label className="text-xs">Symbol</Label>
-            <p className="text-sm font-medium num-mono">{activeSymbol || '—'}</p>
+            <Select
+              value={activeSymbol || undefined}
+              onValueChange={setActiveSymbol}
+            >
+              <SelectTrigger size="sm" className="h-8 num-mono" aria-label="Symbol">
+                <SelectValue placeholder="Select symbol" />
+              </SelectTrigger>
+              <SelectContent position="popper" className="max-h-56">
+                {symbolOptions.map((sym) => (
+                  <SelectItem key={sym} value={sym} className="text-xs num-mono">
+                    {sym}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="ml-training__field">
             <Label className="text-xs">Strategy</Label>
@@ -2231,146 +1049,11 @@ export default function ModelTrainingDashboard({
           </div>
         </div>
 
-        <details className="ml-training__advanced">
-          <summary>Advanced</summary>
-          <div className="ml-training__advanced-grid">
-            <label className="ml-training__advanced-field">
-              <span>n_folds</span>
-              <Input
-                type="number"
-                min={2}
-                max={8}
-                className="h-7 text-xs"
-                value={advanced.nFolds}
-                onChange={(e) => setAdvanced((a) => ({ ...a, nFolds: e.target.value }))}
-              />
-            </label>
-            <label className="ml-training__advanced-field">
-              <span>validate_max_bars</span>
-              <Input
-                type="number"
-                min={200}
-                max={20000}
-                step={100}
-                className="h-7 text-xs"
-                value={advanced.validateMaxBars}
-                onChange={(e) => setAdvanced((a) => ({ ...a, validateMaxBars: e.target.value }))}
-              />
-            </label>
-            <label className="ml-training__advanced-field">
-              <span>pbo_segments</span>
-              <Input
-                type="number"
-                min={2}
-                max={8}
-                className="h-7 text-xs"
-                disabled={strategy === 'RL_PPO_AGENT'}
-                value={advanced.pboSegments}
-                onChange={(e) => setAdvanced((a) => ({ ...a, pboSegments: e.target.value }))}
-              />
-            </label>
-            <label className="ml-training__advanced-field">
-              <span>pbo_max_combos</span>
-              <Input
-                type="number"
-                min={1}
-                max={16}
-                className="h-7 text-xs"
-                disabled={strategy === 'RL_PPO_AGENT'}
-                value={advanced.pboMaxCombos}
-                onChange={(e) => setAdvanced((a) => ({ ...a, pboMaxCombos: e.target.value }))}
-              />
-            </label>
-            {strategy === 'RL_PPO_AGENT' && (
-              <label className="ml-training__advanced-field">
-                <span>total_timesteps</span>
-                <Input
-                  type="number"
-                  min={256}
-                  max={500000}
-                  step={256}
-                  className="h-7 text-xs"
-                  value={advanced.totalTimesteps}
-                  onChange={(e) => setAdvanced((a) => ({ ...a, totalTimesteps: e.target.value }))}
-                />
-              </label>
-            )}
-            {(DEEP_ML_STRATEGIES.has(strategy) || strategy === 'RL_PPO_AGENT') && (
-              <label className="ml-training__advanced-field">
-                <span>hidden_dim</span>
-                <Input
-                  type="number"
-                  min={32}
-                  max={1024}
-                  step={32}
-                  className="h-7 text-xs"
-                  value={advanced.hiddenDim}
-                  onChange={(e) => setAdvanced((a) => ({ ...a, hiddenDim: e.target.value }))}
-                />
-              </label>
-            )}
-            {DEEP_ML_STRATEGIES.has(strategy) && (
-              <label className="ml-training__advanced-field">
-                <span>train epochs</span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={500}
-                  className="h-7 text-xs"
-                  value={advanced.epochs}
-                  onChange={(e) => setAdvanced((a) => ({ ...a, epochs: e.target.value }))}
-                />
-              </label>
-            )}
-            {DEEP_ML_STRATEGIES.has(strategy) && (
-              <label className="ml-training__advanced-field">
-                <span title="Stop after this many epochs with no better validation loss">
-                  early-stop patience
-                </span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  className="h-7 text-xs"
-                  value={advanced.earlyStopPatience}
-                  onChange={(e) => setAdvanced((a) => ({ ...a, earlyStopPatience: e.target.value }))}
-                />
-              </label>
-            )}
-            {strategy === 'ML_SIGNAL_BOOST' && (
-              <>
-                <label className="ml-training__advanced-field">
-                  <span>gbm_max_iter</span>
-                  <Input
-                    type="number"
-                    min={40}
-                    max={1000}
-                    step={10}
-                    className="h-7 text-xs"
-                    value={advanced.gbmMaxIter}
-                    onChange={(e) => setAdvanced((a) => ({ ...a, gbmMaxIter: e.target.value }))}
-                  />
-                </label>
-                <label className="ml-training__advanced-field">
-                  <span>gbm_max_depth</span>
-                  <Input
-                    type="number"
-                    min={3}
-                    max={12}
-                    className="h-7 text-xs"
-                    value={advanced.gbmMaxDepth}
-                    onChange={(e) => setAdvanced((a) => ({ ...a, gbmMaxDepth: e.target.value }))}
-                  />
-                </label>
-              </>
-            )}
-          </div>
-          <p className="ml-training__advanced-hint">
-            Train uses GPU (CUDA) when PyTorch detects it; Validate stays lighter on CPU.
-            Client waits up to ~90 min for PPO / ~60 min for deep models (plus a poll buffer).
-            Live bots still infer via CPU ONNX. Retrain after changing hidden_dim / architecture.
-          </p>
-        </details>
+        <MlAdvancedKnobs
+          advanced={advanced}
+          setAdvanced={setAdvanced}
+          strategy={strategy}
+        />
 
         <JobProgressBar
           job={jobProgress}
@@ -2395,11 +1078,12 @@ export default function ModelTrainingDashboard({
         {busyElsewhere && (
           <p className="text-xs text-amber-400/90">
             Job running for {mlSession.strategy} / {mlSession.symbol}
+            {mlSession.tuning ? ' (auto-tune)' : mlSession.validating ? ' (validate)' : ' (train)'}
             {queueBadge ? ` · ${queueBadge}` : ''}
             {' '}— switch back to that pair to watch progress.
           </p>
         )}
-        {!busyElsewhere && queueBadge && !(training || validating) && (
+        {!busyElsewhere && queueBadge && !(training || validating || sessionTuningHint) && (
           <p className="text-xs text-muted-foreground">
             Worker queue: {queueBadge}
           </p>
@@ -2449,6 +1133,30 @@ export default function ModelTrainingDashboard({
             {strategy === 'RL_PPO_AGENT' || DEEP_ML_STRATEGIES.has(strategy)
               ? 'Walk-forward'
               : 'Walk-forward + PBO'}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-8 text-xs gap-1"
+            disabled={training || validating || busyElsewhere || !activeSymbol}
+            onClick={handleFullPipeline}
+            title="Train → Validate → Backtest → Gate (auto-advance)"
+          >
+            <Workflow size={14} />
+            Run Full Pipeline
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1"
+            disabled={training || validating || busyElsewhere || !activeSymbol}
+            onClick={() => setBatchOpen(true)}
+            title="Train multiple strategies for this symbol"
+          >
+            <Layers size={14} />
+            Batch Train
           </Button>
           <Button
             type="button"
@@ -2688,10 +1396,13 @@ export default function ModelTrainingDashboard({
                     {rowMeta.shortLabel || rowMeta.label}
                     <span className="text-muted-foreground font-normal"> · {row.strategy}</span>
                   </span>
-                  <span className="ml-training__inventory-meta num-mono">
+                  <span
+                    className="ml-training__inventory-meta num-mono"
+                    title={row.error && !row.trained ? row.error : undefined}
+                  >
                     {row.trained_at
                       ? new Date(row.trained_at).toLocaleDateString()
-                      : 'not trained'}
+                      : (row.error ? 'status unavailable' : 'not trained')}
                   </span>
                 </button>
               </li>
@@ -2700,170 +1411,37 @@ export default function ModelTrainingDashboard({
         </ul>
       </section>
 
-      <section className="ml-training__card">
-        <div className="ml-training__card-head">
-          <h4 className="ml-training__section-title">Recent runs</h4>
-          <span className="ml-training__header-meta">
-            {trainRuns.length} · {activeSymbol || '—'}
-          </span>
-        </div>
-        {trainRuns.length === 0 ? (
-          <p className="text-[0.65rem] text-muted-foreground">
-            No train/validate history yet for this symbol/strategy.
-          </p>
-        ) : (
-          <div className="ml-training__runs-scroll" onScroll={onRunsScroll}>
-            <table className="ml-training__runs-table">
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Kind</th>
-                  <th>TF</th>
-                  <th>Result</th>
-                  <th className="text-right">Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                <VirtualTablePadding height={runsWindow.topPad} colSpan={5} />
-                {runsWindow.slice.map((run) => {
-                  const metricHint = run.metrics?.mean_oos_accuracy
-                    ?? run.metrics?.mean_accuracy
-                    ?? run.metrics?.val_accuracy
-                    ?? run.metrics?.pbo;
-                  return (
-                    <tr key={run.id} title={run.error || run.version_id || ''}>
-                      <td className="num-mono">
-                        {run.finished_at
-                          ? new Date(run.finished_at).toLocaleString(undefined, {
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
-                          : '—'}
-                      </td>
-                      <td>{run.kind || '—'}</td>
-                      <td className="num-mono text-muted-foreground">{run.timeframe || '—'}</td>
-                      <td className={cn(
-                        'num-mono',
-                        run.ok ? 'text-emerald-400' : 'text-destructive',
-                      )}
-                      >
-                        {run.ok ? 'ok' : (run.error === 'cancelled' ? 'cancelled' : 'fail')}
-                        {metricHint != null
-                          ? ` · ${fmtMetric(metricHint, 3, 'mean_oos_accuracy') ?? metricHint}`
-                          : ''}
-                      </td>
-                      <td className="num-mono text-right">
-                        {formatDurationMs(run.duration_ms)}
-                      </td>
-                    </tr>
-                  );
-                })}
-                <VirtualTablePadding height={runsWindow.bottomPad} colSpan={5} />
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <MlTrainRunsTable trainRuns={trainRuns} activeSymbol={activeSymbol} />
 
-      {(retrainActions.length > 0 || retrainPending.length > 0 || retrainHistory.length > 0) && (
-        <section className="ml-training__card ml-training__card--warn">
-          <div className="ml-training__card-head">
-            <h4 className="ml-training__section-title">Retrain audit</h4>
-            <span className="ml-training__header-meta">
-              {retrainActions.length} due · {retrainPending.length} pending
-            </span>
-          </div>
+      <MlRetrainQueue
+        retrainActions={retrainActions}
+        retrainPending={retrainPending}
+        retrainHistory={retrainHistory}
+        runNowKey={runNowKey}
+        training={training}
+        validating={validating}
+        busyElsewhere={busyElsewhere}
+        onRunNow={handleRunNow}
+      />
 
-          {retrainActions.length > 0 && (
-            <div className="ml-training__retrain-block">
-              <p className="ml-training__subsection-label">Recommended</p>
-              <ul className="ml-training__retrain-list">
-                {retrainActions.slice(0, 8).map((a, i) => {
-                  const key = `${String(a.symbol || '').toUpperCase()}:${String(a.strategy || '').toUpperCase()}`;
-                  const running = runNowKey === key;
-                  return (
-                    <li key={`${key}-${i}`} className="ml-training__retrain-row">
-                      <div className="ml-training__retrain-meta">
-                        <span className="num-mono font-medium">{a.strategy} / {a.symbol}</span>
-                        <span className="text-muted-foreground">
-                          {a.reason || 'retrain'}
-                          {a.model_age_hours != null ? ` · age ${a.model_age_hours}h` : ''}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[0.65rem] gap-1 shrink-0"
-                        disabled={training || validating || busyElsewhere || Boolean(runNowKey)}
-                        onClick={() => handleRunNow(a.strategy, a.symbol)}
-                      >
-                        {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                        Run now
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-
-          {retrainPending.length > 0 && (
-            <div className="ml-training__retrain-block">
-              <p className="ml-training__subsection-label">Queued (auto-drain or Run now)</p>
-              <ul className="ml-training__retrain-list">
-                {retrainPending.slice(0, 8).map((p) => {
-                  const running = runNowKey === p.key;
-                  return (
-                    <li key={p.key} className="ml-training__retrain-row">
-                      <div className="ml-training__retrain-meta">
-                        <span className="num-mono font-medium">{p.strategy} / {p.symbol}</span>
-                        <span className="text-muted-foreground">
-                          {(p.reasons && p.reasons[0]) || 'queued'}
-                          {p.requested_at
-                            ? ` · ${new Date(p.requested_at).toLocaleString()}`
-                            : ''}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-[0.65rem] gap-1 shrink-0"
-                        disabled={training || validating || busyElsewhere || Boolean(runNowKey)}
-                        onClick={() => handleRunNow(p.strategy, p.symbol)}
-                      >
-                        {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                        Run now
-                      </Button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-
-          {retrainHistory.length > 0 && (
-            <div className="ml-training__retrain-block">
-              <p className="ml-training__subsection-label">Recent requests</p>
-              <ul className="space-y-1 text-[0.65rem] text-muted-foreground">
-                {retrainHistory.slice(0, 8).map((h, i) => (
-                  <li key={`${h.key || h.source}-${h.requested_at || i}`} className="num-mono">
-                    {h.key || '—'}
-                    {h.source ? ` · ${h.source}` : ''}
-                    {h.reason ? ` — ${h.reason}` : ''}
-                    {h.requested_at
-                      ? ` · ${new Date(h.requested_at).toLocaleString()}`
-                      : ''}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
+      <BatchTrainDialog
+        open={batchOpen}
+        onOpenChange={setBatchOpen}
+        symbol={activeSymbol}
+        timeframe={trainingTimeframe}
+        trainingWindow={trainingWindow}
+        inventory={inventory}
+        busy={training || validating || busyElsewhere}
+        initialScope={batchScope}
+        onTrainStrategy={async (stratId) => {
+          const ok = await runTrainJob(stratId, activeSymbol);
+          if (!ok) throw new Error(`Training failed for ${stratId}`);
+        }}
+        onValidateStrategy={async (stratId) => {
+          const ok = await handleValidate({ strategy: stratId });
+          if (!ok) throw new Error(`Validation failed for ${stratId}`);
+        }}
+      />
     </div>
   );
 }

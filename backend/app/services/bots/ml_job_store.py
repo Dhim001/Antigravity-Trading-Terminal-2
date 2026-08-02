@@ -22,6 +22,7 @@ _MAX_JOBS = 80
 _lock = threading.RLock()
 _jobs: dict[str, dict[str, Any]] = {}
 _futures: dict[str, Future] = {}
+_hydrated = False
 
 # Headline keys kept in RAM when a large terminal result is offloaded (#31).
 # Include Lab Apply & Retrain / sweep fields so a failed disk hydrate still
@@ -56,6 +57,152 @@ def _delete_result_file(job_id: str) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _persist_ml_job_row(job: dict[str, Any]) -> None:
+    """Best-effort SQLite upsert so jobs survive process restart."""
+    if not job or not job.get("job_id"):
+        return
+    try:
+        import json as _json
+
+        from app.db.connection import get_connection
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            result = job.get("result")
+            # Don't re-serialize huge offloaded payloads into the jobs table.
+            if isinstance(result, dict) and result.get("_slimmed"):
+                result_json = _json.dumps({
+                    k: v for k, v in result.items()
+                    if k in _SLIM_RESULT_KEYS or str(k).startswith("_")
+                })
+            elif isinstance(result, dict):
+                slim = {k: result.get(k) for k in _SLIM_RESULT_KEYS if result.get(k) is not None}
+                result_json = _json.dumps(slim) if slim else None
+            else:
+                result_json = None
+            cursor.execute(
+                """
+                INSERT INTO ml_jobs (
+                    id, kind, strategy, symbol, status, progress_json, result_json,
+                    error, progress_path, created_at, started_at, finished_at,
+                    created_at_epoch, finished_at_epoch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    progress_json = excluded.progress_json,
+                    result_json = COALESCE(excluded.result_json, ml_jobs.result_json),
+                    error = excluded.error,
+                    progress_path = excluded.progress_path,
+                    started_at = COALESCE(excluded.started_at, ml_jobs.started_at),
+                    finished_at = COALESCE(excluded.finished_at, ml_jobs.finished_at),
+                    finished_at_epoch = COALESCE(excluded.finished_at_epoch, ml_jobs.finished_at_epoch)
+                """,
+                (
+                    job.get("job_id"),
+                    job.get("kind") or "train",
+                    job.get("strategy") or "",
+                    job.get("symbol") or "",
+                    job.get("status") or "queued",
+                    _json.dumps(job.get("progress") or {}),
+                    result_json,
+                    job.get("error"),
+                    job.get("progress_path"),
+                    job.get("created_at") or _now_iso(),
+                    job.get("started_at"),
+                    job.get("finished_at"),
+                    float(job.get("created_at_epoch") or time.time()),
+                    job.get("finished_at_epoch"),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def ensure_ml_jobs_hydrated() -> int:
+    """Load recent jobs from SQLite; mark interrupted in-flight jobs as error."""
+    global _hydrated
+    with _lock:
+        if _hydrated:
+            return 0
+        _hydrated = True
+    loaded = 0
+    try:
+        import json as _json
+
+        from app.db.connection import get_connection
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT id, kind, strategy, symbol, status, progress_json, result_json,
+                       error, progress_path, created_at, started_at, finished_at,
+                       created_at_epoch, finished_at_epoch
+                FROM ml_jobs
+                ORDER BY COALESCE(created_at_epoch, 0) DESC
+                LIMIT ?
+                """,
+                (_MAX_JOBS,),
+            )
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+    with _lock:
+        for row in rows:
+            try:
+                jid = row[0]
+                if jid in _jobs:
+                    continue
+                status = str(row[4] or "queued")
+                progress = {}
+                result = None
+                try:
+                    progress = _json.loads(row[5] or "{}") if row[5] else {}
+                except Exception:
+                    progress = {}
+                try:
+                    result = _json.loads(row[6]) if row[6] else None
+                except Exception:
+                    result = None
+                # Workers die with the process — never leave queued/running forever.
+                err = row[7]
+                if status in ("queued", "running"):
+                    status = "error"
+                    err = "interrupted by server restart"
+                _jobs[jid] = {
+                    "job_id": jid,
+                    "kind": row[1] or "train",
+                    "strategy": row[2] or "",
+                    "symbol": row[3] or "",
+                    "status": status,
+                    "progress": progress if isinstance(progress, dict) else {},
+                    "result": result if isinstance(result, dict) else None,
+                    "error": err,
+                    "progress_path": row[8],
+                    "created_at": row[9],
+                    "started_at": row[10],
+                    "finished_at": row[11] or (_now_iso() if status in _TERMINAL else None),
+                    "created_at_epoch": float(row[12] or 0) or time.time(),
+                    "finished_at_epoch": float(row[13] or 0) or (time.time() if status in _TERMINAL else None),
+                    "cancel_requested": False,
+                }
+                loaded += 1
+                if err == "interrupted by server restart":
+                    _persist_ml_job_row(_jobs[jid])
+            except Exception:
+                continue
+        _prune_locked()
+    return loaded
 
 
 def _prune_locked() -> None:
@@ -147,10 +294,12 @@ def create_ml_job(
     job_id: str | None = None,
 ) -> str:
     """Register a new job; returns job_id."""
+    ensure_ml_jobs_hydrated()
     kind_n = str(kind or "train").lower()
     if kind_n not in ("train", "validate", "hyperparam_sweep"):
         kind_n = "train"
     jid = str(job_id) if job_id else str(uuid.uuid4())
+    snapshot = None
     with _lock:
         if jid in _jobs:
             return jid
@@ -171,11 +320,15 @@ def create_ml_job(
             "progress_path": progress_path,
             "cancel_requested": False,
         }
+        snapshot = dict(_jobs[jid])
         _prune_locked()
+    if snapshot:
+        _persist_ml_job_row(snapshot)
     return jid
 
 
 def get_ml_job(job_id: str) -> dict[str, Any] | None:
+    ensure_ml_jobs_hydrated()
     if not job_id:
         return None
     with _lock:
@@ -184,6 +337,7 @@ def get_ml_job(job_id: str) -> dict[str, Any] | None:
 
 
 def list_ml_jobs(*, limit: int = 20, active_only: bool = False) -> list[dict[str, Any]]:
+    ensure_ml_jobs_hydrated()
     limit = max(1, min(int(limit or 20), 100))
     with _lock:
         rows = list(_jobs.values())
@@ -194,6 +348,7 @@ def list_ml_jobs(*, limit: int = 20, active_only: bool = False) -> list[dict[str
 
 
 def ml_job_counts() -> dict[str, int]:
+    ensure_ml_jobs_hydrated()
     with _lock:
         active = sum(1 for j in _jobs.values() if j.get("status") == "running")
         queued = sum(1 for j in _jobs.values() if j.get("status") == "queued")
@@ -215,6 +370,7 @@ def attach_ml_job_future(job_id: str, future: Future) -> None:
 
 
 def mark_ml_job_running(job_id: str) -> None:
+    snapshot = None
     with _lock:
         job = _jobs.get(job_id)
         if not job or job.get("status") in _TERMINAL:
@@ -222,11 +378,15 @@ def mark_ml_job_running(job_id: str) -> None:
         job["status"] = "running"
         if not job.get("started_at"):
             job["started_at"] = _now_iso()
+        snapshot = dict(job)
+    if snapshot:
+        _persist_ml_job_row(snapshot)
 
 
 def update_ml_job_progress(job_id: str, progress: dict[str, Any] | None) -> dict[str, Any] | None:
     if not job_id:
         return None
+    snapshot = None
     with _lock:
         job = _jobs.get(job_id)
         if not job or job.get("status") in _TERMINAL:
@@ -247,7 +407,13 @@ def update_ml_job_progress(job_id: str, progress: dict[str, Any] | None) -> dict
             job["status"] = "running"
             if not job.get("started_at"):
                 job["started_at"] = _now_iso()
-        return dict(job)
+        snapshot = dict(job)
+    if snapshot:
+        # Throttle DB writes: only persist every ~5% or phase change via pct buckets.
+        pct = int((snapshot.get("progress") or {}).get("pct") or 0)
+        if pct % 5 == 0 or pct >= 99 or (snapshot.get("progress") or {}).get("phase") in ("queued", "done", "error"):
+            _persist_ml_job_row(snapshot)
+    return snapshot
 
 
 def finish_ml_job(
@@ -260,6 +426,7 @@ def finish_ml_job(
     if not job_id or status not in _TERMINAL:
         return
     snapshot: dict[str, Any] | None = None
+    newly_finished = False
     with _lock:
         job = _jobs.get(job_id)
         if not job:
@@ -270,6 +437,7 @@ def finish_ml_job(
                 job["result"] = result
             if error is not None and not job.get("error"):
                 job["error"] = error
+            snapshot = dict(job)
         else:
             job["status"] = status
             job["finished_at"] = _now_iso()
@@ -282,15 +450,18 @@ def finish_ml_job(
                 job["error"] = str(result.get("error"))
             _futures.pop(job_id, None)
             snapshot = dict(job)
+            newly_finished = True
             _prune_locked()
 
     if snapshot is not None:
-        try:
-            from app.services.bots.ml_train_runs import record_ml_train_run_from_job
+        _persist_ml_job_row(snapshot)
+        if newly_finished:
+            try:
+                from app.services.bots.ml_train_runs import record_ml_train_run_from_job
 
-            record_ml_train_run_from_job(snapshot)
-        except Exception:
-            pass
+                record_ml_train_run_from_job(snapshot)
+            except Exception:
+                pass
 
     # MEMORY_CENTRIC_REVIEW #31 — hot RAM holds a slim headline; the full
     # payload moves to disk and is hydrated on demand by ``public_ml_job``.
@@ -430,6 +601,8 @@ def _json_safe_ml_value(value: Any) -> Any:
 
 
 def reset_ml_job_store_for_tests() -> None:
+    global _hydrated
     with _lock:
         _jobs.clear()
         _futures.clear()
+        _hydrated = False

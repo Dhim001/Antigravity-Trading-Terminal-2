@@ -62,6 +62,43 @@ class BacktestCostsIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(base["total_pnl"], costly["total_pnl"])
         self.assertGreater(costly["summary"]["total_fees"], 0)
 
+    def test_research_fast_columnar_uses_bar_volume_for_participation(self):
+        """Regression: research_fast slim row must include volume (not treat as 0)."""
+        high_vol = _make_candles(160)
+        low_vol = []
+        for c in high_vol:
+            low_vol.append({**c, "volume": 1.0})
+
+        def _buy_precompute(strategy, df, start_i, **_kwargs):
+            n = len(df) - int(start_i)
+            return [
+                {"signal": "BUY", "stop_loss_distance": 2.0} if (i % 40 == 0) else {"signal": "NONE"}
+                for i in range(n)
+            ]
+
+        cfg = {
+            "allocation": 5000,
+            "sim_mode": "research_fast",
+            "volume_participation": True,
+            "slippage_bps": 20,
+            "fee_bps": 0,
+            "batch_inference": True,
+        }
+        with patch(
+            "app.services.bots.ml_batch_inference.try_precompute_signals_from_df",
+            side_effect=_buy_precompute,
+        ):
+            hi = self.backtester.run_backtest("TEST", "ML_SIGNAL_BOOST", cfg, high_vol)
+            lo = self.backtester.run_backtest("TEST", "ML_SIGNAL_BOOST", cfg, low_vol)
+
+        self.assertNotIn("error", hi)
+        self.assertNotIn("error", lo)
+        self.assertGreater(hi.get("trade_count") or 0, 0)
+        self.assertGreater(lo.get("trade_count") or 0, 0)
+        # Near-zero bar volume → max participation impact → worse (more negative) PnL
+        # than deep-liquidity bars with the same signals.
+        self.assertLess(lo["total_pnl"], hi["total_pnl"])
+
 
 if __name__ == "__main__":
     unittest.main()

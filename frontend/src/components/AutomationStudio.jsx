@@ -1,7 +1,8 @@
 /**
- * AutomationStudio — full-height algo bot workspace (UX-5).
+ * AutomationStudio — full-height algo bot workspace + ML pipeline cockpit (UX-5).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { toast } from 'sonner';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Cpu, GripVertical } from 'lucide-react';
 import { useStore } from '../store/useStore';
@@ -13,6 +14,18 @@ import { AlgoTab } from './dock/AlgoPanel';
 import ErrorBoundary from './ErrorBoundary';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import PipelineStatusBar from './PipelineStatusBar';
+import PipelineAutoDeploySettings from './PipelineAutoDeploySettings';
+import AutomationQuickActions from './AutomationQuickActions';
+import {
+  getMlPipeline,
+  isPipelineActive,
+  subscribeMlPipeline,
+} from '@/lib/mlPipeline';
+import { openAlgoDeployDialog, resolveDeployQueueAction } from '@/lib/pipelineNav';
+import { openModelTrainingDock } from '@/lib/workspaceNav';
+import { postMlLabRequest } from '@/lib/mlLabRequests';
+import { isMlStrategy } from '@/config/strategies';
 
 const STUDIO_WIDTH_KEY = 'terminal_automation_studio_width';
 const STUDIO_WIDTH_DEFAULT = 960;
@@ -35,7 +48,21 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
   const startW = useRef(0);
 
   const setBotDrawerOpen = useStore((s) => s.setBotDrawerOpen);
+  const activeSymbol = useStore((s) => s.activeSymbol);
+  const botStrategy = useStore((s) => s.botStrategy);
+  const botTimeframe = useStore((s) => s.botTimeframe);
   const backtestResults = useResearchStore((s) => s.backtestResults);
+
+  const pipeline = useSyncExternalStore(
+    subscribeMlPipeline,
+    getMlPipeline,
+    getMlPipeline,
+  );
+  const pipelineActive = isPipelineActive(pipeline);
+
+  const tf = String(botTimeframe || '1m').toLowerCase() === 'tick'
+    ? '1m'
+    : String(botTimeframe || '1m').toLowerCase();
 
   useEffect(() => {
     try { localStorage.setItem(STUDIO_WIDTH_KEY, String(panelWidth)); } catch (_) {}
@@ -92,6 +119,53 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
     };
   }, []);
 
+  const handleFullPipeline = useCallback(() => {
+    const strategy = isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST';
+    // Do not startPipeline here — ml-lab-run-pipeline handler owns the run
+    // (avoids double-start that orphans the first pipelineId).
+    openModelTrainingDock();
+    postMlLabRequest('ml-lab-run-pipeline', {
+      strategy, symbol: activeSymbol, timeframe: tf, mode: 'full',
+    });
+  }, [activeSymbol, botStrategy, tf]);
+
+  const handleOpenLab = useCallback(() => {
+    openModelTrainingDock();
+  }, []);
+
+  const handleBatchTrain = useCallback(() => {
+    openModelTrainingDock();
+    postMlLabRequest('ml-lab-open-batch', { scope: 'all', symbol: activeSymbol, timeframe: tf });
+  }, [activeSymbol, tf]);
+
+  const handleRetrainStale = useCallback(() => {
+    openModelTrainingDock();
+    postMlLabRequest('ml-lab-open-batch', { scope: 'stale', symbol: activeSymbol, timeframe: tf });
+  }, [activeSymbol, tf]);
+
+  const handleDeployQueue = useCallback(() => {
+    const resolved = resolveDeployQueueAction(getMlPipeline());
+    if (resolved.action === 'open_deploy') {
+      openAlgoDeployDialog({ openStudio: false });
+      if (resolved.pendingApproval) {
+        toast.message('Pipeline awaiting deploy approval — confirm in the deploy dialog');
+      } else if (resolved.stage === 'READY_TO_DEPLOY') {
+        toast.message('Pipeline ready to deploy');
+      } else if (resolved.stage === 'GATE_CHECK') {
+        toast.message('Review gate status in the deploy dialog');
+      }
+      return;
+    }
+    const stageLabel = resolved.stage === 'IDLE' ? 'no active pipeline' : resolved.stage;
+    const err = resolved.lastError ? ` — ${resolved.lastError}` : '';
+    toast.message(`Deploy queue: ${stageLabel}${err}`, {
+      action: {
+        label: 'Open deploy',
+        onClick: () => openAlgoDeployDialog({ openStudio: false }),
+      },
+    });
+  }, []);
+
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
@@ -123,16 +197,31 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
           </div>
 
           <SheetHeader className="terminal-sheet__header automation-studio__header">
-            <SheetTitle className="automation-studio__title">
-              <Cpu aria-hidden />
-              Automation Studio
-            </SheetTitle>
+            <div className="automation-studio__header-row">
+              <SheetTitle className="automation-studio__title">
+                <Cpu aria-hidden />
+                Automation Studio
+              </SheetTitle>
+              <PipelineAutoDeploySettings compact className="automation-studio__deploy-mode" />
+            </div>
             <SheetDescription className="automation-studio__description">
               Deploy bots, run backtests, and manage live execution
             </SheetDescription>
           </SheetHeader>
 
           <div className="terminal-sheet__body automation-studio__body flex min-h-0 flex-1 flex-col">
+            <div className="automation-studio__pipeline-strip px-3 pt-2 space-y-2 shrink-0">
+              <PipelineStatusBar />
+              <AutomationQuickActions
+                onFullPipeline={handleFullPipeline}
+                onRetrainStale={handleRetrainStale}
+                onOpenLab={handleOpenLab}
+                onBatchTrain={handleBatchTrain}
+                onDeployQueue={handleDeployQueue}
+                pipelineActive={pipelineActive}
+              />
+            </div>
+
             <ErrorBoundary name="Automation studio algo">
               <AlgoTab hideToolbar />
             </ErrorBoundary>
@@ -143,9 +232,9 @@ export default function AutomationStudio({ open = false, onOpenChange }) {
                   variant="outline"
                   size="xs"
                   className="h-6 text-[0.62rem]"
-                onClick={() => openBacktestLabResults()}
-              >
-                Open Backtest Lab (Results)
+                  onClick={() => openBacktestLabResults()}
+                >
+                  Open Backtest Lab (Results)
                 </Button>
               </div>
             )}

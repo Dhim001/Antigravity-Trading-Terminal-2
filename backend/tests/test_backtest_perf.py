@@ -15,10 +15,40 @@ from app.services.bots.backtest_perf import (
 
 class TestBacktestPerf(unittest.TestCase):
     def test_parallel_worker_count_bounds(self):
+        from app.config import BACKTEST_PARALLEL_MAX
+
         self.assertEqual(parallel_worker_count(0), 1)
         self.assertEqual(parallel_worker_count(1), 1)
         self.assertGreaterEqual(parallel_worker_count(20), 2)
-        self.assertLessEqual(parallel_worker_count(20), 8)
+        self.assertLessEqual(parallel_worker_count(20), max(8, int(BACKTEST_PARALLEL_MAX)))
+
+    def test_parallel_backend_auto_is_process_or_thread(self):
+        from app.services.bots.backtest_perf import parallel_backend
+
+        self.assertIn(parallel_backend(), ("process", "thread"))
+
+    def test_parallel_backend_auto_process_unless_cuda_session_loaded(self):
+        """auto must not force threads merely because CUDA EP is installed."""
+        from unittest.mock import patch
+
+        from app.config import BACKTEST_PARALLEL_BACKEND
+        from app.services.bots import backtest_perf as perf
+        from app.services.bots import ml_onnx_runtime as ort_mod
+
+        if (BACKTEST_PARALLEL_BACKEND or "auto").strip().lower() not in (
+            "auto", "", "default",
+        ):
+            self.skipTest("BACKTEST_PARALLEL_BACKEND overridden")
+
+        prev = ort_mod._cuda_session_created
+        try:
+            ort_mod._cuda_session_created = False
+            with patch.object(ort_mod, "cuda_ep_available", return_value=True):
+                self.assertEqual(perf.parallel_backend(), "process")
+            ort_mod._cuda_session_created = True
+            self.assertEqual(perf.parallel_backend(), "thread")
+        finally:
+            ort_mod._cuda_session_created = prev
 
     def test_is_heavy_portfolio(self):
         self.assertTrue(

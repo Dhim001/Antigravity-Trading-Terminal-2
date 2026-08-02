@@ -22,6 +22,7 @@ from app.services.bots.risk_sizing import entry_quantity_from_risk, parse_risk_s
 from app.services.bots.strategies import get_strategy, normalize_strategy_name
 from app.services.bots.backtest_analytics import drawdown_curve, enrich_summary
 from app.services.bots.backtest_parity import build_htf_bias_lookup
+from app.services.bots.backtest_progress import ProgressThrottle
 from app.services.bots.strategy_filter import build_filter_from_config
 from app.services.bots.strategy_runtime import (
     ExecutionChain,
@@ -38,7 +39,7 @@ from app.services.bots.backtest_category_metrics import (
     load_ml_feature_importance,
 )
 
-_SIM_MODES = frozenset({"live_aligned", "research"})
+_SIM_MODES = frozenset({"live_aligned", "research", "research_fast"})
 _MIN_QTY = 0.001
 _DEFAULT_ALLOCATION = 10_000.0
 MAX_BLOCKED_EVENTS = 200
@@ -492,12 +493,17 @@ class BacktesterService:
         sim_mode = str(cfg.get("sim_mode") or "live_aligned").lower()
         if sim_mode not in _SIM_MODES:
             sim_mode = "live_aligned"
-        research = sim_mode == "research"
+        research = sim_mode in ("research", "research_fast")
+        research_fast = sim_mode == "research_fast"
         live_parity = cfg.get("live_parity")
         if live_parity is None:
+            # research_fast skips the heaviest live_parity gates by default;
+            # live_aligned keeps full parity. Explicit live_parity overrides.
             live_parity = sim_mode == "live_aligned"
         else:
             live_parity = bool(live_parity)
+        if research_fast and cfg.get("live_parity") is None:
+            live_parity = False
         allocation = float(cfg.get("allocation") or _DEFAULT_ALLOCATION)
         if allocation <= 0:
             allocation = _DEFAULT_ALLOCATION
@@ -1200,14 +1206,104 @@ class BacktesterService:
             last_signal_bar_time = bar_time
 
         eval_bars = max(len(df) - start_i, 1)
-        progress_stride = max(1, eval_bars // 40)
+        # Prefer frequent UI updates on long 1m ML runs (was eval_bars//40 ≈ 2k bars,
+        # so the progress stayed at "bar 0" for tens of minutes and looked stuck).
+        progress_stride = max(1, min(200, eval_bars // 100))
+        progress_emit = ProgressThrottle(
+            progress_cb,
+            total=eval_bars,
+            stride=progress_stride,
+            min_interval_sec=2.0,
+        )
+
+        # Batch-precompute ML signals when enabled, then keep the bar loop for
+        # exits / cancel / progress / live_parity gates. ONNX CUDA sessions are
+        # only used when sim_mode is research/research_fast (see strategies).
+        precomputed_signals = None
+        if _chart_agent_signal is None:
+            try:
+                from app.services.bots.ml_batch_inference import (
+                    try_precompute_signals_from_df,
+                )
+
+                def _precompute_progress(done: int, total: int) -> None:
+                    """Map feature/batch phase onto the first ~10% of bar progress."""
+                    if not progress_cb:
+                        return
+                    tot = max(1, int(total or 1))
+                    frac = min(1.0, max(0.0, float(done) / tot))
+                    # Use the throttled emitter so wall-clock heartbeats still fire
+                    # when vectorized precompute reports the same quantized bar.
+                    mapped = max(0, int(frac * eval_bars * 0.10))
+                    progress_emit(mapped, eval_bars)
+
+                if progress_cb:
+                    progress_emit(0, eval_bars)
+                # Prefer DF path (columnar features / fewer dict materializations).
+                precomputed_signals = try_precompute_signals_from_df(
+                    strategy,
+                    df,
+                    start_i,
+                    symbol=sym_u,
+                    strategy_key=strat_key,
+                    config=cfg,
+                    cancel_cb=cancel_cb,
+                    progress_cb=_precompute_progress if progress_cb else None,
+                )
+            except InterruptedError:
+                _release_chart_agent_cache()
+                return {"error": "Backtest cancelled", "cancelled": True}
+
+        # research_fast + precomputed signals: columnar OHLC avoids full to_dict()
+        # per bar (major Python overhead on long 1m runs).
+        _col_fast = None
+        if research_fast and precomputed_signals is not None:
+            try:
+                import numpy as _np
+
+                def _col(name, default=0.0):
+                    if name not in df.columns:
+                        return _np.full(len(df), default, dtype=_np.float64)
+                    return _np.asarray(df[name].to_numpy(), dtype=_np.float64)
+
+                _col_fast = {
+                    "open": _col("open"),
+                    "high": _col("high"),
+                    "low": _col("low"),
+                    "close": _col("close"),
+                    # Required for volume-participation cost model fills.
+                    "volume": _col("volume"),
+                    "atr": _col("ATR_14"),
+                    "atr_alt": _col("ATRr_14"),
+                    "time": df["time"].to_numpy() if "time" in df.columns else None,
+                }
+            except Exception:
+                _col_fast = None
 
         for i in range(start_i, len(df)):
             if cancel_cb and cancel_cb():
                 _release_chart_agent_cache()
                 return {"error": "Backtest cancelled", "cancelled": True}
 
-            row = df.iloc[i].to_dict()
+            if _col_fast is not None:
+                bar_close = float(_col_fast["close"][i] or 0)
+                bar_low = float(_col_fast["low"][i] or bar_close)
+                bar_high = float(_col_fast["high"][i] or bar_close)
+                bar_open = float(_col_fast["open"][i] or bar_close)
+                bar_vol = float(_col_fast["volume"][i] or 0)
+                bar_atr = float(_col_fast["atr"][i] or 0) or float(_col_fast["atr_alt"][i] or 0)
+                bar_time = _col_fast["time"][i] if _col_fast["time"] is not None else None
+                row = {
+                    "time": bar_time,
+                    "open": bar_open,
+                    "high": bar_high,
+                    "low": bar_low,
+                    "close": bar_close,
+                    "volume": bar_vol,
+                    "ATR_14": bar_atr,
+                }
+            else:
+                row = df.iloc[i].to_dict()
             if sym_u:
                 row["_symbol"] = sym_u
             bar_time = row.get("time")
@@ -1259,6 +1355,8 @@ class BacktesterService:
             signal_data = None
             if _chart_agent_signal is not None:
                 signal_data = _chart_agent_signal(i)
+            elif precomputed_signals is not None:
+                signal_data = precomputed_signals[i - start_i]
             else:
                 row["_current_side"] = position["side"] if position else "NONE"
                 signal_data = strategy.evaluate(row)
@@ -1274,10 +1372,30 @@ class BacktesterService:
                 if str(rr).startswith("evaluate error"):
                     evaluate_errors += 1
 
+            # research_fast columnar `row` is OHLCV+ATR only. Gates / filters that
+            # read RSI/MACD/EMA/etc. need a full indicator row — hydrate on demand
+            # (entry bars only) so the hot path stays slim.
+            gate_row = row
+            needs_full_gate_row = (
+                _col_fast is not None
+                and signal in ("BUY", "SELL")
+                and (
+                    (live_parity and strat_filter is not None)
+                    or bool(cfg.get("vae_regime_gate_enabled"))
+                )
+            )
+            if needs_full_gate_row:
+                try:
+                    gate_row = df.iloc[i].to_dict()
+                    if sym_u:
+                        gate_row["_symbol"] = sym_u
+                except Exception:
+                    gate_row = row
+
             confirm_tf = str(cfg.get("confirm_timeframe") or "").strip()
             parity_out = apply_indicator_parity_gates(
                 signal,
-                row=row,
+                row=gate_row,
                 bar_time=bar_time,
                 live_parity=live_parity,
                 strat_key=strat_key,
@@ -1311,8 +1429,8 @@ class BacktesterService:
                     lookback = []
                 vae_out = apply_vae_regime_meta_gate(
                     signal,
-                    row=row,
-                    symbol=str(cfg.get("symbol") or row.get("_symbol") or ""),
+                    row=gate_row,
+                    symbol=str(cfg.get("symbol") or gate_row.get("_symbol") or ""),
                     bot_config=cfg,
                     lookback_rows=lookback,
                 )
@@ -1459,11 +1577,11 @@ class BacktesterService:
             if bar_time is not None and (i % sample_stride == 0 or i == len(df) - 1):
                 equity_curve.append({"time": int(bar_time), "equity": round(equity, 2)})
 
-            if progress_cb and (i - start_i) % progress_stride == 0:
-                progress_cb(i - start_i, eval_bars)
+            if progress_cb:
+                progress_emit(i - start_i, eval_bars)
 
         if progress_cb:
-            progress_cb(eval_bars, eval_bars)
+            progress_emit(eval_bars, eval_bars)
 
         if position:
             last_row = df.iloc[-1].to_dict()

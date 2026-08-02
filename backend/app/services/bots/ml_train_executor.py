@@ -763,7 +763,9 @@ async def submit_train_job(
         try:
             from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
 
-            get_retrain_scheduler().record_retrain(strategy, symbol)
+            get_retrain_scheduler().record_retrain(
+                strategy, symbol, timeframe=cfg.get("timeframe"),
+            )
         except Exception:
             logger.exception("record_retrain failed after train %s/%s", strategy, symbol)
 

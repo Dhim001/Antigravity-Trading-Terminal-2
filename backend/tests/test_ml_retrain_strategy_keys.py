@@ -32,19 +32,24 @@ def test_request_retrain_does_not_queue_macd_as_lab_strategy():
 
 
 def test_drop_stale_lab_incompatible_pending_removes_legacy_ta_keys():
+    from datetime import datetime, timezone
+
     s = MlRetrainScheduler()
+    # Must be within pending TTL (cooldown_hours * 2) or _purge_retrain_maps
+    # expires both entries before drop_stale runs.
+    recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     s._pending["ETHUSDT:MACD_RSI:5m"] = {
         "strategy": "MACD_RSI",
         "symbol": "ETHUSDT",
-        "requested_at": "2026-07-22T00:00:00Z",
+        "requested_at": recent,
     }
     s._pending["ETHUSDT:ML_SIGNAL_BOOST:5m"] = {
         "strategy": "ML_SIGNAL_BOOST",
         "symbol": "ETHUSDT",
-        "requested_at": "2026-07-22T00:00:00Z",
+        "requested_at": recent,
     }
     assert s.drop_stale_lab_incompatible_pending() == 1
-    assert "MACD_RSI" not in s._pending
+    assert "ETHUSDT:MACD_RSI:5m" not in s._pending
     assert "ETHUSDT:ML_SIGNAL_BOOST:5m" in s._pending
 
 
