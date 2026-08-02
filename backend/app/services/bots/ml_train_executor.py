@@ -75,9 +75,37 @@ def _restore_live_champion(snap: dict[str, Any] | None) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def resolve_ml_train_max_workers() -> int:
+    """Resolve process-pool worker count (Opt #1 auto-scale).
+
+    - Explicit integer env → used as-is (min 1)
+    - ``auto`` → conservative: 2 only when CUDA is available **and**
+      ``ML_TRAIN_RSS_LIMIT_MB >= 6144``; otherwise 1
+    - Default shipped value remains 1 (see config.py)
+    """
+    from app.config import ML_TRAIN_MAX_WORKERS_RAW, ML_TRAIN_RSS_LIMIT_MB
+
+    raw = (ML_TRAIN_MAX_WORKERS_RAW or "1").strip().lower()
+    if raw in ("auto", "scale"):
+        rss = max(0, int(ML_TRAIN_RSS_LIMIT_MB or 0))
+        cuda_ok = False
+        try:
+            import torch
+
+            cuda_ok = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_ok = False
+        if cuda_ok and rss >= 6144:
+            return 2
+        return 1
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _max_workers() -> int:
-    from app.config import ML_TRAIN_MAX_WORKERS
-    return max(1, int(ML_TRAIN_MAX_WORKERS))
+    return resolve_ml_train_max_workers()
 
 
 def use_process_pool_for_strategy(strategy: str | None) -> bool:
@@ -304,6 +332,23 @@ def run_validate_job(
     cfg.setdefault("skip_refit", True)
     cfg.setdefault("skip_snapshot", True)
     strat_u = str(strategy or "").upper()
+    # Deploy-grade (capacity parity) stays live_aligned. Lean/exploratory validate
+    # may opt into research_fast via explicit sim_mode or ML_EXPLORATORY_SIM_MODE.
+    wf_parity_early = bool(cfg.get("wf_capacity_parity", True))
+    if "sim_mode" not in cfg:
+        if wf_parity_early:
+            cfg["sim_mode"] = "live_aligned"
+        else:
+            try:
+                from app.config import ML_EXPLORATORY_SIM_MODE
+
+                explor = (ML_EXPLORATORY_SIM_MODE or "").strip().lower()
+            except Exception:
+                explor = ""
+            if explor in ("research", "research_fast"):
+                cfg["sim_mode"] = explor
+            else:
+                cfg.setdefault("sim_mode", "live_aligned")
     # Lean GBM default only for fast Validate / Optuna on HistGBM.
     if (
         strat_u == "ML_SIGNAL_BOOST"
@@ -577,6 +622,14 @@ def _prepare_job_config(
         )
     cfg["_progress_path"] = path
     cfg["_ml_job_id"] = jid
+    cfg["job_id"] = jid
+    try:
+        from app.services.bots.ml_job_store import load_ml_job_checkpoint
+        cp = load_ml_job_checkpoint(jid)
+        if isinstance(cp, dict) and cp.get("study_path"):
+            cfg.setdefault("resume_study_path", cp["study_path"])
+    except Exception:
+        pass
     return jid, cfg, path
 
 
@@ -907,7 +960,7 @@ def run_hyperparam_sweep_job(
         time_budget_sec=float(cfg.get("time_budget_sec") or 600),
         patience=int(cfg.get("patience") or 8),
         multi_fidelity=bool(cfg.get("multi_fidelity", True)),
-        screen_fraction=float(cfg.get("screen_fraction") or 0.4),
+        screen_fraction=float(cfg.get("screen_fraction") or 0.25),
         promote_top_k=int(cfg.get("promote_top_k") or 3),
         custom_search_space=cfg.get("custom_search_space")
         if isinstance(cfg.get("custom_search_space"), dict)
@@ -920,6 +973,8 @@ def run_hyperparam_sweep_job(
         objective_kind=str(cfg.get("objective_kind") or "purged_cv"),
         cv_folds_screen=int(cfg.get("cv_folds_screen") or 2),
         cv_folds_full=int(cfg.get("cv_folds_full") or 3),
+        job_id=str(cfg.get("job_id") or "") or None,
+        resume_study_path=str(cfg.get("resume_study_path") or "") or None,
     )
     if isinstance(result, dict) and result.get("ok"):
         write_ml_progress(

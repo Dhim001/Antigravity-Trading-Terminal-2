@@ -111,13 +111,16 @@ class TickBacktester:
         eval_ticks = 0
 
         def _roll_daily(ts_sec: int) -> None:
-            nonlocal daily_pnl, daily_pnl_day
+            nonlocal daily_pnl, daily_pnl_day, halted
             day = _utc_day_key(ts_sec)
             if day is None:
                 return
             if daily_pnl_day != day:
                 daily_pnl_day = day
                 daily_pnl = 0.0
+                if halted:
+                    halted = False
+                    bot_stub["status"] = "RUNNING"
 
         def _close_position(ts_sec: int, exit_price: float, reason: str) -> None:
             nonlocal position, equity, daily_pnl, halted, total_fees

@@ -6,6 +6,11 @@ const KIND_LABELS = {
   parity_filter: 'Strategy filter',
   risk_gate: 'Risk gate',
   size: 'Size floor',
+  pretrade: 'PreTrade',
+  pretrade_streak_veto: 'Streak VETO',
+  pretrade_streak_cooldown: 'Streak cool-down',
+  direction_mode: 'Direction mode',
+  event: 'Event gate',
 };
 
 export function blockedEventKindLabel(kind) {

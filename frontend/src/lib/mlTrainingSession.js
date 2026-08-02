@@ -62,6 +62,8 @@ let session = {
   // Phase 1 async jobs (additive).
   jobId: null,
   serverProgress: null,
+  /** Last completed hyperparam-sweep payload (survives finish for remount). */
+  tuneResult: null,
   /** Ring buffer of poll snapshots for optional Lab inspection. */
   pollLog: [],
 };
@@ -92,6 +94,12 @@ function nextPollLog(prev, entry) {
     phase: entry?.phase != null ? String(entry.phase) : '',
     detail: entry?.detail != null ? String(entry.detail) : '',
     note: entry?.note != null ? String(entry.note) : '',
+    trial: entry?.trial != null ? entry.trial : null,
+    max_trials: entry?.max_trials != null ? entry.max_trials : null,
+    best_score: entry?.best_score != null ? entry.best_score : null,
+    last_score: entry?.last_score != null ? entry.last_score : null,
+    warning: entry?.warning != null ? String(entry.warning) : '',
+    level: entry?.level != null ? String(entry.level) : '',
   };
   const list = Array.isArray(prev) ? prev : [];
   const last = list[list.length - 1];
@@ -102,6 +110,10 @@ function nextPollLog(prev, entry) {
     && last.phase === line.phase
     && last.detail === line.detail
     && last.note === line.note
+    && last.trial === line.trial
+    && last.best_score === line.best_score
+    && last.last_score === line.last_score
+    && last.warning === line.warning
   ) {
     // Refresh timestamp on identical snapshot (still one row).
     return [...list.slice(0, -1), { ...last, t: line.t }];
@@ -228,18 +240,20 @@ export function setCachedModelStatus(symbol, strategy, body, timeframe = '1m') {
 export function beginMlJob({ kind, strategy, symbol, jobProgress, jobId = null }) {
   const jobToken = session.jobToken + 1;
   const kindN = String(kind || 'train').toLowerCase();
+  const isTune = kindN === 'hyperparam_sweep' || kindN === 'tune' || kindN === 'autotune';
   return patch({
     jobToken,
     strategy,
     symbol,
     training: kindN === 'train',
     validating: kindN === 'validate',
-    tuning: kindN === 'hyperparam_sweep' || kindN === 'tune' || kindN === 'autotune',
+    tuning: isTune,
     jobProgress: jobProgress ? { ...jobProgress, token: jobToken, active: true } : null,
     lastError: null,
     jobId: jobId || null,
     serverProgress: null,
     pollLog: [],
+    ...(isTune ? { tuneResult: null } : {}),
     ...(kindN === 'validate' ? { validation: null } : {}),
   });
 }
@@ -279,7 +293,10 @@ export function setMlServerProgress(progress) {
   if (!progress || typeof progress !== 'object') {
     return patch({ serverProgress: null });
   }
+  // Preserve sweep/train extras (trial, best_score, metrics…) so remount /
+  // Auto-Tune UI can show the same rich snapshot as live polls.
   const serverProgress = {
+    ...progress,
     pct: Number(progress.pct) || 0,
     phase: progress.phase || '',
     detail: progress.detail || '',
@@ -294,8 +311,19 @@ export function setMlServerProgress(progress) {
       phase: serverProgress.phase,
       detail: serverProgress.detail,
       note: progress.note || '',
+      trial: progress.trial,
+      max_trials: progress.max_trials,
+      best_score: progress.best_score,
+      last_score: progress.last_score,
+      warning: progress.warning,
+      level: progress.level || (progress.warning ? 'warn' : ''),
     }),
   });
+}
+
+/** Persist Auto-Tune result for Lab remount after finishMlJob clears busy flags. */
+export function setMlTuneResult(result) {
+  return patch({ tuneResult: result && typeof result === 'object' ? result : null });
 }
 
 /** Explicit poll-log row (timeouts / notes that are not a progress snapshot). */
@@ -327,13 +355,18 @@ export function applyMlJobProgressMessage(data) {
       // Keep post-train race guard — bare invalidate would let late untrained land.
       markModelFreshAfterTrain(sym, strat, tf);
     }
-    // Keep jobId until the Lab panel finishes its own poll cleanup; only clear
-    // active flags so remounts don't look "busy forever".
-    if (status !== 'done' || kind === 'hyperparam_sweep') {
+    // Keep jobId + busy flags on `done` until the Lab/poller calls finishMlJob
+    // (so remount can still reattach and apply the result). On error/cancel,
+    // clear busy flags + progress so the bar does not stick after a WS cancel.
+    if (status !== 'done') {
       patch({
         training: false,
         validating: false,
-        tuning: status === 'done' ? false : session.tuning,
+        tuning: false,
+        jobProgress: session.jobProgress
+          ? { ...session.jobProgress, active: false }
+          : null,
+        lastError: data.error || data.detail || status,
       });
     }
   }
@@ -343,10 +376,17 @@ export function applyMlJobProgressMessage(data) {
 /**
  * Rehydrate Lab session from bootstrap /api/v1/session active ML jobs.
  * Picks the newest queued/running job so tab refresh can reattach polling.
+ * Also reattaches interrupted/failed jobs with checkpoint.resume_ok.
  */
 export function resumeActiveMlJobs(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
-  const active = list.filter((j) => ['queued', 'running'].includes(String(j?.status || '').toLowerCase()));
+  const active = list.filter((j) => {
+    const status = String(j?.status || '').toLowerCase();
+    if (['queued', 'running'].includes(status)) return true;
+    const cp = j?.checkpoint;
+    const resumeOk = Boolean(j?.resumable) || (cp && typeof cp === 'object' && cp.resume_ok);
+    return resumeOk && ['error', 'cancelled', 'failed'].includes(status);
+  });
   if (!active.length) return session;
   // Prefer an already-tracked job if still active.
   if (session.jobId && active.some((j) => j.job_id === session.jobId || j.id === session.jobId)) {
@@ -354,23 +394,55 @@ export function resumeActiveMlJobs(jobs) {
   }
   const job = active[0];
   const kind = String(job.kind || 'train').toLowerCase();
+  const cp = job.checkpoint && typeof job.checkpoint === 'object' ? job.checkpoint : null;
+  const trialBit = cp?.trials_completed != null && cp?.max_trials != null
+    ? ` · resuming trial ${cp.trials_completed}/${cp.max_trials}`
+    : '';
   const progress = job.progress && typeof job.progress === 'object'
     ? {
       active: true,
       kind,
       startedAt: Date.now(),
-      label: `Resuming ${kind} · ${job.strategy || ''}`.trim(),
+      label: `Resuming ${kind} · ${job.strategy || ''}${trialBit}`.trim(),
       phases: [],
     }
     : null;
-  beginMlJob({
+  const resumed = beginMlJob({
     kind,
     strategy: job.strategy,
     symbol: job.symbol,
     jobProgress: progress,
     jobId: job.job_id || job.id,
   });
-  if (job.progress) setMlServerProgress({ ...job.progress, status: job.status });
+  const serverProg = {
+    ...(job.progress || {}),
+    status: job.status,
+    resuming: true,
+  };
+  if (cp?.trials_completed != null) {
+    serverProg.trial = cp.trials_completed;
+    serverProg.max_trials = cp.max_trials;
+    serverProg.phase = serverProg.phase || 'hyperparam_resume';
+    serverProg.detail = serverProg.detail
+      || `Resuming trial ${cp.trials_completed}/${cp.max_trials || '?'}…`;
+  }
+  if (job.progress || cp) setMlServerProgress(serverProg);
+  // Background Optuna sweeps must keep polling even before Auto-Tune remounts.
+  if (
+    kind === 'hyperparam_sweep'
+    || kind === 'tune'
+    || kind === 'autotune'
+  ) {
+    const jobId = job.job_id || job.id;
+    if (jobId) {
+      import('@/lib/mlHyperparamSweepPolling').then(({ startMlHyperparamSweepPolling }) => {
+        startMlHyperparamSweepPolling(jobId, {
+          jobToken: resumed.jobToken,
+          timeBudgetSec: 600,
+        });
+      }).catch(() => { /* ignore */ });
+    }
+  }
   return session;
 }
 

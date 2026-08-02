@@ -297,6 +297,7 @@ def evaluate_parity_pretrade(
     bar_time,
     bot_config: dict | None,
     recent_exit_pnls: Sequence[float] | None = None,
+    recent_exit_times: Sequence[float | int | None] | None = None,
     anomaly: dict | None = None,
     sentiment: dict | None = None,
     reduce_size_factor: float | None = None,
@@ -304,16 +305,21 @@ def evaluate_parity_pretrade(
     sentiment_threshold: float | None = None,
     sentiment_min_mentions: int | None = None,
     gap_veto_pct: float | None = None,
+    lookback_hours: float | None = None,
 ) -> dict[str, Any]:
     """Deterministic PreTradeIntel subset shared by live parity / backtest.
 
     Covers the checks that do not need a live OMS feed or DB:
-    - recent failure streak (from closed trade pnls)
+    - recent failure streak (from closed trade pnls, bar-time lookback)
     - bar anomaly / gap veto
     - sentiment divergence
 
     Event gates and VAE are applied elsewhere (shared already). Correlation
     exposure stays live-only (needs portfolio state).
+
+    Pass ``recent_exit_times`` (unix sec, aligned with ``recent_exit_pnls``) and
+    ``bar_time`` so streak VETO uses a real lookback window instead of latching
+    forever across multi-day live_aligned runs.
     """
     from app.config import (
         PRETRADE_GAP_VETO_PCT,
@@ -351,13 +357,22 @@ def evaluate_parity_pretrade(
     )
 
     streak_action = None
-    # Failure streak from recent closed exits (newest last).
+    # Failure streak from recent closed exits (newest last), bar-time lookback.
+    now_ts = None
+    if bar_time is not None:
+        try:
+            now_ts = float(bar_time)
+        except (TypeError, ValueError):
+            now_ts = None
     if recent_exit_pnls is not None and fail_limit > 0:
         streak_action = apply_failures_streak(
             recent_exit_pnls,
             bot_config=cfg,
             setup_fail_limit=fail_limit,
             newest_first=False,
+            lookback_hours=lookback_hours,
+            exit_times=recent_exit_times,
+            now_ts=now_ts,
         )
         if streak_action:
             vetoes.extend(streak_action.get("vetoes") or [])
@@ -414,9 +429,12 @@ def evaluate_parity_pretrade(
     if verdict == "VETO":
         size_multiplier = 0.0
 
-    # cfg reserved for future bot-level overrides; silence unused lint.
-    _ = bar_time
     _ = symbol
+    streak_veto = bool(
+        streak_action
+        and streak_action.get("verdict") == "VETO"
+        and any(str(v).startswith("failures_streak") for v in vetoes)
+    )
 
     return {
         "verdict": verdict,
@@ -424,6 +442,7 @@ def evaluate_parity_pretrade(
         "size_multiplier": size_multiplier,
         "reasoning": "; ".join(vetoes) if vetoes else "Confirmation passed.",
         "streak_action": streak_action,
+        "streak_veto": streak_veto,
     }
 
 

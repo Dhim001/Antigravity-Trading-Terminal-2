@@ -5,6 +5,7 @@ import {
   backtestJobProgressFingerprint,
   backtestJobProgressUpdatedAtMs,
   isBacktestJobProgressStalled,
+  isDeferredBacktestStillAlive,
 } from './backtestPolling';
 
 describe('backtestPolling', () => {
@@ -141,6 +142,29 @@ describe('backtestPolling', () => {
     expect(isBacktestJobProgressStalled(job, {
       nowMs,
       stallMs: 15 * 60 * 1000,
+    })).toBe(false);
+  });
+
+  it('isDeferredBacktestStillAlive keeps watching when job_id set', () => {
+    expect(isDeferredBacktestStillAlive({
+      backtestRunning: true,
+      backtestJobId: 'abc',
+      backtestJobsById: {},
+    })).toBe(true);
+    expect(isDeferredBacktestStillAlive({
+      backtestRunning: true,
+      backtestJobId: 'abc',
+      backtestJobsById: { abc: { status: 'resolve', progress: { pct: 2 } } },
+    })).toBe(true);
+    expect(isDeferredBacktestStillAlive({
+      backtestRunning: true,
+      backtestJobId: 'abc',
+      backtestJobsById: { abc: { status: 'failed' } },
+    })).toBe(false);
+    expect(isDeferredBacktestStillAlive({
+      backtestRunning: true,
+      backtestJobId: null,
+      backtestJobsById: {},
     })).toBe(false);
   });
 });

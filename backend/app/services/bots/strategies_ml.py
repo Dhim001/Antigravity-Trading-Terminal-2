@@ -161,12 +161,19 @@ def train_ml_signal_model(
         }
 
     # Step 1: Label candles with triple-barrier method
-    labels = label_triple_barrier(
-        candles,
-        atr_mult_upper=atr_mult,
-        atr_mult_lower=atr_mult,
-        max_holding_bars=max_bars,
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
     )
+
+    labels = resolve_precomputed_labels(candles, cfg)
+    if labels is None:
+        labels = label_triple_barrier(
+            candles,
+            atr_mult_upper=atr_mult,
+            atr_mult_lower=atr_mult,
+            max_holding_bars=max_bars,
+        )
     dist = label_distribution(labels)
 
     # Step 2: Extract features for each labelled bar
@@ -179,6 +186,7 @@ def train_ml_signal_model(
     include_trade_state = bool(cfg.get("ml_include_trade_state"))
     feat_names = resolve_feature_names(include_trade_state=include_trade_state)
     feat_version = resolve_feature_version(include_trade_state=include_trade_state)
+    pre_feat = resolve_precomputed_features(candles, cfg)
 
     for idx, label_info in enumerate(labels):
         if label_info.get("barrier_hit") == "invalid":
@@ -191,18 +199,21 @@ def train_ml_signal_model(
             continue
 
         candle = candles[idx]
-        lookback = candles[max(0, idx - feature_lookback):idx]
-        features = bar_to_signal_features(candle, lookback_rows=lookback)
-        # Historical train: trade-state features are zeros unless a caller
-        # supplies per-bar trade_state on the candle (rare).
-        features = merge_trade_state_features(
-            features,
-            candle.get("trade_state") if isinstance(candle, dict) else None,
-            enabled=include_trade_state,
-        )
-        vector = signal_features_to_vector(
-            features, include_trade_state=include_trade_state, feature_names=feat_names,
-        )
+        if pre_feat is not None and not include_trade_state:
+            vector = np.asarray(pre_feat[idx], dtype=np.float64)
+        else:
+            lookback = candles[max(0, idx - feature_lookback):idx]
+            features = bar_to_signal_features(candle, lookback_rows=lookback)
+            # Historical train: trade-state features are zeros unless a caller
+            # supplies per-bar trade_state on the candle (rare).
+            features = merge_trade_state_features(
+                features,
+                candle.get("trade_state") if isinstance(candle, dict) else None,
+                enabled=include_trade_state,
+            )
+            vector = signal_features_to_vector(
+                features, include_trade_state=include_trade_state, feature_names=feat_names,
+            )
 
         rows.append({
             "vector": vector,
@@ -364,7 +375,18 @@ def train_ml_signal_model(
             },
         }
         _signal_model_store.inject_session_model(symbol, model, session_meta, timeframe=tf)
-        return {"ok": True, "symbol": symbol, "timeframe": tf, **session_meta}
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "timeframe": tf,
+            **session_meta,
+            # Thread-safe OOS path for parallel WF folds (shared store races).
+            "_wf_bundle": {
+                "strategy": "ML_SIGNAL_BOOST",
+                "model": model,
+                "metadata": session_meta,
+            },
+        }
 
     os.makedirs(_model_dir(symbol, tf), exist_ok=True)
     model_path = _model_path(symbol, tf)

@@ -50,7 +50,7 @@ import {
   clearBacktestClientTimeout,
   backtestTimeoutHint,
 } from '../../lib/backtestTimeouts';
-import { stopBacktestJobPolling } from '../../lib/backtestPolling';
+import { isDeferredBacktestStillAlive, stopBacktestJobPolling } from '../../lib/backtestPolling';
 import PortfolioBacktestPicker from '../PortfolioBacktestPicker';
 import { canRunPortfolioBacktest } from '../../lib/portfolioBacktest';
 import { formatRunEstimate } from '../../lib/backtestRunEstimate';
@@ -460,12 +460,22 @@ export function AlgoTab({ hideToolbar = false }) {
       days: request?.days,
       portfolioSymbolCount: request?.portfolio_symbols?.length ?? 0,
       onTimeout: (timeoutMs) => {
-        if (useResearchStore.getState().backtestRunning) {
-          stopBacktestJobPolling();
-          setBacktestRunning(false);
-          setBacktestProgress(null);
-          toast.error(`Backtest timed out after ${Math.round(timeoutMs / 60000)} min`);
+        const state = useResearchStore.getState();
+        if (!state.backtestRunning) return;
+        // Parity with Optimizer / TaOptimizerPanel — deferred jobs keep running.
+        if (isDeferredBacktestStillAlive(state)) {
+          toast.warning('Retry is slower than estimated — still running in the background.', {
+            action: {
+              label: 'Open Jobs',
+              onClick: () => useResearchStore.getState().openBacktestLab('jobs'),
+            },
+          });
+          return;
         }
+        stopBacktestJobPolling();
+        setBacktestRunning(false);
+        setBacktestProgress(null);
+        toast.error(`Backtest timed out after ${Math.round(timeoutMs / 60000)} min`);
       },
     });
     const { ok, error } = await sendAction(Action.RUN_BACKTEST, withLlmModel(request));
@@ -519,8 +529,7 @@ export function AlgoTab({ hideToolbar = false }) {
         // A deferred job owns its own lifecycle (poller + Jobs tab). Exceeding
         // the client estimate is not a failure — keep watching instead of
         // dropping a run that is still making progress server-side.
-        const slot = state.backtestJobId ? state.backtestJobsById?.[state.backtestJobId] : null;
-        if (slot && ['pending', 'running'].includes(slot.status)) {
+        if (isDeferredBacktestStillAlive(state)) {
           toast.warning('Backtest is slower than estimated — still running in the background.', {
             action: {
               label: 'Open Jobs',

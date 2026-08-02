@@ -112,7 +112,28 @@ class TestParityPretrade(unittest.TestCase):
             setup_fail_limit=3,
         )
         self.assertEqual(out["verdict"], "VETO")
+        self.assertTrue(out.get("streak_veto"))
         self.assertTrue(any("failures_streak" in v for v in out["vetoes"]))
+
+    def test_failures_streak_lookback_unlock(self):
+        now = 1_000_000.0
+        old = now - 30 * 3600.0
+        out = evaluate_parity_pretrade(
+            side="BUY",
+            symbol="AAPL",
+            bar_time=now,
+            bot_config={
+                "pretrade_streak_mode": "veto",
+                "pretrade_setup_lookback_hours": 24,
+                "max_consecutive_losses": 5,
+            },
+            recent_exit_pnls=[-1, -1, -1, -1, -1],
+            recent_exit_times=[old, old + 1, old + 2, old + 3, old + 4],
+            setup_fail_limit=3,
+        )
+        self.assertEqual(out["verdict"], "CONFIRM")
+        self.assertFalse(out.get("streak_veto"))
+        self.assertIsNone(out.get("streak_action"))
 
     def test_gap_anomaly_veto(self):
         out = evaluate_parity_pretrade(

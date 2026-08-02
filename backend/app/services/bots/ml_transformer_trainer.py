@@ -123,14 +123,20 @@ def _build_transformer(input_dim: int = N_FEATURES, d_model: int = 128,
 
 
 def build_transformer_sequences(
-    candles: list[dict], labels: list[dict], *, lookback: int = 90, max_holding_bars: int = 30,
+    candles: list[dict],
+    labels: list[dict],
+    *,
+    lookback: int = 90,
+    max_holding_bars: int = 30,
+    feat_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     n = len(candles)
     feature_lb = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
-    feat_matrix = precompute_signal_feature_matrix(
-        candles, feature_lookback=feature_lb,
-    )
+    if feat_matrix is None or len(feat_matrix) != n:
+        feat_matrix = precompute_signal_feature_matrix(
+            candles, feature_lookback=feature_lb,
+        )
     seqs_x, seqs_y = [], []
 
     for i in range(lookback + feature_warmup, n - max_holding_bars):
@@ -193,11 +199,17 @@ def train_transformer_model(
     val_frac = float(cfg.get("val_fraction", 0.2))
     atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
     max_bars = int(cfg.get("triple_barrier_max_bars", 30))
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
+    )
     from app.services.bots.ml_torch_device import (
+        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
         ensure_cuda_ready,
+        make_torch_dataloader,
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
@@ -229,9 +241,16 @@ def train_transformer_model(
     if len(candles) < lookback + 120:
         return {"ok": False, "error": "insufficient candles", "symbol": symbol}
 
-    labels = label_triple_barrier(candles, atr_mult_upper=atr_mult, atr_mult_lower=atr_mult, max_holding_bars=max_bars)
+    labels = resolve_precomputed_labels(candles, cfg)
+    if labels is None:
+        labels = label_triple_barrier(
+            candles, atr_mult_upper=atr_mult, atr_mult_lower=atr_mult, max_holding_bars=max_bars,
+        )
     dist = label_distribution(labels)
-    X, y = build_transformer_sequences(candles, labels, lookback=lookback, max_holding_bars=max_bars)
+    pre_feat = resolve_precomputed_features(candles, cfg)
+    X, y = build_transformer_sequences(
+        candles, labels, lookback=lookback, max_holding_bars=max_bars, feat_matrix=pre_feat,
+    )
     n = len(y)
     if n < min_samples:
         return {"ok": False, "error": f"insufficient sequences ({n})", "symbol": symbol}
@@ -272,17 +291,20 @@ def train_transformer_model(
         "early_stop_patience": max_patience,
     }
 
+    train_loader = make_torch_dataloader(
+        X_t, y_t, batch_size=batch_size, device=device, shuffle=True,
+    )
+    val_loader = make_torch_dataloader(
+        X_v, y_v, batch_size=batch_size, device=device, shuffle=False,
+    )
     for ep in range(epochs):
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "TRANSFORMER_SIGNAL")
         model.train()
-        idx = torch.randperm(len(X_t))
         ep_loss = 0.0
         n_batches = 0
-        for s in range(0, len(X_t), batch_size):
-            b = idx[s:s + batch_size]
-            xb = X_t[b].to(device, non_blocking=True)
-            yb = y_t[b].to(device, non_blocking=True)
+        for xb, yb in train_loader:
+            xb, yb = batch_to_device(xb, yb, device)
             optimizer.zero_grad()
             loss = criterion(model(xb), yb)
             loss.backward()
@@ -296,9 +318,8 @@ def train_transformer_model(
         with torch.no_grad():
             vl = 0.0
             n_v = 0
-            for vs in range(0, len(X_v), batch_size):
-                xb = X_v[vs:vs + batch_size].to(device, non_blocking=True)
-                yb = y_v[vs:vs + batch_size].to(device, non_blocking=True)
+            for xb, yb in val_loader:
+                xb, yb = batch_to_device(xb, yb, device)
                 vl += float(criterion(model(xb), yb).item()) * len(xb)
                 n_v += len(xb)
             vl = vl / max(1, n_v)
@@ -329,6 +350,38 @@ def train_transformer_model(
                     strategy="TRANSFORMER_SIGNAL",
                 ))
                 break
+
+        job_id = str(cfg.get("job_id") or cfg.get("_ml_job_id") or "") or None
+        if job_id and best_state is not None:
+            try:
+                from app.services.bots.ml_job_checkpoint import (
+                    empty_epoch_checkpoint,
+                    save_torch_epoch_checkpoint,
+                )
+                from app.services.bots.ml_job_store import save_ml_job_checkpoint
+
+                save_torch_epoch_checkpoint(
+                    job_id,
+                    model_state=best_state,
+                    epoch=ep + 1,
+                    epochs_budget=epochs,
+                    extra={"val_loss": float(vl)},
+                )
+                save_ml_job_checkpoint(
+                    job_id,
+                    {
+                        **empty_epoch_checkpoint(
+                            job_id=job_id,
+                            strategy="TRANSFORMER_SIGNAL",
+                            symbol=symbol,
+                            epochs_budget=epochs,
+                        ),
+                        "last_epoch": ep + 1,
+                        "val_loss": float(vl),
+                    },
+                )
+            except Exception:
+                pass
 
     if best_state:
         model.load_state_dict(best_state)

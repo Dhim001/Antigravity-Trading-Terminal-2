@@ -117,6 +117,65 @@ class MlTrainExecutorTests(unittest.TestCase):
         self.assertEqual(cfg.get("epochs"), 12)
         self.assertNotIn("max_iter", cfg)
 
+    def test_capacity_parity_ignores_exploratory_sim_mode(self):
+        """Deploy-grade WF must stay live_aligned even if ML_EXPLORATORY_SIM_MODE is set."""
+        captured = {}
+
+        def _capture(strategy, symbol, candles, config=None, **kwargs):
+            captured["config"] = dict(config or {})
+            return {"ok": True, "aggregate": {"mean_oos_accuracy": 0.5}}
+
+        with patch("app.config.ML_EXPLORATORY_SIM_MODE", "research_fast"):
+            with patch(
+                "app.services.bots.ml_walk_forward_validator.walk_forward_ml_train",
+                side_effect=_capture,
+            ):
+                with patch(
+                    "app.services.bots.ml_model_artifacts.persist_ml_validation_metadata",
+                    return_value={"ok": True},
+                ):
+                    run_validate_job(
+                        "ML_SIGNAL_BOOST",
+                        "ETHUSDT",
+                        [{"close": i} for i in range(200)],
+                        {},
+                        2,
+                        "rolling",
+                        False,
+                        4,
+                    )
+        self.assertEqual(captured["config"].get("sim_mode"), "live_aligned")
+        self.assertTrue(captured["config"].get("wf_capacity_parity"))
+
+    def test_lean_validate_can_use_exploratory_sim_mode(self):
+        captured = {}
+
+        def _capture(strategy, symbol, candles, config=None, **kwargs):
+            captured["config"] = dict(config or {})
+            return {"ok": True, "aggregate": {"mean_oos_accuracy": 0.5}}
+
+        with patch("app.config.ML_EXPLORATORY_SIM_MODE", "research_fast"):
+            with patch(
+                "app.services.bots.ml_walk_forward_validator.walk_forward_ml_train",
+                side_effect=_capture,
+            ):
+                with patch(
+                    "app.services.bots.ml_model_artifacts.persist_ml_validation_metadata",
+                    return_value={"ok": True},
+                ):
+                    run_validate_job(
+                        "ML_SIGNAL_BOOST",
+                        "ETHUSDT",
+                        [{"close": i} for i in range(200)],
+                        {"wf_capacity_parity": False},
+                        2,
+                        "rolling",
+                        False,
+                        4,
+                    )
+        self.assertEqual(captured["config"].get("sim_mode"), "research_fast")
+        self.assertFalse(captured["config"].get("wf_capacity_parity"))
+
     def test_torch_strategies_prefer_in_process_thread(self):
         with patch("app.config.ML_TRAIN_PROCESS_ISOLATION", True):
             with patch("app.config.ML_TRAIN_TORCH_IN_PROCESS", True):

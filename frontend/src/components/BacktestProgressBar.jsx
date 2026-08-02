@@ -1,9 +1,16 @@
 /**
  * Backtest progress indicator (P2).
  */
-import React from 'react';
+import React, { useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { useResearchStore } from '../store/useResearchStore';
+import { sendAction } from '../api/transport';
+import { Action } from '../api/protocol';
+import { stopBacktestJobPolling } from '../lib/backtestPolling';
+import { clearBacktestClientTimeout } from '../lib/backtestTimeouts';
 
 const PHASE_LABELS = {
   resolve: 'Loading candles',
@@ -40,10 +47,12 @@ export function formatBacktestProgressLabel(progress, { jobId } = {}) {
   let label = progress?.message ?? PHASE_LABELS[phase] ?? 'Running…';
 
   // Soften client-side placeholder before first server progress arrives.
-  if (/^starting backtest/i.test(String(label).trim()) && pct <= 0) {
+  if (/^starting (backtest|sweep|walk-forward)/i.test(String(label).trim()) && pct <= 0) {
     label = jobId
       ? 'Background job accepted — waiting for worker…'
-      : 'Starting backtest — contacting server…';
+      : /sweep|walk-forward/i.test(label)
+        ? 'Starting optimizer — contacting server…'
+        : 'Starting backtest — contacting server…';
   }
 
   // Early ML precompute maps onto the first ~10% of the bar span but still
@@ -64,11 +73,38 @@ export function formatBacktestProgressLabel(progress, { jobId } = {}) {
   return label;
 }
 
-export default function BacktestProgressBar({ className, compact = false }) {
+export async function cancelWatchedBacktestJob() {
+  stopBacktestJobPolling();
+  clearBacktestClientTimeout();
+  const store = useResearchStore.getState();
+  store.setBacktestRunning(false);
+  store.setBacktestProgress(null);
+  const jobId = store.backtestJobId;
+  if (jobId) {
+    store.upsertBacktestJobSlot?.(jobId, { status: 'cancelled', running: false });
+  }
+  const { ok, error } = await sendAction(
+    Action.CANCEL_BACKTEST,
+    jobId ? { job_id: jobId } : {},
+  );
+  if (!ok) {
+    toast.error(error || 'Cancel request could not be delivered — the run may still be going');
+    return { ok: false, error };
+  }
+  toast.message('Backtest cancel requested');
+  return { ok: true };
+}
+
+export default function BacktestProgressBar({
+  className,
+  compact = false,
+  showCancel = true,
+}) {
   const running = useResearchStore((s) => s.backtestRunning);
   const progress = useResearchStore((s) => s.backtestProgress);
   const jobId = useResearchStore((s) => s.backtestJobId);
   const lastRequest = useResearchStore((s) => s.backtestLastRequest);
+  const [cancelling, setCancelling] = useState(false);
 
   if (!running) return null;
 
@@ -86,6 +122,17 @@ export default function BacktestProgressBar({ className, compact = false }) {
   const identity = [symbol, strategy].filter(Boolean).join(' · ');
   const jobShort = shortJobId(progress?.job_id || jobId);
   const isBackground = Boolean(jobShort);
+  const isSweep = phase === 'sweep' || Boolean(lastRequest?.sweep);
+
+  const onCancel = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await cancelWatchedBacktestJob();
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   return (
     <div className={cn('algo-backtest-progress', compact && 'algo-backtest-progress--compact', className)} aria-live="polite">
@@ -98,13 +145,34 @@ export default function BacktestProgressBar({ className, compact = false }) {
           {rateLabel ? `${rateLabel} · ` : ''}{pct}%
         </span>
       </div>
-      {(identity || jobShort || isBackground) && (
+      {(identity || jobShort || isBackground || isSweep) && (
         <p className="algo-backtest-progress__context text-[0.55rem] text-muted-foreground mt-0.5 truncate">
-          {identity || 'Backtest'}
+          {identity || (isSweep ? 'Optimizer' : 'Backtest')}
           {jobShort ? ` · job ${jobShort}` : ''}
           {PHASE_LABELS[phase] ? ` · ${PHASE_LABELS[phase]}` : ''}
-          {isBackground ? ' · background (Jobs tab)' : ''}
+          {progress?.trial != null && progress?.max_trials != null
+            ? ` · trial ${progress.trial}/${progress.max_trials}`
+            : progress?.trial != null
+              ? ` · trial ${progress.trial}`
+              : ''}
+          {progress?.best_score != null ? ` · best ${progress.best_score}` : ''}
+          {isBackground ? ' · background (safe to switch tabs / Jobs)' : ''}
         </p>
+      )}
+      {showCancel && (
+        <div className="mt-1 flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-[0.6rem]"
+            disabled={cancelling}
+            onClick={onCancel}
+          >
+            {cancelling ? <Loader2 size={10} className="animate-spin" /> : null}
+            Cancel
+          </Button>
+        </div>
       )}
       {phase === 'queued' && (
         <p className="text-[0.55rem] text-muted-foreground mt-0.5">

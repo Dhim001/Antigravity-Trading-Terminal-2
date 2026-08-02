@@ -3,7 +3,7 @@
  * A/B compare selection, and one-click result loading.
  */
 import { useCallback, useEffect, useState, useMemo } from 'react';
-import { Loader2, RotateCcw, GitCompare, Pin, Search, ArrowUpDown } from 'lucide-react';
+import { Loader2, RotateCcw, GitCompare, Pin, Search, ArrowUpDown, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ import { useResearchStore } from '../store/useResearchStore';
 import { getStoreActions } from '../api/dispatch';
 import { sendAction } from '../api/transport';
 import { Action } from '../api/protocol';
-import { fetchBacktestJobs, fetchBacktestRun, watchBacktestJob } from '../api/endpoints';
+import { fetchBacktestJobs, fetchBacktestRun, resumeBacktestJob, watchBacktestJob } from '../api/endpoints';
 import { withLlmModel } from '../api/endpoints';
 import { toast } from 'sonner';
 import BacktestJobCompare from './BacktestJobCompare';
@@ -165,6 +165,23 @@ export default function BacktestJobHistory() {
     else toast.message('Retrying backtest…');
   };
 
+  const handleResume = async (job, e) => {
+    e.stopPropagation();
+    if (backtestRunning) { toast.message('A backtest is already running'); return; }
+    openBacktestLabJobs();
+    try {
+      const resumed = await resumeBacktestJob(job.id);
+      const storeActions = getStoreActions();
+      watchBacktestJob(resumed?.id || job.id, storeActions, {
+        progress: resumed?.progress || { pct: 0, phase: 'recover', message: 'Resume queued…' },
+      });
+      toast.message('Resuming from checkpoint…');
+      refresh();
+    } catch (err) {
+      toast.error(err?.message || 'Resume failed');
+    }
+  };
+
   const SortBtn = ({ col, children }) => (
     <button
       className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
@@ -236,6 +253,7 @@ export default function BacktestJobHistory() {
                 const isPinned = pinned.includes(job.id);
                 const isCompared = compareIds.includes(job.id);
                 const canRetry = ['failed', 'cancelled'].includes(job.status);
+                const canResume = Boolean(job.resumable);
                 const isCompleted = job.status === 'completed';
 
                 return (
@@ -265,9 +283,16 @@ export default function BacktestJobHistory() {
                     <td className="whitespace-nowrap font-medium">{sym}</td>
                     <td className="text-muted-foreground whitespace-nowrap">{m.strategy}</td>
                     <td>
-                      <Badge variant={STATUS_VARIANT[job.status] ?? 'secondary'} className="text-[0.52rem]">
-                        {job.status}
-                      </Badge>
+                      <div className="inline-flex flex-wrap items-center gap-0.5">
+                        <Badge variant={STATUS_VARIANT[job.status] ?? 'secondary'} className="text-[0.52rem]">
+                          {job.status}
+                        </Badge>
+                        {canResume && (
+                          <Badge variant="outline" className="text-[0.48rem] text-primary border-primary/40">
+                            Resumable
+                          </Badge>
+                        )}
+                      </div>
                     </td>
                     <td className={cn(
                       'text-right num-mono whitespace-nowrap',
@@ -293,13 +318,24 @@ export default function BacktestJobHistory() {
                             <GitCompare className="size-3" />
                           </button>
                         )}
+                        {canResume && (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="h-5 text-[0.52rem] px-1"
+                            onClick={(e) => handleResume(job, e)}
+                            title="Resume from last checkpoint"
+                          >
+                            <Play className="size-2.5" />
+                          </Button>
+                        )}
                         {canRetry && (
                           <Button
                             variant="ghost"
                             size="xs"
                             className="h-5 text-[0.52rem] px-1"
                             onClick={(e) => handleRetry(job, e)}
-                            title="Retry with same settings"
+                            title="Retry with same settings (fresh run)"
                           >
                             <RotateCcw className="size-2.5" />
                           </Button>

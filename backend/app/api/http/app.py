@@ -1827,6 +1827,19 @@ async def list_backtest_jobs_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "jobs": jobs, "count": len(jobs)})
 
 
+async def resume_backtest_job_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/backtest/jobs/{job_id}/resume — re-queue without wiping checkpoint."""
+    from app.services.bots.backtest_job_store import resume_backtest_job
+
+    job_id = request.path_params.get("job_id")
+    if not job_id:
+        return JSONResponse({"ok": False, "error": "job_id is required"}, status_code=400)
+    outcome = await asyncio.to_thread(resume_backtest_job, job_id)
+    if not outcome.get("ok"):
+        return JSONResponse(outcome, status_code=400)
+    return JSONResponse(outcome)
+
+
 async def list_optimization_runs_handler(request: Request) -> JSONResponse:
     symbol = request.query_params.get("symbol")
     try:
@@ -3055,6 +3068,7 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/backtest/runs/{run_id}/trades", get_backtest_trades_handler, methods=["GET"]),
         Route("/api/v1/backtest/jobs", list_backtest_jobs_handler, methods=["GET"]),
         Route("/api/v1/backtest/jobs/active", get_active_backtest_job_handler, methods=["GET"]),
+        Route("/api/v1/backtest/jobs/{job_id}/resume", resume_backtest_job_handler, methods=["POST"]),
         Route("/api/v1/backtest/jobs/{job_id}", get_backtest_job_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations", list_optimization_runs_handler, methods=["GET"]),
         Route("/api/v1/backtest/optimizations/{run_id}", get_optimization_run_handler, methods=["GET"]),

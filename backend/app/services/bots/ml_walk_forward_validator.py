@@ -25,8 +25,6 @@ from app.services.bots.backtest_purged_cv import (
     apply_embargo_after_test,
     embargo_bars_for_segment,
     estimate_purge_bars,
-    partition_candles,
-    purge_train_before_test,
 )
 from app.services.bots.ml_triple_barrier import label_triple_barrier
 
@@ -201,7 +199,9 @@ def evaluate_oos_accuracy(
     # Fast path: batch predict for XGB signal model (avoids per-bar strategy overhead).
     if key == "ML_SIGNAL_BOOST":
         try:
-            return _evaluate_oos_ml_signal_batch(test_candles, config or {})
+            return _evaluate_oos_ml_signal_batch(
+                test_candles, config or {}, train_result=train_result,
+            )
         except Exception as exc:
             logger.warning("Batch OOS eval failed, falling back to strategy loop: %s", exc)
 
@@ -364,6 +364,10 @@ def _evaluate_oos_transformer_torch(
     config: dict,
 ) -> dict[str, Any]:
     """In-memory Transformer OOS eval — no ONNX reload between WF folds."""
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
+    )
     from app.services.bots.ml_feature_engineering import precompute_signal_feature_matrix
 
     import torch
@@ -388,12 +392,14 @@ def _evaluate_oos_transformer_torch(
     feature_lb = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
     max_bars = int(config.get("triple_barrier_max_bars", 30))
-    labels = label_triple_barrier(
-        test_candles,
-        atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
-        atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
-        max_holding_bars=max_bars,
-    )
+    labels = resolve_precomputed_labels(test_candles, config)
+    if labels is None:
+        labels = label_triple_barrier(
+            test_candles,
+            atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
+            atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
+            max_holding_bars=max_bars,
+        )
 
     stride = 1
     if len(test_candles) > 400:
@@ -403,9 +409,11 @@ def _evaluate_oos_transformer_torch(
     correct = 0
     total = 0
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
-    feat_matrix = precompute_signal_feature_matrix(
-        test_candles, feature_lookback=feature_lb,
-    )
+    feat_matrix = resolve_precomputed_features(test_candles, config)
+    if feat_matrix is None:
+        feat_matrix = precompute_signal_feature_matrix(
+            test_candles, feature_lookback=feature_lb,
+        )
 
     with torch.no_grad():
         for i in range(lookback + feature_warmup, len(test_candles)):
@@ -440,10 +448,48 @@ def _evaluate_oos_transformer_torch(
     }
 
 
-def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dict[str, Any]:
-    """Vectorized OOS accuracy for ML_SIGNAL_BOOST using the on-disk model."""
+def _predict_ml_signal_from_bundle(
+    bundle: dict,
+    features: dict[str, float],
+) -> tuple[str, float] | None:
+    """Predict using an in-memory WF fold model (thread-safe vs shared store)."""
+    model = bundle.get("model")
+    meta = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
+    if model is None:
+        return None
+    from app.services.bots.ml_feature_engineering import (
+        SIGNAL_FEATURE_NAMES,
+        signal_features_to_vector,
+    )
+
+    reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
+    feat_names = meta.get("feature_names") or list(SIGNAL_FEATURE_NAMES)
+    vec = signal_features_to_vector(features, feature_names=feat_names).reshape(1, -1)
+    try:
+        proba = model.predict_proba(vec)[0]
+        pred_idx = int(np.argmax(proba))
+        confidence = float(proba[pred_idx])
+        signal = reverse_map.get(str(pred_idx), "NONE")
+        return signal, confidence
+    except Exception as exc:
+        logger.warning("ML signal bundle predict failed: %s", exc)
+        return None
+
+
+def _evaluate_oos_ml_signal_batch(
+    test_candles: list[dict],
+    config: dict,
+    *,
+    train_result: dict | None = None,
+) -> dict[str, Any]:
+    """Vectorized OOS accuracy for ML_SIGNAL_BOOST using fold bundle or store."""
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
+    )
     from app.services.bots.ml_feature_engineering import (
         EVAL_FEATURE_LOOKBACK,
+        SIGNAL_FEATURE_NAMES,
         bar_to_signal_features,
     )
     from app.services.bots.strategies_ml import get_ml_signal_store
@@ -459,12 +505,26 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
 
     tf = normalize_model_timeframe(config.get("timeframe"))
-    labels = label_triple_barrier(
-        test_candles,
-        atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
-        atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
-        max_holding_bars=int(config.get("triple_barrier_max_bars", 30)),
+    bundle = (train_result or {}).get("_wf_bundle") if isinstance(train_result, dict) else None
+    use_bundle = (
+        isinstance(bundle, dict)
+        and bundle.get("strategy") == "ML_SIGNAL_BOOST"
+        and bundle.get("model") is not None
     )
+    labels = resolve_precomputed_labels(test_candles, config)
+    if labels is None:
+        labels = label_triple_barrier(
+            test_candles,
+            atr_mult_upper=float(config.get("triple_barrier_atr_mult", 2.0)),
+            atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
+            max_holding_bars=int(config.get("triple_barrier_max_bars", 30)),
+        )
+
+    feat_matrix = resolve_precomputed_features(test_candles, config)
+    meta = (bundle or {}).get("metadata") if use_bundle else None
+    feat_names = (
+        (meta or {}).get("feature_names") if isinstance(meta, dict) else None
+    ) or list(SIGNAL_FEATURE_NAMES)
 
     correct = 0
     total = 0
@@ -474,14 +534,24 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
         if i < feature_warmup:
             counts["NONE"] += 1
             continue
-        lookback = test_candles[max(0, i - feature_lookback):i]
-        features = bar_to_signal_features(candle, lookback_rows=lookback)
-        pred = store.predict(
-            symbol,
-            features,
-            model_version=config.get("model_version") or None,
-            timeframe=tf,
-        )
+        if feat_matrix is not None:
+            features = {
+                name: float(feat_matrix[i, j])
+                for j, name in enumerate(feat_names)
+                if j < feat_matrix.shape[1]
+            }
+        else:
+            lookback = test_candles[max(0, i - feature_lookback):i]
+            features = bar_to_signal_features(candle, lookback_rows=lookback)
+        if use_bundle:
+            pred = _predict_ml_signal_from_bundle(bundle, features)
+        else:
+            pred = store.predict(
+                symbol,
+                features,
+                model_version=config.get("model_version") or None,
+                timeframe=tf,
+            )
         if pred is None:
             counts["NONE"] += 1
             continue
@@ -509,6 +579,293 @@ def _evaluate_oos_ml_signal_batch(test_candles: list[dict], config: dict) -> dic
 
 
 # ── Main walk-forward runner ──────────────────────────────────────────────
+
+# CPU/GBM strategies may run folds via ThreadPool. GPU/deep stay sequential
+# to avoid VRAM contention and nested ProcessPool on Windows.
+CPU_PARALLEL_WF_STRATEGIES = frozenset({"ML_SIGNAL_BOOST"})
+
+
+def _purge_train_indices(
+    indices: list[int],
+    purge_bars: int,
+) -> tuple[list[int], dict[str, Any]]:
+    """Mirror ``purge_train_before_test`` on index lists for feature gathering."""
+    from app.services.bots.backtest_purged_cv import MIN_TRAIN_BARS
+
+    purge_bars = max(0, int(purge_bars or 0))
+    if purge_bars <= 0 or not indices:
+        return list(indices), {"purge_bars": 0, "purged": False}
+    if len(indices) <= purge_bars + MIN_TRAIN_BARS // 2:
+        keep = max(MIN_TRAIN_BARS // 2, len(indices) // 2)
+        return indices[:keep], {
+            "purge_bars": purge_bars,
+            "purged": True,
+            "truncated_to": keep,
+            "note": "Train shortened to preserve minimum IS size",
+        }
+    return indices[:-purge_bars], {
+        "purge_bars": purge_bars,
+        "purged": True,
+        "removed_bars": purge_bars,
+    }
+
+
+def _resolve_wf_fold_workers(
+    strategy: str,
+    n_folds: int,
+    cfg: dict | None = None,
+) -> int:
+    """ThreadPool size for WF folds (1 = sequential).
+
+    Shipped default is sequential (``ML_WF_FOLD_WORKERS=1``). ``auto`` scales
+    up to ``min(n_folds, 4, cpu)``. Nested Optuna-trial ThreadPools must stay
+    sequential via ``_disable_wf_fold_parallel``.
+    """
+    key = str(strategy or "").upper()
+    if key not in CPU_PARALLEL_WF_STRATEGIES:
+        return 1
+    conf = cfg if isinstance(cfg, dict) else {}
+    if conf.get("_disable_wf_fold_parallel"):
+        return 1
+    try:
+        from app.config import ML_WF_FOLD_WORKERS
+
+        raw = (ML_WF_FOLD_WORKERS or "1").strip().lower()
+    except Exception:
+        raw = "1"
+    if raw in ("auto", "scale"):
+        import os
+
+        cpu = os.cpu_count() or 4
+        return max(1, min(int(n_folds), 4, cpu))
+    try:
+        return max(1, min(int(raw), int(n_folds)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _prepare_wf_fold_jobs(
+    folds: list[dict],
+    candles: list[dict],
+    symbol: str,
+    cfg: dict,
+    feature_cache: Any | None,
+) -> list[dict[str, Any]]:
+    """Precompute per-fold train/test windows (purge/embargo) before execution."""
+    jobs: list[dict[str, Any]] = []
+    prev_test_start: int | None = None
+    prev_test_end: int | None = None
+
+    for fold in folds:
+        train_start = int(fold["train_start"])
+        train_end = int(fold["train_end"])
+        test_start = int(fold["test_start"])
+        test_end = int(fold["test_end"])
+        embargo_bars = int(fold.get("embargo_bars") or 0)
+
+        embargo_info: dict[str, Any] = {"embargo_bars": embargo_bars, "applied": False}
+        if prev_test_end is not None and prev_test_start is not None:
+            embargo_until = apply_embargo_after_test(candles, prev_test_end, embargo_bars)
+            embargo_info["prev_test_start"] = prev_test_start
+            embargo_info["prev_test_end"] = prev_test_end
+            embargo_info["embargo_until"] = embargo_until
+            train_indices: list[int] = []
+            if train_start < prev_test_start:
+                train_indices.extend(range(train_start, min(train_end, prev_test_start)))
+            if embargo_until < train_end:
+                train_indices.extend(range(max(train_start, embargo_until), train_end))
+            embargo_info["applied"] = True
+            embargo_info["train_bars_after_embargo"] = len(train_indices)
+        else:
+            train_indices = list(range(train_start, train_end))
+
+        test_indices = list(range(test_start, test_end))
+        train_indices, purge_info = _purge_train_indices(
+            train_indices, int(fold["purge_bars"]),
+        )
+        purge_info = {**(purge_info or {}), "embargo": embargo_info}
+
+        train_candles = [candles[i] for i in train_indices]
+        test_candles = [candles[i] for i in test_indices]
+        for row in train_candles:
+            if isinstance(row, dict):
+                row.setdefault("_symbol", symbol)
+        for row in test_candles:
+            if isinstance(row, dict):
+                row.setdefault("_symbol", symbol)
+
+        fold_cfg = dict(cfg)
+        oos_feats = None
+        oos_labels = None
+        if feature_cache is not None:
+            fold_cfg = feature_cache.attach_config(fold_cfg, train_indices)
+            # Keep OOS cache on the job (not fold_cfg) so trainers never see test feats.
+            test_gathered = feature_cache.gather(test_indices)
+            oos_feats = test_gathered["features"]
+            oos_labels = test_gathered["labels"]
+
+        jobs.append({
+            "fold": fold,
+            "train_candles": train_candles,
+            "test_candles": test_candles,
+            "purge_info": purge_info,
+            "fold_cfg": fold_cfg,
+            "_oos_precomputed_features": oos_feats,
+            "_oos_precomputed_labels": oos_labels,
+        })
+        prev_test_start = test_start
+        prev_test_end = test_end
+    return jobs
+
+
+def _run_single_wf_fold(
+    *,
+    strategy: str,
+    symbol: str,
+    trainer: Callable,
+    job: dict[str, Any],
+    progress_path: str | None,
+    fold_num: int,
+    n_fold_total: int,
+) -> dict[str, Any]:
+    """Train + OOS-eval one prepared fold."""
+    from app.services.bots.ml_job_progress import ml_cancel_requested, write_ml_progress
+
+    fold = job["fold"]
+    train_candles = job["train_candles"]
+    test_candles = job["test_candles"]
+    purge_info = job["purge_info"]
+    fold_cfg = dict(job["fold_cfg"])
+
+    if ml_cancel_requested(progress_path):
+        return {
+            "fold": fold["fold"],
+            "ok": False,
+            "cancelled": True,
+            "error": "cancelled",
+            "train_bars": len(train_candles),
+            "test_bars": len(test_candles),
+            "purge": purge_info,
+        }
+
+    write_ml_progress(
+        progress_path,
+        pct=int(5 + (fold_num - 1) / max(1, n_fold_total) * 80),
+        phase=f"fold {fold_num}/{n_fold_total}",
+        detail="training",
+    )
+
+    if len(train_candles) < 50:
+        return {
+            "fold": fold["fold"],
+            "ok": False,
+            "error": (
+                f"Train window too small after purge/embargo ({len(train_candles)} bars)"
+            ),
+            "train_bars": len(train_candles),
+            "test_bars": len(test_candles),
+            "purge": purge_info,
+        }
+
+    try:
+        train_result = trainer(symbol, train_candles, config=fold_cfg)
+    except Exception as exc:
+        logger.warning("WF fold %d train failed: %s", fold["fold"], exc)
+        return {
+            "fold": fold["fold"],
+            "ok": False,
+            "error": str(exc),
+            "train_bars": len(train_candles),
+            "test_bars": len(test_candles),
+            "purge": purge_info,
+        }
+
+    if not train_result.get("ok", False):
+        return {
+            "fold": fold["fold"],
+            "ok": False,
+            "error": train_result.get("error", "Training failed"),
+            "train_bars": len(train_candles),
+            "test_bars": len(test_candles),
+            "purge": purge_info,
+        }
+
+    write_ml_progress(
+        progress_path,
+        pct=int(5 + (fold_num - 0.35) / max(1, n_fold_total) * 80),
+        phase=f"fold {fold_num}/{n_fold_total}",
+        detail="oos",
+    )
+
+    oos_cfg = dict(fold_cfg)
+    # Strip any train-side cache, then attach OOS-only features from the job.
+    oos_cfg.pop("_precomputed_features", None)
+    oos_cfg.pop("_precomputed_labels", None)
+    oos_feats = job.get("_oos_precomputed_features")
+    oos_labels = job.get("_oos_precomputed_labels")
+    if oos_feats is not None:
+        oos_cfg["_precomputed_features"] = oos_feats
+    if oos_labels is not None:
+        oos_cfg["_precomputed_labels"] = oos_labels
+
+    try:
+        oos_metrics = evaluate_oos_accuracy(
+            strategy, test_candles, oos_cfg, train_result=train_result,
+        )
+    except Exception as exc:
+        logger.warning("WF fold %d OOS eval failed: %s", fold["fold"], exc)
+        if isinstance(train_result, dict):
+            train_result.pop("_wf_bundle", None)
+        return {
+            "fold": fold["fold"],
+            "ok": False,
+            "error": f"OOS eval failed: {exc}",
+            "train_bars": len(train_candles),
+            "test_bars": len(test_candles),
+            "train_metrics": train_result.get("metrics", {}),
+            "purge": purge_info,
+        }
+
+    if isinstance(train_result, dict):
+        train_result.pop("_wf_bundle", None)
+
+    train_metrics = train_result.get("metrics", {})
+    if isinstance(train_metrics, dict) and str(strategy).upper() == "RL_PPO_AGENT":
+        train_metrics = {
+            k: train_metrics.get(k)
+            for k in (
+                "total_timesteps",
+                "episodes",
+                "mean_return_pct",
+                "best_mean_return",
+                "mean_trades_per_episode",
+                "hidden_dim",
+            )
+            if train_metrics.get(k) is not None
+        }
+
+    result = {
+        "fold": fold["fold"],
+        "ok": True,
+        "train_bars": len(train_candles),
+        "test_bars": len(test_candles),
+        "accuracy": oos_metrics.get("accuracy"),
+        "n_samples": oos_metrics.get("n_signals"),
+        "train_metrics": train_metrics,
+        "oos_metrics": oos_metrics,
+        "purge": purge_info,
+    }
+    write_ml_progress(
+        progress_path,
+        pct=min(90, int(5 + fold_num / max(1, n_fold_total) * 80)),
+        phase=f"fold {fold_num}/{n_fold_total}",
+        detail=(
+            f"ret={oos_metrics.get('return_pct')}%"
+            if oos_metrics.get("metric_kind") == "rl_return"
+            else f"acc={oos_metrics.get('accuracy')}"
+        ),
+    )
+    return result
 
 
 def walk_forward_ml_train(
@@ -594,193 +951,203 @@ def walk_forward_ml_train(
             "symbol": symbol,
         }
 
-    fold_results = []
-    prev_test_start: int | None = None
-    prev_test_end: int | None = None
-
     from app.services.bots.ml_job_progress import (
         ml_cancel_requested,
         progress_path_from_config,
-        write_ml_progress,
     )
 
     progress_path = progress_path_from_config(cfg)
     n_fold_total = max(1, len(folds))
 
-    for fold in folds:
-        if ml_cancel_requested(progress_path):
+    # Opt #4: precompute features/labels once for the full series.
+    feature_cache = None
+    try:
+        from app.services.bots.ml_feature_cache import WfFeatureCache
+
+        feature_cache = WfFeatureCache(candles, cfg)
+    except Exception:
+        logger.warning("WfFeatureCache build failed — per-fold recompute", exc_info=True)
+
+    jobs = _prepare_wf_fold_jobs(folds, candles, symbol, cfg, feature_cache)
+    fold_workers = _resolve_wf_fold_workers(strategy, len(jobs), cfg)
+    fold_results: list[dict[str, Any]] = []
+
+    job_id = str(cfg.get("job_id") or cfg.get("_ml_job_id") or "") or None
+    done_folds: set[int] = set()
+    prior_folds: list[dict] = []
+    if job_id:
+        try:
+            from app.services.bots.ml_job_checkpoint import (
+                completed_fold_indices,
+                empty_wf_checkpoint,
+            )
+            from app.services.bots.ml_job_store import load_ml_job_checkpoint, save_ml_job_checkpoint
+
+            prior_cp = load_ml_job_checkpoint(job_id)
+            if isinstance(prior_cp, dict) and prior_cp.get("kind") == "walk_forward":
+                done_folds = completed_fold_indices(prior_cp)
+                prior_folds = list(prior_cp.get("fold_results") or [])
+                fold_results.extend(prior_folds)
+            else:
+                save_ml_job_checkpoint(
+                    job_id,
+                    empty_wf_checkpoint(
+                        job_id=job_id,
+                        strategy=strategy,
+                        symbol=symbol,
+                        config=cfg,
+                        n_folds=n_fold_total,
+                    ),
+                )
+        except Exception:
+            logger.debug("WF checkpoint hydrate failed", exc_info=True)
+
+    def _persist_wf_fold(fold_idx: int, entry: dict) -> None:
+        if not job_id:
+            return
+        try:
+            from app.services.bots.ml_job_checkpoint import merge_wf_fold
+            from app.services.bots.ml_job_store import load_ml_job_checkpoint, save_ml_job_checkpoint
+
+            save_ml_job_checkpoint(
+                job_id,
+                merge_wf_fold(
+                    load_ml_job_checkpoint(job_id),
+                    job_id=job_id,
+                    strategy=strategy,
+                    symbol=symbol,
+                    config=cfg,
+                    n_folds=n_fold_total,
+                    fold_idx=fold_idx,
+                    fold_entry=entry,
+                ),
+            )
+        except Exception:
+            logger.debug("WF fold checkpoint save failed", exc_info=True)
+
+    if fold_workers <= 1 or len(jobs) <= 1:
+        for i, job in enumerate(jobs):
+            if i in done_folds:
+                continue
+            if ml_cancel_requested(progress_path):
+                return {
+                    "ok": False,
+                    "cancelled": True,
+                    "error": "cancelled",
+                    "folds": fold_results,
+                    "strategy": strategy,
+                    "symbol": symbol,
+                }
+            entry = _run_single_wf_fold(
+                strategy=strategy,
+                symbol=symbol,
+                trainer=trainer,
+                job=job,
+                progress_path=progress_path,
+                fold_num=i + 1,
+                n_fold_total=n_fold_total,
+            )
+            fold_results.append(entry)
+            _persist_wf_fold(i, entry)
+            if entry.get("cancelled"):
+                return {
+                    "ok": False,
+                    "cancelled": True,
+                    "error": "cancelled",
+                    "folds": [f for f in fold_results if not f.get("cancelled")],
+                    "strategy": strategy,
+                    "symbol": symbol,
+                }
+    else:
+        # Opt #2: ThreadPool for CPU/GBM folds (no nested ProcessPool).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        ordered: dict[int, dict[str, Any]] = {}
+        cancel_hit = False
+        pending_jobs = [(i, job) for i, job in enumerate(jobs) if i not in done_folds]
+        with ThreadPoolExecutor(max_workers=fold_workers) as pool:
+            futures = {
+                pool.submit(
+                    _run_single_wf_fold,
+                    strategy=strategy,
+                    symbol=symbol,
+                    trainer=trainer,
+                    job=job,
+                    progress_path=progress_path,
+                    fold_num=i + 1,
+                    n_fold_total=n_fold_total,
+                ): i
+                for i, job in pending_jobs
+            }
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    ordered[idx] = fut.result()
+                except Exception as exc:
+                    fold = jobs[idx]["fold"]
+                    ordered[idx] = {
+                        "fold": fold["fold"],
+                        "ok": False,
+                        "error": str(exc),
+                        "train_bars": len(jobs[idx]["train_candles"]),
+                        "test_bars": len(jobs[idx]["test_candles"]),
+                        "purge": jobs[idx]["purge_info"],
+                    }
+                _persist_wf_fold(idx, ordered[idx])
+                if ordered[idx].get("cancelled") or ml_cancel_requested(progress_path):
+                    cancel_hit = True
+                    for pending in futures:
+                        pending.cancel()
+                    break
+        # Seed ordered with prior checkpoint folds.
+        for entry in prior_folds:
+            try:
+                fi = int(entry.get("fold") or 0) - 1
+            except (TypeError, ValueError):
+                continue
+            if fi >= 0 and fi not in ordered:
+                ordered[fi] = entry
+        # After executor shutdown (waits for in-flight work), drain any results
+        # that finished after we broke out of as_completed on cancel.
+        if cancel_hit:
+            for fut, idx in futures.items():
+                if idx in ordered or fut.cancelled() or not fut.done():
+                    continue
+                try:
+                    ordered[idx] = fut.result()
+                    _persist_wf_fold(idx, ordered[idx])
+                except Exception as exc:
+                    fold = jobs[idx]["fold"]
+                    ordered[idx] = {
+                        "fold": fold["fold"],
+                        "ok": False,
+                        "error": str(exc),
+                        "train_bars": len(jobs[idx]["train_candles"]),
+                        "test_bars": len(jobs[idx]["test_candles"]),
+                        "purge": jobs[idx]["purge_info"],
+                    }
+                    _persist_wf_fold(idx, ordered[idx])
+        fold_results = [ordered[i] for i in sorted(ordered)]
+        if cancel_hit or any(f.get("cancelled") for f in fold_results):
             return {
                 "ok": False,
                 "cancelled": True,
                 "error": "cancelled",
+                "folds": [f for f in fold_results if not f.get("cancelled")],
+                "strategy": strategy,
+                "symbol": symbol,
+            }
+        if len(ordered) != len(jobs):
+            return {
+                "ok": False,
+                "error": (
+                    f"Incomplete parallel fold results "
+                    f"({len(ordered)}/{len(jobs)} folds collected)"
+                ),
                 "folds": fold_results,
                 "strategy": strategy,
                 "symbol": symbol,
             }
-
-        fold_num = int(fold.get("fold") or len(fold_results) + 1)
-        pct = int(5 + (fold_num - 1) / n_fold_total * 80)
-        write_ml_progress(
-            progress_path,
-            pct=pct,
-            phase=f"fold {fold_num}/{n_fold_total}",
-            detail="training",
-        )
-
-        train_start = int(fold["train_start"])
-        train_end = int(fold["train_end"])
-        test_start = int(fold["test_start"])
-        test_end = int(fold["test_end"])
-        embargo_bars = int(fold.get("embargo_bars") or 0)
-
-        # Post-test embargo: strip prior OOS (+ embargo buffer) from the next IS window
-        # so labels / features from fold i's test do not leak into fold i+1 train.
-        embargo_info: dict[str, Any] = {"embargo_bars": embargo_bars, "applied": False}
-        if prev_test_end is not None and prev_test_start is not None:
-            embargo_until = apply_embargo_after_test(candles, prev_test_end, embargo_bars)
-            embargo_info["prev_test_start"] = prev_test_start
-            embargo_info["prev_test_end"] = prev_test_end
-            embargo_info["embargo_until"] = embargo_until
-            parts: list[dict] = []
-            if train_start < prev_test_start:
-                parts.extend(candles[train_start:min(train_end, prev_test_start)])
-            if embargo_until < train_end:
-                parts.extend(candles[max(train_start, embargo_until):train_end])
-            train_candles = parts
-            embargo_info["applied"] = True
-            embargo_info["train_bars_after_embargo"] = len(train_candles)
-        else:
-            train_candles = candles[train_start:train_end]
-
-        test_candles = candles[test_start:test_end]
-        for row in train_candles:
-            if isinstance(row, dict):
-                row.setdefault("_symbol", symbol)
-        for row in test_candles:
-            if isinstance(row, dict):
-                row.setdefault("_symbol", symbol)
-
-        # Purge overlap between this fold's train end and its own test start
-        train_candles, purge_info = purge_train_before_test(
-            train_candles, test_candles, fold["purge_bars"],
-        )
-        purge_info = {**(purge_info or {}), "embargo": embargo_info}
-
-        if len(train_candles) < 50:
-            fold_results.append({
-                "fold": fold["fold"],
-                "ok": False,
-                "error": (
-                    f"Train window too small after purge/embargo ({len(train_candles)} bars)"
-                ),
-                "train_bars": len(train_candles),
-                "test_bars": len(test_candles),
-                "purge": purge_info,
-            })
-            prev_test_start = test_start
-            prev_test_end = test_end
-            continue
-
-        # Train on IS fold
-        try:
-            train_result = trainer(symbol, train_candles, config=cfg)
-        except Exception as exc:
-            logger.warning("WF fold %d train failed: %s", fold["fold"], exc)
-            fold_results.append({
-                "fold": fold["fold"],
-                "ok": False,
-                "error": str(exc),
-                "train_bars": len(train_candles),
-                "test_bars": len(test_candles),
-                "purge": purge_info,
-            })
-            prev_test_start = test_start
-            prev_test_end = test_end
-            continue
-
-        if not train_result.get("ok", False):
-            fold_results.append({
-                "fold": fold["fold"],
-                "ok": False,
-                "error": train_result.get("error", "Training failed"),
-                "train_bars": len(train_candles),
-                "test_bars": len(test_candles),
-                "purge": purge_info,
-            })
-            prev_test_start = test_start
-            prev_test_end = test_end
-            continue
-
-        # Evaluate on OOS fold (must not abort the whole WF run)
-        write_ml_progress(
-            progress_path,
-            pct=int(5 + (fold_num - 0.35) / n_fold_total * 80),
-            phase=f"fold {fold_num}/{n_fold_total}",
-            detail="oos",
-        )
-        try:
-            oos_metrics = evaluate_oos_accuracy(
-                strategy, test_candles, cfg, train_result=train_result,
-            )
-        except Exception as exc:
-            logger.warning("WF fold %d OOS eval failed: %s", fold["fold"], exc)
-            if isinstance(train_result, dict):
-                train_result.pop("_wf_bundle", None)
-            fold_results.append({
-                "fold": fold["fold"],
-                "ok": False,
-                "error": f"OOS eval failed: {exc}",
-                "train_bars": len(train_candles),
-                "test_bars": len(test_candles),
-                "train_metrics": train_result.get("metrics", {}),
-                "purge": purge_info,
-            })
-            prev_test_start = test_start
-            prev_test_end = test_end
-            continue
-
-        if isinstance(train_result, dict):
-            train_result.pop("_wf_bundle", None)
-
-        train_metrics = train_result.get("metrics", {})
-        if isinstance(train_metrics, dict) and str(strategy).upper() == "RL_PPO_AGENT":
-            # Keep wire payload small / JSON-safe (drop per-episode histories).
-            train_metrics = {
-                k: train_metrics.get(k)
-                for k in (
-                    "total_timesteps",
-                    "episodes",
-                    "mean_return_pct",
-                    "best_mean_return",
-                    "mean_trades_per_episode",
-                    "hidden_dim",
-                )
-                if train_metrics.get(k) is not None
-            }
-
-        fold_results.append({
-            "fold": fold["fold"],
-            "ok": True,
-            "train_bars": len(train_candles),
-            "test_bars": len(test_candles),
-            "accuracy": oos_metrics.get("accuracy"),
-            "n_samples": oos_metrics.get("n_signals"),
-            "train_metrics": train_metrics,
-            "oos_metrics": oos_metrics,
-            "purge": purge_info,
-        })
-        write_ml_progress(
-            progress_path,
-            pct=min(90, int(5 + fold_num / n_fold_total * 80)),
-            phase=f"fold {fold_num}/{n_fold_total}",
-            detail=(
-                f"ret={oos_metrics.get('return_pct')}%"
-                if oos_metrics.get("metric_kind") == "rl_return"
-                else f"acc={oos_metrics.get('accuracy')}"
-            ),
-        )
-        prev_test_start = test_start
-        prev_test_end = test_end
 
     # Aggregate results
     successful = [f for f in fold_results if f.get("ok")]

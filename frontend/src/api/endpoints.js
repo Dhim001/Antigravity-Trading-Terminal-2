@@ -80,6 +80,20 @@ export function applySessionToStore(session, storeActions) {
   if (job && ['pending', 'running'].includes(job.status)) {
     watchBacktestJob(job.id, storeActions, { progress: job.progress });
   }
+  // Reattach ALL resumable jobs (failed/cancelled/pending with checkpoint), not only running.
+  const resumable = Array.isArray(session.resumable_backtest_jobs)
+    ? session.resumable_backtest_jobs
+    : [];
+  for (const rj of resumable) {
+    if (!rj?.id) continue;
+    if (job && rj.id === job.id) continue;
+    storeActions.upsertBacktestJobSlot?.(rj.id, {
+      running: false,
+      status: rj.status,
+      resumable: true,
+      progress: rj.progress,
+    });
+  }
   if (session.active_ml_jobs?.length) {
     import('../lib/mlTrainingSession').then(({ resumeActiveMlJobs }) => {
       resumeActiveMlJobs(session.active_ml_jobs);
@@ -387,6 +401,16 @@ export async function fetchBacktestJobs({ status, limit = 20 } = {}) {
   qs.set('limit', String(limit));
   const body = await apiRequest(`/api/v1/backtest/jobs?${qs}`);
   return body?.jobs ?? [];
+}
+
+/** Re-queue a failed/cancelled job keeping its checkpoint (combo/fold progress). */
+export async function resumeBacktestJob(jobId) {
+  const body = await apiRequest(
+    `/api/v1/backtest/jobs/${encodeURIComponent(jobId)}/resume`,
+    { method: 'POST', body: {} },
+  );
+  if (!body?.ok) throw new Error(body?.error || 'Resume failed');
+  return body.job;
 }
 
 export async function fetchOptimizationRuns({ symbol, limit = 20 } = {}) {
@@ -714,13 +738,16 @@ export function startBacktestJobPolling(jobId, storeActions) {
   // Failed polls must NOT count as "no progress" — heavy feature precompute can
   // starve the event loop briefly while the worker is still writing progress.
   const pollMaxMs = 6 * 60 * 60 * 1000;
-  const stallMs = 15 * 60 * 1000;
+  // Sweeps can spend >15m on the first ML combo before pct advances; rely on
+  // server updated_at heartbeats (parallel sweep now emits every 8s). Keep a
+  // longer client grace so a missed heartbeat during GIL storms is not fatal.
+  const stallMs = 45 * 60 * 1000;
   const contactStallMs = 45 * 60 * 1000;
   let lastAdvanceAt = Date.now();
   let lastFingerprint = '';
   let lastSuccessfulPollAt = Date.now();
 
-  const failStall = () => {
+    const failStall = () => {
     stopBacktestJobPolling();
     clearBacktestClientTimeout();
     storeActions.setBacktestRunning(false);
@@ -728,7 +755,13 @@ export function startBacktestJobPolling(jobId, storeActions) {
     storeActions.upsertBacktestJobSlot?.(jobId, { running: false, status: 'timeout' });
     const msg = 'Background backtest stopped responding — check Jobs tab or retry';
     storeActions.setBacktestLastError?.(msg, null);
-    toast.error(msg);
+    toast.error(msg, {
+      description: 'Often a long ML sweep combo with no progress heartbeat, or the API went unreachable under load.',
+      action: {
+        label: 'Open Jobs',
+        onClick: () => useResearchStore.getState().openBacktestLab('jobs'),
+      },
+    });
   };
 
   const applyCompletedResults = (fresh) => {

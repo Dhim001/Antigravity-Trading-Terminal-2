@@ -167,10 +167,17 @@ export const useResearchStore = create(subscribeWithSelector((set, get) => ({
     const jobId = next?.job_id || state.backtestJobId;
     if (!jobId) return { backtestProgress: next };
     const prev = state.backtestJobsById[jobId] || {};
+    // Keep slot.status as a lifecycle value so client-timeout guards do not
+    // treat missing status as "dead" and wipe a still-running deferred job.
+    const prevStatus = String(prev.status || '').toLowerCase();
+    const terminal = ['completed', 'failed', 'cancelled', 'timeout', 'error'].includes(prevStatus);
+    const lifecycleOk = prevStatus === 'pending' || prevStatus === 'running';
     const slot = {
       ...prev,
       jobId,
       progress: next,
+      running: terminal ? Boolean(prev.running) : true,
+      status: terminal ? prev.status : (lifecycleOk ? prev.status : 'running'),
       updatedAt: Date.now(),
     };
     const byId = { ...state.backtestJobsById, [jobId]: slot };

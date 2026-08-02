@@ -1058,6 +1058,7 @@ export default function ModelTrainingDashboard({
         <JobProgressBar
           job={jobProgress}
           serverProgress={serverProgress}
+          jobId={activeJobId}
           onCancel={activeJobId ? handleCancelJob : undefined}
           cancelling={cancellingJob}
         />

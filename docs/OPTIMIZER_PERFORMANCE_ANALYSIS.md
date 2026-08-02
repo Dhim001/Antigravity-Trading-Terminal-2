@@ -1,6 +1,6 @@
 # Optimizer Performance Deep-Dive: Bottleneck Analysis & GPU/Multi-Core Acceleration
 
-> **Status:** Analysis complete — awaiting approval before implementation  
+> **Status:** Phase 0–2 implemented (2026-08-02) — knobs in `.env.example`; Opt #2/#3/#4/#7/#8 in ML Validate/Auto-Tune surface. Keep `BACKTEST_PARALLEL_BACKEND=auto`; WF IS ProcessPool shortcut stays removed (Tier A).  
 > **Created:** 2026-08-01  
 > **Scope:** Backend compute pipeline — ML training, walk-forward validation, Optuna hyperparam sweep, and backtest optimization
 
@@ -518,6 +518,25 @@ BACKTEST_SWEEP_MAX_TRIALS=200           # More trials allowed
 
 > [!IMPORTANT]
 > These config changes alone (no code changes) should give you a **2–3× speedup** immediately. The code changes (Optimizations 2–4, 7–8) would add another **2–5× on top**.
+
+---
+
+## Durability knobs & Auto-Tune resume
+
+| Knob / path | Meaning |
+|-------------|---------|
+| `BACKTEST_HEAVY_SIDECAR=1` | ML/RL optimizer backtests run in the heavy-job sidecar (API stays responsive) |
+| `data/optuna/{job_id}.db` | Optuna SQLite study for Auto-Tune — reload on resume |
+| `ml_jobs.checkpoint_json` | Trial history + best params flushed after each Optuna tell; WF folds appended per fold |
+| `data/ml_checkpoints/{job_id}/` | Last completed epoch weights for LSTM/TCN/Transformer |
+
+**Resume semantics**
+
+- Hyperparam sweep: hydrate keeps `resume_ok` on interrupted jobs; remaining trials continue from the SQLite study + trial_history (skip completed count).
+- Walk-forward validate: finished folds are skipped from `completed_fold_indices`.
+- GBM: fold-level checkpoints only (no epoch state).
+- FE Auto-Tune shows **Resuming trial X/Y…** when `phase=hyperparam_resume` or `checkpoint.resume_ok`.
+- Session bootstrap reattaches resumable ML jobs (not only `queued`/`running`).
 
 ---
 

@@ -134,6 +134,7 @@ def build_tcn_sequences(
     candles: list[dict],
     *,
     lookback: int = 120,
+    feat_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X, y) sequences for TCN training.
 
@@ -144,9 +145,10 @@ def build_tcn_sequences(
     feature_lb = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
     closes = [float(c.get("close") or 0) for c in candles]
-    feat_matrix = precompute_signal_feature_matrix(
-        candles, feature_lookback=feature_lb,
-    )
+    if feat_matrix is None or len(feat_matrix) != n:
+        feat_matrix = precompute_signal_feature_matrix(
+            candles, feature_lookback=feature_lb,
+        )
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[np.ndarray] = []
@@ -192,11 +194,14 @@ def train_tcn_model(
     min_samples = int(cfg.get("min_train_samples", 300))
     lr = float(cfg.get("learning_rate", 0.001))
     val_fraction = float(cfg.get("val_fraction", 0.2))
+    from app.services.bots.ml_feature_cache import resolve_precomputed_features
     from app.services.bots.ml_torch_device import (
+        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
         ensure_cuda_ready,
+        make_torch_dataloader,
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
@@ -214,7 +219,8 @@ def train_tcn_model(
         return {"ok": False, "error": f"insufficient candles ({len(candles)})", "symbol": symbol}
 
     # Build sequences
-    X, y = build_tcn_sequences(candles, lookback=lookback)
+    pre_feat = resolve_precomputed_features(candles, cfg)
+    X, y = build_tcn_sequences(candles, lookback=lookback, feat_matrix=pre_feat)
     n = len(y)
     if n < min_samples:
         return {"ok": False, "error": f"insufficient sequences ({n} < {min_samples})", "symbol": symbol}
@@ -265,18 +271,21 @@ def train_tcn_model(
         "early_stop_patience": max_patience,
     }
     progress_path = progress_path_from_config(cfg)
+    train_loader = make_torch_dataloader(
+        X_t, y_t, batch_size=batch_size, device=device, shuffle=True,
+    )
+    val_loader = make_torch_dataloader(
+        X_v, y_v, batch_size=batch_size, device=device, shuffle=False,
+    )
     for epoch in range(epochs):
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "TCN_MULTI_HORIZON")
         model.train()
-        indices = torch.randperm(len(X_t))
         epoch_loss = 0.0
         n_batches = 0
 
-        for start in range(0, len(X_t), batch_size):
-            idx = indices[start:start + batch_size]
-            xb = X_t[idx].to(device, non_blocking=True)
-            yb = y_t[idx].to(device, non_blocking=True)
+        for xb, yb in train_loader:
+            xb, yb = batch_to_device(xb, yb, device)
             pred = model(xb)
             loss = criterion(pred, yb)
             optimizer.zero_grad()
@@ -291,9 +300,8 @@ def train_tcn_model(
         with torch.no_grad():
             val_loss = 0.0
             n_v = 0
-            for vs in range(0, len(X_v), batch_size):
-                xb = X_v[vs:vs + batch_size].to(device, non_blocking=True)
-                yb = y_v[vs:vs + batch_size].to(device, non_blocking=True)
+            for xb, yb in val_loader:
+                xb, yb = batch_to_device(xb, yb, device)
                 val_loss += float(criterion(model(xb), yb).item()) * len(xb)
                 n_v += len(xb)
             val_loss = val_loss / max(1, n_v)
@@ -326,6 +334,38 @@ def train_tcn_model(
                     strategy="TCN_MULTI_HORIZON",
                 ))
                 break
+
+        job_id = str(cfg.get("job_id") or cfg.get("_ml_job_id") or "") or None
+        if job_id and best_state is not None:
+            try:
+                from app.services.bots.ml_job_checkpoint import (
+                    empty_epoch_checkpoint,
+                    save_torch_epoch_checkpoint,
+                )
+                from app.services.bots.ml_job_store import save_ml_job_checkpoint
+
+                save_torch_epoch_checkpoint(
+                    job_id,
+                    model_state=best_state,
+                    epoch=epoch + 1,
+                    epochs_budget=epochs,
+                    extra={"val_loss": float(val_loss)},
+                )
+                save_ml_job_checkpoint(
+                    job_id,
+                    {
+                        **empty_epoch_checkpoint(
+                            job_id=job_id,
+                            strategy="TCN_MULTI_HORIZON",
+                            symbol=symbol,
+                            epochs_budget=epochs,
+                        ),
+                        "last_epoch": epoch + 1,
+                        "val_loss": float(val_loss),
+                    },
+                )
+            except Exception:
+                pass
 
     if best_state:
         model.load_state_dict(best_state)

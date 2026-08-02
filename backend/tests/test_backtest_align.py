@@ -124,6 +124,11 @@ class BacktestLiveAlignmentTests(unittest.TestCase):
         self.assertIn("time_in_market_pct", result["summary"])
         self.assertIn("blocked_entries", result["summary"])
         self.assertIn("max_consecutive_losses", result["summary"])
+        self.assertIn("streak_veto_latched", result["summary"])
+        self.assertIn("streak_cooldown_active", result["summary"])
+        self.assertIn("streak_cooldown_resumed", result["summary"])
+        self.assertIn("halted", result["summary"])
+        self.assertIn("daily_loss_halted", result["summary"])
         self.assertEqual(result["trades_total"], len(result["trades"]))
 
     def test_backtest_long_only_skips_short_entries(self):

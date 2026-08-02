@@ -1004,12 +1004,19 @@ def run_walk_forward(
     cancel_cb=None,
     sweep: dict | None = None,
     wf_options: dict | None = None,
+    completed_fold_indices: set[int] | None = None,
+    prior_fold_entries: list[dict] | None = None,
+    fold_checkpoint_cb: Callable[[int, dict], None] | None = None,
 ) -> dict[str, Any]:
     """
     Optimize on train window(s), evaluate on out-of-sample.
 
     rolling_folds=1: single train/test split (backward compatible).
     rolling_folds>1: rolling sequential folds with aggregated OOS metrics.
+
+    When ``completed_fold_indices`` / ``prior_fold_entries`` are supplied (resume),
+    finished folds are skipped. ``fold_checkpoint_cb(fold_idx, fold_entry)`` is
+    invoked after each newly completed fold.
 
     Returns merged result dict with walk_forward block.
     """
@@ -1028,8 +1035,15 @@ def run_walk_forward(
     if not windows:
         return {"error": "Not enough bars for walk-forward split"}
 
+    done_folds = set(completed_fold_indices or ())
+    seeded_folds = list(prior_fold_entries or [])
+
     if n_folds <= 1 and len(windows) == 1:
-        return _run_single_walk_forward(
+        if 0 in done_folds and seeded_folds:
+            # Single-fold already checkpointed — rebuild via multi-fold path shape
+            # is not needed; fall through to re-run only when no prior entry.
+            pass
+        result = _run_single_walk_forward(
             run_backtest=run_backtest,
             symbol=symbol,
             strategy=strategy,
@@ -1047,6 +1061,19 @@ def run_walk_forward(
             sweep=sweep,
             wf_options=wf_options,
         )
+        if (
+            fold_checkpoint_cb
+            and isinstance(result, dict)
+            and not result.get("error")
+            and not result.get("cancelled")
+        ):
+            folds = (result.get("walk_forward") or {}).get("folds") or []
+            if folds:
+                try:
+                    fold_checkpoint_cb(0, folds[0])
+                except Exception:
+                    pass
+        return result
 
     total_folds = len(windows)
     from app.services.bots.backtest_bayesian import is_bayesian_sweep
@@ -1057,12 +1084,23 @@ def run_walk_forward(
         else len(configs)
     )
     total_is_runs = per_fold_runs * total_folds
-    fold_entries: list[dict] = []
+    # Seed from checkpoint; keep one entry per fold number.
+    fold_by_num: dict[int, dict] = {}
+    for entry in seeded_folds:
+        try:
+            num = int(entry.get("fold") or 0)
+        except (TypeError, ValueError):
+            continue
+        if num > 0:
+            fold_by_num[num] = entry
     last_sweep_rows: list[dict] = []
 
     for fold_idx, (train, test, train_meta, test_meta) in enumerate(windows):
         if cancel_cb and cancel_cb():
             return {"error": "Backtest cancelled", "cancelled": True}
+
+        if fold_idx in done_folds and (fold_idx + 1) in fold_by_num:
+            continue
 
         run_offset = fold_idx * per_fold_runs
         sweep_rows = _run_in_sample_sweep(
@@ -1130,7 +1168,7 @@ def run_walk_forward(
         from app.services.bots.backtest_analytics import classify_backtest_regime
 
         oos_regime = classify_backtest_regime(test)
-        fold_entries.append({
+        fold_entry = {
             "fold": fold_idx + 1,
             "best_config": best_config,
             "oos_regime": oos_regime,
@@ -1141,7 +1179,31 @@ def run_walk_forward(
                 "meta": train_meta,
             },
             "out_of_sample": _oos_snapshot(oos),
-        })
+        }
+        fold_by_num[fold_idx + 1] = fold_entry
+        if fold_checkpoint_cb:
+            try:
+                fold_checkpoint_cb(fold_idx, fold_entry)
+            except Exception:
+                pass
+
+    fold_entries = [fold_by_num[k] for k in sorted(fold_by_num)]
+    if not fold_entries:
+        return {"error": "Walk-forward produced no fold results"}
+    if last_sweep_rows is None:
+        last_sweep_rows = []
+    # Prefer last completed fold's best_config for ranking fallback when all skipped.
+    if not last_sweep_rows and fold_entries:
+        # Reconstruct a minimal ranked list from the last fold's best_config.
+        last_cfg = fold_entries[-1].get("best_config")
+        if last_cfg:
+            last_sweep_rows = [{
+                "config": last_cfg,
+                "label": sweep_label(last_cfg),
+                "summary": (fold_entries[-1].get("in_sample") or {}).get("summary") or {},
+                "total_pnl": (fold_entries[-1].get("in_sample") or {}).get("total_pnl"),
+                "trade_count": (fold_entries[-1].get("in_sample") or {}).get("trade_count"),
+            }]
 
     # Pick config with best mean OOS objective across all folds (not just last-fold IS winner)
     config_oos_scores: dict[str, dict] = {}

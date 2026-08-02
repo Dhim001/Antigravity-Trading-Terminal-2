@@ -88,8 +88,8 @@ def _persist_ml_job_row(job: dict[str, Any]) -> None:
                 INSERT INTO ml_jobs (
                     id, kind, strategy, symbol, status, progress_json, result_json,
                     error, progress_path, created_at, started_at, finished_at,
-                    created_at_epoch, finished_at_epoch
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at_epoch, finished_at_epoch, checkpoint_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
                     progress_json = excluded.progress_json,
@@ -98,7 +98,8 @@ def _persist_ml_job_row(job: dict[str, Any]) -> None:
                     progress_path = excluded.progress_path,
                     started_at = COALESCE(excluded.started_at, ml_jobs.started_at),
                     finished_at = COALESCE(excluded.finished_at, ml_jobs.finished_at),
-                    finished_at_epoch = COALESCE(excluded.finished_at_epoch, ml_jobs.finished_at_epoch)
+                    finished_at_epoch = COALESCE(excluded.finished_at_epoch, ml_jobs.finished_at_epoch),
+                    checkpoint_json = COALESCE(excluded.checkpoint_json, ml_jobs.checkpoint_json)
                 """,
                 (
                     job.get("job_id"),
@@ -115,6 +116,7 @@ def _persist_ml_job_row(job: dict[str, Any]) -> None:
                     job.get("finished_at"),
                     float(job.get("created_at_epoch") or time.time()),
                     job.get("finished_at_epoch"),
+                    _json.dumps(job.get("checkpoint")) if isinstance(job.get("checkpoint"), dict) else None,
                 ),
             )
             conn.commit()
@@ -125,7 +127,12 @@ def _persist_ml_job_row(job: dict[str, Any]) -> None:
 
 
 def ensure_ml_jobs_hydrated() -> int:
-    """Load recent jobs from SQLite; mark interrupted in-flight jobs as error."""
+    """Load recent jobs from SQLite; mark interrupted in-flight jobs as error.
+
+    Hyperparam / WF jobs with a valid ``checkpoint.resume_ok`` stay resumable
+    (error + checkpoint intact) instead of a hard wipe — FE / resume API can
+    continue remaining trials or folds.
+    """
     global _hydrated
     with _lock:
         if _hydrated:
@@ -136,6 +143,7 @@ def ensure_ml_jobs_hydrated() -> int:
         import json as _json
 
         from app.db.connection import get_connection
+        from app.services.bots.ml_job_checkpoint import checkpoint_resume_ok
 
         conn = get_connection()
         cursor = conn.cursor()
@@ -144,7 +152,7 @@ def ensure_ml_jobs_hydrated() -> int:
                 """
                 SELECT id, kind, strategy, symbol, status, progress_json, result_json,
                        error, progress_path, created_at, started_at, finished_at,
-                       created_at_epoch, finished_at_epoch
+                       created_at_epoch, finished_at_epoch, checkpoint_json
                 FROM ml_jobs
                 ORDER BY COALESCE(created_at_epoch, 0) DESC
                 LIMIT ?
@@ -155,7 +163,31 @@ def ensure_ml_jobs_hydrated() -> int:
         finally:
             conn.close()
     except Exception:
-        return 0
+        # Older DBs may lack checkpoint_json — fall back without it.
+        try:
+            from app.db.connection import get_connection
+            import json as _json
+
+            conn = get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT id, kind, strategy, symbol, status, progress_json, result_json,
+                           error, progress_path, created_at, started_at, finished_at,
+                           created_at_epoch, finished_at_epoch
+                    FROM ml_jobs
+                    ORDER BY COALESCE(created_at_epoch, 0) DESC
+                    LIMIT ?
+                    """,
+                    (_MAX_JOBS,),
+                )
+                rows = cursor.fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            return 0
+        checkpoint_resume_ok = lambda _cp: False  # noqa: E731
 
     with _lock:
         for row in rows:
@@ -166,6 +198,7 @@ def ensure_ml_jobs_hydrated() -> int:
                 status = str(row[4] or "queued")
                 progress = {}
                 result = None
+                checkpoint = None
                 try:
                     progress = _json.loads(row[5] or "{}") if row[5] else {}
                 except Exception:
@@ -174,14 +207,30 @@ def ensure_ml_jobs_hydrated() -> int:
                     result = _json.loads(row[6]) if row[6] else None
                 except Exception:
                     result = None
+                if len(row) > 14 and row[14]:
+                    try:
+                        checkpoint = _json.loads(row[14]) if isinstance(row[14], str) else row[14]
+                    except Exception:
+                        checkpoint = None
                 # Workers die with the process — never leave queued/running forever.
                 err = row[7]
+                kind = str(row[1] or "train")
                 if status in ("queued", "running"):
+                    resumable = checkpoint_resume_ok(checkpoint) and kind in (
+                        "hyperparam_sweep", "validate", "train",
+                    )
                     status = "error"
-                    err = "interrupted by server restart"
+                    if resumable:
+                        err = "interrupted by server restart — resumable"
+                        if isinstance(checkpoint, dict):
+                            checkpoint = {**checkpoint, "resume_ok": True}
+                    else:
+                        err = "interrupted by server restart"
+                        if isinstance(checkpoint, dict):
+                            checkpoint = {**checkpoint, "resume_ok": False}
                 _jobs[jid] = {
                     "job_id": jid,
-                    "kind": row[1] or "train",
+                    "kind": kind,
                     "strategy": row[2] or "",
                     "symbol": row[3] or "",
                     "status": status,
@@ -195,14 +244,77 @@ def ensure_ml_jobs_hydrated() -> int:
                     "created_at_epoch": float(row[12] or 0) or time.time(),
                     "finished_at_epoch": float(row[13] or 0) or (time.time() if status in _TERMINAL else None),
                     "cancel_requested": False,
+                    "checkpoint": checkpoint if isinstance(checkpoint, dict) else None,
+                    "resumable": bool(
+                        status in ("error", "cancelled")
+                        and checkpoint_resume_ok(checkpoint)
+                    ),
                 }
                 loaded += 1
-                if err == "interrupted by server restart":
+                if err and "interrupted by server restart" in str(err):
                     _persist_ml_job_row(_jobs[jid])
             except Exception:
                 continue
         _prune_locked()
     return loaded
+
+
+def save_ml_job_checkpoint(job_id: str, checkpoint: dict | None) -> None:
+    if not job_id:
+        return
+    snapshot = None
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job["checkpoint"] = dict(checkpoint) if isinstance(checkpoint, dict) else None
+        job["resumable"] = bool(
+            job.get("status") in ("error", "cancelled", "queued", "running")
+            and isinstance(job.get("checkpoint"), dict)
+            and job["checkpoint"].get("resume_ok", True)
+        )
+        snapshot = dict(job)
+    if snapshot:
+        _persist_ml_job_row(snapshot)
+
+
+def load_ml_job_checkpoint(job_id: str) -> dict[str, Any] | None:
+    ensure_ml_jobs_hydrated()
+    with _lock:
+        job = _jobs.get(job_id)
+        cp = job.get("checkpoint") if job else None
+        return dict(cp) if isinstance(cp, dict) else None
+
+
+def requeue_ml_job_for_resume(job_id: str) -> dict[str, Any] | None:
+    """Mark a resumable interrupted job as queued so a worker can continue."""
+    ensure_ml_jobs_hydrated()
+    from app.services.bots.ml_job_checkpoint import checkpoint_resume_ok
+
+    snapshot = None
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return None
+        cp = job.get("checkpoint")
+        if not checkpoint_resume_ok(cp):
+            return dict(job)
+        job["status"] = "queued"
+        job["error"] = None
+        job["finished_at"] = None
+        job["finished_at_epoch"] = None
+        job["cancel_requested"] = False
+        job["progress"] = {
+            **(job.get("progress") or {}),
+            "pct": int((job.get("progress") or {}).get("pct") or 0),
+            "phase": "resume",
+            "detail": "Resuming from checkpoint…",
+        }
+        job["resumable"] = True
+        snapshot = dict(job)
+    if snapshot:
+        _persist_ml_job_row(snapshot)
+    return snapshot
 
 
 def _prune_locked() -> None:
@@ -319,6 +431,8 @@ def create_ml_job(
             "error": None,
             "progress_path": progress_path,
             "cancel_requested": False,
+            "checkpoint": None,
+            "resumable": False,
         }
         snapshot = dict(_jobs[jid])
         _prune_locked()
@@ -448,6 +562,14 @@ def finish_ml_job(
                 job["error"] = error
             elif status == "error" and isinstance(result, dict) and result.get("error"):
                 job["error"] = str(result.get("error"))
+            if status == "done":
+                job["checkpoint"] = None
+                job["resumable"] = False
+            elif status in ("error", "cancelled"):
+                cp = job.get("checkpoint")
+                job["resumable"] = bool(
+                    isinstance(cp, dict) and cp.get("resume_ok", True)
+                )
             _futures.pop(job_id, None)
             snapshot = dict(job)
             newly_finished = True
@@ -553,7 +675,23 @@ def public_ml_job(job: dict[str, Any] | None, *, include_result: bool = True) ->
         "progress": job.get("progress") or {},
         "error": job.get("error"),
         "cancel_requested": bool(job.get("cancel_requested")),
+        "resumable": bool(job.get("resumable")),
     }
+    cp = job.get("checkpoint")
+    if isinstance(cp, dict):
+        # Slim checkpoint for FE resume UX (no full trial_history blobs).
+        out["checkpoint"] = {
+            "version": cp.get("version"),
+            "kind": cp.get("kind"),
+            "resume_ok": bool(cp.get("resume_ok", True)),
+            "trials_completed": cp.get("trials_completed"),
+            "max_trials": cp.get("max_trials"),
+            "best_score": cp.get("best_score"),
+            "completed_fold_indices": cp.get("completed_fold_indices"),
+            "n_folds": cp.get("n_folds"),
+            "last_epoch": cp.get("last_epoch"),
+            "study_path": cp.get("study_path"),
+        }
     if include_result and job.get("status") in _TERMINAL:
         result = job.get("result")
         if isinstance(result, dict):

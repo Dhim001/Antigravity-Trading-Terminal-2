@@ -426,6 +426,7 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_backtest_jobs_status ON backtest_jobs (status, created_at DESC)"
     )
+    _safe_alter(cursor, "ALTER TABLE backtest_jobs ADD COLUMN checkpoint_json TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ml_jobs (
@@ -448,6 +449,7 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ml_jobs_status ON ml_jobs (status, created_at DESC)"
     )
+    _safe_alter(cursor, "ALTER TABLE ml_jobs ADD COLUMN checkpoint_json TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ml_train_runs (

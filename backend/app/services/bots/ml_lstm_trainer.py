@@ -164,6 +164,7 @@ def build_sequences(
     lookback: int = 60,
     max_holding_bars: int = 30,
     progress_path: str | None = None,
+    feat_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build (X, y) sliding window sequences from labelled candles.
 
@@ -197,12 +198,13 @@ def build_sequences(
         )
 
     # O(n) feature pass — then O(n) window slices (was O(n × lookback) feature calls).
-    feat_matrix = precompute_signal_feature_matrix(
-        candles,
-        feature_lookback=feature_lookback,
-        progress_cb=_on_feat_progress if progress_path else None,
-        cancel_cb=_cancel if progress_path else None,
-    )
+    if feat_matrix is None or len(feat_matrix) != n:
+        feat_matrix = precompute_signal_feature_matrix(
+            candles,
+            feature_lookback=feature_lookback,
+            progress_cb=_on_feat_progress if progress_path else None,
+            cancel_cb=_cancel if progress_path else None,
+        )
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[int] = []
@@ -295,10 +297,12 @@ def train_lstm_signal_model(
     num_layers = int(cfg.get("num_layers", 2))
     lr = float(cfg.get("learning_rate", 0.001))
     from app.services.bots.ml_torch_device import (
+        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
         ensure_cuda_ready,
+        make_torch_dataloader,
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
@@ -333,14 +337,22 @@ def train_lstm_signal_model(
         }
 
     # Step 1: Label candles
-    write_ml_progress(progress_path, pct=10, phase="labels", detail="triple-barrier")
-    labels = label_triple_barrier(
-        candles,
-        atr_mult_upper=atr_mult,
-        atr_mult_lower=atr_mult,
-        max_holding_bars=max_bars,
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
     )
+
+    write_ml_progress(progress_path, pct=10, phase="labels", detail="triple-barrier")
+    labels = resolve_precomputed_labels(candles, cfg)
+    if labels is None:
+        labels = label_triple_barrier(
+            candles,
+            atr_mult_upper=atr_mult,
+            atr_mult_lower=atr_mult,
+            max_holding_bars=max_bars,
+        )
     dist = label_distribution(labels)
+    pre_feat = resolve_precomputed_features(candles, cfg)
 
     # Step 2: Build sliding window sequences
     write_ml_progress(progress_path, pct=15, phase="sequences", detail="build windows")
@@ -350,6 +362,7 @@ def train_lstm_signal_model(
             lookback=lookback,
             max_holding_bars=max_bars,
             progress_path=progress_path,
+            feat_matrix=pre_feat,
         )
     except InterruptedError:
         return cancelled_train_result(symbol, "LSTM_DIRECTION")
@@ -432,12 +445,18 @@ def train_lstm_signal_model(
     }
     loss_history: list[dict] = []
 
+    train_loader = make_torch_dataloader(
+        X_train_t, y_train_t, batch_size=batch_size, device=device, shuffle=True,
+    )
+    val_loader = make_torch_dataloader(
+        X_val_t, y_val_t, batch_size=batch_size, device=device, shuffle=False,
+    )
+
     def _batched_val_loss() -> float:
         total = 0.0
         n = 0
-        for vs in range(0, len(X_val_t), batch_size):
-            xb = X_val_t[vs:vs + batch_size].to(device, non_blocking=True)
-            yb = y_val_t[vs:vs + batch_size].to(device, non_blocking=True)
+        for xb, yb in val_loader:
+            xb, yb = batch_to_device(xb, yb, device)
             total += float(criterion(model(xb), yb).item()) * len(xb)
             n += len(xb)
         return total / max(1, n)
@@ -446,17 +465,11 @@ def train_lstm_signal_model(
     for epoch in range(epochs):
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "LSTM_DIRECTION")
-        # Mini-batch training
-        indices = torch.randperm(len(X_train_t))
         epoch_loss = 0.0
         n_batches = 0
 
-        for start in range(0, len(X_train_t), batch_size):
-            end = min(start + batch_size, len(X_train_t))
-            batch_idx = indices[start:end]
-            xb = X_train_t[batch_idx].to(device, non_blocking=True)
-            yb = y_train_t[batch_idx].to(device, non_blocking=True)
-
+        for xb, yb in train_loader:
+            xb, yb = batch_to_device(xb, yb, device)
             optimizer.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
@@ -505,6 +518,39 @@ def train_lstm_signal_model(
                     strategy="LSTM_DIRECTION",
                 ))
                 break
+
+        # Durable epoch boundary for deep trainers (resume after crash).
+        job_id = str(cfg.get("job_id") or cfg.get("_ml_job_id") or "") or None
+        if job_id and best_state is not None:
+            try:
+                from app.services.bots.ml_job_checkpoint import (
+                    empty_epoch_checkpoint,
+                    save_torch_epoch_checkpoint,
+                )
+                from app.services.bots.ml_job_store import save_ml_job_checkpoint
+
+                save_torch_epoch_checkpoint(
+                    job_id,
+                    model_state=best_state,
+                    epoch=epoch + 1,
+                    epochs_budget=epochs,
+                    extra={"val_loss": float(val_loss), "symbol": symbol},
+                )
+                save_ml_job_checkpoint(
+                    job_id,
+                    {
+                        **empty_epoch_checkpoint(
+                            job_id=job_id,
+                            strategy="LSTM_DIRECTION",
+                            symbol=symbol,
+                            epochs_budget=epochs,
+                        ),
+                        "last_epoch": epoch + 1,
+                        "val_loss": float(val_loss),
+                    },
+                )
+            except Exception:
+                pass
 
     # Load best weights
     if best_state is not None:

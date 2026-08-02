@@ -308,19 +308,20 @@ def _apply_fidelity_caps(params: dict, *, screen: bool) -> dict:
     out = dict(params)
     if not screen:
         return out
+    # Opt #7: more aggressive screen fidelity (epochs/5, ~25% data via screen_fraction).
     if "epochs" in out:
         try:
-            out["epochs"] = max(8, int(int(out["epochs"]) / 3))
+            out["epochs"] = max(8, int(int(out["epochs"]) / 5))
         except (TypeError, ValueError):
             pass
     if "total_timesteps" in out:
         try:
-            out["total_timesteps"] = max(2048, int(int(out["total_timesteps"]) / 3))
+            out["total_timesteps"] = max(2048, int(int(out["total_timesteps"]) / 5))
         except (TypeError, ValueError):
             pass
     if "gbm_max_iter" in out:
         try:
-            out["gbm_max_iter"] = max(40, int(int(out["gbm_max_iter"]) / 3))
+            out["gbm_max_iter"] = max(40, int(int(out["gbm_max_iter"]) / 5))
         except (TypeError, ValueError):
             pass
     # Only clamp early-stop when the trial actually searched / set it —
@@ -337,6 +338,27 @@ def _apply_fidelity_caps(params: dict, *, screen: bool) -> dict:
     return out
 
 
+def _optuna_startup_workers(n_startup: int, strategy: str) -> int:
+    """Parallel batch size for Optuna random startup trials only.
+
+    Shipped default is 1 (sequential). Raise ``ML_OPTUNA_STARTUP_WORKERS`` to
+    opt into parallel ask/tell for GBM screen startups only.
+    """
+    if n_startup <= 1:
+        return 1
+    # GPU/deep trains: keep startup sequential (VRAM contention).
+    strat = str(strategy or "").upper()
+    if strat != "ML_SIGNAL_BOOST":
+        return 1
+    try:
+        from app.config import ML_OPTUNA_STARTUP_WORKERS
+
+        cap = max(1, int(ML_OPTUNA_STARTUP_WORKERS or 1))
+    except Exception:
+        cap = 1
+    return max(1, min(n_startup, cap, 4))
+
+
 def run_ml_hyperparam_sweep(
     strategy: str,
     symbol: str,
@@ -347,7 +369,7 @@ def run_ml_hyperparam_sweep(
     time_budget_sec: float = 600.0,
     patience: int = 8,
     multi_fidelity: bool = True,
-    screen_fraction: float = 0.4,
+    screen_fraction: float = 0.25,
     promote_top_k: int = 3,
     custom_search_space: dict | None = None,
     progress_cb: Callable[[dict], None] | None = None,
@@ -356,6 +378,8 @@ def run_ml_hyperparam_sweep(
     objective_kind: str = "purged_cv",
     cv_folds_screen: int = 2,
     cv_folds_full: int = 3,
+    job_id: str | None = None,
+    resume_study_path: str | None = None,
 ) -> dict[str, Any]:
     """Run Optuna TPE sweep over ML training hyperparameters.
 
@@ -367,6 +391,10 @@ def run_ml_hyperparam_sweep(
     objective_kind
         ``purged_cv`` (default) scores trials with purged walk-forward OOS;
         ``val_holdout`` uses a single train validation split (faster screen).
+    job_id / resume_study_path
+        When set, Optuna study is persisted under ``data/optuna/{job_id}.db``
+        and trial history is flushed into ``ml_jobs.checkpoint_json`` so a
+        restart can continue remaining trials.
     """
     strat = str(strategy or "").upper()
     if strat not in SWEEPABLE_ML_STRATEGIES:
@@ -427,17 +455,99 @@ def run_ml_hyperparam_sweep(
     time_budget_sec = max(30.0, float(time_budget_sec or 600.0))
     patience = max(2, min(30, int(patience or 8)))
     promote_top_k = max(1, min(10, int(promote_top_k or 3)))
+    # Keep screen folds at ≥2 (deploy decision — do not drop to 1).
     cv_folds_screen = max(2, min(4, int(cv_folds_screen or 2)))
     cv_folds_full = max(2, min(5, int(cv_folds_full or 3)))
+    n_startup = min(5, max_trials)
+
+    from app.services.bots.ml_job_checkpoint import (
+        merge_hyperparam_trial,
+        optuna_study_path,
+    )
+    from app.services.bots.ml_job_store import load_ml_job_checkpoint, save_ml_job_checkpoint
+
+    study_path = resume_study_path or base_cfg.get("resume_study_path")
+    if not study_path and job_id:
+        study_path = optuna_study_path(job_id)
+    storage = None
+    study_name = f"ml_hp_{job_id or 'anon'}"
+    if study_path:
+        storage = f"sqlite:///{study_path.replace(chr(92), '/')}"
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = optuna.create_study(direction="maximize", sampler=TPESampler(seed=42, n_startup_trials=min(5, max_trials)))
+    try:
+        if storage:
+            study = optuna.create_study(
+                study_name=study_name,
+                storage=storage,
+                load_if_exists=True,
+                direction="maximize",
+                sampler=TPESampler(seed=42, n_startup_trials=n_startup),
+            )
+        else:
+            study = optuna.create_study(
+                direction="maximize",
+                sampler=TPESampler(seed=42, n_startup_trials=n_startup),
+            )
+    except Exception:
+        logger.exception("Optuna study create/load failed — falling back to in-memory")
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=TPESampler(seed=42, n_startup_trials=n_startup),
+        )
+        study_path = None
+
+    prior_cp = load_ml_job_checkpoint(job_id) if job_id else None
+    prior_history = list((prior_cp or {}).get("trial_history") or []) if prior_cp else []
+    completed_from_study = len([t for t in study.trials if t.state.name == "COMPLETE"])
+    already_done = max(len(prior_history), completed_from_study)
 
     t0 = time.monotonic()
-    trial_history: list[dict[str, Any]] = []
+    trial_history: list[dict[str, Any]] = list(prior_history)
     best_score = -1e18
+    if prior_cp and prior_cp.get("best_score") is not None:
+        try:
+            best_score = float(prior_cp.get("best_score"))
+        except (TypeError, ValueError):
+            best_score = -1e18
     no_improve = 0
-    screen_rows: list[dict[str, Any]] = []
+    screen_rows: list[dict[str, Any]] = [r for r in trial_history if r.get("phase") != "full"]
+
+    def _flush_checkpoint(row: dict | None = None, *, best_params: dict | None = None) -> None:
+        if not job_id:
+            return
+        try:
+            save_ml_job_checkpoint(
+                job_id,
+                merge_hyperparam_trial(
+                    load_ml_job_checkpoint(job_id),
+                    job_id=job_id,
+                    strategy=strat,
+                    symbol=symbol,
+                    config=base_cfg,
+                    max_trials=max_trials,
+                    trial_row=row,
+                    best_hyperparams=best_params,
+                    best_score=None if best_score <= -1e8 else float(best_score),
+                    study_path=study_path,
+                ),
+            )
+        except Exception:
+            logger.debug("hyperparam checkpoint flush failed", exc_info=True)
+
+    # Seed empty checkpoint so hydrate sees resume_ok even before first trial.
+    if job_id and already_done == 0 and not prior_cp:
+        try:
+            from app.services.bots.ml_job_checkpoint import empty_hyperparam_checkpoint
+            save_ml_job_checkpoint(
+                job_id,
+                empty_hyperparam_checkpoint(
+                    job_id=job_id, strategy=strat, symbol=symbol,
+                    config=base_cfg, max_trials=max_trials,
+                ),
+            )
+        except Exception:
+            pass
 
     def _emit(payload: dict) -> None:
         if progress_cb:
@@ -446,37 +556,31 @@ def run_ml_hyperparam_sweep(
             except Exception:
                 logger.debug("hyperparam progress_cb failed", exc_info=True)
 
+    if already_done > 0:
+        _emit({
+            "pct": min(10 + int((already_done / max(max_trials, 1)) * 80), 90),
+            "phase": "hyperparam_resume",
+            "detail": f"Resuming trial {already_done}/{max_trials}…",
+            "trial": already_done,
+            "max_trials": max_trials,
+            "trials_completed": already_done,
+            "best_score": None if best_score <= -1e8 else round(float(best_score), 6),
+            "resuming": True,
+        })
+
+
     n_screen = max(1, int(max_trials * 0.6)) if multi_fidelity else max_trials
     n_screen = min(n_screen, max_trials)
+    early_stopped = False
 
-    # ── Phase A: multi-fidelity screen (optional) ─────────────────────────
-    for i in range(n_screen):
-        if cancel_cb and cancel_cb():
-            break
-        if time.monotonic() - t0 >= time_budget_sec:
-            break
-
-        trial = study.ask()
-        params = _suggest_from_space(trial, space)
-        trial_cfg = {
-            **base_cfg,
-            **_apply_fidelity_caps(params, screen=multi_fidelity),
-            "skip_persist": True,
-            "skip_snapshot": True,
-        }
-        bars = _slice_candles_for_fidelity(candles, screen_fraction if multi_fidelity else 1.0)
-        try:
-            # Cheap screen only when multi_fidelity; otherwise full CV budget.
-            is_screen = bool(multi_fidelity)
-            result = _evaluate(
-                bars, trial_cfg,
-                folds=(cv_folds_screen if is_screen else cv_folds_full) if use_purged else 1,
-                screen=is_screen,
-            )
-        except Exception as exc:
-            logger.exception("Hyperparam screen trial failed")
-            result = {"ok": False, "error": str(exc)}
-
+    def _record_screen_trial(
+        i: int,
+        trial,
+        params: dict,
+        result: dict,
+    ) -> bool:
+        """Tell Optuna + emit progress. Returns True if early-stop should break."""
+        nonlocal best_score, no_improve, early_stopped
         score = extract_objective_score(result, strat)
         study.tell(trial, float(score))
         row = {
@@ -498,6 +602,8 @@ def run_ml_hyperparam_sweep(
             no_improve = 0
         else:
             no_improve += 1
+
+        _flush_checkpoint(row, best_params=dict(params) if score >= best_score - 1e-12 else None)
 
         warn = _trial_warning(result, score=score)
         snap_metrics = _pick_progress_metrics(result)
@@ -527,6 +633,7 @@ def run_ml_hyperparam_sweep(
         })
 
         if no_improve >= patience and i + 1 >= min(5, max_trials):
+            early_stopped = True
             _emit({
                 "pct": min(85, int(((i + 1) / max(max_trials, 1)) * 80) + 5),
                 "phase": "hyperparam_early_stop",
@@ -539,7 +646,88 @@ def run_ml_hyperparam_sweep(
                 "level": "warn",
                 "elapsed_sec": round(time.monotonic() - t0, 1),
             })
+            return True
+        return False
+
+    def _run_one_screen(
+        trial,
+        params: dict,
+        *,
+        disable_wf_parallel: bool = False,
+    ) -> dict:
+        trial_cfg = {
+            **base_cfg,
+            **_apply_fidelity_caps(params, screen=multi_fidelity),
+            "skip_persist": True,
+            "skip_snapshot": True,
+        }
+        # Avoid nested ThreadPool (Optuna trial workers × WF fold workers).
+        if disable_wf_parallel:
+            trial_cfg["_disable_wf_fold_parallel"] = True
+        bars = _slice_candles_for_fidelity(candles, screen_fraction if multi_fidelity else 1.0)
+        try:
+            is_screen = bool(multi_fidelity)
+            return _evaluate(
+                bars, trial_cfg,
+                folds=(cv_folds_screen if is_screen else cv_folds_full) if use_purged else 1,
+                screen=is_screen,
+            )
+        except Exception as exc:
+            logger.exception("Hyperparam screen trial failed")
+            return {"ok": False, "error": str(exc)}
+
+    # ── Phase A: multi-fidelity screen (optional) ─────────────────────────
+    # Opt #3: parallel ask/tell for random startup trials only (TPE still sequential after).
+    # Skip trials already completed via Optuna storage / checkpoint resume.
+    i = int(already_done)
+    startup_parallel = _optuna_startup_workers(min(n_startup, max(0, n_screen - i)), strat)
+    if startup_parallel > 1 and i < min(n_startup, n_screen):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        batch_n = min(startup_parallel, max(0, n_startup - i), max(0, n_screen - i))
+        batch: list[tuple[int, Any, dict]] = []
+        for _ in range(max(0, batch_n)):
+            if cancel_cb and cancel_cb():
+                break
+            if time.monotonic() - t0 >= time_budget_sec:
+                break
+            trial = study.ask()
+            params = _suggest_from_space(trial, space)
+            batch.append((i, trial, params))
+            i += 1
+        if batch:
+            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                futs = {
+                    pool.submit(
+                        _run_one_screen, trial, params, disable_wf_parallel=True,
+                    ): (idx, trial, params)
+                    for idx, trial, params in batch
+                }
+                completed: list[tuple[int, Any, dict, dict]] = []
+                for fut in as_completed(futs):
+                    idx, trial, params = futs[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        result = {"ok": False, "error": str(exc)}
+                    completed.append((idx, trial, params, result))
+                # Tell *all* completed trials in order — never leave Optuna
+                # trials stuck RUNNING when early-stop triggers mid-batch.
+                for idx, trial, params, result in sorted(completed, key=lambda t: t[0]):
+                    _record_screen_trial(idx, trial, params, result)
+
+    while i < n_screen and not early_stopped:
+        if cancel_cb and cancel_cb():
             break
+        if time.monotonic() - t0 >= time_budget_sec:
+            break
+
+        trial = study.ask()
+        params = _suggest_from_space(trial, space)
+        result = _run_one_screen(trial, params)
+        if _record_screen_trial(i, trial, params, result):
+            break
+        i += 1
 
     # ── Phase B: promote top-k to full training ────────────────────────────
     promoted: list[dict[str, Any]] = []
@@ -588,6 +776,7 @@ def run_ml_hyperparam_sweep(
             trial_history.append(full_row)
             if score > best_score + 1e-9:
                 best_score = score
+            _flush_checkpoint(full_row, best_params=dict(params) if score >= best_score - 1e-12 else None)
             warn = _trial_warning(result, score=score)
             score_s = "—" if score <= -1e8 else str(round(float(score), 4))
             best_s = "—" if best_score <= -1e8 else str(round(float(best_score), 4))

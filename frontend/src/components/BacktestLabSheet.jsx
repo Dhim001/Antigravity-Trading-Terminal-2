@@ -263,7 +263,12 @@ function BacktestLabSheetInner() {
           labTab === 'jobs' && 'backtest-lab__scroll--jobs',
         )}
         >
-            <BacktestProgressBar />
+            {/* Optimizer embeds its own sticky bar next to Run/Cancel — avoid a duplicate here. */}
+            {labTab !== 'optimizer' && (
+              <div className="algo-backtest-progress-sticky sticky top-0 z-10 bg-background/95 py-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                <BacktestProgressBar />
+              </div>
+            )}
 
             {labTab === 'jobs' && (
               <Suspense fallback={<LabPanelFallback />}>

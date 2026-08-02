@@ -516,8 +516,41 @@ function BacktestSummaryCards({ summary, results, isFull }) {
       <StatCard
         label="Blocked"
         value={String(s.blocked_entries ?? 0)}
-        sub="Risk gate rejects"
+        sub={
+          s.streak_veto_latched
+            ? 'Streak VETO latched'
+            : s.streak_cooldown_active
+              ? 'Streak cool-down'
+              : s.daily_loss_halted
+                ? 'Daily loss halt'
+                : 'Risk / parity rejects'
+        }
+        tone={s.streak_veto_latched || s.halted || s.daily_loss_halted ? 'down' : 'neutral'}
       />
+      {(s.streak_veto_latched || s.streak_cooldown_resumed || s.halted || s.daily_loss_halted) && (
+        <StatCard
+          label="Halt state"
+          value={
+            s.streak_veto_latched
+              ? 'Streak VETO'
+              : s.daily_loss_halted || s.halted
+                ? 'Daily halt'
+                : s.streak_cooldown_resumed
+                  ? 'Resumed'
+                  : '—'
+          }
+          sub={
+            s.streak_cooldown_active
+              ? 'Cool-down active'
+              : s.streak_cooldown_resumed
+                ? 'Lookback unlocked'
+                : s.streak_veto_blocks
+                  ? `${s.streak_veto_blocks} streak vetoes`
+                  : undefined
+          }
+          tone={s.streak_veto_latched || s.halted ? 'down' : 'up'}
+        />
+      )}
       <StatCard
         label="Max loss streak"
         value={String(s.max_consecutive_losses ?? 0)}

@@ -46,7 +46,7 @@ export default function BacktestBlockedLog({ results, className, onFocusBar }) {
         </span>
       </p>
       <p className="algo-backtest-blocked-log__hint text-muted-foreground">
-        Entry signals rejected by analyst filters, live-parity gates, or risk limits — not just counts.
+        Entry signals rejected by analyst filters, live-parity gates, streak VETO / cool-down, or risk limits — not just counts.
       </p>
       <div
         className={cn('algo-backtest-table-scroll', 'algo-backtest-table-scroll--blocked')}

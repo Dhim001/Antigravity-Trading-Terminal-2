@@ -63,7 +63,11 @@ export default function BacktestStandaloneContent() {
         </Tabs>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <BacktestProgressBar />
+        {labTab !== 'optimizer' && (
+          <div className="sticky top-0 z-10 bg-background/95 py-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+            <BacktestProgressBar />
+          </div>
+        )}
 
         {labTab === 'jobs' && (
           <Suspense fallback={<LabFallback />}>

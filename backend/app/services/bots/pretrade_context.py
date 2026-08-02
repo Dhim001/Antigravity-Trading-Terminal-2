@@ -63,6 +63,63 @@ def streak_cooldown_sec(bot_config: dict | None = None) -> int:
         return int(PRETRADE_STREAK_COOLDOWN_SEC)
 
 
+def resolve_lookback_hours(
+    bot_config: dict | None = None,
+    lookback_hours: float | None = None,
+) -> float:
+    """Resolve Pre-Trade streak lookback hours (live SQL + backtest bar-time)."""
+    if lookback_hours is not None:
+        try:
+            return max(0.0, float(lookback_hours))
+        except (TypeError, ValueError):
+            pass
+    cfg = bot_config or {}
+    raw = cfg.get("pretrade_setup_lookback_hours", PRETRADE_SETUP_LOOKBACK_HOURS)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return float(PRETRADE_SETUP_LOOKBACK_HOURS)
+
+
+def filter_exit_pnls_by_lookback(
+    exit_pnls: Sequence[float] | None,
+    *,
+    exit_times: Sequence[float | int | None] | None = None,
+    now_ts: float | None = None,
+    lookback_hours: float | None = None,
+    bot_config: dict | None = None,
+) -> list[float]:
+    """Keep exit PnLs inside the bar-time lookback window (live SQL equivalent).
+
+    When ``exit_times`` or ``now_ts`` is missing, returns all pnls unchanged
+    (legacy callers / unit tests without timestamps).
+    """
+    if exit_pnls is None:
+        return []
+    pnls = [float(p) for p in exit_pnls]
+    if not pnls or exit_times is None or now_ts is None:
+        return pnls
+    hours = resolve_lookback_hours(bot_config, lookback_hours)
+    if hours <= 0:
+        return pnls
+    try:
+        cutoff = float(now_ts) - hours * 3600.0
+    except (TypeError, ValueError):
+        return pnls
+    times = list(exit_times)
+    out: list[float] = []
+    for i, p in enumerate(pnls):
+        ts = times[i] if i < len(times) else None
+        if ts is None:
+            continue
+        try:
+            if float(ts) >= cutoff:
+                out.append(p)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def consecutive_loss_count(exit_pnls: Sequence[float], *, newest_first: bool = False) -> int:
     """Count consecutive losing exits from the most recent trade."""
     pnls = [float(p) for p in (exit_pnls or [])]
@@ -86,12 +143,18 @@ def apply_failures_streak(
     setup_fail_limit: int | None = None,
     newest_first: bool = False,
     lookback_hours: float | None = None,
+    exit_times: Sequence[float | int | None] | None = None,
+    now_ts: float | None = None,
 ) -> dict[str, Any] | None:
     """Evaluate streak policy.
 
+    When ``exit_times`` + ``now_ts`` are provided, only exits inside
+    ``PRETRADE_SETUP_LOOKBACK_HOURS`` (or override) count — matching live SQL
+    lookback so VETO cannot latch forever across a multi-day backtest.
+
     Returns None when no streak action applies, else a dict with
     ``verdict`` (REDUCE_SIZE|VETO), ``size_multiplier``, ``reason``, ``streak``,
-    ``vetoes`` entry string.
+    ``vetoes`` entry string, ``lookback_hours``, ``cooldown_sec``.
     """
     mode = resolve_streak_mode(bot_config)
     if mode == "off" or exit_pnls is None:
@@ -105,7 +168,14 @@ def apply_failures_streak(
     if fail_limit <= 0:
         return None
 
-    pnls = [float(p) for p in exit_pnls]
+    hours = resolve_lookback_hours(bot_config, lookback_hours)
+    pnls = filter_exit_pnls_by_lookback(
+        exit_pnls,
+        exit_times=exit_times,
+        now_ts=now_ts,
+        lookback_hours=hours,
+        bot_config=bot_config,
+    )
     streak = consecutive_loss_count(pnls, newest_first=newest_first)
     if streak < fail_limit:
         return None
@@ -121,12 +191,7 @@ def apply_failures_streak(
         if streak < fail_limit:
             return None
 
-    hours = float(
-        lookback_hours
-        if lookback_hours is not None
-        else PRETRADE_SETUP_LOOKBACK_HOURS
-    )
-    reason = f"{streak} losses in last {hours}h"
+    reason = f"{streak} losses in last {hours:g}h"
     veto_line = f"failures_streak: {reason}"
 
     # Escalate to hard VETO only in explicit veto mode, or when streak reaches
@@ -137,14 +202,19 @@ def apply_failures_streak(
     except (TypeError, ValueError):
         max_streak = int(BOT_MAX_CONSECUTIVE_LOSSES)
 
+    base = {
+        "reason": reason,
+        "streak": streak,
+        "vetoes": [veto_line],
+        "cooldown_sec": streak_cooldown_sec(bot_config),
+        "lookback_hours": hours,
+    }
+
     if mode == "veto" or (max_streak > 0 and streak >= max_streak):
         return {
+            **base,
             "verdict": "VETO",
             "size_multiplier": 0.0,
-            "reason": reason,
-            "streak": streak,
-            "vetoes": [veto_line],
-            "cooldown_sec": streak_cooldown_sec(bot_config),
         }
 
     # Stepped reduce: mild at fail_limit, severe at severe_limit+.
@@ -155,12 +225,9 @@ def apply_failures_streak(
         mult = streak_reduce_factor(bot_config)
     mult = max(0.05, min(1.0, float(mult)))
     return {
+        **base,
         "verdict": "REDUCE_SIZE",
         "size_multiplier": mult,
-        "reason": reason,
-        "streak": streak,
-        "vetoes": [veto_line],
-        "cooldown_sec": streak_cooldown_sec(bot_config),
     }
 
 

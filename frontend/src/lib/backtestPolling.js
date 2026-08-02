@@ -92,3 +92,26 @@ export function claimBacktestJobCompletion(jobId) {
 export function resetBacktestJobCompletionClaims() {
   _completedJobIds.clear();
 }
+
+const ACTIVE_SLOT_STATUSES = new Set(['pending', 'running']);
+
+/**
+ * Whether client timeout should keep watching instead of wiping the bar.
+ * Slot ``status`` may be a progress phase (resolve/sweep) when only WS
+ * progress has arrived — treat those as alive when a job_id is present.
+ */
+export function isDeferredBacktestStillAlive(state) {
+  if (!state?.backtestRunning) return false;
+  const jobId = state.backtestJobId;
+  if (!jobId) return false;
+  const slot = state.backtestJobsById?.[jobId];
+  if (!slot) return true; // job adopted; slot not mirrored yet
+  const status = String(slot.status || '').toLowerCase();
+  if (ACTIVE_SLOT_STATUSES.has(status)) return true;
+  if (['completed', 'failed', 'cancelled', 'timeout', 'error'].includes(status)) {
+    return false;
+  }
+  // Progress phase strings (resolve, sweep, indicators, …) ⇒ still running.
+  if (status || slot.progress || slot.running) return true;
+  return true;
+}

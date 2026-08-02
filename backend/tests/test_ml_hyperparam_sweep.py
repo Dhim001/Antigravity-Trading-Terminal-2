@@ -196,9 +196,126 @@ def test_fidelity_caps_do_not_inject_early_stop():
 
     capped = _apply_fidelity_caps({"gbm_max_depth": 6, "epochs": 90}, screen=True)
     assert "early_stop_patience" not in capped
+    # Opt #7: epochs/5 screen fidelity (90 → 18)
+    assert capped["epochs"] == 18
     assert capped["epochs"] <= 30
     with_patience = _apply_fidelity_caps({"early_stop_patience": 15}, screen=True)
     assert with_patience["early_stop_patience"] == 8
+
+
+def test_optuna_startup_parallel_records_all_trials(monkeypatch):
+    """Opt #3: parallel startup ask/tell must complete every trial."""
+    from app.services.bots import ml_hyperparam_sweep as sweep
+
+    monkeypatch.setattr(sweep, "_optuna_startup_workers", lambda n, s: min(3, n))
+
+    candles = [
+        {"close": 100 + i * 0.1, "high": 101, "low": 99, "volume": 1, "ATR_14": 1}
+        for i in range(200)
+    ]
+    seen = {"n": 0}
+
+    def fake_train(symbol, bars, config=None):
+        seen["n"] += 1
+        depth = float((config or {}).get("gbm_max_depth") or 3)
+        return {"ok": True, "metrics": {"val_accuracy": 0.5 + depth * 0.01}}
+
+    result = sweep.run_ml_hyperparam_sweep(
+        "ML_SIGNAL_BOOST",
+        "BTCUSDT",
+        candles,
+        config={"timeframe": "1m", "skip_persist": True},
+        max_trials=5,
+        time_budget_sec=120,
+        patience=20,
+        multi_fidelity=False,
+        objective_kind="val_holdout",
+        train_fn=fake_train,
+    )
+    assert result["ok"] is True
+    assert result["trials_completed"] == seen["n"]
+    assert result["trials_completed"] >= 1
+
+
+def test_optuna_startup_parallel_leaves_no_orphan_trials(monkeypatch):
+    """Parallel ask/tell must complete every asked trial (no RUNNING orphans)."""
+    import optuna
+    from app.services.bots import ml_hyperparam_sweep as sweep
+
+    monkeypatch.setattr(sweep, "_optuna_startup_workers", lambda n, s: min(3, n))
+    studies: list = []
+    real_create = optuna.create_study
+
+    def _capture_study(*args, **kwargs):
+        study = real_create(*args, **kwargs)
+        studies.append(study)
+        return study
+
+    monkeypatch.setattr(optuna, "create_study", _capture_study)
+
+    candles = [
+        {"close": 100 + i * 0.1, "high": 101, "low": 99, "volume": 1, "ATR_14": 1}
+        for i in range(200)
+    ]
+
+    def fake_train(symbol, bars, config=None):
+        return {"ok": True, "metrics": {"val_accuracy": 0.6}}
+
+    result = sweep.run_ml_hyperparam_sweep(
+        "ML_SIGNAL_BOOST",
+        "BTCUSDT",
+        candles,
+        config={"timeframe": "1m", "skip_persist": True},
+        max_trials=5,
+        time_budget_sec=120,
+        patience=20,
+        multi_fidelity=False,
+        objective_kind="val_holdout",
+        train_fn=fake_train,
+    )
+    assert result["ok"] is True
+    assert studies
+    states = {t.state for t in studies[0].trials}
+    assert optuna.trial.TrialState.RUNNING not in states
+    assert optuna.trial.TrialState.WAITING not in states
+    complete = [
+        t for t in studies[0].trials if t.state == optuna.trial.TrialState.COMPLETE
+    ]
+    assert len(complete) >= 3
+
+
+def test_optuna_parallel_startup_disables_nested_wf_folds(monkeypatch):
+    from app.services.bots import ml_hyperparam_sweep as sweep
+
+    monkeypatch.setattr(sweep, "_optuna_startup_workers", lambda n, s: min(2, n))
+    seen_flags: list[bool] = []
+
+    candles = [
+        {"close": 100 + i * 0.1, "high": 101, "low": 99, "volume": 1, "ATR_14": 1}
+        for i in range(200)
+    ]
+
+    def fake_train(symbol, bars, config=None):
+        cfg = config or {}
+        seen_flags.append(bool(cfg.get("_disable_wf_fold_parallel")))
+        return {"ok": True, "metrics": {"val_accuracy": 0.6}}
+
+    sweep.run_ml_hyperparam_sweep(
+        "ML_SIGNAL_BOOST",
+        "BTCUSDT",
+        candles,
+        config={"timeframe": "1m", "skip_persist": True},
+        max_trials=4,
+        time_budget_sec=60,
+        patience=20,
+        multi_fidelity=False,
+        objective_kind="val_holdout",
+        train_fn=fake_train,
+    )
+    # Parallel startup batch (first 2) should disable nested WF fold pools.
+    assert len(seen_flags) >= 2
+    assert seen_flags[0] is True
+    assert seen_flags[1] is True
 
 
 def test_merge_optimized_requires_opt_in_on_lab_path(monkeypatch):

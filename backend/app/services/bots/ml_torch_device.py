@@ -156,3 +156,61 @@ def cpu_tensor(data, *, dtype):
     import torch
 
     return torch.as_tensor(data, dtype=dtype, device="cpu")
+
+
+def resolve_dataloader_num_workers() -> int:
+    """DataLoader worker count — 0 on Windows by default (spawn-safe)."""
+    import sys
+
+    try:
+        from app.config import ML_DATALOADER_NUM_WORKERS
+
+        raw = (ML_DATALOADER_NUM_WORKERS or "").strip()
+    except Exception:
+        raw = (os.environ.get("ML_DATALOADER_NUM_WORKERS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            pass
+    if sys.platform == "win32":
+        return 0
+    return 2
+
+
+def make_torch_dataloader(
+    X_t,
+    y_t,
+    *,
+    batch_size: int,
+    device,
+    shuffle: bool = True,
+):
+    """DataLoader with ``pin_memory`` on CUDA and platform-safe ``num_workers``.
+
+    Optimizer Opt #8 — overlaps host→device copies when CUDA is available.
+    """
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    pin = getattr(device, "type", None) == "cuda"
+    workers = resolve_dataloader_num_workers() if pin else 0
+    # persistent_workers requires num_workers > 0
+    kwargs: dict[str, Any] = {
+        "batch_size": max(1, int(batch_size)),
+        "shuffle": bool(shuffle),
+        "pin_memory": pin,
+        "num_workers": workers,
+    }
+    if workers > 0:
+        kwargs["persistent_workers"] = True
+    return DataLoader(TensorDataset(X_t, y_t), **kwargs)
+
+
+def batch_to_device(batch_x, batch_y, device):
+    """Move a DataLoader batch to ``device`` with non_blocking CUDA copies."""
+    non_blocking = getattr(device, "type", None) == "cuda"
+    return (
+        batch_x.to(device, non_blocking=non_blocking),
+        batch_y.to(device, non_blocking=non_blocking),
+    )

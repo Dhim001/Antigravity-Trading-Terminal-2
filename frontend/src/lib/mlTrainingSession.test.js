@@ -14,6 +14,7 @@ import {
   setCachedModelStatus,
   setMlJobId,
   setMlServerProgress,
+  setMlTuneResult,
   STATUS_CACHE_MAX,
   statusCacheKey,
 } from './mlTrainingSession';
@@ -22,6 +23,8 @@ import { useResearchStore } from '@/store/useResearchStore';
 describe('mlTrainingSession', () => {
   beforeEach(() => {
     finishMlJob(getMlTrainingSession().jobToken, {});
+    setMlTuneResult(null);
+    clearMlPollLog();
   });
 
   it('caches model status by symbol|strategy|timeframe', () => {
@@ -135,6 +138,71 @@ describe('mlTrainingSession', () => {
     expect(getMlTrainingSession().training).toBe(false);
     expect(getMlTrainingSession().jobId).toBe('job-tune-1');
     finishMlJob(jobToken, {});
+    expect(getMlTrainingSession().tuning).toBe(false);
+  });
+
+  it('keeps rich sweep fields on serverProgress for remount', () => {
+    beginMlJob({
+      kind: 'hyperparam_sweep',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+      jobId: 'job-tune-rich',
+      jobProgress: { active: true, kind: 'hyperparam_sweep', label: 'Auto-tune' },
+    });
+    setMlServerProgress({
+      pct: 40,
+      phase: 'hyperparam_trial',
+      detail: 'trial 4/12',
+      status: 'running',
+      trial: 4,
+      max_trials: 12,
+      best_score: 0.55,
+      last_score: 0.51,
+    });
+    const prog = getMlTrainingSession().serverProgress;
+    expect(prog.trial).toBe(4);
+    expect(prog.max_trials).toBe(12);
+    expect(prog.best_score).toBe(0.55);
+    expect(getMlTrainingSession().pollLog.at(-1)?.trial).toBe(4);
+  });
+
+  it('keeps tuning=true on WS done for hyperparam so poller can finish', () => {
+    beginMlJob({
+      kind: 'hyperparam_sweep',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+      jobId: 'job-tune-ws',
+      jobProgress: { active: true, kind: 'hyperparam_sweep', label: 'Auto-tune' },
+    });
+    applyMlJobProgressMessage({
+      job_id: 'job-tune-ws',
+      status: 'done',
+      kind: 'hyperparam_sweep',
+      pct: 100,
+      phase: 'done',
+      trial: 10,
+      best_score: 0.8,
+    });
+    expect(getMlTrainingSession().tuning).toBe(true);
+    expect(getMlTrainingSession().jobId).toBe('job-tune-ws');
+    expect(getMlTrainingSession().serverProgress?.best_score).toBe(0.8);
+  });
+
+  it('clears tuning on WS cancel for hyperparam', () => {
+    beginMlJob({
+      kind: 'hyperparam_sweep',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+      jobId: 'job-tune-cancel',
+      jobProgress: { active: true, kind: 'hyperparam_sweep', label: 'Auto-tune' },
+    });
+    applyMlJobProgressMessage({
+      job_id: 'job-tune-cancel',
+      status: 'cancelled',
+      kind: 'hyperparam_sweep',
+      pct: 30,
+      phase: 'cancelled',
+    });
     expect(getMlTrainingSession().tuning).toBe(false);
   });
 

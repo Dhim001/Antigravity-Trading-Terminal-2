@@ -20,9 +20,18 @@ from app.services.bots.backtest_jobs import cancel_job, clear_job, start_job
 from app.services.bots.backtest_job_store import (
     create_backtest_job,
     is_job_cancelled,
+    load_job_checkpoint,
+    save_job_checkpoint,
     set_job_status,
     start_job_execution,
     update_job_progress,
+)
+from app.services.bots.backtest_checkpoint import (
+    checkpoint_compatible,
+    completed_fold_index_set,
+    completed_index_set,
+    merge_sweep_progress,
+    merge_walk_forward_progress,
 )
 from app.services.bots.backtest_perf import (
     backtest_tier_meta,
@@ -176,7 +185,12 @@ def _parse_backtest_request(msg: dict) -> dict:
 
 
 async def _maybe_defer_backtest(ctx: RequestContext, req: dict) -> bool:
-    """Queue slow runs in a background task; return True when deferred."""
+    """Queue slow runs in a background task; return True when deferred.
+
+    When the heavy-job sidecar is enabled, ML/RL/ensemble (or all deferred jobs
+    if BACKTEST_SIDECAR_ALL=1) are enqueued as pending only — the sidecar (or
+    restart worker) executes them outside the API process GIL.
+    """
     tier_meta = backtest_tier_meta(req)
     tier = tier_meta["tier"]
     if tier != "deferred":
@@ -190,16 +204,29 @@ async def _maybe_defer_backtest(ctx: RequestContext, req: dict) -> bool:
     job_req = {**req, "tier": tier, "estimated_sec": tier_meta.get("estimated_sec")}
     job_id = create_backtest_job(job_req, status="pending", client_key=client_key)
     start_job(ctx.websocket, job_id, deferred=True)
+
+    from app.services.bots.heavy_job_worker import defer_to_sidecar_only
+
+    sidecar_only = defer_to_sidecar_only(req)
     progress = {
         "pct": 0,
         "phase": "queued",
-        "message": f"Queued {label} backtest (~{tier_meta.get('estimated_sec')}s est.)…",
+        "message": (
+            f"Queued {label} for heavy-job sidecar (~{tier_meta.get('estimated_sec')}s est.)…"
+            if sidecar_only
+            else f"Queued {label} backtest (~{tier_meta.get('estimated_sec')}s est.)…"
+        ),
         "job_id": job_id,
         "tier": tier,
         "estimated_sec": tier_meta.get("estimated_sec"),
+        "sidecar": bool(sidecar_only),
     }
     update_job_progress(job_id, progress)
     await send_backtest_progress(ctx, progress)
+
+    if sidecar_only:
+        # Sidecar / filtered API worker will claim — do not create_task in API.
+        return True
 
     async def _run_deferred() -> None:
         try:
@@ -308,19 +335,56 @@ async def _execute_backtest(
     job = start_job(ctx.websocket, job_id, deferred=deferred_run)
     progress_queue: asyncio.Queue = asyncio.Queue(maxsize=64)
     drain_task = asyncio.create_task(_drain_backtest_progress(ctx, progress_queue))
+    event_loop = asyncio.get_running_loop()
+    # Coalesce SQLite progress writes so heartbeats cannot spawn unbounded tasks.
+    _progress_db_latest: dict | None = None
+    _progress_db_flushing = False
 
     def enqueue_progress(data: dict) -> None:
+        nonlocal _progress_db_latest, _progress_db_flushing
         payload = {
             **data,
             "job_id": job_id,
             "symbol": symbol,
             "strategy": strategy,
         }
-        update_job_progress(job_id, payload)
+
+        def _push_ws() -> None:
+            try:
+                progress_queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
+
         try:
-            progress_queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            pass
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is event_loop:
+            # Never block the HTTP/WS event loop on SQLite busy_timeout.
+            _push_ws()
+            _progress_db_latest = payload
+
+            async def _flush_progress_db() -> None:
+                nonlocal _progress_db_latest, _progress_db_flushing
+                try:
+                    while _progress_db_latest is not None:
+                        to_write = _progress_db_latest
+                        _progress_db_latest = None
+                        await asyncio.to_thread(update_job_progress, job_id, to_write)
+                finally:
+                    _progress_db_flushing = False
+                    # A write may have been queued after the last drain iteration.
+                    if _progress_db_latest is not None and not _progress_db_flushing:
+                        _progress_db_flushing = True
+                        event_loop.create_task(_flush_progress_db())
+
+            if not _progress_db_flushing:
+                _progress_db_flushing = True
+                event_loop.create_task(_flush_progress_db())
+        else:
+            update_job_progress(job_id, payload)
+            event_loop.call_soon_threadsafe(_push_ws)
 
     def is_cancelled() -> bool:
         if job and job.is_cancelled():
@@ -725,6 +789,43 @@ async def _execute_backtest(
                 })
 
             wf_runner = thread_local_backtest_runner(ctx.backtester)
+            _wf_cp = load_job_checkpoint(job_id) if job_id else None
+            _wf_done: set[int] = set()
+            _wf_prior: list[dict] = []
+            if (
+                _wf_cp
+                and checkpoint_compatible(_wf_cp, request_payload)
+                and _wf_cp.get("kind") == "walk_forward"
+            ):
+                _wf_done = completed_fold_index_set(_wf_cp)
+                _wf_prior = list(_wf_cp.get("fold_results") or [])
+                if _wf_done:
+                    enqueue_progress({
+                        "pct": min(10 + int((len(_wf_done) / max(int(rolling_folds or 1), 1)) * 80), 90),
+                        "phase": "sweep",
+                        "message": (
+                            f"Resuming walk-forward — {len(_wf_done)}/"
+                            f"{max(int(rolling_folds or 1), 1)} folds already done…"
+                        ),
+                        "total_runs": len(configs),
+                    })
+
+            def _wf_fold_checkpoint(fold_idx: int, fold_entry: dict) -> None:
+                if not job_id:
+                    return
+                try:
+                    save_job_checkpoint(
+                        job_id,
+                        merge_walk_forward_progress(
+                            load_job_checkpoint(job_id),
+                            request=request_payload,
+                            fold_idx=fold_idx,
+                            fold_entry=fold_entry,
+                        ),
+                    )
+                except Exception:
+                    logger.debug("walk-forward checkpoint save failed", exc_info=True)
+
             best_result = await asyncio.to_thread(
                 partial(
                     run_walk_forward,
@@ -743,6 +844,9 @@ async def _execute_backtest(
                     cancel_cb=is_cancelled,
                     sweep=sweep,
                     wf_options=wf_options,
+                    completed_fold_indices=_wf_done or None,
+                    prior_fold_entries=_wf_prior or None,
+                    fold_checkpoint_cb=_wf_fold_checkpoint if job_id else None,
                 ),
             )
             if isinstance(best_result, dict) and best_result.get("cancelled"):
@@ -892,6 +996,28 @@ async def _execute_backtest(
             sweep_rows = []
             best_result = None
             best_config = None
+            # Resume from durable checkpoint when request fingerprint matches.
+            _cp = load_job_checkpoint(job_id) if job_id else None
+            _done_indices: set[int] = set()
+            if _cp and checkpoint_compatible(_cp, request_payload):
+                prior_rows = list(_cp.get("sweep_rows") or [])
+                if prior_rows:
+                    sweep_rows.extend(prior_rows)
+                _done_indices = completed_index_set(_cp)
+                # Restore best config snapshot when present (full best_result rebuilt later if needed).
+                if isinstance(_cp.get("best_config"), dict):
+                    best_config = _cp["best_config"]
+                if _done_indices:
+                    enqueue_progress({
+                        "pct": min(10 + int((len(_done_indices) / max(len(configs), 1)) * 85), 95),
+                        "phase": "sweep",
+                        "message": f"Resuming sweep — {len(_done_indices)}/{len(configs)} combos already done…",
+                        "run": len(_done_indices),
+                        "total_runs": len(configs),
+                    })
+                    # Credit trial budget for already-finished combos.
+                    for _ in range(len(_done_indices)):
+                        trial_budget.record_trial()
 
             portfolio_sweep = bool((sweep or {}).get("portfolio_sweep")) and portfolio_symbols and len(portfolio_symbols) > 1
             portfolio_sweep_complete = False
@@ -928,6 +1054,8 @@ async def _execute_backtest(
                         candles_by_sym[sym] = []
 
                 for run_idx, run_config in enumerate(configs):
+                    if run_idx in _done_indices:
+                        continue
                     if is_cancelled():
                         await _finish("cancelled")
                         return
@@ -957,6 +1085,21 @@ async def _execute_backtest(
                     )
                     sweep_rows.append(row)
                     trial_budget.record_trial()
+                    if job_id:
+                        try:
+                            save_job_checkpoint(
+                                job_id,
+                                merge_sweep_progress(
+                                    load_job_checkpoint(job_id),
+                                    request=request_payload,
+                                    run_idx=run_idx,
+                                    label=row.get("label") or sweep_label(run_config),
+                                    row=row,
+                                    best_config=best_config if isinstance(best_config, dict) else None,
+                                ),
+                            )
+                        except Exception:
+                            logger.debug("portfolio sweep checkpoint save failed", exc_info=True)
                     enqueue_progress({
                         "pct": min(10 + int((run_idx + 1) / max(len(configs), 1) * 80), 90),
                         "phase": "sweep",
@@ -1021,14 +1164,32 @@ async def _execute_backtest(
                     nonlocal best_result, best_config
                     if isinstance(results, dict) and results.get("cancelled"):
                         return False
+                    label = sweep_label(run_config)
+                    row_for_cp = None
                     if isinstance(results, dict) and results.get("error"):
                         if is_sweep:
-                            sweep_rows.append({
-                                "label": sweep_label(run_config),
+                            row_for_cp = {
+                                "label": label,
                                 "config": run_config,
                                 "error": results["error"],
-                            })
+                            }
+                            sweep_rows.append(row_for_cp)
                             trial_budget.record_trial()
+                            if job_id:
+                                try:
+                                    save_job_checkpoint(
+                                        job_id,
+                                        merge_sweep_progress(
+                                            load_job_checkpoint(job_id),
+                                            request=request_payload,
+                                            run_idx=run_idx,
+                                            label=label,
+                                            row=row_for_cp,
+                                            best_config=best_config if isinstance(best_config, dict) else None,
+                                        ),
+                                    )
+                                except Exception:
+                                    logger.debug("sweep checkpoint save failed", exc_info=True)
                             return True
                         return False
                     if not isinstance(results, dict):
@@ -1036,7 +1197,7 @@ async def _execute_backtest(
                     summary = results.get("summary") or {}
                     from app.services.bots.backtest_walk_forward import slim_ml_metrics_for_sweep
                     row = {
-                        "label": sweep_label(run_config),
+                        "label": label,
                         "config": run_config,
                         "summary": summary,
                         "total_pnl": results.get("total_pnl"),
@@ -1073,6 +1234,22 @@ async def _execute_backtest(
                     ):
                         best_result = results
                         best_config = run_config
+                    if job_id:
+                        try:
+                            save_job_checkpoint(
+                                job_id,
+                                merge_sweep_progress(
+                                    load_job_checkpoint(job_id),
+                                    request=request_payload,
+                                    run_idx=run_idx,
+                                    label=label,
+                                    row=row,
+                                    best_config=best_config if isinstance(best_config, dict) else None,
+                                    best_summary=(best_result or {}).get("summary") if isinstance(best_result, dict) else None,
+                                ),
+                            )
+                        except Exception:
+                            logger.debug("sweep checkpoint save failed", exc_info=True)
                     return True
 
                 if is_bayesian_sweep(sweep) and is_sweep:
@@ -1143,11 +1320,29 @@ async def _execute_backtest(
                         return
                     best_result["sweep"] = sweep_block
                 else:
-                    use_parallel = is_sweep and len(configs) > 1
+                    # asyncio.to_thread parallel sweeps share one process GIL. ML/RL
+                    # combos (feature matrices, ONNX, PPO) wedge HTTP when N>1 —
+                    # that looks like the server "crashing" (502 / recycle loops).
+                    heavy_ml = False
+                    try:
+                        from app.services.bots.ml_walk_forward_validator import (
+                            is_ensemble_strategy,
+                            is_ml_strategy,
+                        )
+
+                        strat_key = str(strategy or "")
+                        # Ensemble wraps ML models — same in-process GIL hazard.
+                        heavy_ml = is_ml_strategy(strat_key) or is_ensemble_strategy(strat_key)
+                    except Exception:
+                        heavy_ml = False
+                    use_parallel = is_sweep and len(configs) > 1 and not heavy_ml
                     if use_parallel:
                         workers = parallel_worker_count(len(configs))
+                        # Soft cap even for TA — leave headroom for the event loop.
+                        workers = max(1, min(workers, 4))
                         sem = asyncio.Semaphore(workers)
                         completed = 0
+                        sweep_t0 = time.monotonic()
 
                         async def _run_one(run_idx: int, run_config: dict):
                             async with sem:
@@ -1155,36 +1350,75 @@ async def _execute_backtest(
                                     return run_idx, run_config, {"cancelled": True}
                                 return await asyncio.to_thread(_run_config, run_idx, run_config)
 
-                        for coro in asyncio.as_completed(
-                            [_run_one(idx, cfg) for idx, cfg in enumerate(configs)]
-                        ):
-                            if is_cancelled():
-                                await _finish("cancelled")
-                                return
-                            run_idx, run_config, results = await coro
-                            if isinstance(results, dict) and results.get("cancelled"):
-                                await _finish("cancelled")
-                                return
-                            if isinstance(results, dict) and results.get("error") and not is_sweep:
-                                await _finish("error", message=results["error"])
-                                return
-                            if not _consume_result(run_idx, run_config, results):
-                                if not is_sweep:
-                                    err = results.get("error") if isinstance(results, dict) else "Invalid backtest response"
-                                    await _finish("error", message=err)
+                        async def _parallel_sweep_heartbeat() -> None:
+                            """Keep progress.updated_at fresh while combos run.
+
+                            Parallel path only bumps completed-count after each combo;
+                            heartbeats prevent false FE stalls during long first trials.
+                            """
+                            while True:
+                                await asyncio.sleep(8.0)
+                                elapsed = max(0.001, time.monotonic() - sweep_t0)
+                                enqueue_progress({
+                                    "pct": min(10 + int((completed / max(len(configs), 1)) * 85), 95),
+                                    "phase": "sweep",
+                                    "message": (
+                                        f"Sweep {completed}/{len(configs)} complete — "
+                                        f"up to {workers} worker{'s' if workers != 1 else ''} busy…"
+                                    ),
+                                    "run": completed,
+                                    "total_runs": len(configs),
+                                    "elapsed_sec": round(elapsed, 1),
+                                })
+
+                        hb_task = asyncio.create_task(_parallel_sweep_heartbeat())
+                        try:
+                            pending_cfgs = [
+                                (idx, cfg) for idx, cfg in enumerate(configs)
+                                if idx not in _done_indices
+                            ]
+                            if not pending_cfgs and sweep_rows:
+                                # All combos already checkpointed — fall through to enrich.
+                                completed = len(configs)
+                            for coro in asyncio.as_completed(
+                                [_run_one(idx, cfg) for idx, cfg in pending_cfgs]
+                            ):
+                                if is_cancelled():
+                                    await _finish("cancelled")
                                     return
-                            completed += 1
-                            if trial_budget.should_stop():
-                                break
-                            enqueue_progress({
-                                "pct": min(10 + int((completed / len(configs)) * 85), 95),
-                                "phase": "sweep",
-                                "message": f"Sweep {completed}/{len(configs)} complete…",
-                                "run": completed,
-                                "total_runs": len(configs),
-                            })
+                                run_idx, run_config, results = await coro
+                                if isinstance(results, dict) and results.get("cancelled"):
+                                    await _finish("cancelled")
+                                    return
+                                if isinstance(results, dict) and results.get("error") and not is_sweep:
+                                    await _finish("error", message=results["error"])
+                                    return
+                                if not _consume_result(run_idx, run_config, results):
+                                    if not is_sweep:
+                                        err = results.get("error") if isinstance(results, dict) else "Invalid backtest response"
+                                        await _finish("error", message=err)
+                                        return
+                                completed += 1
+                                if trial_budget.should_stop():
+                                    break
+                                enqueue_progress({
+                                    "pct": min(10 + int((completed / len(configs)) * 85), 95),
+                                    "phase": "sweep",
+                                    "message": f"Sweep {completed}/{len(configs)} complete…",
+                                    "run": completed,
+                                    "total_runs": len(configs),
+                                    "elapsed_sec": round(max(0.001, time.monotonic() - sweep_t0), 1),
+                                })
+                        finally:
+                            hb_task.cancel()
+                            try:
+                                await hb_task
+                            except asyncio.CancelledError:
+                                pass
                     else:
                         for run_idx, run_config in enumerate(configs):
+                            if run_idx in _done_indices:
+                                continue
                             if is_cancelled():
                                 await _finish("cancelled")
                                 return
@@ -1261,6 +1495,36 @@ async def _execute_backtest(
                             if not _consume_result(run_idx, run_config, results) and not is_sweep:
                                 await _finish("error", message="Invalid backtest response")
                                 return
+
+            # Resume path may have best_config + sweep_rows but no full best_result payload.
+            if (
+                best_result is None
+                and is_sweep
+                and isinstance(best_config, dict)
+                and sweep_rows
+                and not (walk_forward and is_sweep)
+            ):
+                enqueue_progress({
+                    "pct": 88,
+                    "phase": "sweep",
+                    "message": "Rebuilding best result from checkpoint…",
+                })
+                best_result = await asyncio.to_thread(
+                    partial(
+                        ctx.backtester.run_backtest,
+                        symbol,
+                        strategy,
+                        best_config,
+                        candles,
+                        cancel_cb=is_cancelled,
+                    ),
+                )
+                if isinstance(best_result, dict) and best_result.get("cancelled"):
+                    await _finish("cancelled")
+                    return
+                if isinstance(best_result, dict) and best_result.get("error"):
+                    await _finish("error", message=best_result["error"])
+                    return
 
         if best_result is None:
             ctx.backtester.clear_candle_cache()

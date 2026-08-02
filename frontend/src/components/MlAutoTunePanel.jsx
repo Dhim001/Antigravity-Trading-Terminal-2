@@ -2,18 +2,24 @@
  * ML training hyperparameter auto-tune (Optuna) — Model Training Lab.
  * Progress UI matches Train / Walk-forward (bar + optional poll log).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Loader2, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiRequest } from '@/api/client';
+import { apiRequest, isAbortError } from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
+import { cancelMlJob } from '@/lib/mlLabApi';
+import {
+  isMlHyperparamSweepPolling,
+  startMlHyperparamSweepPolling,
+} from '@/lib/mlHyperparamSweepPolling';
 import {
   appendMlPollLog,
   beginMlJob,
+  clearMlPollLog,
   finishMlJob,
   getMlTrainingSession,
   setMlJobId,
@@ -81,7 +87,6 @@ const DEFAULT_HP = {
 };
 
 const POLL_LOG_PREF_KEY = 'ml-lab-autotune-show-poll-log';
-const MAX_POLL_LOG = 200;
 
 const SWEEP_PHASES = [
   { until: 8, label: 'Queuing Optuna study…' },
@@ -157,21 +162,6 @@ function formatSnapValue(key, value) {
   if (Math.abs(n) >= 100) return n.toFixed(1);
   if (Math.abs(n) >= 1) return n.toFixed(3);
   return n.toFixed(4);
-}
-
-function pollEntryFingerprint(entry) {
-  return [
-    entry.status,
-    entry.pct,
-    entry.phase,
-    entry.detail,
-    entry.trial,
-    entry.best_score,
-    entry.last_score,
-    entry.warning,
-    entry.note,
-    entry.level,
-  ].join('|');
 }
 
 function ConvergenceSparkline({ points }) {
@@ -385,6 +375,11 @@ function SweepProgressBar({
   startedAt,
   budgetSec,
   serverProgress,
+  jobId,
+  symbol,
+  strategy,
+  onCancel,
+  cancelling,
 }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -411,9 +406,18 @@ function SweepProgressBar({
   const phaseIdx = SWEEP_PHASES.findIndex((p) => pct < p.until);
   const phase = SWEEP_PHASES[phaseIdx >= 0 ? phaseIdx : Math.max(SWEEP_PHASES.length - 1, 0)];
   const phaseLabel = hasServerPct
-    ? [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
-      || phase?.label
+    ? (
+      serverProgress.resuming || serverProgress.phase === 'hyperparam_resume'
+        ? (
+          serverProgress.trial != null && serverProgress.max_trials != null
+            ? `Resuming trial ${serverProgress.trial}/${serverProgress.max_trials}…`
+            : (serverProgress.detail || 'Resuming from checkpoint…')
+        )
+        : [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
+    ) || phase?.label
     : phase?.label;
+  const jobShort = jobId ? String(jobId).slice(0, 8) : null;
+  const identity = [symbol, strategy].filter(Boolean).join(' · ');
 
   return (
     <div className="ml-training__progress" role="status" aria-live="polite">
@@ -442,7 +446,35 @@ function SweepProgressBar({
         {phaseLabel && (
           <p className="ml-training__progress-phase">{phaseLabel}</p>
         )}
+        {typeof onCancel === 'function' && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 text-[0.65rem] shrink-0"
+            disabled={cancelling || !jobId}
+            onClick={onCancel}
+          >
+            {cancelling ? <Loader2 size={12} className="animate-spin" /> : null}
+            Cancel
+          </Button>
+        )}
       </div>
+      {(identity || jobShort || serverProgress?.trial != null) && (
+        <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
+          {identity || 'Auto-tune'}
+          {jobShort ? ` · job ${jobShort}` : ''}
+          {' · background (safe to switch tabs)'}
+          {serverProgress?.trial != null && serverProgress?.max_trials != null
+            ? ` · trial ${serverProgress.trial}/${serverProgress.max_trials}`
+            : serverProgress?.trial != null
+              ? ` · trial ${serverProgress.trial}`
+              : ''}
+          {serverProgress?.best_score != null
+            ? ` · best ${serverProgress.best_score}`
+            : ''}
+        </p>
+      )}
       {serverProgress?.warning && (
         <p className="mt-1 text-[10px] text-amber-400/90">
           Warning: {serverProgress.warning}
@@ -464,11 +496,8 @@ export default function MlAutoTunePanel({
   const [maxTrials, setMaxTrials] = useState(12);
   const [timeBudget, setTimeBudget] = useState(600);
   const [multiFidelity, setMultiFidelity] = useState(true);
-  const [localRunning, setLocalRunning] = useState(false);
-  const [progress, setProgress] = useState(null);
-  const [result, setResult] = useState(null);
-  const [startedAt, setStartedAt] = useState(null);
-  const [pollLog, setPollLog] = useState([]);
+  const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [showPollLog, setShowPollLog] = useState(() => {
     try {
       return sessionStorage.getItem(POLL_LOG_PREF_KEY) === '1';
@@ -476,10 +505,6 @@ export default function MlAutoTunePanel({
       return false;
     }
   });
-  const lastLogFpRef = useRef('');
-  const aliveRef = useRef(true);
-  const reattachedRef = useRef(null);
-  const jobTokenRef = useRef(null);
 
   const mlSession = useSyncExternalStore(
     subscribeMlTrainingSession,
@@ -488,91 +513,35 @@ export default function MlAutoTunePanel({
   );
   const sessionMatches = mlSession.symbol === symbol && mlSession.strategy === strategy;
   const sessionTuning = Boolean(sessionMatches && mlSession.tuning);
-  const running = localRunning || sessionTuning;
+  const running = starting || sessionTuning;
+  const progress = sessionMatches ? mlSession.serverProgress : null;
+  const pollLog = sessionMatches ? (mlSession.pollLog || []) : [];
+  const result = sessionMatches ? mlSession.tuneResult : null;
+  const jobId = sessionMatches ? mlSession.jobId : null;
+  const startedAt = sessionMatches
+    ? (mlSession.jobProgress?.startedAt || null)
+    : null;
 
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
-
-  // Remount reattach: resume polling a sweep that survived tab switch via mlTrainingSession.
+  // Remount / tab-switch: ensure module poller is attached (does not depend on this panel).
   useEffect(() => {
     if (!sessionMatches || !mlSession.tuning || !mlSession.jobId) return;
-    if (reattachedRef.current === mlSession.jobId) return;
-    reattachedRef.current = mlSession.jobId;
-    setLocalRunning(true);
-    setStartedAt(Date.now());
-    if (mlSession.serverProgress) {
-      setProgress({ ...mlSession.serverProgress, status: mlSession.serverProgress.status || 'running' });
-    }
-    const jobId = mlSession.jobId;
-    const token = mlSession.jobToken;
-    jobTokenRef.current = token;
-    let cancelled = false;
-    (async () => {
-      try {
-        const deadline = Date.now() + Math.max(Number(timeBudget) * 1000, 120_000) + 60_000;
-        while (!cancelled && aliveRef.current && Date.now() < deadline) {
-          const body = await apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(jobId)}`, {
-            method: 'GET',
-            timeoutMs: 15_000,
-          });
-          if (cancelled || !aliveRef.current) return;
-          const job = body?.job || body;
-          if (!job) break;
-          const prog = job.progress || null;
-          if (prog) {
-            setProgress({ ...prog, status: job.status });
-            setMlServerProgress({ ...prog, status: job.status });
-          }
-          if (['done', 'error', 'cancelled'].includes(job.status)) {
-            const res = (job.result && typeof job.result === 'object') ? job.result : {};
-            if (job.status === 'done' && res.ok !== false) setResult(res);
-            finishMlJob(token, {
-              error: job.status === 'error' ? (res.error || job.error || 'failed') : null,
-            });
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 1500));
-        }
-      } catch {
-        /* poll errors retried by loop / user can restart */
-      } finally {
-        if (!cancelled && aliveRef.current) setLocalRunning(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- reattach once per job id
-  }, [sessionMatches, mlSession.tuning, mlSession.jobId, mlSession.jobToken, timeBudget]);
+    if (isMlHyperparamSweepPolling(mlSession.jobId)) return;
+    startMlHyperparamSweepPolling(mlSession.jobId, {
+      jobToken: mlSession.jobToken,
+      timeBudgetSec: Number(timeBudget) || 600,
+    });
+  }, [
+    sessionMatches,
+    mlSession.tuning,
+    mlSession.jobId,
+    mlSession.jobToken,
+    timeBudget,
+  ]);
 
   const defaults = useMemo(
     () => DEFAULT_HP[strategy] || DEFAULT_HP.ML_SIGNAL_BOOST,
     [strategy],
   );
-
-  const appendPoll = useCallback((entry) => {
-    if (!aliveRef.current) return;
-    const next = {
-      t: Date.now(),
-      ...entry,
-    };
-    const fp = pollEntryFingerprint(next);
-    if (fp && fp === lastLogFpRef.current) return;
-    lastLogFpRef.current = fp;
-    setPollLog((prev) => {
-      const list = Array.isArray(prev) ? prev : [];
-      return [...list, next].slice(-MAX_POLL_LOG);
-    });
-    try {
-      appendMlPollLog(next);
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
   const onPollLogEnabled = useCallback((on) => {
     setShowPollLog(on);
@@ -583,60 +552,23 @@ export default function MlAutoTunePanel({
     }
   }, []);
 
-  const pollJob = useCallback(async (jobId) => {
-    const deadline = Date.now() + Math.max(timeBudget * 1000, 120_000) + 60_000;
-    while (aliveRef.current && Date.now() < deadline) {
-      try {
-        const body = await apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(jobId)}`, {
-          method: 'GET',
-          timeoutMs: 15_000,
-        });
-        if (!aliveRef.current) return null;
-        const job = body?.job || body;
-        if (!job) throw new Error(body?.error || 'Job not found');
-        const prog = job.progress || null;
-        if (prog) {
-          setProgress({ ...prog, status: job.status });
-          setMlServerProgress({ ...prog, status: job.status });
-          appendPoll({
-            status: job.status,
-            pct: prog.pct,
-            phase: prog.phase,
-            detail: prog.detail,
-            trial: prog.trial,
-            max_trials: prog.max_trials,
-            best_score: prog.best_score,
-            last_score: prog.last_score,
-            warning: prog.warning,
-            level: prog.level || (prog.warning ? 'warn' : 'info'),
-          });
-        } else {
-          appendPoll({
-            status: job.status || 'running',
-            phase: 'waiting',
-            detail: 'no progress payload yet',
-            note: 'poll',
-          });
-        }
-        if (['done', 'error', 'cancelled'].includes(job.status)) {
-          return job;
-        }
-      } catch (err) {
-        if (!aliveRef.current) return null;
-        appendPoll({
-          status: 'running',
-          phase: 'waiting',
-          detail: 'server busy — still polling…',
-          note: 'poll_err',
-          warning: err?.message || 'poll failed',
-          level: 'warn',
-        });
+  const handleCancel = useCallback(async () => {
+    const id = getMlTrainingSession().jobId;
+    if (!id || cancelling) return;
+    setCancelling(true);
+    try {
+      const body = await cancelMlJob(id);
+      if (body?.ok) {
+        toast.message(body.immediate ? 'Sweep cancelled' : 'Cancel requested — finishing current trial…');
+      } else {
+        toast.error(body?.error || 'Cancel failed');
       }
-      await new Promise((r) => setTimeout(r, 1500));
+    } catch (err) {
+      if (!isAbortError(err)) toast.error(err?.message || 'Cancel failed');
+    } finally {
+      setCancelling(false);
     }
-    if (!aliveRef.current) return null;
-    throw new Error('Hyperparam sweep timed out');
-  }, [timeBudget, appendPoll]);
+  }, [cancelling]);
 
   const startSweep = useCallback(async () => {
     if (!symbol || !strategy) {
@@ -656,14 +588,9 @@ export default function MlAutoTunePanel({
         phases: SWEEP_PHASES,
       },
     });
-    jobTokenRef.current = jobToken;
-    setLocalRunning(true);
-    setResult(null);
-    setPollLog([]);
-    lastLogFpRef.current = '';
-    setStartedAt(Date.now());
-    setProgress({ pct: 1, phase: 'queued', detail: 'hyperparam sweep' });
-    appendPoll({
+    setStarting(true);
+    setMlServerProgress({ pct: 1, phase: 'queued', detail: 'hyperparam sweep', status: 'queued' });
+    appendMlPollLog({
       status: 'queued',
       pct: 1,
       phase: 'queued',
@@ -691,7 +618,7 @@ export default function MlAutoTunePanel({
       });
       if (!body?.ok || !body.job_id) {
         toast.error(body?.error || 'Failed to start hyperparam sweep');
-        appendPoll({
+        appendMlPollLog({
           status: 'error',
           phase: 'error',
           detail: body?.error || 'start failed',
@@ -702,71 +629,22 @@ export default function MlAutoTunePanel({
         return;
       }
       setMlJobId(body.job_id);
-      reattachedRef.current = body.job_id;
       toast.message(`Auto-tune started · job ${String(body.job_id).slice(0, 8)}…`);
-      appendPoll({
+      appendMlPollLog({
         status: 'running',
         pct: 2,
         phase: 'queued',
         detail: `job ${String(body.job_id).slice(0, 8)} accepted`,
         level: 'info',
       });
-      const job = await pollJob(body.job_id);
-      if (!aliveRef.current || !job) return;
-      const res = (job.result && typeof job.result === 'object') ? job.result : {};
-      if (job.status === 'cancelled' || res.cancelled) {
-        toast.message('Hyperparam sweep cancelled');
-        appendPoll({
-          status: 'cancelled',
-          phase: 'cancelled',
-          detail: 'sweep cancelled',
-          level: 'warn',
-        });
-        finishMlJob(jobToken);
-        return;
-      }
-      if (job.status !== 'done' || res.ok === false) {
-        toast.error(res.error || job.error || 'Hyperparam sweep failed');
-        setResult(res);
-        appendPoll({
-          status: 'error',
-          phase: 'error',
-          detail: res.error || job.error || 'failed',
-          level: 'warn',
-          warning: res.error || job.error || 'failed',
-        });
-        finishMlJob(jobToken, { error: res.error || job.error || 'failed' });
-        return;
-      }
-      setResult(res);
-      setProgress({
-        pct: 100,
-        phase: 'done',
-        detail: `best=${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
-        best_score: res.best_score,
-        trial: res.trials_completed,
-        max_trials: res.max_trials,
-        objective_kind: res.objective_kind,
-        fidelity_phase: res.multi_fidelity ? 'full' : 'full',
-        status: 'done',
+      // Module poller owns progress + completion (survives panel unmount).
+      startMlHyperparamSweepPolling(body.job_id, {
+        jobToken,
+        timeBudgetSec: Number(timeBudget) || 600,
       });
-      appendPoll({
-        status: 'done',
-        pct: 100,
-        phase: 'done',
-        detail: `best=${res.best_score ?? '—'} · trials=${res.trials_completed ?? 0}`,
-        best_score: res.best_score,
-        trial: res.trials_completed,
-        max_trials: res.max_trials,
-        level: 'info',
-      });
-      toast.success(
-        `Best score ${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
-      );
-      finishMlJob(jobToken);
     } catch (err) {
       toast.error(err?.message || 'Hyperparam sweep failed');
-      appendPoll({
+      appendMlPollLog({
         status: 'error',
         phase: 'error',
         detail: err?.message || 'failed',
@@ -775,7 +653,7 @@ export default function MlAutoTunePanel({
       });
       finishMlJob(jobToken, { error: err?.message || 'failed' });
     } finally {
-      setLocalRunning(false);
+      setStarting(false);
     }
   }, [
     symbol,
@@ -785,8 +663,6 @@ export default function MlAutoTunePanel({
     multiFidelity,
     timeframe,
     trainingWindow,
-    pollJob,
-    appendPoll,
   ]);
 
   const applyRetrain = useCallback(async () => {
@@ -900,6 +776,19 @@ export default function MlAutoTunePanel({
           {running ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
           Start Sweep
         </Button>
+        {running && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            disabled={cancelling || !jobId}
+            onClick={handleCancel}
+          >
+            {cancelling ? <Loader2 size={14} className="animate-spin" /> : null}
+            Cancel
+          </Button>
+        )}
         <Button
           type="button"
           size="sm"
@@ -918,6 +807,11 @@ export default function MlAutoTunePanel({
         startedAt={startedAt}
         budgetSec={Number(timeBudget) || 600}
         serverProgress={progress}
+        jobId={jobId}
+        symbol={symbol}
+        strategy={strategy}
+        onCancel={jobId ? handleCancel : undefined}
+        cancelling={cancelling}
       />
 
       {(running || pollLog.length > 0) && (
@@ -926,10 +820,7 @@ export default function MlAutoTunePanel({
             entries={pollLog}
             enabled={showPollLog}
             onEnabledChange={onPollLogEnabled}
-            onClear={() => {
-              setPollLog([]);
-              lastLogFpRef.current = '';
-            }}
+            onClear={() => clearMlPollLog()}
           />
         </div>
       )}

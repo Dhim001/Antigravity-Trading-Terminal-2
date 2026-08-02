@@ -318,6 +318,12 @@ def _compute_summary(
     total_fees: float = 0.0,
     slippage_bps: float = 0.0,
     fee_bps: float = 0.0,
+    halted: bool = False,
+    daily_loss_halted: bool = False,
+    streak_veto_latched: bool = False,
+    streak_cooldown_active: bool = False,
+    streak_cooldown_resumed: bool = False,
+    streak_veto_blocks: int = 0,
 ) -> dict:
     wins = [float(t["pnl"]) for t in closed if (t.get("pnl") or 0) > 0]
     losses = [float(t["pnl"]) for t in closed if (t.get("pnl") or 0) < 0]
@@ -371,6 +377,12 @@ def _compute_summary(
         "total_fees": round(total_fees, 2),
         "slippage_bps": slippage_bps,
         "fee_bps": fee_bps,
+        "halted": bool(halted),
+        "daily_loss_halted": bool(daily_loss_halted),
+        "streak_veto_latched": bool(streak_veto_latched),
+        "streak_cooldown_active": bool(streak_cooldown_active),
+        "streak_cooldown_resumed": bool(streak_cooldown_resumed),
+        "streak_veto_blocks": int(streak_veto_blocks),
     }
 
 
@@ -637,10 +649,14 @@ class BacktesterService:
         daily_pnl = 0.0
         daily_pnl_day: str | None = None
         halted = False
+        daily_loss_halted = False
         bot_stub = {"status": "RUNNING", "allocation": allocation, "config": cfg, "symbol": symbol}
         blocked_entries = 0
         blocked_events: list[dict] = []
         blocked_events_total = [0]
+        streak_veto_latched = False
+        streak_cooldown_resumed = False
+        streak_veto_blocks = 0
         filter_rejects: dict[str, int] = {
             "min_score": 0,
             "trend": 0,
@@ -679,16 +695,167 @@ class BacktesterService:
             )
 
         def _roll_daily(bar_time) -> None:
-            nonlocal daily_pnl, daily_pnl_day
+            nonlocal daily_pnl, daily_pnl_day, halted, daily_loss_halted
             day = _utc_day_key(bar_time)
             if day is None:
                 return
             if daily_pnl_day != day:
                 daily_pnl_day = day
                 daily_pnl = 0.0
+                # Daily loss halt is per UTC day — resume on the next day.
+                if halted:
+                    halted = False
+                    daily_loss_halted = False
+                    bot_stub["status"] = "RUNNING"
+
+        def _closed_exit_series() -> tuple[list[float], list[float | int | None]]:
+            pnls: list[float] = []
+            times: list[float | int | None] = []
+            for t in trade_log:
+                if t.get("is_exit") and t.get("pnl") is not None:
+                    pnls.append(float(t["pnl"]))
+                    times.append(t.get("time"))
+            return pnls, times
+
+        def _apply_live_parity_pretrade(
+            *,
+            side: str,
+            signal: str,
+            signal_data: dict,
+            bar_time,
+            qty: float,
+            chain: ExecutionChain,
+            row_i: int,
+        ) -> float | None:
+            """Shared live_parity PreTrade + streak cool-down. None = blocked."""
+            nonlocal blocked_entries, streak_veto_latched, streak_cooldown_resumed
+            nonlocal streak_veto_blocks
+
+            from app.services.bots.pretrade_context import (
+                apply_reduce_size_multiplier,
+                get_bot_streak_cooldown_hold,
+                is_cool_until_active,
+                set_bot_streak_cooldown,
+            )
+
+            now_f = None
+            if bar_time is not None:
+                try:
+                    now_f = float(bar_time)
+                except (TypeError, ValueError):
+                    now_f = None
+
+            # Live manager: cool-down blocks entries before PreTrade re-eval.
+            hold = get_bot_streak_cooldown_hold(bot_stub, now=now_f)
+            if hold:
+                blocked_entries += 1
+                rem = hold.get("remaining_sec")
+                reason = (
+                    hold.get("block_reason")
+                    or (
+                        f"Pre-Trade streak cool-down ({rem}s remaining) — "
+                        "resume after cool-down / lookback decay"
+                    )
+                )
+                chain.record("pretrade", ok=False, reason=reason)
+                _record_blocked(
+                    "pretrade_streak_cooldown",
+                    reason,
+                    bar_time,
+                    side=side,
+                    signal=signal,
+                )
+                return None
+
+            exit_pnls, exit_times = _closed_exit_series()
+            bt_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
+            size_cfg = dict(cfg)
+            size_cfg.setdefault("symbol", symbol)
+            qty = scale_entry_quantity(
+                qty,
+                signal_data=signal_data,
+                bot_config=size_cfg,
+                bot_id=bt_bot_id,
+                recent_closed_pnls=exit_pnls[-3:],
+            )
+
+            anomaly = None
+            try:
+                from app.services.agent.anomaly_detector import detect_bar_anomaly
+
+                anomaly = detect_bar_anomaly(df, row_i)
+            except Exception:
+                anomaly = None
+
+            pt = evaluate_parity_pretrade(
+                side=side,
+                symbol=symbol,
+                bar_time=bar_time,
+                bot_config=cfg,
+                recent_exit_pnls=exit_pnls,
+                recent_exit_times=exit_times,
+                anomaly=anomaly,
+                sentiment=None,
+            )
+            streak_action = pt.get("streak_action") if isinstance(pt, dict) else None
+            if pt.get("verdict") == "VETO":
+                blocked_entries += 1
+                if pt.get("streak_veto"):
+                    streak_veto_latched = True
+                    streak_veto_blocks += 1
+                    cool_sec = 0
+                    if isinstance(streak_action, dict):
+                        cool_sec = int(streak_action.get("cooldown_sec") or 0)
+                        bot_stub["_pretrade_streak_count"] = int(
+                            streak_action.get("streak") or 0
+                        )
+                    if cool_sec > 0 and now_f is not None:
+                        set_bot_streak_cooldown(bot_stub, cool_sec, now=now_f)
+                    reason = (
+                        f"failures_streak VETO latched: {pt.get('reasoning')} "
+                        f"(cool-down {cool_sec}s; resumes after lookback decay)"
+                    )
+                    kind = "pretrade_streak_veto"
+                else:
+                    reason = pt.get("reasoning") or "PreTrade parity veto"
+                    kind = "pretrade"
+                chain.record("pretrade", ok=False, reason=reason)
+                _record_blocked(
+                    kind,
+                    reason,
+                    bar_time,
+                    side=side,
+                    signal=signal,
+                )
+                return None
+
+            # Lookback decay / cool-down expired → unlock after a prior latch.
+            if streak_veto_latched and not pt.get("streak_veto"):
+                if not is_cool_until_active(
+                    bot_stub.get("_pretrade_streak_cool_until"), now=now_f
+                ):
+                    streak_veto_latched = False
+                    streak_cooldown_resumed = True
+
+            if pt.get("verdict") == "REDUCE_SIZE":
+                qty, _size_note = apply_reduce_size_multiplier(
+                    qty,
+                    float(pt.get("size_multiplier") or 0.5),
+                    vetoes=pt.get("vetoes") or [],
+                    recent_closed_pnls=exit_pnls[-3:],
+                    use_regime_sizing=bool(cfg.get("use_regime_sizing", True)),
+                )
+                chain.record(
+                    "pretrade",
+                    ok=True,
+                    reason=pt.get("reasoning"),
+                    size_multiplier=pt.get("size_multiplier"),
+                    size_note=_size_note,
+                )
+            return qty
 
         def _close_position(bar_time, exit_price: float, reason: str) -> None:
-            nonlocal position, equity, daily_pnl, halted, total_fees
+            nonlocal position, equity, daily_pnl, halted, daily_loss_halted, total_fees
             if not position:
                 return
             side = position["side"]
@@ -747,6 +914,7 @@ class BacktesterService:
             position = None
             if not research and loss_limit > 0 and daily_pnl <= -loss_limit:
                 halted = True
+                daily_loss_halted = True
                 bot_stub["status"] = "ERROR"
 
         def _try_entry(signal: str, signal_data: dict, row: dict, bar_time) -> None:
@@ -829,71 +997,18 @@ class BacktesterService:
 
             # Shared live/backtest sizing overlays (confidence/temp/Kelly/meta/regime).
             if live_parity:
-                exit_pnls = [
-                    float(t["pnl"])
-                    for t in trade_log
-                    if t.get("is_exit") and t.get("pnl") is not None
-                ]
-                bt_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
-                size_cfg = dict(cfg)
-                size_cfg.setdefault("symbol", symbol)
-                qty = scale_entry_quantity(
-                    qty,
-                    signal_data=signal_data,
-                    bot_config=size_cfg,
-                    bot_id=bt_bot_id,
-                    recent_closed_pnls=exit_pnls[-3:],
-                )
-
-                # Deterministic PreTradeIntel subset (streak / anomaly).
-                # Skip live get_aggregate_sentiment here — it is wall-clock
-                # based and would look ahead in historical sims.
-                anomaly = None
-                try:
-                    from app.services.agent.anomaly_detector import detect_bar_anomaly
-
-                    anomaly = detect_bar_anomaly(df, i)
-                except Exception:
-                    anomaly = None
-                pt = evaluate_parity_pretrade(
+                qty_out = _apply_live_parity_pretrade(
                     side="BUY",
-                    symbol=symbol,
+                    signal="BUY",
+                    signal_data=signal_data,
                     bar_time=bar_time,
-                    bot_config=cfg,
-                    recent_exit_pnls=exit_pnls,
-                    anomaly=anomaly,
-                    sentiment=None,
+                    qty=qty,
+                    chain=chain,
+                    row_i=i,
                 )
-                if pt.get("verdict") == "VETO":
-                    blocked_entries += 1
-                    chain.record("pretrade", ok=False, reason=pt.get("reasoning"))
-                    _record_blocked(
-                        "pretrade",
-                        pt.get("reasoning") or "PreTrade parity veto",
-                        bar_time,
-                        side="BUY",
-                        signal="BUY",
-                    )
+                if qty_out is None:
                     return
-                if pt.get("verdict") == "REDUCE_SIZE":
-                    from app.services.bots.pretrade_context import (
-                        apply_reduce_size_multiplier,
-                    )
-
-                    qty, _size_note = apply_reduce_size_multiplier(
-                        qty,
-                        float(pt.get("size_multiplier") or 0.5),
-                        vetoes=pt.get("vetoes") or [],
-                        recent_closed_pnls=exit_pnls[-3:],
-                        use_regime_sizing=bool(cfg.get("use_regime_sizing", True)),
-                    )
-                    chain.record(
-                        "pretrade",
-                        ok=True,
-                        reason=pt.get("reasoning"),
-                        size_multiplier=pt.get("size_multiplier"),
-                        size_note=_size_note,
-                    )
+                qty = qty_out
 
             if qty < _MIN_QTY:
                 blocked_entries += 1
@@ -1067,67 +1182,18 @@ class BacktesterService:
                 chain.record("risk_gate", ok=True, quantity=round(qty, 6))
 
             if live_parity:
-                exit_pnls = [
-                    float(t["pnl"])
-                    for t in trade_log
-                    if t.get("is_exit") and t.get("pnl") is not None
-                ]
-                bt_bot_id = str(cfg.get("_bot_id") or cfg.get("backtest_bot_id") or "backtest")
-                size_cfg = dict(cfg)
-                size_cfg.setdefault("symbol", symbol)
-                qty = scale_entry_quantity(
-                    qty,
-                    signal_data=signal_data,
-                    bot_config=size_cfg,
-                    bot_id=bt_bot_id,
-                    recent_closed_pnls=exit_pnls[-3:],
-                )
-                anomaly = None
-                try:
-                    from app.services.agent.anomaly_detector import detect_bar_anomaly
-
-                    anomaly = detect_bar_anomaly(df, i)
-                except Exception:
-                    anomaly = None
-                pt = evaluate_parity_pretrade(
+                qty_out = _apply_live_parity_pretrade(
                     side="SELL",
-                    symbol=symbol,
+                    signal="SELL",
+                    signal_data=signal_data,
                     bar_time=bar_time,
-                    bot_config=cfg,
-                    recent_exit_pnls=exit_pnls,
-                    anomaly=anomaly,
-                    sentiment=None,
+                    qty=qty,
+                    chain=chain,
+                    row_i=i,
                 )
-                if pt.get("verdict") == "VETO":
-                    blocked_entries += 1
-                    chain.record("pretrade", ok=False, reason=pt.get("reasoning"))
-                    _record_blocked(
-                        "pretrade",
-                        pt.get("reasoning") or "PreTrade parity veto",
-                        bar_time,
-                        side="SELL",
-                        signal="SELL",
-                    )
+                if qty_out is None:
                     return
-                if pt.get("verdict") == "REDUCE_SIZE":
-                    from app.services.bots.pretrade_context import (
-                        apply_reduce_size_multiplier,
-                    )
-
-                    qty, _size_note = apply_reduce_size_multiplier(
-                        qty,
-                        float(pt.get("size_multiplier") or 0.5),
-                        vetoes=pt.get("vetoes") or [],
-                        recent_closed_pnls=exit_pnls[-3:],
-                        use_regime_sizing=bool(cfg.get("use_regime_sizing", True)),
-                    )
-                    chain.record(
-                        "pretrade",
-                        ok=True,
-                        reason=pt.get("reasoning"),
-                        size_multiplier=pt.get("size_multiplier"),
-                        size_note=_size_note,
-                    )
+                qty = qty_out
 
             if qty < _MIN_QTY:
                 blocked_entries += 1
@@ -1594,6 +1660,41 @@ class BacktesterService:
         total_trades = len(closed)
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         total_pnl = round(equity - starting_equity, 2)
+        last_bar_ts = None
+        if equity_curve:
+            try:
+                last_bar_ts = float(equity_curve[-1].get("time"))
+            except (TypeError, ValueError, IndexError):
+                last_bar_ts = None
+        if last_bar_ts is None and trade_log:
+            try:
+                last_bar_ts = float(trade_log[-1].get("time"))
+            except (TypeError, ValueError):
+                last_bar_ts = None
+        from app.services.bots.pretrade_context import is_cool_until_active
+
+        streak_cooldown_active = is_cool_until_active(
+            bot_stub.get("_pretrade_streak_cool_until"),
+            now=last_bar_ts,
+        )
+        # Still latched if cool-down active or lookback streak would still VETO.
+        if live_parity and closed and last_bar_ts is not None:
+            exit_pnls, exit_times = _closed_exit_series()
+            final_pt = evaluate_parity_pretrade(
+                side="BUY",
+                symbol=symbol,
+                bar_time=last_bar_ts,
+                bot_config=cfg,
+                recent_exit_pnls=exit_pnls,
+                recent_exit_times=exit_times,
+                anomaly=None,
+                sentiment=None,
+            )
+            if final_pt.get("streak_veto"):
+                streak_veto_latched = True
+            elif streak_veto_latched and not streak_cooldown_active:
+                streak_veto_latched = False
+                streak_cooldown_resumed = True
         summary = _compute_summary(
             closed,
             total_pnl=total_pnl,
@@ -1611,6 +1712,12 @@ class BacktesterService:
             total_fees=total_fees,
             slippage_bps=slippage_bps,
             fee_bps=fee_bps,
+            halted=halted,
+            daily_loss_halted=daily_loss_halted,
+            streak_veto_latched=streak_veto_latched,
+            streak_cooldown_active=streak_cooldown_active,
+            streak_cooldown_resumed=streak_cooldown_resumed,
+            streak_veto_blocks=streak_veto_blocks,
         )
         summary["live_parity"] = live_parity
         summary["parity_gate_blocks"] = parity_gate_blocks

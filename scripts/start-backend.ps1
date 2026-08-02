@@ -39,6 +39,14 @@ $env:TERMINAL_PROFILE = $key
 Write-Host "Starting $($ports.Label) backend (WS :$($ports.Ws), HTTP :$($ports.Http)) ..." -ForegroundColor Cyan
 Write-Host "Profile: env.profiles\$key.env (overrides repo-root .env for this process)" -ForegroundColor DarkGray
 
+# Heavy-job sidecar is spawned by the API lifespan when BACKTEST_HEAVY_SIDECAR=1 (default).
+# To run it manually alongside the API instead, unset spawn and start:
+#   $env:BACKTEST_HEAVY_SIDECAR = '0'
+#   Start-Process $python -ArgumentList '-m','app.services.bots.heavy_job_worker' -WorkingDirectory (Join-Path $script:TerminalRoot 'backend')
+if (-not $env:BACKTEST_HEAVY_SIDECAR) {
+    $env:BACKTEST_HEAVY_SIDECAR = '1'
+}
+
 Push-Location (Join-Path $script:TerminalRoot 'backend')
 try {
     $python = Join-Path (Get-Location) '.venv\Scripts\python.exe'

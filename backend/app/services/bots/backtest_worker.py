@@ -6,20 +6,41 @@ import asyncio
 import logging
 
 from app.api.context import RequestContext
-from app.services.bots.backtest_job_store import claim_next_pending_job, recover_stale_running_jobs
+from app.services.bots.backtest_job_store import (
+    claim_next_pending_job,
+    fail_stale_pending_jobs,
+    recover_dead_worker_jobs,
+    recover_stale_running_jobs,
+)
+from app.services.bots.heavy_job_worker import api_worker_should_claim, sidecar_enabled
 
 logger = logging.getLogger(__name__)
 
 
 async def backtest_job_worker_loop(state) -> None:
-    """Poll for pending jobs and execute them (recovered after restart)."""
+    """Poll for pending jobs and execute them (recovered after restart).
+
+    When the heavy-job sidecar is enabled, this loop only claims light jobs
+    (or none if BACKTEST_SIDECAR_ALL=1) so ML/RL work stays off the API GIL.
+    """
     recovered = recover_stale_running_jobs()
     if recovered:
         logger.info("Recovered %s interrupted backtest job(s) for resume", recovered)
+    abandoned = fail_stale_pending_jobs(max_age_hours=6.0)
+    if abandoned:
+        logger.warning("Failed %s stale pending backtest job(s) older than 6h", abandoned)
 
+    _dead_check_at = 0.0
     while True:
         try:
-            job = await asyncio.to_thread(claim_next_pending_job)
+            now = asyncio.get_running_loop().time()
+            if now - _dead_check_at >= 15.0:
+                _dead_check_at = now
+                dead = await asyncio.to_thread(recover_dead_worker_jobs)
+                if dead:
+                    logger.warning("Re-queued %s job(s) with dead worker_pid", dead)
+            accept = api_worker_should_claim if sidecar_enabled() else None
+            job = await asyncio.to_thread(claim_next_pending_job, accept=accept)
             if not job:
                 await asyncio.sleep(2.0)
                 continue
@@ -35,6 +56,8 @@ async def backtest_job_worker_loop(state) -> None:
 
 async def _run_recovered_job(state, job: dict) -> None:
     from app.api.handlers.bots import _execute_backtest
+    from app.services.bots.backtest_job_store import update_job_progress
+    import os
 
     req = job.get("request") or {}
     sweep = req.get("sweep")
@@ -46,6 +69,13 @@ async def _run_recovered_job(state, job: dict) -> None:
         min_trades = max(0, int(min_trades if min_trades is not None else 0))
     except (TypeError, ValueError):
         min_trades = 0
+
+    update_job_progress(job["id"], {
+        "pct": max(1, int(((job.get("progress") or {}).get("pct") or 1))),
+        "phase": (job.get("progress") or {}).get("phase") or "recover",
+        "message": f"API worker pid={os.getpid()} claimed job…",
+        "worker_pid": os.getpid(),
+    })
 
     ctx = RequestContext(
         websocket=None,

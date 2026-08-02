@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import websockets
 
 from app.bootstrap import create_app_state
@@ -693,6 +694,14 @@ async def main():
             from app.services.bots.backtest_worker import backtest_job_worker_loop
             tasks.append(asyncio.create_task(backtest_job_worker_loop(state)))
 
+            # Heavy ML/RL jobs run in a sibling process so the API event loop stays responsive.
+            from app.services.bots.heavy_job_worker import (
+                sidecar_enabled,
+                spawn_sidecar_subprocess,
+            )
+            if sidecar_enabled() and not os.environ.get("BACKTEST_HEAVY_SIDECAR_CHILD"):
+                spawn_sidecar_subprocess()
+
             await wait_for_shutdown_or_tasks(tasks, shutdown_event)
     except OSError as exc:
         port_in_use = (
@@ -710,6 +719,11 @@ async def main():
             logging.critical("Server bind failed on %s:%s: %s", WS_HOST, WS_PORT, exc)
         raise
     finally:
+        try:
+            from app.services.bots.heavy_job_worker import stop_sidecar_subprocess
+            stop_sidecar_subprocess()
+        except Exception:
+            logging.getLogger(__name__).debug("Sidecar stop failed", exc_info=True)
         await graceful_shutdown(
             bot_manager=state.bot_manager if runs_bot_engine_inline() else None,
             oms=state.oms,

@@ -56,10 +56,18 @@ async def session_handler(request: Request) -> JSONResponse:
         history = []
 
     active_job = None
+    resumable_backtest_jobs = []
     try:
+        from app.services.bots.backtest_job_store import list_backtest_jobs
+
         active_job = get_active_backtest_job()
+        recent = list_backtest_jobs(limit=20)
+        resumable_backtest_jobs = [j for j in recent if j.get("resumable")]
     except Exception:
-        pass
+        try:
+            active_job = get_active_backtest_job()
+        except Exception:
+            pass
 
     active_ml_jobs = []
     ml_queue = {"active": 0, "queued": 0}
@@ -67,10 +75,19 @@ async def session_handler(request: Request) -> JSONResponse:
         from app.services.bots.ml_job_store import list_ml_jobs, ml_job_counts, public_ml_job
 
         ml_queue = ml_job_counts()
+        # Include resumable interrupted jobs so FE can reattach Auto-Tune / validate.
+        recent_ml = list_ml_jobs(limit=20, active_only=False)
         active_ml_jobs = [
             public_ml_job(j, include_result=False)
-            for j in list_ml_jobs(limit=10, active_only=True)
-        ]
+            for j in recent_ml
+            if j.get("status") in ("queued", "running")
+            or j.get("resumable")
+            or (
+                isinstance(j.get("checkpoint"), dict)
+                and j["checkpoint"].get("resume_ok")
+                and j.get("status") in ("error", "cancelled")
+            )
+        ][:10]
     except Exception:
         pass
 
@@ -101,6 +118,7 @@ async def session_handler(request: Request) -> JSONResponse:
             "bots": state.bot_manager.list_bots_public(),
             "strategies": list_strategy_catalog(),
             "active_backtest_job": active_job,
+            "resumable_backtest_jobs": resumable_backtest_jobs,
             "active_ml_jobs": active_ml_jobs,
             "ml_queue": ml_queue,
             "metrics": {

@@ -63,7 +63,9 @@ def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     cache_kb = max(1024, int(SQLITE_CACHE_KB))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # Heavy backtest/ML writers can hold the write lock past 5s under GIL pressure.
+    busy_ms = max(1000, int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "15000")))
+    conn.execute(f"PRAGMA busy_timeout = {busy_ms}")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute(f"PRAGMA cache_size = -{cache_kb}")
 

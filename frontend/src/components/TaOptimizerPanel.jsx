@@ -29,6 +29,7 @@ import OptimizerHeatmap from './OptimizerHeatmap';
 import OptimizationHistory from './OptimizationHistory';
 import BacktestWalkForwardPanel from './BacktestWalkForwardPanel';
 import FilterRejectsDashboard from './FilterRejectsDashboard';
+import BacktestProgressBar from './BacktestProgressBar';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
   scheduleBacktestClientTimeout,
@@ -36,10 +37,13 @@ import {
   formatBacktestTimeoutLabel,
   getBacktestClientTimeoutMs,
 } from '../lib/backtestTimeouts';
+import { isDeferredBacktestStillAlive, stopBacktestJobPolling } from '../lib/backtestPolling';
 import { toast } from 'sonner';
 import { apiRequest } from '@/api/client';
 import { isMlStrategy } from '@/config/strategies';
 import { isHoldoutBacktestDays } from '@/lib/mlBacktestRange';
+import BacktestErrorRecovery from './BacktestErrorRecovery';
+import { Loader2 } from 'lucide-react';
 
 const OBJECTIVE_OPTIONS = [
   { value: 'calmar_ratio', label: 'Calmar ratio (default)' },
@@ -224,6 +228,10 @@ export default function TaOptimizerPanel({
   includeTrainHyperparams = false,
 }) {
   const backtestRunning = useResearchStore((s) => s.backtestRunning);
+  const backtestProgress = useResearchStore((s) => s.backtestProgress);
+  const backtestLastError = useResearchStore((s) => s.backtestLastError);
+  const backtestLastRequest = useResearchStore((s) => s.backtestLastRequest);
+  const clearBacktestLastError = useResearchStore((s) => s.clearBacktestLastError);
   const botConfig = useStore((s) => s.botConfig);
   const storeBacktestDays = useResearchStore((s) => s.backtestDays);
   const optimizerPreset = useResearchStore((s) => s.optimizerPreset);
@@ -413,11 +421,24 @@ export default function TaOptimizerPanel({
       return;
     }
     if (backtestRunning) return;
-    useResearchStore.getState().setBacktestRunning(true);
-    useResearchStore.getState().setBacktestProgress({
+    const store = useResearchStore.getState();
+    // Clear stale watched job_id so deferred sweep progress is not filtered as foreign.
+    store.beginBacktestRun();
+    store.setBacktestRunning(true);
+    store.setBacktestProgress({
       pct: 0,
       phase: 'sweep',
       message: walkForward ? 'Starting walk-forward…' : 'Starting sweep…',
+      symbol,
+      strategy,
+    });
+    store.setBacktestLastError?.(null, {
+      symbol,
+      strategy,
+      days: parseInt(days, 10) || 7,
+      timeframe,
+      walk_forward: walkForward || undefined,
+      sweep: true,
     });
     const parsedDays = parseInt(days, 10) || 7;
     const wfFolds = walkForward ? (rollingWf ? rollingFolds : 1) : 1;
@@ -438,14 +459,43 @@ export default function TaOptimizerPanel({
       strategy,
       timeoutMs,
       onTimeout: (elapsedMs) => {
-        if (!useResearchStore.getState().backtestRunning) return;
-        useResearchStore.getState().setBacktestRunning(false);
-        useResearchStore.getState().setBacktestProgress(null);
-        toast.error(
-          walkForward
-            ? `Walk-forward timed out after ${formatBacktestTimeoutLabel(elapsedMs)} — try fewer folds/combos or increase VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS`
-            : `Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`,
-        );
+        const state = useResearchStore.getState();
+        if (!state.backtestRunning) return;
+        // Deferred sweeps own their lifecycle via Jobs poller — do not wipe UI.
+        if (isDeferredBacktestStillAlive(state)) {
+          toast.warning(
+            walkForward
+              ? 'Walk-forward is slower than estimated — still running in the background.'
+              : 'Sweep is slower than estimated — still running in the background.',
+            {
+              action: {
+                label: 'Open Jobs',
+                onClick: () => useResearchStore.getState().openBacktestLab('jobs'),
+              },
+            },
+          );
+          return;
+        }
+        stopBacktestJobPolling();
+        state.setBacktestRunning(false);
+        state.setBacktestProgress(null);
+        const timeoutMsg = walkForward
+          ? `Walk-forward timed out after ${formatBacktestTimeoutLabel(elapsedMs)} — try fewer folds/combos or increase VITE_BACKTEST_WALK_FORWARD_TIMEOUT_MS`
+          : `Sweep timed out after ${formatBacktestTimeoutLabel(elapsedMs)}`;
+        state.setBacktestLastError?.(timeoutMsg, {
+          symbol,
+          strategy,
+          days: parsedDays,
+          timeframe,
+          walk_forward: walkForward || undefined,
+          sweep: true,
+        });
+        toast.error(timeoutMsg, {
+          action: {
+            label: 'Open Jobs',
+            onClick: () => useResearchStore.getState().openBacktestLab('jobs'),
+          },
+        });
       },
     });
     const portfolioSymbols = portfolioSweep
@@ -501,6 +551,27 @@ export default function TaOptimizerPanel({
       clearBacktestClientTimeout();
       useResearchStore.getState().setBacktestRunning(false);
       useResearchStore.getState().setBacktestProgress(null);
+    }
+  };
+
+  const handleCancelSweep = async () => {
+    stopBacktestJobPolling();
+    clearBacktestClientTimeout();
+    const store = useResearchStore.getState();
+    store.setBacktestRunning(false);
+    store.setBacktestProgress(null);
+    const jobId = store.backtestJobId;
+    if (jobId) {
+      store.upsertBacktestJobSlot?.(jobId, { status: 'cancelled', running: false });
+    }
+    const { ok, error } = await sendAction(
+      Action.CANCEL_BACKTEST,
+      jobId ? { job_id: jobId } : {},
+    );
+    if (!ok) {
+      toast.error(error || 'Cancel request could not be delivered — the run may still be going');
+    } else {
+      toast.message('Optimizer job cancel requested');
     }
   };
 
@@ -645,6 +716,9 @@ export default function TaOptimizerPanel({
             title={sweepDisabledReason || undefined}
             onClick={() => runSweep(false)}
           >
+            {backtestRunning && backtestProgress?.phase === 'sweep' ? (
+              <Loader2 size={14} className="animate-spin mr-1" aria-hidden />
+            ) : null}
             Run sweep
             <span className="algo-backtest-sweep__btn-badge num-mono">{comboCount}</span>
           </Button>
@@ -671,6 +745,18 @@ export default function TaOptimizerPanel({
                 ? `Rolling WF (${rollingFolds})`
                 : 'Walk-forward'}
           </Button>
+          {backtestRunning && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="algo-backtest-sweep__btn"
+              onClick={handleCancelSweep}
+              title="Cancel running optimizer job"
+            >
+              Cancel
+            </Button>
+          )}
           {sweep?.results?.length > 0 && (
             <Button
               type="button"
@@ -684,6 +770,24 @@ export default function TaOptimizerPanel({
           )}
         </div>
       </header>
+      )}
+      {backtestRunning && (
+        <div className="algo-backtest-progress-sticky sticky top-0 z-10 -mx-0.5 mb-2 bg-background/95 px-0.5 py-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+          {/* Rich bar next to Run controls — Lab-level bar is hidden on Optimizer tab. */}
+          <BacktestProgressBar compact showCancel />
+        </div>
+      )}
+      {!backtestRunning && backtestLastError && (
+        <BacktestErrorRecovery
+          error={backtestLastError}
+          lastRequest={backtestLastRequest}
+          onRetry={() => {
+            clearBacktestLastError();
+            void runSweep(Boolean(backtestLastRequest?.walk_forward));
+          }}
+          onDismiss={clearBacktestLastError}
+          className="mb-2"
+        />
       )}
 
       <section className="algo-backtest-sweep__card algo-backtest-sweep__card--search" aria-label="Search settings">

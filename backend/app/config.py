@@ -72,12 +72,33 @@ ML_MODEL_CACHE_TTL_SEC = float(os.environ.get("ML_MODEL_CACHE_TTL_SEC", "3600"))
 ML_TRAIN_PROCESS_ISOLATION = os.environ.get("ML_TRAIN_PROCESS_ISOLATION", "true").lower() in (
     "1", "true", "yes"
 )
-ML_TRAIN_MAX_WORKERS = int(os.environ.get("ML_TRAIN_MAX_WORKERS", "1"))
+# Concurrent train/validate process-pool workers. Default 1 (conservative).
+# Set to ``auto`` for conservative scale-up (≤2 when CUDA present + RSS≥6144).
+# Integer env values are used as-is (see resolve_ml_train_max_workers).
+ML_TRAIN_MAX_WORKERS_RAW = os.environ.get("ML_TRAIN_MAX_WORKERS", "1").strip()
+try:
+    ML_TRAIN_MAX_WORKERS = max(1, int(ML_TRAIN_MAX_WORKERS_RAW))
+except ValueError:
+    # ``auto`` or other non-int — resolved at pool creation time.
+    ML_TRAIN_MAX_WORKERS = 1
 # Soft RSS ceiling for train/validate worker processes (MEMORY #27). 0 = disabled.
 # Unix: resource.RLIMIT_AS (address space). Windows: best-effort log-only check via psutil.
+# Optimizer perf doc recommends 6144 on ≥16GB hosts with CUDA; keep 4096 shipped default.
 ML_TRAIN_RSS_LIMIT_MB = int(os.environ.get("ML_TRAIN_RSS_LIMIT_MB", "4096"))
 # Cap concurrent async train/validate tasks so candle lists are not pinned unboundedly.
 ML_ASYNC_MAX_INFLIGHT = int(os.environ.get("ML_ASYNC_MAX_INFLIGHT", "1"))
+# Walk-forward fold ThreadPool size for CPU/GBM strategies (``auto``|int; 1=sequential).
+# Shipped default 1 (conservative). Set ``auto`` or 2–4 for Opt #2 speedup.
+# GPU deep models stay sequential regardless. Never nests ProcessPool.
+ML_WF_FOLD_WORKERS = os.environ.get("ML_WF_FOLD_WORKERS", "1").strip()
+# Optuna multi-fidelity screen: parallel startup (random) trials only.
+# Shipped default 1 (conservative). Set 2–4 to opt into Opt #3.
+ML_OPTUNA_STARTUP_WORKERS = int(os.environ.get("ML_OPTUNA_STARTUP_WORKERS", "1"))
+# Torch DataLoader workers for deep trainers (empty = platform default: 0 on Windows).
+ML_DATALOADER_NUM_WORKERS = os.environ.get("ML_DATALOADER_NUM_WORKERS", "").strip()
+# Optional sim_mode for lean/exploratory ML validate (wf_capacity_parity=false only).
+# Deploy-grade capacity-parity WF stays live_aligned. Example: research_fast
+ML_EXPLORATORY_SIM_MODE = os.environ.get("ML_EXPLORATORY_SIM_MODE", "").strip().lower()
 # Torch/RL trains: default to the process pool (MEMORY_CENTRIC_REVIEW #41) so the
 # largest RSS spikes stay out of the live feed/OMS process (Hummingbot lesson).
 # The previous in-process default avoided two Windows issues: (1) pickling tens of
