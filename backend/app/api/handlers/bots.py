@@ -1301,7 +1301,26 @@ async def _execute_backtest(
                         bayesian_meta=bayesian_meta,
                         trial_budget_meta={**budget_meta, **trial_budget.to_meta()},
                     )
-                    best_config = sweep_block.get("stable_config") or sweep_block.get("best_config") or config
+                    best_config = sweep_block.get("stable_config") or sweep_block.get("best_config")
+                    if not best_config:
+                        from app.services.bots.backtest_walk_forward import (
+                            _format_no_valid_is_error,
+                            _resolve_min_trades,
+                        )
+                        effective_min, min_meta = _resolve_min_trades(
+                            min_trades, [], sweep, walk_forward=False,
+                        )
+                        await _finish(
+                            "error",
+                            message=_format_no_valid_is_error(
+                                sweep_rows,
+                                effective_min=effective_min,
+                                min_meta=min_meta,
+                                train_bars=len(candles or []),
+                                candle_meta=meta,
+                            ),
+                        )
+                        return
                     best_result = await asyncio.to_thread(
                         partial(
                             ctx.backtester.run_backtest,

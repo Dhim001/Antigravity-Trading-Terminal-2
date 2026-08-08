@@ -829,6 +829,9 @@ class SimulatedOMSService(BaseOMSService):
 
         current_atrs = {}
 
+        # Massive + Alpaca expose feed._seeded. Skip symbols until REST/live seed
+        # replaces SYMBOLS defaults (BTCUSDT starts at 63000) — otherwise a backend
+        # recycle can falsely trip trailing stops on open paper positions.
         seeded_symbols = getattr(self.feed, "_seeded", None)
 
         for symbol in symbols:

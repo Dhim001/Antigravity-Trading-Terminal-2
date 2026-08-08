@@ -16,6 +16,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { BrainCircuit, ExternalLink } from 'lucide-react';
 import { apiRequest } from '@/api/client';
 import { openModelTrainingDock } from '../lib/workspaceNav';
+import { formatVersionLabel } from '@/components/MlModelVersionSelect';
 
 const BASE_OBJECTIVES = [
   { value: 'robust_score', label: 'Robust score (Sharpe × √trades)' },
@@ -200,8 +201,7 @@ function ModelPinSlot({
                     key={v.version_id || v.trained_at}
                     value={v.trained_at || v.version_id}
                   >
-                    {(v.trained_at ? new Date(v.trained_at).toLocaleString() : v.version_id)
-                      + (v.is_current ? ' (current)' : '')}
+                    {formatVersionLabel(v)}
                   </option>
                 ))}
               </select>
@@ -212,6 +212,12 @@ function ModelPinSlot({
               <span className="num-mono text-foreground">
                 {trainedAt ? new Date(trainedAt).toLocaleString() : '—'}
               </span>
+            </p>
+          )}
+          {modelStatus?.champion_desynced && (
+            <p className="text-amber-600 dark:text-amber-400">
+              Newest snapshot ({modelStatus.newest_version_id || '—'}) differs from live champion
+              — Activate in Model Training to promote it.
             </p>
           )}
         </div>
@@ -234,7 +240,7 @@ export default function MlOptimizerPanel(props) {
   const [pinEnabled, setPinEnabled] = useState(true);
   const [pinnedVersion, setPinnedVersion] = useState('');
   // Default ON for ML — include training knobs (lr, depth, epochs) in backtest sweep.
-  const [includeTrainHyperparams, setIncludeTrainHyperparams] = useState(true);
+  const [includeTrainHyperparams, setIncludeTrainHyperparams] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     if (!symbol || !strategy) {
@@ -293,7 +299,7 @@ export default function MlOptimizerPanel(props) {
               />
               Include training hyperparams in sweep
               <span className="text-[10px] text-muted-foreground">
-                (lr, depth, epochs, lookback…)
+                (lr, depth, epochs — lookback needs Lab retrain; ONNX seq length is fixed)
               </span>
             </label>
             <p className="text-[10px] text-muted-foreground mt-1">

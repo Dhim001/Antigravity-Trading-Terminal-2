@@ -141,3 +141,35 @@ class TestGnnRegistration:
         from app.services.bots.strategy_catalog import list_strategy_catalog
         ids = [s["id"] for s in list_strategy_catalog()]
         assert "GNN_CROSS_ASSET" in ids
+
+
+class TestFeatureScalerAlign:
+    def test_truncate_wider_live_features(self):
+        """Reproduce optimizer job crash: (30,41) vs scaler (34,)."""
+        from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+        windows = np.random.randn(4, 30, 41).astype(np.float32)
+        mean = np.zeros(34, dtype=np.float32)
+        std = np.ones(34, dtype=np.float32)
+        out = apply_feature_scaler(windows, mean, std)
+        assert out.shape == (4, 30, 34)
+
+    def test_pad_narrower_live_features(self):
+        from app.services.bots.ml_feature_engineering import align_features_to_scaler_dim
+
+        narrow = np.random.randn(2, 10, 30).astype(np.float32)
+        out = align_features_to_scaler_dim(narrow, 34)
+        assert out.shape == (2, 10, 34)
+        assert np.allclose(out[..., 30:], 0.0)
+
+    def test_mismatch_warns_once(self, caplog):
+        import logging
+        from app.services.bots import ml_feature_engineering as mfe
+
+        mfe._ALIGN_WARNED.clear()
+        arr = np.zeros((2, 5, 41), dtype=np.float32)
+        with caplog.at_level(logging.WARNING):
+            mfe.align_features_to_scaler_dim(arr, 34, log_label="AuditLabel")
+            mfe.align_features_to_scaler_dim(arr, 34, log_label="AuditLabel")
+        warns = [r for r in caplog.records if "feature-dim mismatch" in r.getMessage()]
+        assert len(warns) == 1

@@ -23,14 +23,29 @@ from app.services.bots.ml_train_executor import (
 def test_torch_strategies_default_to_process_pool(monkeypatch):
     monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", True)
     monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", False)
+    monkeypatch.setattr("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset())
     for strat in TORCH_TRAIN_STRATEGIES:
         assert use_process_pool_for_strategy(strat) is True, strat
+    assert use_process_pool_for_strategy("ML_SIGNAL_BOOST") is True
+
+
+def test_spawn_unstable_strategies_default_to_thread(monkeypatch):
+    # RL_PPO_AGENT hangs on Windows spawn+CUDA — default in-process even though
+    # it is a Torch strategy. Operators can clear the set to re-enable the pool.
+    monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", True)
+    monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", False)
+    monkeypatch.setattr(
+        "app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset({"RL_PPO_AGENT"})
+    )
+    assert use_process_pool_for_strategy("RL_PPO_AGENT") is False
+    assert use_process_pool_for_strategy("LSTM_DIRECTION") is True
     assert use_process_pool_for_strategy("ML_SIGNAL_BOOST") is True
 
 
 def test_torch_in_process_opt_in_forces_thread(monkeypatch):
     monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", True)
     monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", True)
+    monkeypatch.setattr("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset())
     for strat in TORCH_TRAIN_STRATEGIES:
         assert use_process_pool_for_strategy(strat) is False, strat
     # GBM still uses the pool even in debugging mode.
@@ -40,6 +55,9 @@ def test_torch_in_process_opt_in_forces_thread(monkeypatch):
 def test_isolation_off_never_uses_pool(monkeypatch):
     monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", False)
     monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", False)
+    monkeypatch.setattr(
+        "app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset({"RL_PPO_AGENT"})
+    )
     assert use_process_pool_for_strategy("RL_PPO_AGENT") is False
 
 
@@ -69,6 +87,9 @@ def test_parent_trim_lean_mode_uses_2500_default(monkeypatch):
 def test_parent_trim_respects_validate_max_bars_over_12k(monkeypatch):
     monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", True)
     monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", False)
+    # RL_PPO_AGENT is thread-bound by default (spawn+CUDA hang); clear the set
+    # so this trim-behavior test exercises the pool-bound path.
+    monkeypatch.setattr("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset())
     candles = [{"time": i} for i in range(50_000)]
     out = _parent_trim_validate_candles(
         "RL_PPO_AGENT", candles, {"validate_max_bars": 30_000},
@@ -80,6 +101,7 @@ def test_parent_trim_respects_validate_max_bars_over_12k(monkeypatch):
 def test_parent_trim_lean_still_clamps_to_12k(monkeypatch):
     monkeypatch.setattr("app.config.ML_TRAIN_PROCESS_ISOLATION", True)
     monkeypatch.setattr("app.config.ML_TRAIN_TORCH_IN_PROCESS", False)
+    monkeypatch.setattr("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset())
     candles = [{"time": i} for i in range(50_000)]
     out = _parent_trim_validate_candles(
         "RL_PPO_AGENT",

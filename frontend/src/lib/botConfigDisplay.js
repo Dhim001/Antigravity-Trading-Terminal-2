@@ -69,6 +69,12 @@ export const FIELD_META = {
   use_meta_label_sizing: { label: 'Meta-label sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by GBM P(win) when a model is loaded.' },
   use_confidence_sizing: { label: 'Confidence sizing', group: 'agent', kind: 'boolean', hint: 'Scale entry size by signal confidence.' },
   regime_routing_enabled: { label: 'Regime routing', group: 'agent', kind: 'boolean', hint: 'Apply stricter thresholds in elevated/compressed ATR regimes.' },
+  atr_ratio_elevated: { label: 'ATR elevated ratio', group: 'agent', kind: 'float', hint: 'ATR / median ATR >= this -> elevated_vol (default 1.5).' },
+  adx_trend: { label: 'ADX trend threshold', group: 'agent', kind: 'float', hint: 'ADX above this (and not elevated) -> trending (default 25).' },
+  regime_hysteresis_bars: { label: 'Regime hysteresis', group: 'agent', kind: 'integer', hint: 'Consecutive bars of a new regime before switching specialist.' },
+  regime_min_hold_bars: { label: 'Regime min hold', group: 'agent', kind: 'integer', hint: 'Minimum bars to keep the active specialist after a switch.' },
+  exhaustion_bars: { label: 'Exhaustion bars', group: 'agent', kind: 'integer', hint: 'Consecutive same-direction bars with declining volume for exhaustion.' },
+  structure_lookback: { label: 'Structure lookback', group: 'agent', kind: 'integer', hint: 'Rolling high/low window for structure proximity.' },
   elevated_min_confidence: { label: 'Elevated min conf', group: 'agent', kind: 'confidence', hint: 'Minimum confidence when ATR regime is elevated.' },
   elevated_min_score: { label: 'Elevated min score', group: 'agent', kind: 'integer', hint: 'Minimum |score| when ATR regime is elevated.' },
   elevated_block_entries: { label: 'Block elevated entries', group: 'agent', kind: 'boolean', hint: 'Hard-block all entries in elevated vol (overrides routing thresholds).' },
@@ -187,7 +193,11 @@ export const STRATEGY_FIELD_KEYS = {
     'atr_length', 'rsi_length', 'use_rsi_confirmation', 'rsi_overbought_gate', 'rsi_oversold_gate', 'direction_mode', 'vae_regime_gate_enabled',
   ],
   CHART_AGENT: ['min_confidence', 'use_vol_sizing', 'use_confidence_sizing', 'require_trend_alignment', 'block_elevated_vol', 'min_score', 'confirm_timeframe', 'regime_routing_enabled', 'elevated_min_confidence', 'elevated_min_score', 'elevated_block_entries', 'compressed_min_confidence', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'meta_label_model_mode', 'meta_label_min_prob', 'meta_label_min_train_samples', 'meta_label_shadow_mode', 'use_meta_label_sizing', 'use_llm', 'llm_temperature', 'max_reasoning_tokens', 'require_multi_domain', 'rsi_length', 'macd_fast', 'macd_slow', 'macd_signal', 'atr_length', 'direction_mode'],
-  ABSORPTION_AGENT: ['min_confidence', 'min_score', 'confirm_timeframe', 'calibration_gate_enabled', 'calibration_min_samples', 'calibration_min_wilson', 'trailing_stop_percent', 'direction_mode'],
+  ABSORPTION_AGENT: ['min_confidence', 'min_score', 'exhaustion_bars', 'structure_lookback', 'volume_ma_length', 'atr_length', 'trailing_stop_percent', 'direction_mode'],
+  REGIME_STRATEGY_AGENT: [
+    'atr_ratio_elevated', 'adx_trend', 'regime_hysteresis_bars', 'regime_min_hold_bars',
+    'atr_length', 'adx_length', 'trailing_stop_percent', 'direction_mode',
+  ],
   // Deploy / live inference only — training hyperparams live in Model Training.
   ML_SIGNAL_BOOST: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
   LSTM_DIRECTION: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
@@ -274,6 +284,13 @@ const SWEEP_EXCLUDED_KEYS = new Set([
   'model_version',
   'model_symbol',
   'model_artifact',
+  // REGIME_STRATEGY_AGENT router knobs — not swept in v1
+  'regime_hysteresis_bars',
+  'regime_min_hold_bars',
+  'regime_strategy_map',
+  'atr_ratio_elevated',
+  'adx_trend',
+  'child_config',
 ]);
 
 const SWEEP_EXTRA_KEYS = ['allocation', 'slippage_bps', 'fee_bps', 'stop_loss_percent'];

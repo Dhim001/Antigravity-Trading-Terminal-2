@@ -53,16 +53,6 @@ DEFAULT_COOLDOWN_HOURS = 24        # Min time between retrains per symbol
 DEFAULT_ALPHA_DECAY_THRESHOLD = 0.4  # Retrain if decay score exceeds this
 DEFAULT_MIN_TRADES_BEFORE_EVAL = 20  # Don't evaluate until enough trades
 
-MODEL_DIRS = {
-    "ML_SIGNAL_BOOST": "ml_signal_models",
-    "LSTM_DIRECTION": "lstm_signal_models",
-    "RL_PPO_AGENT": "rl_ppo_models",
-    "TCN_MULTI_HORIZON": "tcn_signal_models",
-    "VAE_REGIME_DETECTOR": "vae_regime_models",
-    "TRANSFORMER_SIGNAL": "transformer_signal_models",
-    "GNN_CROSS_ASSET": "gnn_signal_models",
-}
-
 
 def _model_metadata_path(
     strategy: str,
@@ -567,21 +557,41 @@ async def drain_one_pending_retrain(
         job_id, strategy, symbol, tf, item.get("reasons"),
     )
 
-    train_cfg: dict[str, Any] = {"timeframe": tf}
-    # Phase 3: reuse last Optuna / sweep hyperparams when available
-    use_opt = bool(item.get("retrain_use_optimized_hyperparams", True))
-    if use_opt:
-        try:
-            from app.services.bots.optimization_store import merge_optimized_train_hyperparams
+    train_cfg: dict[str, Any] = {
+        "timeframe": tf,
+        # Lab write semantics — persist champion + snapshot like Apply & Retrain.
+        "champion_train": True,
+        "use_optimized_hyperparams": True,
+        "retrain_from_live_model": True,
+        "skip_persist": False,
+        "skip_snapshot": False,
+    }
+    # Prefer hyperparameters from the live model metadata (same params).
+    try:
+        from app.services.bots.optimization_store import (
+            merge_live_model_train_hyperparams,
+            merge_optimized_train_hyperparams,
+        )
 
+        train_cfg = merge_live_model_train_hyperparams(
+            train_cfg, symbol, strategy, timeframe=tf,
+        )
+        # Fill any remaining gaps from the latest Optuna/sweep best_config.
+        use_opt = bool(item.get("retrain_use_optimized_hyperparams", True))
+        if use_opt:
             train_cfg = merge_optimized_train_hyperparams(train_cfg, symbol, strategy)
             if train_cfg.get("retrain_from_optimized"):
                 logger.info(
                     "Retrain drain using optimized hyperparams for %s/%s: %s",
                     strategy, symbol, train_cfg.get("_optimized_hyperparams_applied"),
                 )
-        except Exception:
-            logger.debug("Optimized hyperparam lookup failed", exc_info=True)
+        if train_cfg.get("retrain_from_live_model"):
+            logger.info(
+                "Retrain drain using live-model hyperparams for %s/%s: %s",
+                strategy, symbol, train_cfg.get("_live_model_hyperparams_applied"),
+            )
+    except Exception:
+        logger.debug("Hyperparam reuse lookup failed", exc_info=True)
 
     try:
         result = await submit_train_job(

@@ -4,7 +4,7 @@
 import React, { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Download, Maximize2, AlertTriangle, LineChart, Loader2, FileText, Sparkles } from 'lucide-react';
-import { openBacktestLabResults } from '../lib/backtestLab';
+import { openBacktestLabOptimizer, openBacktestLabResults } from '../lib/backtestLab';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
 import { Button } from '@/components/ui/button';
@@ -1465,7 +1465,7 @@ export default function BacktestResultsPanel({
         <button
           type="button"
           className="algo-backtest-sweep-teaser text-[0.62rem] text-primary hover:underline text-left px-1 py-1"
-          onClick={() => useResearchStore.getState().openBacktestLab('optimizer')}
+          onClick={() => openBacktestLabOptimizer()}
         >
           {results.sweep.configs_tested ?? results.sweep.results.length} configs tested → Open optimizer
         </button>

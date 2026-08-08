@@ -105,6 +105,7 @@ def test_load_feature_importance_accepts_top_features(tmp_path, monkeypatch):
     }
     (data_dir / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
     monkeypatch.setattr("app.config.BASE_DIR", str(tmp_path))
+    monkeypatch.setattr("app.services.bots.ml_model_artifacts.BASE_DIR", str(tmp_path))
 
     fi = bcm.load_ml_feature_importance("ML_SIGNAL_BOOST", "SPY")
     assert fi and fi[0]["name"] == "rsi"

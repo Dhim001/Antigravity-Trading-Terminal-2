@@ -191,7 +191,8 @@ _STRATEGY_ALIASES = {
 
 
 def normalize_strategy_name(strategy_name: str) -> str:
-    return _STRATEGY_ALIASES.get(strategy_name.upper(), strategy_name.upper())
+    key = str(strategy_name or "").upper()
+    return _STRATEGY_ALIASES.get(key, key)
 
 
 def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
@@ -263,6 +264,11 @@ def get_strategy(strategy_name: str, config: dict) -> BaseStrategy:
         from app.services.bots.strategies_ensemble import HybridEnsembleStrategy
 
         return HybridEnsembleStrategy(config or {})
+
+    if key == "REGIME_STRATEGY_AGENT":
+        from app.services.bots.strategies_regime_agent import RegimeStrategyAgent
+
+        return RegimeStrategyAgent(config or {})
 
     if key in ("CVD_DIVERGENCE", "WYCKOFF_SPRING", "VPOC_REVERSION", "ORDERFLOW_IMBALANCE", "ABSORPTION_AGENT"):
         from app.services.bots.strategies_microstructure import (

@@ -398,51 +398,227 @@ class OrderFlowImbalanceStrategy(BaseStrategy):
 
 
 class AbsorptionAgentStrategy(BaseStrategy):
-    """Multi-domain scoring for absorption and exhaustion."""
+    """Multi-domain scoring for absorption, exhaustion, structure, and trend."""
 
     def evaluate(self, df_row) -> dict:
         try:
             cfg = merge_strategy_config("ABSORPTION_AGENT", self.config)
-            atr = df_row.get(atr_col(cfg["atr_length"]), 0)
-            vol_ma = df_row.get(f"volume_ma_{int(cfg.get('volume_ma_length', 20))}", 0)
-            vol = df_row.get("volume", 0)
-            close = df_row.get("close", 0)
-            open_ = df_row.get("open", 0)
-            high = df_row.get("high", 0)
-            low = df_row.get("low", 0)
-            
+            atr_len = int(cfg.get("atr_length", 14))
+            atr = float(df_row.get(atr_col(atr_len), 0) or 0)
+            vol_ma_len = int(cfg.get("volume_ma_length", 20))
+            vol_ma = float(df_row.get(f"volume_ma_{vol_ma_len}", 0) or 0)
+            vol = float(df_row.get("volume", 0) or 0)
+            close = float(df_row.get("close", 0) or 0)
+            open_ = float(df_row.get("open", 0) or 0)
+            high = float(df_row.get("high", 0) or 0)
+            low = float(df_row.get("low", 0) or 0)
+
             if atr <= 0 or vol_ma <= 0:
-                return {"signal": "NONE"}
-                
+                return {"signal": "NONE", "reject_reason": "insufficient atr/volume_ma"}
+
             body = abs(close - open_)
             candle_range = high - low
-            
-            score = 0
-            reasons = []
-            
-            # Domain 1: Absorption
+            score = 0.0
+            reasons: list[str] = []
+            domain_scores: dict[str, float] = {}
+
+            # Domain 1: Absorption (weight 2.0)
+            absorption = 0.0
             if candle_range > 3 * body and vol > vol_ma * 1.5:
-                if close > open_: # Bullish absorption
-                    score += 2
-                    reasons.append("Bullish volume absorption detected")
+                if close > open_:
+                    absorption = 2.0
+                    reasons.append("Bullish volume absorption")
                 else:
-                    score -= 2
-                    reasons.append("Bearish volume absorption detected")
-                    
-            if score >= 2:
+                    absorption = -2.0
+                    reasons.append("Bearish volume absorption")
+            domain_scores["absorption"] = absorption
+            score += absorption
+
+            # Domain 2: Exhaustion (weight 1.5) — N same-direction bars, declining volume
+            exhaustion_n = max(2, int(cfg.get("exhaustion_bars", 3)))
+            exhaustion = 0.0
+            dirs = []
+            vols = [vol]
+            ok_hist = True
+            for i in range(1, exhaustion_n):
+                c = df_row.get(f"close_shift_{i}")
+                o = df_row.get(f"open_shift_{i}")
+                v = df_row.get(f"volume_shift_{i}")
+                if c is None or o is None or v is None:
+                    ok_hist = False
+                    break
+                dirs.append(1 if float(c) > float(o) else (-1 if float(c) < float(o) else 0))
+                vols.append(float(v))
+            # Current bar direction
+            cur_dir = 1 if close > open_ else (-1 if close < open_ else 0)
+            dirs.insert(0, cur_dir)
+            if ok_hist and cur_dir != 0 and all(d == cur_dir for d in dirs):
+                declining = all(vols[i] < vols[i + 1] for i in range(len(vols) - 1))
+                if declining:
+                    # Declining volume into direction → exhaustion → reverse
+                    exhaustion = -1.5 * cur_dir
+                    reasons.append(
+                        "Bullish exhaustion" if exhaustion > 0 else "Bearish exhaustion"
+                    )
+            domain_scores["exhaustion"] = exhaustion
+            score += exhaustion
+
+            # Domain 3: Order book (weight 1.5) — live L2 when injected; else row fields
+            book = 0.0
+            bid_depth = df_row.get("bid_depth") or df_row.get("book_bid_depth")
+            ask_depth = df_row.get("ask_depth") or df_row.get("book_ask_depth")
+            imbalance = df_row.get("book_imbalance")
+            # Derive depths from live `_orderbook` (manager injects for ABSORPTION_AGENT)
+            if (bid_depth is None or ask_depth is None) or imbalance is None:
+                ob = df_row.get("_orderbook")
+                if isinstance(ob, dict):
+                    levels = max(1, int(cfg.get("book_levels", 5)))
+                    try:
+                        bids = ob.get("bids") or []
+                        asks = ob.get("asks") or []
+                        bd = sum(
+                            float(x[1]) for x in list(bids)[:levels] if x and len(x) >= 2
+                        )
+                        ad = sum(
+                            float(x[1]) for x in list(asks)[:levels] if x and len(x) >= 2
+                        )
+                        if bid_depth is None:
+                            bid_depth = bd
+                        if ask_depth is None:
+                            ask_depth = ad
+                    except (TypeError, ValueError, IndexError):
+                        pass
+            # Signed imbalance field (tests / feeds): +bid / -ask walls
+            if imbalance is not None and book == 0.0:
+                try:
+                    imb = float(imbalance)
+                    if imb >= 3.0:
+                        book = 1.5
+                        reasons.append("Bid wall / book imbalance")
+                    elif imb <= -3.0:
+                        book = -1.5
+                        reasons.append("Ask wall / book imbalance")
+                except (TypeError, ValueError):
+                    pass
+            # Depth walls (live book or explicit depth columns)
+            if book == 0.0 and bid_depth is not None and ask_depth is not None:
+                try:
+                    bd, ad = float(bid_depth), float(ask_depth)
+                    if ad > 0 and bd > 3 * ad:
+                        book = 1.5
+                        reasons.append("Bid wall detected")
+                    elif bd > 0 and ad > 3 * bd:
+                        book = -1.5
+                        reasons.append("Ask wall detected")
+                except (TypeError, ValueError):
+                    pass
+            domain_scores["orderbook"] = book
+            score += book
+
+            # Domain 4: Structure (weight 1.0)
+            structure = 0.0
+            structure_lb = int(cfg.get("structure_lookback", 20))
+            roll_low = df_row.get(f"rolling_low_{structure_lb}")
+            roll_high = df_row.get(f"rolling_high_{structure_lb}")
+            if roll_low is not None and roll_high is not None and atr > 0:
+                try:
+                    rl, rh = float(roll_low), float(roll_high)
+                    if abs(low - rl) <= 0.5 * atr:
+                        structure += 1.0
+                        reasons.append("Near rolling support")
+                    if abs(high - rh) <= 0.5 * atr:
+                        structure -= 1.0
+                        reasons.append("Near rolling resistance")
+                except (TypeError, ValueError):
+                    pass
+            # Inside bar after absorption
+            prev_high = df_row.get("high_shift_1")
+            prev_low = df_row.get("low_shift_1")
+            if (
+                absorption != 0
+                and prev_high is not None
+                and prev_low is not None
+                and high <= float(prev_high)
+                and low >= float(prev_low)
+            ):
+                structure += 1.0 if absorption > 0 else -1.0
+                reasons.append("Inside bar after absorption")
+            domain_scores["structure"] = structure
+            score += structure
+
+            # Domain 5: Trend context (weight 0.5)
+            trend = 0.0
+            ema_fast = df_row.get("EMA_9")
+            ema_slow = df_row.get("EMA_21")
+            adx_val = df_row.get(adx_col(14))
+            if ema_fast is not None and ema_slow is not None:
+                try:
+                    if float(ema_fast) > float(ema_slow):
+                        trend += 0.5
+                        reasons.append("EMA bullish tilt")
+                    elif float(ema_fast) < float(ema_slow):
+                        trend -= 0.5
+                        reasons.append("EMA bearish tilt")
+                except (TypeError, ValueError):
+                    pass
+            if adx_val is not None:
+                try:
+                    if float(adx_val) < 20:
+                        # Chop — dampen trend contribution
+                        trend *= 0.5
+                except (TypeError, ValueError):
+                    pass
+            domain_scores["trend"] = trend
+            score += trend
+
+            # Confidence: sigmoid of |score|
+            confidence = 1.0 / (1.0 + math.exp(-abs(score) / 2.0))
+            min_conf = float(cfg.get("min_confidence", 0.55) or 0.55)
+            min_score = cfg.get("min_score")
+            try:
+                min_score_v = float(min_score) if min_score is not None and min_score != "" else 2.0
+            except (TypeError, ValueError):
+                min_score_v = 2.0
+
+            if confidence < min_conf:
+                return {
+                    "signal": "NONE",
+                    "confidence": confidence,
+                    "score": score,
+                    "domain_scores": domain_scores,
+                    "reasons": reasons,
+                    "reject_reason": f"confidence {confidence:.2f} below min {min_conf}",
+                }
+
+            if score >= min_score_v:
                 return {
                     "signal": "BUY",
                     "stop_loss_distance": 1.5 * atr,
+                    "confidence": confidence,
+                    "score": score,
+                    "domain_scores": domain_scores,
                     "reasons": reasons,
                 }
-            elif score <= -2:
+            if score <= -min_score_v:
                 return {
                     "signal": "SELL",
                     "stop_loss_distance": 1.5 * atr,
+                    "confidence": confidence,
+                    "score": score,
+                    "domain_scores": domain_scores,
                     "reasons": reasons,
                 }
 
+            return {
+                "signal": "NONE",
+                "confidence": confidence,
+                "score": score,
+                "domain_scores": domain_scores,
+                "reasons": reasons,
+                "reject_reason": f"|score| {abs(score):.1f} below min {min_score_v}",
+            }
+
         except Exception:
             pass
-            
+
         return {"signal": "NONE"}

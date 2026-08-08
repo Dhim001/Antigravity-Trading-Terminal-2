@@ -1,8 +1,9 @@
-"""ML feature engineering — expanded features for XGBoost signal classifier.
+"""ML feature engineering — expanded features for HistGBM signal classifier.
 
 Extracts numeric features from a prepared indicator row (pandas Series or dict)
-for use with the ML_SIGNAL_BOOST strategy.  Designed to work with the same df_row
-format that all BaseStrategy.evaluate() methods receive.
+for use with the ML_SIGNAL_BOOST strategy (HistGradientBoostingClassifier).
+Designed to work with the same df_row format that all BaseStrategy.evaluate()
+methods receive.
 
 Research / backtest: prefer :func:`compute_signal_feature_matrix_vectorized`
 (``BACKTEST_VECTORIZED_FEATURES=true``, default on). Live ``evaluate()`` keeps
@@ -1021,3 +1022,68 @@ def signal_features_to_vector(
         [float(features.get(name, 0.0)) for name in names],
         dtype=np.float64,
     )
+
+
+_ALIGN_WARNED: set[str] = set()
+
+
+def align_features_to_scaler_dim(
+    arr: np.ndarray,
+    n_expected: int,
+    *,
+    log_label: str | None = None,
+) -> np.ndarray:
+    """Pad/truncate the last axis so ``arr`` matches a trained scaler / ONNX width.
+
+    New signal features are always appended to :data:`SIGNAL_FEATURE_NAMES`, so
+    older models (narrower scaler) are served by keeping the leading columns.
+    Wider padding (zeros) covers rare downgrade cases.
+    """
+    if arr is None or n_expected <= 0:
+        return arr
+    a = np.asarray(arr)
+    if a.ndim < 1:
+        return a
+    n_got = int(a.shape[-1])
+    if n_got == n_expected:
+        return a
+    if log_label:
+        # Once per label — batch backtests would otherwise spam every chunk.
+        warn_key = f"{log_label}:{n_got}->{n_expected}"
+        if warn_key not in _ALIGN_WARNED:
+            _ALIGN_WARNED.add(warn_key)
+            logger.warning(
+                "%s feature-dim mismatch: live=%d model=%d — aligning by %s "
+                "(retrain recommended for full schema)",
+                log_label,
+                n_got,
+                n_expected,
+                "truncate" if n_got > n_expected else "zero-pad",
+            )
+    if n_got > n_expected:
+        return a[..., :n_expected]
+    pad_width = [(0, 0)] * (a.ndim - 1) + [(0, n_expected - n_got)]
+    return np.pad(a, pad_width, mode="constant", constant_values=0.0)
+
+
+def apply_feature_scaler(
+    arr: np.ndarray,
+    mean: np.ndarray | list[float],
+    std: np.ndarray | list[float],
+    *,
+    log_label: str | None = None,
+) -> np.ndarray:
+    """Z-score normalize ``arr`` after aligning the feature axis to scaler length."""
+    m = np.asarray(mean, dtype=np.float32).reshape(-1)
+    s = np.asarray(std, dtype=np.float32).reshape(-1)
+    if m.size == 0:
+        return np.asarray(arr, dtype=np.float32)
+    if s.size != m.size:
+        s = np.ones_like(m, dtype=np.float32)
+    s = np.where(s < 1e-8, 1.0, s)
+    aligned = align_features_to_scaler_dim(
+        np.asarray(arr, dtype=np.float32),
+        int(m.size),
+        log_label=log_label,
+    )
+    return (aligned - m) / s

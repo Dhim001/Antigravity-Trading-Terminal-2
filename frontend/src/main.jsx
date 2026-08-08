@@ -50,7 +50,16 @@ if (typeof window !== 'undefined' && import.meta.env.DEV) {
   window.__ttGetState = () => useStore.getState();
 }
 
-createRoot(document.getElementById('root')).render(
+const rootEl = document.getElementById('root')
+// HMR / Fast Refresh re-executes this module — reuse the root (avoids
+// "createRoot() on a container that has already been passed to createRoot()").
+const root = (import.meta.hot?.data?.root)
+  ?? createRoot(rootEl)
+if (import.meta.hot) {
+  import.meta.hot.data.root = root
+}
+
+root.render(
   <StrictMode>
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <TooltipProvider delayDuration={300}>

@@ -2,7 +2,7 @@
  * ML training hyperparameter auto-tune (Optuna) — Model Training Lab.
  * Progress UI matches Train / Walk-forward (bar + optional poll log).
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Loader2, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiRequest, isAbortError } from '@/api/client';

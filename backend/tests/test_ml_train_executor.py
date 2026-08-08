@@ -179,14 +179,16 @@ class MlTrainExecutorTests(unittest.TestCase):
     def test_torch_strategies_prefer_in_process_thread(self):
         with patch("app.config.ML_TRAIN_PROCESS_ISOLATION", True):
             with patch("app.config.ML_TRAIN_TORCH_IN_PROCESS", True):
-                self.assertFalse(use_process_pool_for_strategy("LSTM_DIRECTION"))
-                self.assertFalse(use_process_pool_for_strategy("RL_PPO_AGENT"))
-                self.assertTrue(use_process_pool_for_strategy("ML_SIGNAL_BOOST"))
+                with patch("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset()):
+                    self.assertFalse(use_process_pool_for_strategy("LSTM_DIRECTION"))
+                    self.assertFalse(use_process_pool_for_strategy("RL_PPO_AGENT"))
+                    self.assertTrue(use_process_pool_for_strategy("ML_SIGNAL_BOOST"))
 
     def test_torch_can_opt_into_process_pool(self):
         with patch("app.config.ML_TRAIN_PROCESS_ISOLATION", True):
             with patch("app.config.ML_TRAIN_TORCH_IN_PROCESS", False):
-                self.assertTrue(use_process_pool_for_strategy("LSTM_DIRECTION"))
+                with patch("app.config.ML_TRAIN_IN_PROCESS_STRATEGIES", frozenset()):
+                    self.assertTrue(use_process_pool_for_strategy("LSTM_DIRECTION"))
 
     def test_broken_pool_error_detection(self):
         class BrokenProcessPool(Exception):

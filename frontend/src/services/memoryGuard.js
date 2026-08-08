@@ -107,6 +107,7 @@ function trimCritical(getMarketStore, getResearchStore) {
   });
 
   // Force offload research backtest tree even if Lab is open (MEMORY #26).
+  // When Lab is open, schedule IDB restore so the panel does not stay hollow.
   const research = getResearchStore().getState();
   if (research.backtestResults && !research.backtestResults._offloaded) {
     import('./backtestStorage').then(({ offloadBacktestFromMemory }) => {
@@ -125,6 +126,11 @@ function trimCritical(getMarketStore, getResearchStore) {
           backtestOverlay: buildBacktestOverlay(slim) ?? current.backtestOverlay,
         };
       });
+      const after = getResearchStore().getState();
+      if (after.backtestLabOpen && after.backtestResults?._offloaded) {
+        // Re-open path schedules restore; call openBacktestLab to hydrate again.
+        after.openBacktestLab(after.backtestLabTab || 'results');
+      }
     }).catch(() => {
       getResearchStore().setState((current) => ({
         ...trimVisionAndInsightHistory(current),

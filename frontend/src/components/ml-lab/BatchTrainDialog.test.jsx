@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { selectStrategiesForScope } from './batchTrainScope';
 import { formatBatchTrainSummary, runBatchTrainQueue } from './batchTrainRunner';
+import { isModelStale, modelAgeHours } from '@/lib/modelHealth';
 
 const inventory = [
   { strategy: 'ML_SIGNAL_BOOST', trained: false },
@@ -49,6 +50,32 @@ describe('selectStrategiesForScope', () => {
 
   it('treats missing inventory rows as untrained', () => {
     expect(selectStrategiesForScope([], 'untrained', [], ['A', 'B'])).toEqual(['A', 'B']);
+  });
+});
+
+describe('stale age for batch inventory rows', () => {
+  it('flags 15d-old GBDT / ML_SIGNAL_BOOST as stale (>48h)', () => {
+    const row = {
+      strategy: 'ML_SIGNAL_BOOST',
+      trained: true,
+      trained_at: new Date(Date.now() - 15 * 24 * 3600_000).toISOString(),
+    };
+    expect(modelAgeHours(row)).toBeGreaterThan(48);
+    expect(isModelStale(row, 48)).toBe(true);
+  });
+
+  it('does not flag models under 48h as stale', () => {
+    const fresh = {
+      strategy: 'TCN_MULTI_HORIZON',
+      trained: true,
+      trained_at: new Date(Date.now() - 12 * 3600_000).toISOString(),
+    };
+    expect(isModelStale(fresh, 48)).toBe(false);
+    const fourDays = {
+      ...fresh,
+      trained_at: new Date(Date.now() - 4 * 24 * 3600_000).toISOString(),
+    };
+    expect(isModelStale(fourDays, 48)).toBe(true);
   });
 });
 

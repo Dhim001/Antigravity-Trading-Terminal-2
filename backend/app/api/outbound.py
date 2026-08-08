@@ -68,10 +68,22 @@ def bot_detail(data: dict) -> dict:
     return frame(MessageType.BOT_DETAIL, data)
 
 
-def bot_log(bot_id: str, level: str, message: str, *, meta: dict | None = None) -> dict:
+def bot_log(
+    bot_id: str,
+    level: str,
+    message: str,
+    *,
+    meta: dict | None = None,
+    log_id: int | str | None = None,
+    timestamp: str | None = None,
+) -> dict:
     payload = {"bot_id": bot_id, "level": level, "message": message}
     if meta:
         payload["meta"] = meta
+    if log_id is not None:
+        payload["id"] = log_id
+    if timestamp:
+        payload["timestamp"] = timestamp
     return frame(MessageType.BOT_LOG, payload)
 
 
@@ -138,8 +150,20 @@ async def publish_bot_log(
     message: str,
     *,
     meta: dict | None = None,
+    log_id: int | str | None = None,
+    timestamp: str | None = None,
 ) -> None:
-    await publish(broadcast_fn, bot_log(bot_id, level, message, meta=meta))
+    await publish(
+        broadcast_fn,
+        bot_log(
+            bot_id,
+            level,
+            message,
+            meta=meta,
+            log_id=log_id,
+            timestamp=timestamp,
+        ),
+    )
 
 
 async def publish_bots_update(broadcast_fn: BroadcastFn | None, data: list) -> None:

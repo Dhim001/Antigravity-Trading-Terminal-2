@@ -118,6 +118,10 @@ class AlpacaFeedService(BaseFeedService):
         self._ht_cache: dict[tuple, tuple[float, list]] = {}
         self._seed_done = False
         self._seed_expected = 0
+        # Per-symbol readiness for paper OMS SL/TP (sim_oms gates on this).
+        # Without it, startup still uses CRYPTO_SYMBOLS defaults (BTCUSDT=63000)
+        # and can falsely fire trailing stops on restart.
+        self._seeded: set[str] = set()
         self._status: dict[str, Any] = {
             "equity": {"state": "idle", "ws": None, "symbols": 0},
             "crypto": {"state": "idle", "ws": None, "symbols": 0, "last_tick_ts": None},
@@ -1345,6 +1349,7 @@ class AlpacaFeedService(BaseFeedService):
     async def _seed_history(self) -> None:
         """Replace synthetic fallback candles with real Alpaca REST 1m history."""
         if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+            # Leave _seeded empty so paper SL/TP never runs on SYMBOLS defaults.
             self._seed_done = True
             return
         sem = asyncio.Semaphore(3)
@@ -1355,6 +1360,7 @@ class AlpacaFeedService(BaseFeedService):
         ]
         self._seed_expected = len(symbols)
         self._seed_done = False
+        self._seeded.clear()
 
         async def _seed_one(symbol: str) -> None:
             async with sem:
@@ -1385,6 +1391,7 @@ class AlpacaFeedService(BaseFeedService):
                                 merged = merged[-_MAX_CANDLES:]
                     self.candles[symbol] = merged
                     self._symbols[symbol]["price"] = float(merged[-1]["close"])
+                    self._seeded.add(symbol)
                     self._status.setdefault("seeded", {})
                     if isinstance(self._status.get("seeded"), dict):
                         self._status["seeded"][symbol] = len(merged)

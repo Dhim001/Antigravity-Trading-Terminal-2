@@ -18,7 +18,10 @@ STRATEGY_TRADE_NOTES: dict[str, list[str]] = {
         "Backtest uses a candle pressure proxy; live prefers L2 orderbook when available.",
     ],
     "ABSORPTION_AGENT": [
-        "Only the volume-absorption domain is implemented (not full multi-domain scoring).",
+        "Scores volume absorption, exhaustion, structure, and trend context (order book live-only).",
+    ],
+    "REGIME_STRATEGY_AGENT": [
+        "Delegates to TA specialists by ATR/ADX regime; not insight-cache based.",
     ],
     "CHART_AGENT": [
         "Live path needs a chart-analyst insight cache; backtest uses bar-by-bar scoring.",

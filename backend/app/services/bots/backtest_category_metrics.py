@@ -23,20 +23,7 @@ _AGENT_FUNNEL_ORDER = (
     "other",
 )
 
-_ML_STRATEGIES = frozenset({
-    "ML_SIGNAL_BOOST",
-    "LSTM_DIRECTION",
-    "RL_PPO_AGENT",
-    "TCN_MULTI_HORIZON",
-    "VAE_REGIME_DETECTOR",
-    "TRANSFORMER_SIGNAL",
-    "GNN_CROSS_ASSET",
-})
-
-_AGENT_STRATEGIES = frozenset({
-    "CHART_AGENT",
-    "ABSORPTION_AGENT",
-})
+from app.services.bots.ml_registry import ML_STRATEGIES as _ML_STRATEGIES
 
 
 def is_ml_strategy_key(strategy: str) -> bool:
@@ -45,6 +32,13 @@ def is_ml_strategy_key(strategy: str) -> bool:
 
 def is_rl_strategy_key(strategy: str) -> bool:
     return str(strategy or "").upper() == "RL_PPO_AGENT"
+
+
+_AGENT_STRATEGIES = frozenset({
+    "CHART_AGENT",
+    "ABSORPTION_AGENT",
+    "REGIME_STRATEGY_AGENT",
+})
 
 
 def is_agent_strategy_key(strategy: str) -> bool:
@@ -535,27 +529,22 @@ class CategoryMetricsCollector:
         }
 
 
-def load_ml_feature_importance(strategy: str, symbol: str) -> list[dict[str, Any]] | None:
+def load_ml_feature_importance(
+    strategy: str,
+    symbol: str,
+    timeframe: str | None = None,
+) -> list[dict[str, Any]] | None:
     """Best-effort load of feature importance from trained model metadata."""
     try:
         import json
         import os
-        from app.config import BASE_DIR
 
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (symbol or "").upper())
-        subdirs = {
-            "ML_SIGNAL_BOOST": "ml_signal_models",
-            "LSTM_DIRECTION": "lstm_signal_models",
-            "TCN_MULTI_HORIZON": "tcn_signal_models",
-            "TRANSFORMER_SIGNAL": "transformer_signal_models",
-            "VAE_REGIME_DETECTOR": "vae_regime_models",
-            "GNN_CROSS_ASSET": "gnn_signal_models",
-            "RL_PPO_AGENT": "rl_ppo_models",
-        }
-        sub = subdirs.get(str(strategy or "").upper())
-        if not sub or not safe:
+        from app.services.bots.ml_model_artifacts import model_root_for
+
+        root = model_root_for(strategy, symbol, timeframe)
+        if not root:
             return None
-        path = os.path.join(BASE_DIR, "data", sub, safe, "metadata.json")
+        path = os.path.join(root, "metadata.json")
         if not os.path.isfile(path):
             return None
         with open(path, encoding="utf-8") as f:

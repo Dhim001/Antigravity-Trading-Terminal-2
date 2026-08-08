@@ -13,6 +13,25 @@ export const DEPLOY_GATE_DEFAULTS = {
   maxDrawdownWarnPct: 25,
 };
 
+/**
+ * True when backtest results belong to the expected symbol/strategy
+ * (blocks ML pipeline from gating/deploying on stale store results).
+ */
+export function backtestResultsMatchTarget(results, { symbol, strategy } = {}) {
+  if (!results || typeof results !== 'object') return false;
+  const meta = results.meta && typeof results.meta === 'object' ? results.meta : {};
+  const resultSym = String(meta.symbol || results.symbol || '').trim().toUpperCase();
+  const resultStrat = String(meta.strategy || results.strategy || '').trim().toUpperCase();
+  const wantSym = String(symbol || '').trim().toUpperCase();
+  const wantStrat = String(strategy || '').trim().toUpperCase();
+  if (wantSym && resultSym && resultSym !== wantSym) return false;
+  if (wantStrat && resultStrat && resultStrat !== wantStrat) return false;
+  // Require identity when a target was specified — unknown meta is not a match.
+  if (wantSym && !resultSym) return false;
+  if (wantStrat && !resultStrat) return false;
+  return true;
+}
+
 function check({ id, level, ok, message, detail }) {
   return { id, level, ok, message, detail };
 }
@@ -172,6 +191,21 @@ export function evaluateDeployGate({
       detail: 'Run a backtest before deploying capital, or confirm deploy anyway.',
     }));
     return finalize(checks, 'backtest');
+  }
+
+  if (symbol || strategy) {
+    const matched = backtestResultsMatchTarget(results, { symbol, strategy });
+    if (!matched) {
+      const meta = results.meta || {};
+      checks.push(check({
+        id: 'result_identity',
+        level: 'block',
+        ok: false,
+        message: 'Backtest results do not match deploy symbol/strategy',
+        detail: `Results ${meta.symbol || '?'} / ${meta.strategy || '?'} vs deploy ${symbol || '?'} / ${strategy || '?'}`,
+      }));
+      return finalize(checks, 'blocked');
+    }
   }
 
   const { scoped, symbolError, missingSymbol } = symbolSlice(results, symbol);
@@ -451,6 +485,9 @@ export function buildDeployPayload({
     config,
     simMode: config?.sim_mode,
   });
+  // Never inherit a prior bot's backtest_run_id — that stamped an unrelated
+  // profitable BTC run onto an AMZN ML deploy when results.run_id was missing.
+  const runId = results?.run_id || null;
   return {
     strategy,
     symbol,
@@ -462,7 +499,7 @@ export function buildDeployPayload({
     config: {
       ...config,
       trailing_stop_percent: config?.trailing_stop_percent ?? 2,
-      backtest_run_id: results?.run_id ?? config?.backtest_run_id,
+      backtest_run_id: runId,
       backtest_fingerprint: snapshot || fingerprint,
     },
   };

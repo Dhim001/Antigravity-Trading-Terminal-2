@@ -22,14 +22,20 @@ import {
 
 export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
   const candidates = useMemo(
-    () => recentRuns.filter((r) => r.id !== currentRun?.run_id),
+    () => recentRuns.filter((r) => {
+      const rid = r.id ?? r.run_id;
+      return rid && rid !== currentRun?.run_id;
+    }),
     [recentRuns, currentRun?.run_id],
   );
 
-  const [compareId, setCompareId] = useState(candidates[0]?.id ?? '');
+  const [compareId, setCompareId] = useState(() => {
+    const first = candidates[0];
+    return first?.id ?? first?.run_id ?? '';
+  });
 
   const baseline = useMemo(
-    () => candidates.find((r) => r.id === compareId) ?? null,
+    () => candidates.find((r) => (r.id ?? r.run_id) === compareId) ?? null,
     [candidates, compareId],
   );
 
@@ -63,11 +69,16 @@ export default function BacktestComparePanel({ currentRun, recentRuns = [] }) {
             <SelectValue placeholder="Compare to…" />
           </SelectTrigger>
           <SelectContent>
-            {candidates.map((run) => (
-              <SelectItem key={run.id} value={run.id} className="text-xs">
-                {run.created_at?.slice(0, 16) ?? run.id.slice(0, 8)} · {run.strategy}
-              </SelectItem>
-            ))}
+            {candidates.map((run) => {
+              const rid = run.id ?? run.run_id;
+              if (!rid) return null;
+              const labelTime = run.created_at?.slice(0, 16) ?? String(rid).slice(0, 8);
+              return (
+                <SelectItem key={rid} value={rid} className="text-xs">
+                  {labelTime} · {run.strategy || '—'}
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
       </div>

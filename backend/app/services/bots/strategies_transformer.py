@@ -37,6 +37,7 @@ class TransformerSignalStrategy(BaseStrategy):
         self._lookback = int(self._cfg.get("lookback", 60))
         self._window: deque = deque(maxlen=self._lookback)
         self._bar_history: deque = deque(maxlen=25)
+        self._lookback_synced = False
 
     def _model_timeframe(self) -> str:
         from app.services.bots.ml_model_artifacts import normalize_model_timeframe
@@ -44,6 +45,27 @@ class TransformerSignalStrategy(BaseStrategy):
         return normalize_model_timeframe(
             self._cfg.get("timeframe") or self.config.get("timeframe")
         )
+
+    def _sync_lookback_from_model(self, symbol: str, *, pinned=None, timeframe: str | None = None) -> int:
+        """ONNX seq length is fixed at export — prefer trained lookback over sweep config."""
+        lookback = self._lookback
+        if self._lookback_synced:
+            return lookback
+        store = get_transformer_store()
+        meta = store.get_metadata(symbol, model_version=pinned or None, timeframe=timeframe)
+        if not meta:
+            # Model not loaded yet — retry on a later bar/batch; don't latch forever.
+            return lookback
+        trained_lb = int((meta.get("config") or {}).get("lookback") or lookback)
+        if trained_lb > 0 and trained_lb != self._lookback:
+            logger.info(
+                "TRANSFORMER_SIGNAL lookback pinned to trained artifact (%s → %s) for %s",
+                self._lookback, trained_lb, symbol,
+            )
+            self._lookback = trained_lb
+            self._window = deque(list(self._window)[-trained_lb:], maxlen=trained_lb)
+        self._lookback_synced = True
+        return self._lookback
 
     def _format_result(self, df_row, result, *, symbol: str = "", timeframe: str = "") -> dict:
         if result is None:
@@ -100,7 +122,9 @@ class TransformerSignalStrategy(BaseStrategy):
         if not symbol:
             return out
 
-        lookback = self._lookback
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        lookback = self._sync_lookback_from_model(symbol, pinned=pinned, timeframe=tf)
         feat_mat = precompute_signal_feature_matrix(
             rows,
             feature_lookback=EVAL_FEATURE_LOOKBACK,
@@ -114,8 +138,6 @@ class TransformerSignalStrategy(BaseStrategy):
         from app.services.bots.ml_onnx_runtime import backtest_research_inference
 
         store = get_transformer_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         # live_aligned must use CPU sessions (research=False) to match evaluate().
         research = backtest_research_inference(self._cfg)
         batch_size = inference_batch_size(self._cfg)
@@ -156,13 +178,17 @@ class TransformerSignalStrategy(BaseStrategy):
         features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
         self._window.append(signal_features_to_vector(features))
 
-        if len(self._window) < self._lookback:
-            return {"signal": "NONE"}
-
         symbol = self._cfg.get("model_symbol") or str(df_row.get("_symbol", ""))
         if not symbol:
             symbol = str(self.config.get("symbol", "")).upper()
         if not symbol:
+            return {"signal": "NONE"}
+
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        self._sync_lookback_from_model(symbol, pinned=pinned, timeframe=tf)
+
+        if len(self._window) < self._lookback:
             return {"signal": "NONE"}
 
         from app.services.bots.ml_feature_drift import record_ml_inference_features
@@ -171,8 +197,6 @@ class TransformerSignalStrategy(BaseStrategy):
 
         window_array = np.array(list(self._window))
         store = get_transformer_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         result = store.predict(
             symbol, window_array, model_version=pinned or None, timeframe=tf,
         )

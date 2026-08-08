@@ -157,6 +157,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     { id: 't9', name: 'Donchian Breakout', strategy: 'DONCHIAN_BREAKOUT', category: 'breakout', execution_mode: 'BAR_CLOSE', allocation: 3000, config: { breakout_length: 20, exit_length: 10, atr_confirm_mult: 1.0, trailing_stop_percent: 3, take_profit_percent: 4, tp_mode: 'percent', direction_mode: 'BOTH' } },
     { id: 't10', name: 'Market Maker', strategy: 'MARKET_MAKING', category: 'market_making', execution_mode: 'BAR_CLOSE', allocation: 5000, config: { spread_pct: 0.002, max_skew: 0.5, vol_shutdown_mult: 2.5, inventory_target: 0, trailing_stop_percent: 1, tp_mode: 'none', direction_mode: 'BOTH' } },
     { id: 't11', name: 'Absorption Agent', strategy: 'ABSORPTION_AGENT', category: 'agent', execution_mode: 'BAR_CLOSE', allocation: 2000, config: pickDeployConfig('ABSORPTION_AGENT', { min_confidence: 0.55, trailing_stop_percent: 2, take_profit_percent: 2.5, tp_mode: 'percent', direction_mode: 'BOTH' }) },
+    { id: 't12', name: 'Regime Strategy Agent', strategy: 'REGIME_STRATEGY_AGENT', category: 'agent', execution_mode: 'BAR_CLOSE', allocation: 2000, config: pickDeployConfig('REGIME_STRATEGY_AGENT', { atr_ratio_elevated: 1.5, adx_trend: 25, regime_hysteresis_bars: 3, regime_min_hold_bars: 15, trailing_stop_percent: 2, take_profit_percent: 3, tp_mode: 'percent', direction_mode: 'BOTH' }) },
     ...ML_STRATEGY_IDS.map((id, i) => {
       const meta = getStrategyMeta(id);
       const allocation = defaultAllocationFor(id);
@@ -302,7 +303,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     const trades = [];
     let wins = 0;
     let losses = 0;
-    let total_sells = 0;
+    let total_exits = 0;
     let total_pnl = 0;
     let totalWinPnl = 0;
     let totalLossPnl = 0;
@@ -318,8 +319,14 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       if (typeof ts === 'number') {
         ts = ts < 10000000000 ? ts * 1000 : ts;
       } else if (typeof ts === 'string' && ts) {
-        const parsed = new Date(ts).getTime();
-        ts = isNaN(parsed) ? Date.now() : parsed;
+        // SQLite/OMS often emit naive UTC ("2026-08-04 10:45:00"). Treat as UTC so
+        // chart markers align with exchange candle times (local Date() shifts them).
+        const raw = ts.trim();
+        const normalized = /Z|[+-]\d{2}:?\d{2}$/.test(raw)
+          ? raw
+          : `${raw.replace(' ', 'T')}Z`;
+        const parsed = new Date(normalized).getTime();
+        ts = Number.isNaN(parsed) ? Date.now() : parsed;
       } else {
         ts = Date.now();
       }
@@ -331,13 +338,15 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         total_fills++;
         gross_volume += (trade.trade_value || 0);
 
-        if (trade.side === 'SELL' && trade.realized_pnl != null) {
-          total_sells++;
+        // Exit fills only: entries never persist realized_pnl; count by pnl so
+        // BUY-to-cover exits are included (previous SELL-only check dropped them).
+        if (trade.realized_pnl != null) {
+          total_exits++;
           const pnl = trade.realized_pnl;
           total_pnl += pnl;
-          
-          if (pnl > best_trade || total_sells === 1) best_trade = pnl;
-          if (pnl < worst_trade || total_sells === 1) worst_trade = pnl;
+
+          if (pnl > best_trade || total_exits === 1) best_trade = pnl;
+          if (pnl < worst_trade || total_exits === 1) worst_trade = pnl;
 
           if (pnl > 0) {
             wins++;
@@ -350,7 +359,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
       }
     }
 
-    const win_rate = total_sells > 0 ? (wins / total_sells) * 100 : 0.0;
+    const win_rate = total_exits > 0 ? (wins / total_exits) * 100 : 0.0;
     const profit_factor = Math.abs(totalLossPnl) > 0 ? (totalWinPnl / Math.abs(totalLossPnl)) : (totalWinPnl > 0 ? 99.9 : 0.0);
     const avg_win = wins > 0 ? totalWinPnl / wins : 0.0;
     const avg_loss = losses > 0 ? totalLossPnl / losses : 0.0;
@@ -361,7 +370,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         total_pnl,
         wins,
         losses,
-        total_sells,
+        total_exits,
         win_rate,
         profit_factor,
         best_trade,
@@ -468,18 +477,31 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
     set({ botConfig: next });
   },
   addBotLog: (log) => set((state) => {
-    const entry = normalizeBotLogEntry(log, Date.now());
-    const newLogs = [entry, ...state.botLogs];
-    if (newLogs.length > 100) newLogs.pop();
+    const entry = normalizeBotLogEntry(log);
+    // Drop exact id matches (history replay / dual-transport) so keys stay unique.
+    const withoutDup = entry.id
+      ? state.botLogs.filter((l) => l.id !== entry.id)
+      : state.botLogs;
+    const newLogs = [entry, ...withoutDup];
+    if (newLogs.length > 100) newLogs.length = 100;
     return { botLogs: newLogs };
   }),
   setBotLogs: (logsArray) => set({
     botLogs: [...(Array.isArray(logsArray) ? logsArray : [])]
       .sort((a, b) => {
-        const ta = a.timestamp ?? 0;
-        const tb = b.timestamp ?? 0;
-        const toMs = (v) => (typeof v === 'string' ? new Date(v).getTime() : Number(v) || 0);
-        return toMs(tb) - toMs(ta);
+        const toMs = (v) => {
+          if (v == null) return 0;
+          if (typeof v === 'number') return v;
+          const raw = typeof v === 'string' && !v.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(v)
+            ? `${v}Z`
+            : v;
+          const ms = new Date(raw).getTime();
+          return Number.isFinite(ms) ? ms : 0;
+        };
+        const tb = toMs(b.timestamp);
+        const ta = toMs(a.timestamp);
+        if (tb !== ta) return tb - ta;
+        return Number(b.id || 0) - Number(a.id || 0);
       })
       .slice(0, 100)
       .map((log, i) => normalizeBotLogEntry(log, i)),

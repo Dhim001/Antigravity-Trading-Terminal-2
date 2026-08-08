@@ -22,9 +22,10 @@ export const ML_TRAIN_TIMEOUT_MS = Object.freeze({
 
 export const ML_VALIDATE_TIMEOUT_MS = Object.freeze({
   // Capacity-parity folds ≈ full Train × n_folds — give multi-hour headroom.
+  // HistGBM + PBO at 12mo routinely runs ~80–100+ min on CPU.
   RL_PPO_AGENT: 10_800_000, // 180 min — multi-fold PPO at train timesteps
   deep: 7_200_000, // 120 min — LSTM/TCN/Transformer/VAE/GNN at train epochs
-  default: 3_600_000, // 60 min — HistGBM + PBO
+  default: 5_400_000, // 90 min — HistGBM + PBO (was 60; real runs exceeded it)
 });
 
 /** Extra headroom after the nominal budget before the UI soft-budget toast. */
@@ -61,8 +62,18 @@ export function isTransientMlPollError(err) {
   const msg = String(err?.message || err || '');
   // During LSTM sequence build / CUDA train the event loop can starve; treat
   // gateway and overload responses as retryable so the UI does not abandon
-  // a still-running server job.
-  return /timed out|failed to fetch|network|load failed|econnreset|econnrefused|http 429|http 502|http 503|http 504|http 500|too many requests|server busy|invalid json from \/api\/v1\/ml\/jobs/i.test(msg);
+  // a still-running server job. Bare "timeout" is Electron/Chromium AbortError.
+  return /timed?\s*out|^timeout$|failed to fetch|network|load failed|econnreset|econnrefused|http 429|http 502|http 503|http 504|http 500|too many requests|server busy|invalid json from \/api\/v1\/ml\/jobs/i.test(msg);
+}
+
+/** True when a Lab validation failure is a client wait abort, not a bad model. */
+export function isMlClientTimeoutError(errOrMessage) {
+  const msg = String(
+    (errOrMessage && typeof errOrMessage === 'object')
+      ? (errOrMessage.message || errOrMessage.error || '')
+      : (errOrMessage || ''),
+  );
+  return /timed?\s*out|^timeout$/i.test(msg) || isAbortError(errOrMessage);
 }
 
 /**

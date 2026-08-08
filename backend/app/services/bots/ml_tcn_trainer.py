@@ -537,9 +537,14 @@ class TcnModelStore:
             return None
         scaler = self._scalers.get(key)
         if scaler:
-            mean = np.array(scaler["mean"], dtype=np.float32)
-            std = np.array(scaler["std"], dtype=np.float32)
-            window = (window.astype(np.float32) - mean) / std
+            from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+            window = apply_feature_scaler(
+                window,
+                scaler["mean"],
+                scaler["std"],
+                log_label=f"TCN[{symbol}]",
+            )
         try:
             returns = session.run(None, {"input": window.reshape(1, *window.shape).astype(np.float32)})[0][0]
             return returns
@@ -591,9 +596,13 @@ class TcnModelStore:
                 raise InterruptedError("ml_batch_cancel_requested")
             end = min(start + bs, n)
             chunk = windows[start:end].astype(np.float32)
-            if mean is not None and std is not None:
-                chunk = (chunk - mean) / std
             try:
+                if mean is not None and std is not None:
+                    from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+                    chunk = apply_feature_scaler(
+                        chunk, mean, std, log_label=f"TCN[{symbol}]",
+                    )
                 preds = session.run(None, {"input": chunk})[0]
             except Exception as exc:
                 logger.warning(

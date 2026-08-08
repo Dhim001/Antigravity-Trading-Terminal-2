@@ -80,13 +80,16 @@ import {
 } from '@/lib/mlPipeline';
 import {
   formatMlJobBudgetLabel,
+  isMlClientTimeoutError,
   mlJobTimeoutMs,
 } from '@/lib/mlJobTimeouts';
 import {
   activateMlVersion,
   deleteMlVersion,
+  updateMlVersion,
   submitMlTrainJob,
   submitMlValidateJob,
+  pollMlJob,
 } from '@/lib/mlLabApi';
 import { clearMlLabRequest, takeMlLabRequest } from '@/lib/mlLabRequests';
 import {
@@ -136,6 +139,8 @@ export default function ModelTrainingDashboard({
     setActivatingVersionId,
     deletingVersionId,
     setDeletingVersionId,
+    updatingVersionId,
+    setUpdatingVersionId,
     showPollLog,
     setShowPollLog,
     challengerDismissed,
@@ -216,12 +221,16 @@ export default function ModelTrainingDashboard({
       toast.error('Activate another version before deleting the active one');
       return;
     }
+    if (version.protected) {
+      toast.error('Unkeep this version first (star), then delete');
+      return;
+    }
     const pin = version.trained_at || version.version_id;
     if (!pin) {
       toast.error('Version has no trained_at / version_id');
       return;
     }
-    const label = version.version_id || pin;
+    const label = version.display_name || version.version_id || pin;
     if (!window.confirm(
       `Delete model version ${label} for ${strategy} / ${activeSymbol}?\n\nThis removes the snapshot from disk and cannot be undone.`,
     )) {
@@ -251,6 +260,41 @@ export default function ModelTrainingDashboard({
     }
   };
 
+  const handleUpdateVersion = async (version, patch = {}) => {
+    if (!activeSymbol || !strategy || !version || updatingVersionId) return;
+    const pin = version.trained_at || version.version_id;
+    if (!pin) {
+      toast.error('Version has no trained_at / version_id');
+      return;
+    }
+    setUpdatingVersionId(version.version_id || pin);
+    try {
+      const body = await updateMlVersion({
+        symbol: activeSymbol,
+        strategy,
+        timeframe: trainingTimeframe,
+        model_version: pin,
+        version_id: version.version_id,
+        ...patch,
+      });
+      if (body?.ok) {
+        setCachedModelStatus(activeSymbol, strategy, body, trainingTimeframe);
+        setStatus(body);
+        if (patch.protected != null) {
+          toast.message(patch.protected ? 'Version marked Keep (skip prune)' : 'Keep removed');
+        } else {
+          toast.message(patch.clear_display_name ? 'Name cleared' : 'Version renamed');
+        }
+      } else {
+        toast.error(body?.error || 'Failed to update version');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Update request failed');
+    } finally {
+      setUpdatingVersionId(null);
+    }
+  };
+
   // Fail the pipeline when a stage's job cannot even start, so the run never
   // parks at TRAINING/VALIDATING forever (status bar + quick actions unblock).
   const failPipelineAtStage = (stage, strat, symbol, error) => {
@@ -277,74 +321,89 @@ export default function ModelTrainingDashboard({
     const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
-    const isChampion = Boolean(championTrain || Object.keys(hp).length);
+    // Queue / decay retrain only: champion write + live-model HP reuse (no Lab knob overlay).
+    // Apply & Retrain keeps Lab knobs + Optuna hp — do NOT treat championTrain as reuseLive
+    // or tuned Apply would silently prefer stale live metadata over Advanced / best_config.
+    const isChampion = Boolean(championTrain || fromQueue || Object.keys(hp).length);
+    const reuseLive = Boolean(fromQueue);
     localJobWaiterRef.current = true;
     let trainUiCompleted = false;
     let trainOk = false;
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
-          isChampion
-            ? `Champion retrain ${strat} with tuned hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
-            : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
+          reuseLive
+            ? `Retrain ${strat} with saved model hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
+            : isChampion
+              ? `Champion retrain ${strat} with tuned hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
+              : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
         );
       }
+      const baseConfig = reuseLive
+        ? {
+            timeframe: trainingTimeframe,
+            training_window_months: Number(trainingWindow),
+            champion_train: true,
+            use_optimized_hyperparams: true,
+            retrain_from_live_model: true,
+            skip_persist: false,
+            skip_snapshot: false,
+            ...hp,
+          }
+        : {
+            timeframe: trainingTimeframe,
+            training_window_months: Number(trainingWindow),
+            champion_train: isChampion,
+            skip_persist: false,
+            skip_snapshot: false,
+            ...(strat === 'RL_PPO_AGENT'
+              ? {
+                  total_timesteps: parsePositiveInt(
+                    knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
+                  ),
+                  hidden_dim: parsePositiveInt(
+                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                  ),
+                }
+              : {}),
+            ...(DEEP_ML_STRATEGIES.has(strat)
+              ? {
+                  epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
+                  early_stop_patience: parsePositiveInt(
+                    knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
+                  ),
+                  hidden_dim: parsePositiveInt(
+                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
+                  ),
+                  ...(strat === 'TRANSFORMER_SIGNAL'
+                    ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
+                    : {}),
+                  ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
+                }
+              : {}),
+            ...(strat === 'ML_SIGNAL_BOOST'
+              ? {
+                  gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
+                  gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
+                }
+              : {}),
+            ...hp,
+            skip_persist: false,
+            skip_snapshot: false,
+            ...(isChampion
+              ? { champion_train: true, use_optimized_hyperparams: true }
+              : (
+                typeof sessionStorage !== 'undefined'
+                && sessionStorage.getItem(`ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`) === '1'
+                  ? { use_optimized_hyperparams: true }
+                  : {}
+              )),
+          };
       const body = await submitMlTrainJob({
         symbol,
         strategy: strat,
         async: true,
-        config: {
-          timeframe: trainingTimeframe,
-          training_window_months: Number(trainingWindow),
-          // Force a real Lab champion write — never inherit Optuna trial
-          // skip_persist / _wf_mode that produce empty metrics + no artifact.
-          champion_train: isChampion,
-          skip_persist: false,
-          skip_snapshot: false,
-          ...(strat === 'RL_PPO_AGENT'
-            ? {
-                total_timesteps: parsePositiveInt(
-                  knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
-                ),
-                hidden_dim: parsePositiveInt(
-                  knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                ),
-              }
-            : {}),
-          ...(DEEP_ML_STRATEGIES.has(strat)
-            ? {
-                epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
-                early_stop_patience: parsePositiveInt(
-                  knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
-                ),
-                hidden_dim: parsePositiveInt(
-                  knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                ),
-                ...(strat === 'TRANSFORMER_SIGNAL'
-                  ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
-                  : {}),
-                ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
-              }
-            : {}),
-          ...(strat === 'ML_SIGNAL_BOOST'
-            ? {
-                gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
-                gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
-              }
-            : {}),
-          ...hp,
-          // Re-assert after hp spread — Optuna trial flags must never win.
-          skip_persist: false,
-          skip_snapshot: false,
-          ...(isChampion
-            ? { champion_train: true, use_optimized_hyperparams: true }
-            : (
-              typeof sessionStorage !== 'undefined'
-              && sessionStorage.getItem(`ml-lab-use-opt-hp:${String(symbol).toUpperCase()}:${String(strat).toUpperCase()}`) === '1'
-                ? { use_optimized_hyperparams: true }
-                : {}
-            )),
-        },
+        config: baseConfig,
       });
       if (!body?.ok) {
         toast.error(body?.error || 'Training failed to start');
@@ -692,13 +751,52 @@ export default function ModelTrainingDashboard({
       }
     } catch (err) {
       const msg = err?.message || String(err) || 'Validation request failed';
+      const jobId = getMlTrainingSession()?.jobId;
+      // Client HTTP abort often surfaces as bare "timeout" while the server job
+      // is still running (or already finished). Prefer a final status read.
+      if (jobId && isMlClientTimeoutError(err)) {
+        try {
+          const body = await pollMlJob(jobId);
+          const job = body?.job;
+          if (job && (job.status === 'done' || job.status === 'error' || job.status === 'cancelled')) {
+            const result = (job.result && typeof job.result === 'object')
+              ? job.result
+              : { ok: false, error: job.error || 'Validation failed' };
+            setMlValidation(result);
+            if (job.status === 'done' && result.ok) {
+              validateOk = true;
+              toast.success('Walk-forward validation finished (recovered after client wait timeout)');
+              const pipe = getMlPipeline();
+              if (pipe.pipelineId && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
+                advancePipeline(pipe.pipelineId, { result });
+              }
+              return validateOk;
+            }
+            toast.error(job.error || result.error || 'Validation failed');
+            return false;
+          }
+          if (job && (job.status === 'running' || job.status === 'queued')) {
+            setMlValidation(null);
+            toast.message(
+              'Client wait timed out — validation is still running on the server. Progress will update when it finishes.',
+            );
+            return false;
+          }
+        } catch {
+          /* fall through to friendly timeout message */
+        }
+      }
       const badJson = /invalid json|internal server error/i.test(msg);
       const friendly = badJson
         ? 'Validation hit a server error (non-JSON response). Recycle the backend and retry — RL walk-forward needs the latest ONNX export fix.'
-        : msg;
-      setMlValidation({ ok: false, error: friendly });
+        : (isMlClientTimeoutError(err)
+          ? 'Client wait timed out — the server may still finish. Check Recent runs / model status, or re-open Model Training.'
+          : msg);
+      // Don't pin a bare "timeout" error over a later persisted walk_forward stamp.
+      if (isMlClientTimeoutError(err)) setMlValidation(null);
+      else setMlValidation({ ok: false, error: friendly });
       if (!isAbortError(err)) {
-        toast.error(badJson ? 'Validation failed — recycle backend and retry' : msg);
+        toast.error(badJson ? 'Validation failed — recycle backend and retry' : friendly);
       }
       const pipe = getMlPipeline();
       if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
@@ -851,19 +949,31 @@ export default function ModelTrainingDashboard({
     ? `${queueTelemetry.active} running · ${queueTelemetry.queued} queued`
     : null;
 
-  const displayValidation = validation || (
-    status?.walk_forward || status?.pbo
+  const displayValidation = (() => {
+    const sessionVal = validation;
+    const persisted = (status?.walk_forward || status?.pbo)
       ? {
         ok: Boolean(status.walk_forward?.ok),
         mean_accuracy: status.walk_forward?.mean_oos_accuracy,
         n_folds: status.walk_forward?.n_folds,
         successful_folds: status.walk_forward?.successful_folds,
         recommendation: status.walk_forward?.recommendation,
+        aggregate: status.walk_forward?.aggregate,
         pbo: status.pbo,
         _persisted: true,
       }
-      : null
-  );
+      : null;
+    // Bare client "timeout" must not hide a successful server stamp.
+    if (
+      sessionVal
+      && sessionVal.ok === false
+      && isMlClientTimeoutError(sessionVal.error)
+      && persisted?.ok
+    ) {
+      return persisted;
+    }
+    return sessionVal || persisted;
+  })();
 
   const challengerHint = (
     !challengerDismissed
@@ -1187,8 +1297,10 @@ export default function ModelTrainingDashboard({
         versions={status?.versions}
         activatingVersionId={activatingVersionId}
         deletingVersionId={deletingVersionId}
+        updatingVersionId={updatingVersionId}
         onActivateVersion={handleActivateVersion}
         onDeleteVersion={handleDeleteVersion}
+        onUpdateVersion={handleUpdateVersion}
         onCopyPin={handleCopyPin}
       />
 
@@ -1412,7 +1524,11 @@ export default function ModelTrainingDashboard({
         </ul>
       </section>
 
-      <MlTrainRunsTable trainRuns={trainRuns} activeSymbol={activeSymbol} />
+      <MlTrainRunsTable
+        trainRuns={trainRuns}
+        activeSymbol={activeSymbol}
+        versions={status?.versions}
+      />
 
       <MlRetrainQueue
         retrainActions={retrainActions}

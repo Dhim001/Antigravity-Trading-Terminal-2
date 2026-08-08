@@ -102,3 +102,57 @@ describe('patchMainSlotInPlace', () => {
     expect(oor.data).toBe(line);
   });
 });
+
+describe('trade chart markers', () => {
+  const base = 1_700_000_000;
+  const candles = Array.from({ length: 8 }, (_, i) => ({
+    time: base + i * 60,
+    open: 100,
+    high: 101,
+    low: 99,
+    close: 100.5,
+    volume: 1,
+  }));
+
+  it('tradeSymbolsMatch accepts Alpaca wire crypto symbols', async () => {
+    const { tradeSymbolsMatch } = await import('./chartHelpers');
+    expect(tradeSymbolsMatch('BTC/USD', 'BTCUSDT')).toBe(true);
+    expect(tradeSymbolsMatch('BTCUSD', 'BTCUSDT')).toBe(true);
+    expect(tradeSymbolsMatch('AAPL', 'AAPL')).toBe(true);
+    expect(tradeSymbolsMatch('ETHUSDT', 'BTCUSDT')).toBe(false);
+  });
+
+  it('emits category-index scatter points that survive conflation', async () => {
+    const { buildTradeMarkers } = await import('./chartHelpers');
+    const { conflateBars } = await import('./conflateBars');
+    const trades = [{
+      symbol: 'BTC/USD',
+      status: 'FILLED',
+      side: 'BUY',
+      timestamp: (base + 3 * 60) * 1000,
+      quantity: 0.01,
+      average_fill_price: 100.2,
+    }];
+    const full = buildTradeMarkers(trades, 'BTCUSDT', candles, 60);
+    expect(full).toHaveLength(1);
+    expect(full[0].value[0]).toBe(3);
+
+    const conflated = conflateBars(candles, 2);
+    const markers = buildTradeMarkers(trades, 'BTCUSDT', conflated, 120);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].value[0]).toBeGreaterThanOrEqual(0);
+    expect(markers[0].value[0]).toBeLessThan(conflated.length);
+    expect(Number.isFinite(markers[0].value[1])).toBe(true);
+  });
+
+  it('toSignalScatterPoint uses bar index not unix category key', async () => {
+    const { toSignalScatterPoint } = await import('./chartHelpers');
+    const pt = toSignalScatterPoint(candles, 2, 99.5, {
+      value: 'BUY',
+      symbol: 'circle',
+      symbolSize: 8,
+      itemStyle: { color: '#0f0' },
+    });
+    expect(pt.value).toEqual([2, 99.5]);
+  });
+});

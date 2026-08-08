@@ -297,21 +297,35 @@ export default function TaOptimizerPanel({
           next[def.key] = true;
         }
       }
+      // Hiding train axes can leave zero selectable params (e.g. only lookback was on).
+      if (!includeTrainHyperparams && !paramDefs.some((d) => next[d.key])) {
+        for (const def of paramDefs) {
+          next[def.key] = Boolean(defaults[def.key]);
+        }
+      }
       return next;
     });
     setValuesByKey((prev) => {
       const seeded = defaultValuesForFields(paramDefs, botConfig);
-      return { ...seeded, ...prev };
+      const next = { ...seeded, ...prev };
+      // Fill blank Values for axes that are/will be enabled so Run sweep unlocks.
+      for (const def of paramDefs) {
+        if (!String(next[def.key] ?? '').trim()) {
+          next[def.key] = def.placeholder || seeded[def.key] || '';
+        }
+      }
+      return next;
     });
   }, [includeTrainHyperparams, paramDefs, strategy, botConfig]);
 
   // Seed newly appeared param keys without clobbering user edits.
   useEffect(() => {
+    const defaults = defaultSweepEnabled(strategy, paramDefs);
     setValuesByKey((prev) => {
-      const defaults = defaultValuesForFields(paramDefs, botConfig);
+      const seeded = defaultValuesForFields(paramDefs, botConfig);
       let changed = false;
       const next = { ...prev };
-      for (const [key, val] of Object.entries(defaults)) {
+      for (const [key, val] of Object.entries(seeded)) {
         if (next[key] === undefined) {
           next[key] = val;
           changed = true;
@@ -324,13 +338,40 @@ export default function TaOptimizerPanel({
       const next = { ...prev };
       for (const def of paramDefs) {
         if (next[def.key] === undefined) {
-          next[def.key] = false;
+          // Use strategy defaults — never leave new axes stuck unchecked with empty Values.
+          next[def.key] = Boolean(defaults[def.key]);
           changed = true;
         }
       }
+      // Only auto-restore when every visible key is still unset (e.g. train HPs just
+      // filtered out). Do NOT re-enable after the user explicitly unchecks all axes.
+      const allUnset = paramDefs.length > 0
+        && paramDefs.every((d) => prev[d.key] === undefined);
+      if (allUnset && !paramDefs.some((d) => next[d.key])) {
+        for (const def of paramDefs) {
+          next[def.key] = Boolean(defaults[def.key]);
+        }
+        changed = true;
+      }
       return changed ? next : prev;
     });
-  }, [paramDefs, botConfig]);
+  }, [paramDefs, botConfig, strategy]);
+
+  // Ensure enabled axes always have Values text (otherwise sweepGrid stays null).
+  useEffect(() => {
+    setValuesByKey((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      const seeded = defaultValuesForFields(paramDefs, botConfig);
+      for (const def of paramDefs) {
+        if (!enabled[def.key]) continue;
+        if (String(next[def.key] ?? '').trim()) continue;
+        next[def.key] = def.placeholder || seeded[def.key] || '';
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [enabled, paramDefs, botConfig]);
 
   useEffect(() => {
     if (!optimizerPreset) return;
@@ -920,7 +961,10 @@ export default function TaOptimizerPanel({
         <h5 className="algo-backtest-sweep__card-title">Parameters</h5>
         {!sweepGrid && (
           <p className="algo-backtest-sweep__hint">
-            Check at least one parameter and enter comma-separated Values to enable Run sweep.
+            Check at least one parameter and enter comma-separated Values to enable Run sweep
+            {includeTrainHyperparams
+              ? ''
+              : ' (training knobs like lookback are hidden — enable “Include training hyperparams” or tick a risk/confidence field)'}.
           </p>
         )}
         <div className="algo-backtest-sweep__param-head" aria-hidden>

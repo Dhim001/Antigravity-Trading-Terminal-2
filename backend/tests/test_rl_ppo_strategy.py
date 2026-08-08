@@ -42,6 +42,24 @@ class TestTradingEnv:
         assert obs.shape == (OBS_DIM,)
         assert all(np.isfinite(obs))
 
+    def test_env_build_cancelled_via_progress_flag(self, tmp_path):
+        from app.services.bots.ml_job_progress import (
+            make_progress_path,
+            request_ml_cancel_file,
+        )
+        from app.services.bots.rl_trading_env import TradingEnv
+
+        candles = self._make_candles(5000)
+        path = make_progress_path("test_env_cancel")
+        request_ml_cancel_file(path)
+        try:
+            with pytest.raises(InterruptedError):
+                TradingEnv(candles, progress_path=path)
+        finally:
+            from app.services.bots.ml_job_progress import cleanup_ml_progress
+
+            cleanup_ml_progress(path)
+
     def test_step_returns_correct_types(self):
         from app.services.bots.rl_trading_env import TradingEnv, ACTION_HOLD
         candles = self._make_candles(100)

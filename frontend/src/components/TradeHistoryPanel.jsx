@@ -255,7 +255,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
             icon={Target}
             value={`${fmt(stats.win_rate, 1)}%`}
             tone={stats.win_rate >= 50 ? 'up' : stats.win_rate < 40 ? 'down' : 'neutral'}
-            sub={`${stats.total_sells} closed`}
+            sub={`${stats.total_exits} closed`}
           />
           <StatCard
             label="Profit Factor"

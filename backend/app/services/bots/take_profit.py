@@ -14,6 +14,7 @@ STRATEGY_TP_DEFAULTS: dict[str, dict[str, Any]] = {
     "TICK_BREAKOUT": {"take_profit_percent": 0.25, "tp_mode": "percent"},
     "CHART_AGENT": {"take_profit_percent": 3.0, "tp_mode": "percent"},
     "ABSORPTION_AGENT": {"take_profit_percent": 2.5, "tp_mode": "percent"},
+    "REGIME_STRATEGY_AGENT": {"take_profit_percent": 3.0, "tp_mode": "percent"},
     "CVD_DIVERGENCE": {"take_profit_percent": 2.5, "tp_mode": "percent"},
     "WYCKOFF_SPRING": {"take_profit_percent": 3.0, "tp_mode": "percent"},
     "VPOC_REVERSION": {"take_profit_percent": 2.0, "tp_mode": "percent"},

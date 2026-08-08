@@ -124,6 +124,14 @@ export const STRATEGY_CATALOG = Object.freeze({
     tagline: 'Multi-domain footprint scoring',
     style: 'agent',
   },
+  REGIME_STRATEGY_AGENT: {
+    label: 'Regime Strategy Agent',
+    shortLabel: 'Regime',
+    icon: Bot,
+    color: '#8b5cf6',
+    tagline: 'ATR/ADX regime → TA specialist',
+    style: 'agent',
+  },
 
   /* ── ML / DL / RL strategies ───────────────────────────────── */
   ML_SIGNAL_BOOST: {
@@ -223,6 +231,7 @@ export const STRATEGY_ALLOCATION_DEFAULTS = Object.freeze({
   TICK_BREAKOUT: 1000,
   CHART_AGENT: 2000,
   ABSORPTION_AGENT: 2000,
+  REGIME_STRATEGY_AGENT: 2000,
   ICT_SMC: 2000,
   DONCHIAN_BREAKOUT: 3000,
   MARKET_MAKING: 5000,

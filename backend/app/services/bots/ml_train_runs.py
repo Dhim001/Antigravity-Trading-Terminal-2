@@ -69,9 +69,18 @@ def _extract_metrics(result: dict | None) -> dict[str, Any]:
         "epochs_budget",
         "val_loss",
         "train_accuracy",
+        "best_score",
+        "best_trial",
+        "trials_completed",
     ):
         if src.get(key) is not None:
             metrics[key] = _finite_or_none(src.get(key))
+    # Sweep / Optuna summaries sometimes nest best metrics.
+    best = result.get("best") if isinstance(result.get("best"), dict) else {}
+    if best.get("mean_return_pct") is not None:
+        metrics.setdefault("best_mean_return", _finite_or_none(best.get("mean_return_pct")))
+    if best.get("score") is not None:
+        metrics.setdefault("best_score", _finite_or_none(best.get("score")))
     if src.get("early_stopped") is not None:
         metrics["early_stopped"] = bool(src.get("early_stopped"))
     if result.get("early_stopped") is not None:
@@ -136,6 +145,127 @@ def _extract_timeframe(result: dict | None, job: dict | None = None) -> str | No
     return None
 
 
+def _extract_version_id(result: dict | None, job: dict | None = None) -> str | None:
+    """Best-effort model version / pin from train or validate payloads."""
+    result = result if isinstance(result, dict) else {}
+    job = job if isinstance(job, dict) else {}
+    meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    vp = result.get("validation_persisted") if isinstance(result.get("validation_persisted"), dict) else {}
+    cfg = result.get("config") if isinstance(result.get("config"), dict) else {}
+    jcfg = job.get("config") if isinstance(job.get("config"), dict) else {}
+    candidates = [
+        result.get("version_id"),
+        meta.get("version_id"),
+        vp.get("version_id"),
+        result.get("model_version"),
+        meta.get("model_version"),
+        cfg.get("model_version"),
+        job.get("model_version"),
+        jcfg.get("model_version"),
+        result.get("trained_at"),
+        meta.get("trained_at"),
+        vp.get("trained_at"),
+        job.get("trained_at"),
+    ]
+    for raw in candidates:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return None
+
+
+def _extract_display_name(result: dict | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    for raw in (
+        result.get("display_name"),
+        meta.get("display_name"),
+        (result.get("validation_persisted") or {}).get("display_name")
+        if isinstance(result.get("validation_persisted"), dict)
+        else None,
+    ):
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    return None
+
+
+def _model_identity(strategy: str | None) -> dict[str, str | None]:
+    """Human-readable model family + primary artifact for a strategy."""
+    key = str(strategy or "").upper()
+    try:
+        from app.services.bots.ml_registry import model_type_label, primary_artifact_name
+
+        return {
+            "model_label": model_type_label(key) if key else None,
+            "artifact": primary_artifact_name(key) if key else None,
+        }
+    except Exception:
+        return {"model_label": key.lower() if key else None, "artifact": None}
+
+
+def _lookup_version_meta(
+    strategy: str | None,
+    symbol: str | None,
+    timeframe: str | None,
+    version_id: str | None = None,
+    *,
+    versions_cache: dict[tuple[str, str, str], list] | None = None,
+) -> dict[str, Any]:
+    """Resolve display_name for a known version_id from the on-disk index.
+
+    Never invents a champion pin when ``version_id`` is missing or unmatched —
+    that would rewrite historical validate/sweep rows to today's current model.
+    """
+    out: dict[str, Any] = {}
+    if not strategy or not symbol or not version_id:
+        return out
+    try:
+        from app.services.bots.ml_model_artifacts import (
+            list_model_versions,
+            model_root_for,
+            normalize_model_timeframe,
+            version_id_from_iso,
+        )
+    except Exception:
+        return out
+    try:
+        tf = normalize_model_timeframe(timeframe) if timeframe else "1m"
+        cache_key = (str(strategy).upper(), str(symbol).upper(), tf)
+        if versions_cache is not None and cache_key in versions_cache:
+            versions = versions_cache[cache_key]
+        else:
+            root = model_root_for(str(strategy), str(symbol), tf)
+            versions = list_model_versions(root)
+            if versions_cache is not None:
+                versions_cache[cache_key] = versions
+    except Exception:
+        return out
+    if not versions:
+        return out
+
+    needle = str(version_id).strip()
+    vid = version_id_from_iso(needle)
+    match = None
+    for entry in versions:
+        eid = str(entry.get("version_id") or "")
+        eat = str(entry.get("trained_at") or "")
+        if eid == needle or eid == vid or eat == needle:
+            match = entry
+            break
+    if not isinstance(match, dict):
+        return out
+    if match.get("version_id"):
+        out["version_id"] = str(match["version_id"])
+    if match.get("display_name"):
+        out["display_name"] = str(match["display_name"]).strip()[:80]
+    if match.get("trained_at"):
+        out["trained_at"] = str(match["trained_at"])
+    return out
+
+
 def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
     """Insert one row from a finished in-memory job. Best-effort; never raises."""
     if not isinstance(job, dict):
@@ -161,14 +291,24 @@ def record_ml_train_run_from_job(job: dict[str, Any] | None) -> str | None:
     if status == "cancelled":
         error = error or "cancelled"
 
-    version_id = None
-    if result:
-        version_id = result.get("version_id") or (result.get("metadata") or {}).get("version_id")
-        if not version_id:
-            version_id = result.get("trained_at") or (result.get("metadata") or {}).get("trained_at")
-
+    version_id = _extract_version_id(result, job)
     metrics = _extract_metrics(result)
+    display_name = _extract_display_name(result)
     timeframe = _extract_timeframe(result, job)
+    # Only attach a custom name when we already have a real pin — never invent one.
+    if version_id and not display_name:
+        looked = _lookup_version_meta(
+            job.get("strategy"),
+            job.get("symbol"),
+            timeframe or job.get("timeframe"),
+            version_id,
+        )
+        if looked.get("display_name"):
+            display_name = looked["display_name"]
+        if looked.get("version_id"):
+            version_id = looked["version_id"]
+    if display_name:
+        metrics = {**metrics, "display_name": display_name}
     run_id = str(uuid.uuid4())
     try:
         conn = get_connection()
@@ -253,7 +393,24 @@ def list_ml_train_runs(
             params,
         )
         rows = cursor.fetchall()
-        return [_row_to_run(row) for row in rows]
+        runs = [_row_to_run(row) for row in rows]
+        # Only resolve custom names for rows that already have a pin — never invent pins.
+        versions_cache: dict[tuple[str, str, str], list] = {}
+        for run in runs:
+            if run.get("display_name") or not run.get("version_id"):
+                continue
+            looked = _lookup_version_meta(
+                run.get("strategy"),
+                run.get("symbol"),
+                run.get("timeframe"),
+                run.get("version_id"),
+                versions_cache=versions_cache,
+            )
+            if looked.get("display_name"):
+                run["display_name"] = looked["display_name"]
+            if looked.get("version_id"):
+                run["version_id"] = looked["version_id"]
+        return runs
     finally:
         conn.close()
 
@@ -327,10 +484,20 @@ def _row_to_run(row) -> dict[str, Any]:
         metrics = {k: v for k, v in metrics.items() if v is not None}
     else:
         metrics = {}
+    strategy = item.get("strategy")
+    identity = _model_identity(strategy)
+    display_name = None
+    if isinstance(metrics, dict) and metrics.get("display_name"):
+        display_name = str(metrics.get("display_name"))
+        metrics = {k: v for k, v in metrics.items() if k != "display_name"}
+    # model_name = stable family label; custom nicknames live in display_name only.
+    model_name = identity.get("model_label") or (
+        str(strategy).lower() if strategy else None
+    )
     return {
         "id": item.get("id"),
         "kind": item.get("kind"),
-        "strategy": item.get("strategy"),
+        "strategy": strategy,
         "symbol": item.get("symbol"),
         "timeframe": item.get("timeframe"),
         "started_at": item.get("started_at"),
@@ -343,4 +510,8 @@ def _row_to_run(row) -> dict[str, Any]:
         "version_id": item.get("version_id"),
         "job_id": item.get("job_id"),
         "created_at": item.get("created_at"),
+        "model_label": identity.get("model_label"),
+        "artifact": identity.get("artifact"),
+        "display_name": display_name,
+        "model_name": model_name,
     }

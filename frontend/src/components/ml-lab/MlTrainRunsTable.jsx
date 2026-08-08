@@ -1,10 +1,16 @@
 import { useVirtualRows, VirtualTablePadding } from '@/components/VirtualTableBody';
 import { cn } from '@/lib/utils';
-import { fmtMetric, formatDurationMs } from '@/components/ml-lab/MlLabConstants';
+import { formatDurationMs } from '@/components/ml-lab/MlLabConstants';
+import {
+  runModelLabel,
+  runResultLabel,
+  runTitle,
+  runVersionParts,
+} from '@/lib/mlTrainRunsDisplay';
 
-export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
+export function MlTrainRunsTable({ trainRuns, activeSymbol, versions = [] }) {
   const { onScroll: onRunsScroll, window: runsWindow } = useVirtualRows(trainRuns, {
-    rowHeight: 32,
+    rowHeight: 46,
     overscan: 6,
   });
 
@@ -26,6 +32,8 @@ export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
             <thead>
               <tr>
                 <th>When</th>
+                <th>Model</th>
+                <th>Version</th>
                 <th>Kind</th>
                 <th>TF</th>
                 <th>Result</th>
@@ -33,14 +41,12 @@ export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
               </tr>
             </thead>
             <tbody>
-              <VirtualTablePadding height={runsWindow.topPad} colSpan={5} />
+              <VirtualTablePadding height={runsWindow.topPad} colSpan={7} />
               {runsWindow.slice.map((run) => {
-                const metricHint = run.metrics?.mean_oos_accuracy
-                  ?? run.metrics?.mean_accuracy
-                  ?? run.metrics?.val_accuracy
-                  ?? run.metrics?.pbo;
+                const model = runModelLabel(run);
+                const version = runVersionParts(run, versions);
                 return (
-                  <tr key={run.id} title={run.error || run.version_id || ''}>
+                  <tr key={run.id} title={runTitle(run)}>
                     <td className="num-mono">
                       {run.finished_at
                         ? new Date(run.finished_at).toLocaleString(undefined, {
@@ -51,6 +57,30 @@ export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
                         })
                         : '—'}
                     </td>
+                    <td>
+                      <div className="ml-training__runs-model">
+                        <span className="ml-training__runs-model-name">{model}</span>
+                        <span className="ml-training__runs-model-meta num-mono text-muted-foreground">
+                          {[run.symbol || activeSymbol, run.artifact].filter(Boolean).join(' · ') || '—'}
+                        </span>
+                      </div>
+                    </td>
+                    <td title={run.version_id || version.name || ''}>
+                      <div className="ml-training__runs-version">
+                        {version.name ? (
+                          <span className="ml-training__runs-version-name">{version.name}</span>
+                        ) : null}
+                        {version.id ? (
+                          <span className="ml-training__runs-version-id num-mono text-muted-foreground">
+                            {version.id}
+                          </span>
+                        ) : (
+                          <span className="ml-training__runs-version-id num-mono text-muted-foreground">
+                            {version.emptyLabel}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td>{run.kind || '—'}</td>
                     <td className="num-mono text-muted-foreground">{run.timeframe || '—'}</td>
                     <td className={cn(
@@ -58,10 +88,7 @@ export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
                       run.ok ? 'text-emerald-400' : 'text-destructive',
                     )}
                     >
-                      {run.ok ? 'ok' : (run.error === 'cancelled' ? 'cancelled' : 'fail')}
-                      {metricHint != null
-                        ? ` · ${fmtMetric(metricHint, 3, 'mean_oos_accuracy') ?? metricHint}`
-                        : ''}
+                      {runResultLabel(run)}
                     </td>
                     <td className="num-mono text-right">
                       {formatDurationMs(run.duration_ms)}
@@ -69,7 +96,7 @@ export function MlTrainRunsTable({ trainRuns, activeSymbol }) {
                   </tr>
                 );
               })}
-              <VirtualTablePadding height={runsWindow.bottomPad} colSpan={5} />
+              <VirtualTablePadding height={runsWindow.bottomPad} colSpan={7} />
             </tbody>
           </table>
         </div>

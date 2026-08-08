@@ -159,6 +159,29 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
     "ABSORPTION_AGENT": {
         "atr_length": 14,
         "volume_ma_length": 20,
+        "min_confidence": 0.55,
+        "min_score": 2,
+        "exhaustion_bars": 3,
+        "structure_lookback": 20,
+        "direction_mode": "BOTH",
+    },
+    "REGIME_STRATEGY_AGENT": {
+        "atr_length": 14,
+        "adx_length": 14,
+        "atr_ratio_elevated": 1.5,
+        "adx_trend": 25,
+        "regime_hysteresis_bars": 3,
+        "regime_min_hold_bars": 15,
+        "rsi_length": 14,
+        "stoch_k": 14,
+        "stoch_d": 3,
+        "stoch_smooth": 3,
+        "bb_length": 20,
+        "bb_std": 2.0,
+        # Match SUPERTREND_ADX defaults so child merge / screener union stay aligned.
+        "st_length": 14,
+        "st_multiplier": 3.0,
+        "direction_mode": "BOTH",
     },
     "ML_SIGNAL_BOOST": {
         "rsi_length": 14,
@@ -359,9 +382,12 @@ MIN_WARMUP_BARS = 50
 
 
 def merge_strategy_config(strategy: str, config: dict | None) -> dict:
-    key = strategy.upper()
+    key = str(strategy or "").upper()
     defaults = STRATEGY_DEFAULTS.get(key, {})
-    return {**defaults, **(config or {})}
+    # JSON/FE often sends explicit nulls; do not let them wipe typed defaults
+    # (e.g. direction_mode=None → RiskGate AttributeError on .upper()).
+    overlay = {k: v for k, v in (config or {}).items() if v is not None}
+    return {**defaults, **overlay}
 
 
 def _fmt_band_std(std: float) -> str:
@@ -369,8 +395,14 @@ def _fmt_band_std(std: float) -> str:
 
 
 def _fmt_multiplier(mult: float) -> str:
+    """Format SuperTrend multiplier to match pandas_ta column suffixes.
+
+    Current pandas_ta emits ``3.0`` for whole multipliers (not ``3``).
+    """
     val = float(mult)
-    return str(int(val)) if val == int(val) else str(val)
+    if val == int(val):
+        return f"{int(val)}.0"
+    return str(val)
 
 
 def macd_hist_col(fast: int, slow: int, signal: int) -> str:
@@ -425,7 +457,7 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
 
     cfg = merge_strategy_config(strategy, config)
     out = df.copy()
-    key = strategy.upper()
+    key = str(strategy or "").upper()
 
     if key == "MACD_RSI":
         hist = macd_hist_col(cfg["macd_fast"], cfg["macd_slow"], cfg["macd_signal"])
@@ -488,6 +520,24 @@ def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) ->
     elif key == "ABSORPTION_AGENT":
         vol_ma = int(cfg.get("volume_ma_length", 20))
         out[f"volume_ma_{vol_ma}"] = out["volume"].rolling(vol_ma).mean().shift(1)
+        structure_lb = int(cfg.get("structure_lookback", 20))
+        out[f"rolling_low_{structure_lb}"] = out["low"].rolling(structure_lb).min().shift(1)
+        out[f"rolling_high_{structure_lb}"] = out["high"].rolling(structure_lb).max().shift(1)
+        # Exhaustion / inside-bar need short lookbacks of OHLC + volume
+        for i in range(1, int(cfg.get("exhaustion_bars", 3)) + 1):
+            out[f"close_shift_{i}"] = out["close"].shift(i)
+            out[f"open_shift_{i}"] = out["open"].shift(i)
+            out[f"volume_shift_{i}"] = out["volume"].shift(i)
+            out[f"high_shift_{i}"] = out["high"].shift(i)
+            out[f"low_shift_{i}"] = out["low"].shift(i)
+    elif key == "REGIME_STRATEGY_AGENT":
+        # Union of BRS + Supertrend + VWAP prep columns
+        st_len = int(cfg.get("st_length", 14))
+        st_mult = float(cfg.get("st_multiplier", 3.0))
+        st_dir = supertrend_dir_col(st_len, st_mult)
+        if st_dir in out.columns:
+            out[f"{st_dir}_prev"] = out[st_dir].shift(1)
+        out["close_prev"] = out["close"].shift(1)
 
     return out
 

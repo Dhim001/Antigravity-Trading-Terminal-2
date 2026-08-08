@@ -24,7 +24,14 @@
 
 ## Background & Problem Statement
 
-After deep analysis of the ML Lab (`ModelTrainingDashboard.jsx`, 2,872 lines), Algo Bot (`AlgoPanel.jsx`, 2,057 lines), and all supporting infrastructure (`mlTrainingSession.js`, `deployGate.js`, `BacktestWorkflowPresets.jsx`, `AutomationStudio.jsx`, `backtestPolling.js`, `mlBacktestRange.js`, `mlJobTimeouts.js`, `useResearchStore.js`, `protocol.js`), the current pipeline is **manual and fragmented**:
+After deep analysis of the ML Lab (`ModelTrainingDashboard.jsx`, decomposed into `ml-lab/*`),
+Algo Bot (`AlgoPanel.jsx`), and supporting infrastructure (`mlTrainingSession.js`, `deployGate.js`,
+`BacktestWorkflowPresets.jsx`, `AutomationStudio.jsx`, …), the current pipeline is **manual and
+fragmented**.
+
+**Artifact SSOT:** Lab strategy ids, on-disk subdirs, artifact filenames, and trainer import paths
+live in [`backend/app/services/bots/ml_registry.py`](../backend/app/services/bots/ml_registry.py).
+Meta-label GBM models remain separate under `data/meta_label_models/{bot_id}/` (not Lab-versioned).
 
 ```mermaid
 graph LR

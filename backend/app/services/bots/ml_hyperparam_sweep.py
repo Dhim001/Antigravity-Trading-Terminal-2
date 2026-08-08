@@ -11,18 +11,9 @@ import logging
 import time
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+from app.services.bots.ml_registry import SWEEPABLE_ML_STRATEGIES
 
-# Strategies supported by the auto-tune engine.
-SWEEPABLE_ML_STRATEGIES = frozenset({
-    "ML_SIGNAL_BOOST",
-    "LSTM_DIRECTION",
-    "TRANSFORMER_SIGNAL",
-    "TCN_MULTI_HORIZON",
-    "RL_PPO_AGENT",
-    "VAE_REGIME_DETECTOR",
-    "GNN_CROSS_ASSET",
-})
+logger = logging.getLogger(__name__)
 
 # Keys surfaced on live progress snapshots for the Auto-Tune UI.
 _PROGRESS_METRIC_KEYS = (

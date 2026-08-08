@@ -31,7 +31,7 @@ class StrategyFilter:
 
     def __init__(self, filter_strategy_instance: "BaseStrategy", mode: str = "TREND_GATE"):
         self.filter = filter_strategy_instance
-        self.mode = mode.upper()
+        self.mode = str(mode or "TREND_GATE").upper()
 
     def evaluate_gate(self, df_row: dict, primary_signal: str) -> tuple[bool, str]:
         """Check whether the primary signal passes the filter gate.
@@ -94,7 +94,7 @@ class StrategyFilter:
 
 def build_filter_from_config(bot_config: dict) -> StrategyFilter | None:
     """Create a StrategyFilter from bot config, or None if not configured."""
-    filter_name = (bot_config or {}).get("filter_strategy", "").strip()
+    filter_name = str((bot_config or {}).get("filter_strategy") or "").strip()
     if not filter_name:
         return None
 

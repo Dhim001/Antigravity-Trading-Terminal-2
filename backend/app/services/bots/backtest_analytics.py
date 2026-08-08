@@ -188,7 +188,7 @@ def _fetch_benchmark_closes(symbol: str, t0: int, t1: int, feed=None) -> list[di
 
     days = max(1, (t1 - t0) // 86400 + 2)
     period = f"{days}d" if days <= 59 else "3mo"
-    yf_sym = DEFAULT_BENCHMARKS.get(symbol.upper(), symbol)
+    yf_sym = DEFAULT_BENCHMARKS.get(str(symbol or "").upper(), symbol)
 
     closes: list[dict] = []
     if feed and hasattr(feed, "candles") and symbol in getattr(feed, "candles", {}):

@@ -123,12 +123,19 @@ export function isMlLabStandaloneLocation(search) {
   return readStandalonePanelQuery(search) === 'ml-lab';
 }
 
-export function standalonePanelUrl(panelId) {
+export function standalonePanelUrl(panelId, extraParams = {}) {
   const def = getStandalonePanelDef(panelId);
   if (!def) return typeof window !== 'undefined' ? window.location.href : '/';
-  if (typeof window === 'undefined') return `?${STANDALONE_PANEL_QUERY}=${def.query}`;
+  if (typeof window === 'undefined') {
+    const qs = new URLSearchParams({ [STANDALONE_PANEL_QUERY]: def.query, ...extraParams });
+    return `?${qs.toString()}`;
+  }
   const url = new URL(window.location.href);
   url.searchParams.set(STANDALONE_PANEL_QUERY, def.query);
+  for (const [key, value] of Object.entries(extraParams || {})) {
+    if (value == null || value === '') continue;
+    url.searchParams.set(key, String(value));
+  }
   url.hash = '';
   return url.toString();
 }
@@ -154,15 +161,21 @@ export function focusStandaloneWindow(panelId) {
 
 /**
  * Open a standalone panel window (call from a user click).
+ * @param {string} panelId
+ * @param {Record<string, string|number|boolean>} [extraParams] — extra query params (e.g. runId)
  * @returns {Window | null}
  */
-export function openStandaloneWindow(panelId) {
+export function openStandaloneWindow(panelId, extraParams = {}) {
   const def = getStandalonePanelDef(panelId);
   if (!def || typeof window === 'undefined') return null;
   const reg = detachedRegistry();
   const existing = reg?.[def.id];
   if (existing && !existing.closed) {
     try {
+      // Nudge an already-open window to load a run / tab when Detach is clicked again.
+      if (extraParams && Object.keys(extraParams).length) {
+        broadcastStandaloneEvent(def.id, 'navigate', extraParams);
+      }
       existing.focus();
     } catch {
       /* ignore */
@@ -170,7 +183,7 @@ export function openStandaloneWindow(panelId) {
     return existing;
   }
 
-  const win = window.open(standalonePanelUrl(def.id), def.windowName, def.features);
+  const win = window.open(standalonePanelUrl(def.id, extraParams), def.windowName, def.features);
   if (!win) return null;
   if (reg) reg[def.id] = win;
   return win;

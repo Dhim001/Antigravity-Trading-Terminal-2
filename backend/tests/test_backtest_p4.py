@@ -207,6 +207,117 @@ class TestWalkForward(unittest.TestCase):
         self.assertIsNotNone(wf.get("best_config"))
         self.assertGreater(call_count["n"], 0)
 
+    def test_bayesian_walk_forward_uses_base_config_when_configs_empty(self):
+        """Bayesian expand_sweep_grid returns [] — WF must still seed Optuna from base_config."""
+        from app.services.bots.backtest_walk_forward import run_walk_forward
+
+        candles = _make_candles(400)
+        seen = {"cfgs": []}
+
+        def mock_backtest(symbol, strategy, cfg, bars, progress_cb=None, cancel_cb=None):
+            seen["cfgs"].append(dict(cfg))
+            return {
+                "summary": {"total_pnl": 50, "sharpe_ratio": 1.2, "total_trades": 20},
+                "total_pnl": 50,
+                "trade_count": 20,
+            }
+
+        try:
+            result = run_walk_forward(
+                run_backtest=mock_backtest,
+                symbol="TEST",
+                strategy="TRANSFORMER_SIGNAL",
+                base_config={
+                    "allocation": 2500,
+                    "min_confidence": 0.55,
+                    "direction_mode": "both",
+                    "ml_backtest_range": "free",
+                },
+                candles=candles,
+                meta={"symbol": "TEST", "replayed_days": 7},
+                configs=[],  # bayesian placeholder
+                rolling_folds=2,
+                min_trades=5,
+                sweep={
+                    "sweep_mode": "bayesian",
+                    "max_combos": 3,
+                    "bayesian_patience": 10,
+                    "bayesian_startup_trials": 2,
+                    "sweep_seed": 2,
+                    "min_confidence": [0.4, 0.55, 0.7],
+                    "trailing_stop_percent": [1, 2, 3],
+                    "wf_mode": "rolling",
+                },
+            )
+        except RuntimeError as exc:
+            if "optuna" in str(exc).lower():
+                self.skipTest("optuna not installed")
+            raise
+
+        self.assertNotIn("error", result, msg=result.get("error"))
+        self.assertGreater(len(seen["cfgs"]), 0)
+        # Every trial must inherit non-sweep fields from base_config.
+        for cfg in seen["cfgs"]:
+            self.assertEqual(cfg.get("allocation"), 2500)
+            self.assertEqual(cfg.get("direction_mode"), "both")
+            self.assertTrue(cfg.get("live_parity"))
+            self.assertEqual(cfg.get("sim_mode"), "live_aligned")
+
+    def test_bayesian_walk_forward_ranks_fold_winners_when_configs_padded(self):
+        """HTTP handler pads bayesian expand [] → [base]; final best must not stay base."""
+        from app.services.bots.backtest_walk_forward import run_walk_forward
+
+        candles = _make_candles(400)
+        base = {
+            "allocation": 1000,
+            "min_confidence": 0.9,
+            "trailing_stop_percent": 1,
+        }
+
+        def mock_backtest(symbol, strategy, cfg, bars, progress_cb=None, cancel_cb=None):
+            # Higher confidence in base → worse score; Optuna-like fold winners use 0.4.
+            conf = float(cfg.get("min_confidence") or 0.5)
+            pnl = 100.0 if conf <= 0.45 else 1.0
+            return {
+                "summary": {"total_pnl": pnl, "sharpe_ratio": pnl / 10, "total_trades": 20},
+                "total_pnl": pnl,
+                "trade_count": 20,
+            }
+
+        try:
+            result = run_walk_forward(
+                run_backtest=mock_backtest,
+                symbol="TEST",
+                strategy="TRANSFORMER_SIGNAL",
+                base_config=base,
+                candles=candles,
+                meta={"symbol": "TEST"},
+                configs=[dict(base)],  # padded handler path
+                rolling_folds=2,
+                min_trades=5,
+                sweep={
+                    "sweep_mode": "bayesian",
+                    "max_combos": 4,
+                    "bayesian_patience": 10,
+                    "bayesian_startup_trials": 2,
+                    "sweep_seed": 3,
+                    "min_confidence": [0.4, 0.55, 0.9],
+                    "trailing_stop_percent": [1, 2],
+                },
+            )
+        except RuntimeError as exc:
+            if "optuna" in str(exc).lower():
+                self.skipTest("optuna not installed")
+            raise
+
+        self.assertNotIn("error", result, msg=result.get("error"))
+        best = (result.get("walk_forward") or {}).get("best_config") or {}
+        self.assertNotEqual(
+            float(best.get("min_confidence") or 0),
+            0.9,
+            msg="padded base must not win over fold Bayesian winners",
+        )
+
 
 class TestResearchSimMode(unittest.TestCase):
     def setUp(self):

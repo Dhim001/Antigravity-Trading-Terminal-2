@@ -122,6 +122,14 @@ export async function deleteMlVersion(params) {
   });
 }
 
+export async function updateMlVersion(params) {
+  return apiRequest('/api/v1/ml/update-version', {
+    method: 'POST',
+    body: params,
+    timeoutMs: 60_000,
+  });
+}
+
 export async function cancelMlJob(jobId) {
   return apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}/cancel`, {
     method: 'POST',

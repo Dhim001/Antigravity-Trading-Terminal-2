@@ -1,29 +1,57 @@
-import { Loader2, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Pencil, Star, Trash2 } from 'lucide-react';
 import FeatureImportanceChart from '@/components/FeatureImportanceChart';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { normalizeTopFeatures } from '@/components/ml-lab/MlLabConstants';
+
+function versionTitle(v) {
+  if (v?.display_name) return String(v.display_name);
+  return v?.version_id || '—';
+}
 
 export function DatasetBrowser({
   dataset,
   versions,
   activatingVersionId,
   deletingVersionId,
+  updatingVersionId,
   onActivateVersion,
   onDeleteVersion,
   onCopyPin,
+  onUpdateVersion,
 }) {
+  const [editingId, setEditingId] = useState(null);
+  const [draftName, setDraftName] = useState('');
+
   if (!dataset && !(versions && versions.length)) return null;
   const labels = dataset?.label_distribution;
   const features = Array.isArray(dataset?.feature_names) ? dataset.feature_names : [];
   const topFeatures = normalizeTopFeatures(dataset?.top_features).slice(0, 10);
-  const versionBusy = Boolean(activatingVersionId || deletingVersionId);
+  const versionBusy = Boolean(activatingVersionId || deletingVersionId || updatingVersionId);
+
+  const startRename = (v) => {
+    const id = v.version_id || v.trained_at;
+    setEditingId(id);
+    setDraftName(v.display_name || '');
+  };
+
+  const submitRename = (v) => {
+    const name = draftName.trim();
+    setEditingId(null);
+    onUpdateVersion?.(v, {
+      display_name: name || undefined,
+      clear_display_name: !name,
+    });
+  };
+
   return (
     <section className="ml-training__dataset">
       <div className="ml-training__card-head">
         <h4 className="ml-training__section-title">Dataset & versions</h4>
         <span className="ml-training__header-meta">
-          Activate sets the live root · Delete removes a non-active snapshot · pin via Model version pin
+          Star = keep (skip prune) · Rename for a friendly label · Activate sets live root
         </span>
       </div>
       <div className="ml-training__dataset-grid">
@@ -91,7 +119,7 @@ export function DatasetBrowser({
           <div className="ml-training__dataset-versions">
             <p className="ml-training__subsection-label">Version history</p>
             <ul className="ml-training__version-list">
-              {versions.slice(0, 12).map((v) => {
+              {versions.slice(0, 16).map((v) => {
                 const id = v.version_id || v.trained_at;
                 const activating = activatingVersionId && (
                   activatingVersionId === v.version_id
@@ -101,24 +129,96 @@ export function DatasetBrowser({
                   deletingVersionId === v.version_id
                   || deletingVersionId === v.trained_at
                 );
+                const updating = updatingVersionId && (
+                  updatingVersionId === v.version_id
+                  || updatingVersionId === v.trained_at
+                );
                 const pinValue = v.trained_at || v.version_id || '';
+                const isEditing = editingId === id;
                 return (
                   <li
                     key={id}
                     className={cn(
                       'ml-training__version-row',
                       v.is_current && 'ml-training__version-row--current',
+                      v.protected && 'ml-training__version-row--protected',
                     )}
                   >
-                    <div className="ml-training__version-meta num-mono">
-                      <span className="ml-training__version-id">{v.version_id || '—'}</span>
-                      <span className="text-muted-foreground">
-                        {v.trained_at ? new Date(v.trained_at).toLocaleString() : '—'}
-                        {v.is_current ? ' · current' : ''}
-                        {v.sample_count != null ? ` · n=${v.sample_count}` : ''}
-                      </span>
+                    <div className="ml-training__version-meta">
+                      {isEditing ? (
+                        <form
+                          className="flex items-center gap-1"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            submitRename(v);
+                          }}
+                        >
+                          <Input
+                            value={draftName}
+                            onChange={(e) => setDraftName(e.target.value)}
+                            className="h-6 text-[0.65rem] px-1.5"
+                            placeholder="Friendly name"
+                            maxLength={80}
+                            autoFocus
+                          />
+                          <Button type="submit" size="sm" variant="outline" className="h-6 px-1.5 text-[0.6rem]">
+                            Save
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[0.6rem]"
+                            onClick={() => setEditingId(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </form>
+                      ) : (
+                        <>
+                          <span className="ml-training__version-id font-medium">
+                            {v.protected ? '★ ' : ''}
+                            {versionTitle(v)}
+                          </span>
+                          <span className="text-muted-foreground num-mono text-[0.6rem]">
+                            {v.display_name ? `${v.version_id || '—'} · ` : ''}
+                            {v.trained_at ? new Date(v.trained_at).toLocaleString() : '—'}
+                            {v.is_current ? ' · current' : ''}
+                            {v.protected ? ' · kept' : ''}
+                            {v.sample_count != null ? ` · n=${v.sample_count}` : ''}
+                          </span>
+                        </>
+                      )}
                     </div>
                     <div className="ml-training__version-actions">
+                      {onUpdateVersion && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5 text-[0.6rem] gap-0.5"
+                          disabled={versionBusy}
+                          title={v.protected ? 'Remove keep/favorite' : 'Keep — skip auto-prune'}
+                          onClick={() => onUpdateVersion(v, { protected: !v.protected })}
+                        >
+                          {updating ? <Loader2 size={10} className="animate-spin" /> : <Star size={10} className={v.protected ? 'fill-current' : ''} />}
+                          {v.protected ? 'Kept' : 'Keep'}
+                        </Button>
+                      )}
+                      {onUpdateVersion && !isEditing && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-1.5 text-[0.6rem] gap-0.5"
+                          disabled={versionBusy}
+                          title="Rename this snapshot"
+                          onClick={() => startRename(v)}
+                        >
+                          <Pencil size={10} />
+                          Rename
+                        </Button>
+                      )}
                       {pinValue && onCopyPin && (
                         <Button
                           type="button"
@@ -153,7 +253,7 @@ export function DatasetBrowser({
                           size="sm"
                           className="h-6 px-1.5 text-[0.6rem] gap-1 text-destructive hover:text-destructive"
                           disabled={versionBusy}
-                          title="Delete this snapshot from disk (cannot undo)"
+                          title={v.protected ? 'Unkeep first, then delete' : 'Delete this snapshot from disk (cannot undo)'}
                           onClick={() => onDeleteVersion(v)}
                         >
                           {deleting ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}

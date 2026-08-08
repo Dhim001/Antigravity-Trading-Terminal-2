@@ -58,8 +58,13 @@ export async function apiRequest(path, options = {}) {
       try {
         payload = JSON.parse(text);
       } catch {
-        if (response.status === 404 && path.startsWith('/api/v1/news/')) {
-          throw new Error('News API not found — restart the backend to load the latest server code');
+        if (
+          response.status === 404
+          && (path.startsWith('/api/v1/news/') || path.startsWith('/api/v1/ml/'))
+        ) {
+          throw new Error(
+            `API route not found (${path}) — restart the backend (e.g. start-desktop.ps1 -Recycle) to load the latest server code`,
+          );
         }
         const preview = text.trim().slice(0, 100).replace(/\s+/g, ' ');
         throw new Error(
@@ -76,7 +81,11 @@ export async function apiRequest(path, options = {}) {
     }
     return payload;
   } catch (err) {
-    if (isAbortError(err) && controller.signal.reason === 'timeout') {
+    const reason = controller.signal.reason;
+    const reasonIsTimeout = reason === 'timeout'
+      || (typeof reason === 'string' && /timeout/i.test(reason))
+      || (reason && typeof reason === 'object' && /timeout/i.test(String(reason.message || reason.name || '')));
+    if (isAbortError(err) && (reasonIsTimeout || /timeout/i.test(String(err?.message || '')))) {
       throw new Error(`Request timed out after ${timeoutMs}ms: ${path}`);
     }
     throw err;

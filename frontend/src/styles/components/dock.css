@@ -1327,7 +1327,7 @@
 }
 
 .ml-training__runs-scroll {
-  max-height: 10.5rem;
+  max-height: 14rem;
   overflow: auto;
 }
 
@@ -1342,6 +1342,7 @@
   padding: 0.25rem 0.35rem;
   text-align: left;
   border-bottom: 1px solid color-mix(in oklab, var(--ml-line) 70%, transparent);
+  vertical-align: top;
 }
 
 .ml-training__runs-table th {
@@ -1355,6 +1356,50 @@
 
 .ml-training__runs-table .text-right {
   text-align: right;
+}
+
+.ml-training__runs-model {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 7.5rem;
+  max-width: 12rem;
+}
+
+.ml-training__runs-model-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ml-training__runs-model-meta {
+  font-size: 0.58rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ml-training__runs-version {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 7rem;
+  max-width: 11rem;
+}
+
+.ml-training__runs-version-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ml-training__runs-version-id {
+  font-size: 0.58rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ml-training__section-title {
@@ -1935,6 +1980,10 @@
 .ml-training__version-row--current {
   border-color: color-mix(in oklab, var(--ml-accent) 40%, transparent);
   background: color-mix(in oklab, var(--ml-accent) 8%, transparent);
+}
+
+.ml-training__version-row--protected {
+  border-color: color-mix(in oklab, #eab308 40%, transparent);
 }
 
 .ml-training__version-meta {

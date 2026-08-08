@@ -80,10 +80,15 @@ def compute_scaler(sequences: np.ndarray) -> dict[str, list[float]]:
 
 
 def apply_scaler(sequences: np.ndarray, scaler: dict[str, list[float]]) -> np.ndarray:
-    """Z-score normalize sequences in-place."""
-    mean = np.array(scaler["mean"], dtype=np.float32)
-    std = np.array(scaler["std"], dtype=np.float32)
-    return (sequences - mean) / std
+    """Z-score normalize sequences (aligns feature dim to scaler width)."""
+    from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+    return apply_feature_scaler(
+        sequences,
+        scaler["mean"],
+        scaler["std"],
+        log_label="LSTM scaler",
+    )
 
 
 def save_scaler(
@@ -273,15 +278,11 @@ def train_lstm_signal_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("LSTM_DIRECTION", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
-    if cfg.get("champion_train") or raw_cfg.get("champion_train"):
-        cfg["champion_train"] = True
-        cfg.pop("_wf_mode", None)
-        cfg.pop("wf_mode", None)
-        cfg["skip_persist"] = False
-        cfg["skip_snapshot"] = False
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     epochs = int(cfg.get("epochs", epochs))
     lookback = int(cfg.get("lookback", 90))
     # Interactive / walk-forward validation uses short fold windows — relax the

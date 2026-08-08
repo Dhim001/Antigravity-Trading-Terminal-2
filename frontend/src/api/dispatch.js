@@ -279,16 +279,21 @@ export function applyServerMessage(type, data, storeActions, meta) {
       }
       stopBacktestJobPolling();
       clearBacktestClientTimeout();
-      storeActions.setBacktestRunning(false);
-      storeActions.setBacktestProgress(null);
-      if (resultJobId) {
-        storeActions.setBacktestJobId(resultJobId);
-        storeActions.upsertBacktestJobSlot?.(resultJobId, {
-          status: data?.status || 'completed',
-          running: false,
-        });
-      }
+      // Clear running only after success results land — clearing first lets the
+      // ML pipeline gate evaluate stale store results and auto-deploy losers.
+      const finishBacktestUi = ({ running = false, status = null } = {}) => {
+        storeActions.setBacktestRunning(running);
+        storeActions.setBacktestProgress(null);
+        if (resultJobId) {
+          storeActions.setBacktestJobId(resultJobId);
+          storeActions.upsertBacktestJobSlot?.(resultJobId, {
+            running: Boolean(running),
+            status: status || data?.status || 'completed',
+          });
+        }
+      };
       if (data?.status === 'cancelled') {
+        finishBacktestUi({ running: false, status: 'cancelled' });
         toast.info(data?.message || 'Backtest cancelled');
         break;
       }
@@ -297,8 +302,12 @@ export function applyServerMessage(type, data, storeActions, meta) {
         // Deferred jobs also complete via HTTP poll — claim once to avoid double toasts.
         const claimed = claimBacktestJobCompletion(data?.job_id);
         // MEMORY #24 — trim on worker thread when available.
-        void trimBacktestPayloadAsync(data.results).then((results) => {
+        void trimBacktestPayloadAsync({
+          ...data.results,
+          run_id: data.run_id ?? data.results.run_id,
+        }).then((results) => {
           storeBacktestResultsAware(storeActions, results);
+          finishBacktestUi({ running: false, status: 'completed' });
           const overlay = buildBacktestOverlay(results);
           if (overlay) {
             storeActions.setBacktestOverlay(overlay);
@@ -348,8 +357,16 @@ export function applyServerMessage(type, data, storeActions, meta) {
               action: openLab,
             });
           }
+        }).catch((err) => {
+          console.error('Backtest result apply failed:', err);
+          finishBacktestUi({ running: false, status: 'error' });
+          storeActions.setBacktestLastError?.(
+            err?.message || 'Failed to apply backtest results',
+            data?.request ?? null,
+          );
         });
       } else {
+        finishBacktestUi({ running: false, status: 'error' });
         const msg = data?.results?.error || data?.message || 'Backtest failed';
         console.error('Backtest failed:', msg);
         storeActions.setBacktestLastError?.(msg, data?.request ?? null);

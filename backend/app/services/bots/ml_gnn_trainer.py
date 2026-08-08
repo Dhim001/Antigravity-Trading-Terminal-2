@@ -239,9 +239,14 @@ class GnnModelStore:
 
         scaler = self._scalers.get(key)
         if scaler:
-            m = np.array(scaler["mean"], dtype=np.float32)
-            s = np.array(scaler["std"], dtype=np.float32)
-            node_features = (node_features.astype(np.float32) - m) / s
+            from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+            node_features = apply_feature_scaler(
+                node_features,
+                scaler["mean"],
+                scaler["std"],
+                log_label=f"GNN[{basket}]",
+            )
 
         try:
             logits = session.run(None, {
@@ -321,9 +326,11 @@ def train_gnn_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("GNN_CROSS_ASSET", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     epochs = int(cfg.get("epochs", epochs))
     basket = str(cfg.get("basket_id") or symbol or "").upper()
     if not basket:

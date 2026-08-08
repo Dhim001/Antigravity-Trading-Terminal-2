@@ -5,6 +5,7 @@ import { useBootstrap } from '../hooks/useBootstrap';
 import { useWebSocket } from '../hooks/useWebSocket';
 import SettingsBootstrap from '../components/SettingsBootstrap';
 import ErrorBoundary from '../components/ErrorBoundary';
+import { useResearchStore } from '../store/useResearchStore';
 import {
   broadcastStandaloneEvent,
   broadcastTerminalNav,
@@ -59,7 +60,13 @@ export default function StandaloneShell({ panelId, children }) {
   }, [def?.id]);
 
   const handleReattach = () => {
-    if (def) broadcastStandaloneEvent(def.id, 'reattach');
+    const payload = {};
+    if (def?.id === 'backtest-lab') {
+      const s = useResearchStore.getState();
+      if (s.backtestResults?.run_id) payload.runId = s.backtestResults.run_id;
+      payload.labTab = s.backtestLabTab || 'results';
+    }
+    if (def) broadcastStandaloneEvent(def.id, 'reattach', payload);
     window.close();
   };
 
@@ -71,27 +78,32 @@ export default function StandaloneShell({ panelId, children }) {
     );
   }
 
+  // Backtest Lab owns its sheet-matching chrome (header / tabs / reattach).
+  const bareChrome = def.id === 'backtest-lab';
+
   return (
     <>
       <SettingsBootstrap />
       <div className="flex h-screen w-screen flex-col bg-background text-foreground">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
-          <div className="text-sm font-medium">
-            {def.title.replace(' · Antigravity', '')}
-            <span className="ml-2 text-xs font-normal text-muted-foreground">standalone</span>
+        {!bareChrome && (
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-2">
+            <div className="text-sm font-medium">
+              {def.title.replace(' · Antigravity', '')}
+              <span className="ml-2 text-xs font-normal text-muted-foreground">standalone</span>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1"
+              onClick={handleReattach}
+              title="Close this window and return to the trading layout"
+            >
+              <PanelLeft size={14} aria-hidden />
+              Reattach to terminal
+            </Button>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs gap-1"
-            onClick={handleReattach}
-            title="Close this window and return to the trading layout"
-          >
-            <PanelLeft size={14} aria-hidden />
-            Reattach to terminal
-          </Button>
-        </div>
+        )}
         <div className="min-h-0 flex-1 overflow-hidden">
           <ErrorBoundary name={def.title}>
             {typeof children === 'function' ? children({ onReattach: handleReattach }) : children}

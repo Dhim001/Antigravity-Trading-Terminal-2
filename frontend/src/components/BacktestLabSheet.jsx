@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Activity, ExternalLink, GripVertical, Maximize2, Minimize2 } from 'lucide-react';
+import { Activity, ExternalLink, GripVertical, Loader2, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useStore } from '../store/useStore';
 import { useResearchStore } from '../store/useResearchStore';
@@ -65,10 +65,18 @@ function readLabWidth() {
   return LAB_WIDTH_DEFAULT;
 }
 
+function clearBodyResizeStyles() {
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+}
+
 export default function BacktestLabSheet() {
-  const open = useResearchStore((s) => s.backtestLabOpen);
-  if (!open) return null;
-  return <BacktestLabSheetInner />;
+  // Keep Sheet mounted while closed so Radix can run close animation / clear scroll-lock.
+  return (
+    <ErrorBoundary name="Backtest Lab">
+      <BacktestLabSheetInner />
+    </ErrorBoundary>
+  );
 }
 
 function BacktestLabSheetInner() {
@@ -100,6 +108,7 @@ function BacktestLabSheetInner() {
   const strategy = backtestResults?.meta?.strategy ?? botStrategy;
   const timeframe = backtestResults?.meta?.timeframe ?? botTimeframe;
   const advisorBotId = selectedBotId ?? backtestResults?.meta?.bot_id ?? null;
+  const resultsOffloaded = Boolean(backtestResults?._offloaded);
 
   // Fingerprint / Select sentinel must stay as store selection (e.g. "holdout"),
   // not meta.days (numeric holdout length) — otherwise Lab always looks stale.
@@ -155,14 +164,17 @@ function BacktestLabSheetInner() {
       if (!isDragging.current) return;
       isDragging.current = false;
       setResizing(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
+      clearBodyResizeStyles();
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      if (isDragging.current) {
+        isDragging.current = false;
+        clearBodyResizeStyles();
+      }
     };
   }, []);
 
@@ -177,9 +189,11 @@ function BacktestLabSheetInner() {
           fullscreen && 'backtest-lab--fullscreen',
         )}
         style={fullscreen ? {
-          width: '100vw',
-          minWidth: '100vw',
-          maxWidth: '100vw',
+          width: '100%',
+          minWidth: '100%',
+          maxWidth: '100%',
+          left: 0,
+          right: 0,
         } : {
           width: panelWidth,
           minWidth: LAB_WIDTH_MIN,
@@ -259,10 +273,10 @@ function BacktestLabSheetInner() {
 
         <div className="terminal-sheet__body backtest-lab__body">
           <div className={cn(
-          'terminal-sheet__scroll backtest-lab__scroll',
-          labTab === 'jobs' && 'backtest-lab__scroll--jobs',
-        )}
-        >
+            'terminal-sheet__scroll backtest-lab__scroll',
+            labTab === 'jobs' && 'backtest-lab__scroll--jobs',
+          )}
+          >
             {/* Optimizer embeds its own sticky bar next to Run/Cancel — avoid a duplicate here. */}
             {labTab !== 'optimizer' && (
               <div className="algo-backtest-progress-sticky sticky top-0 z-10 bg-background/95 py-1 backdrop-blur supports-[backdrop-filter]:bg-background/80">
@@ -271,9 +285,11 @@ function BacktestLabSheetInner() {
             )}
 
             {labTab === 'jobs' && (
-              <Suspense fallback={<LabPanelFallback />}>
-                <BacktestJobHistory />
-              </Suspense>
+              <ErrorBoundary name="Backtest jobs">
+                <Suspense fallback={<LabPanelFallback />}>
+                  <BacktestJobHistory />
+                </Suspense>
+              </ErrorBoundary>
             )}
 
             {labTab === 'optimizer' && (
@@ -287,7 +303,7 @@ function BacktestLabSheetInner() {
                       days={optimizerDays}
                       timeframe={timeframe}
                       oosPct={backtestOos ? 30 : backtestResults?.meta?.oos_pct}
-                      results={backtestResults}
+                      results={resultsOffloaded ? null : backtestResults}
                     />
                   </Suspense>
                 </ErrorBoundary>
@@ -301,7 +317,13 @@ function BacktestLabSheetInner() {
                     Running backtest…
                   </p>
                 )}
-                {backtestResults ? (
+                {resultsOffloaded && (
+                  <p className="backtest-lab__loading px-3 pt-2 flex items-center gap-2">
+                    <Loader2 size={14} className="animate-spin" aria-hidden />
+                    Restoring full report…
+                  </p>
+                )}
+                {backtestResults && !resultsOffloaded ? (
                   <ErrorBoundary name="Backtest report">
                     <Suspense fallback={<LabPanelFallback />}>
                       <BacktestResultsPanel
@@ -321,7 +343,7 @@ function BacktestLabSheetInner() {
                       />
                     </Suspense>
                   </ErrorBoundary>
-                ) : !backtestRunning && (
+                ) : !backtestRunning && !resultsOffloaded && (
                   <div className="backtest-lab__empty">
                     <p>
                       No backtest loaded yet. Run one from the bottom dock, then return here for the full report.

@@ -173,12 +173,18 @@ def _compute_trade_stats(pnls: list[float]) -> dict:
     }
 
 
-def _fetch_bot_exit_trades(cutoff: float) -> list[dict]:
+def _fetch_bot_exit_trades(cutoff: float) -> tuple[list[dict], set[str]]:
+    """Return (exit trades, order_ids covered by those exits).
+
+    ``order_ids`` are used to skip matching bot fills in account history so
+    combined views do not double-count, while still allowing orphan account
+    fills (missing / NULL-pnl bot_trades rows) as a fallback.
+    """
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT t.id, t.bot_id, t.symbol, t.pnl, t.timestamp,
+        SELECT t.id, t.bot_id, t.order_id, t.symbol, t.pnl, t.timestamp,
                b.strategy, b.timeframe
         FROM bot_trades t
         JOIN bots b ON b.id = t.bot_id
@@ -189,10 +195,14 @@ def _fetch_bot_exit_trades(cutoff: float) -> list[dict]:
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     out = []
+    covered_order_ids: set[str] = set()
     for row in rows:
         ts = _parse_timestamp(row["timestamp"])
         if ts is None or ts < cutoff:
             continue
+        oid = row.get("order_id")
+        if oid is not None and str(oid).strip():
+            covered_order_ids.add(str(oid))
         out.append({
             "source": "bot",
             "id": row["id"],
@@ -203,16 +213,41 @@ def _fetch_bot_exit_trades(cutoff: float) -> list[dict]:
             "pnl": float(row["pnl"]),
             "timestamp": ts,
         })
+    return out, covered_order_ids
+
+
+def _bot_strategy_meta() -> dict[str, tuple[str, str]]:
+    """Map bot_id -> (strategy, timeframe) for orphan account-fill fallback."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, strategy, timeframe FROM bots")
+    rows = cursor.fetchall()
+    conn.close()
+    out: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        d = dict(row)
+        out[str(d["id"])] = (
+            str(d.get("strategy") or "Unknown"),
+            str(d.get("timeframe") or MANUAL_TIMEFRAME),
+        )
     return out
 
 
-def _fetch_account_exit_trades(account_history: dict | list, cutoff: float) -> list[dict]:
+def _fetch_account_exit_trades(
+    account_history: dict | list,
+    cutoff: float,
+    *,
+    covered_order_ids: set[str] | None = None,
+    bot_meta: dict[str, tuple[str, str]] | None = None,
+) -> list[dict]:
     if isinstance(account_history, dict):
         trades = account_history.get("trades") or []
     elif isinstance(account_history, list):
         trades = account_history
     else:
         trades = []
+    covered = covered_order_ids or set()
+    meta = bot_meta or {}
     out = []
     for t in trades:
         if t.get("status") != "FILLED":
@@ -225,13 +260,34 @@ def _fetch_account_exit_trades(account_history: dict | list, cutoff: float) -> l
         ts = _parse_timestamp(t.get("timestamp"))
         if ts is None or ts < cutoff:
             continue
+
+        bot_id = t.get("bot_id") or None
+        order_id = t.get("id")
+        # Skip bot-tagged fills already represented in bot_trades (with pnl).
+        # Keep orphans / NULL-pnl bot_trades cases as fallback so Dashboard
+        # does not under-report vs History.
+        if bot_id and order_id is not None and str(order_id) in covered:
+            continue
+
+        if bot_id:
+            strategy, timeframe = meta.get(
+                str(bot_id),
+                ("Unknown", MANUAL_TIMEFRAME),
+            )
+            source = "bot"
+        else:
+            bot_id = None
+            strategy = MANUAL_STRATEGY
+            timeframe = MANUAL_TIMEFRAME
+            source = "account"
+
         out.append({
-            "source": "account",
-            "id": t.get("id"),
-            "bot_id": None,
+            "source": source,
+            "id": order_id,
+            "bot_id": bot_id,
             "symbol": t.get("symbol"),
-            "strategy": MANUAL_STRATEGY,
-            "timeframe": MANUAL_TIMEFRAME,
+            "strategy": strategy,
+            "timeframe": timeframe,
             "pnl": float(pnl),
             "timestamp": ts,
         })
@@ -251,8 +307,15 @@ def collect_exit_trades(
     source: SourceFilter = "combined",
 ) -> list[dict]:
     cutoff = _period_cutoff(period)
-    bot = _fetch_bot_exit_trades(cutoff)
-    acct = _fetch_account_exit_trades(account_history, cutoff)
+    bot, covered = _fetch_bot_exit_trades(cutoff)
+    # Only load bot meta when account history may contain orphan bot fills.
+    bot_meta = _bot_strategy_meta() if account_history else {}
+    acct = _fetch_account_exit_trades(
+        account_history,
+        cutoff,
+        covered_order_ids=covered,
+        bot_meta=bot_meta,
+    )
     combined = bot + acct
     combined.sort(key=lambda t: t["timestamp"])
     return _filter_source(combined, source)

@@ -26,78 +26,27 @@ from app.services.bots.backtest_purged_cv import (
     embargo_bars_for_segment,
     estimate_purge_bars,
 )
+from app.services.bots.ml_registry import (
+    ENSEMBLE_STRATEGIES,
+    ML_STRATEGIES,
+    _trainer_cache as _TRAINER_REGISTRY,
+    get_trainer,
+    is_ensemble_strategy,
+    is_ml_strategy,
+)
 from app.services.bots.ml_triple_barrier import label_triple_barrier
 
 logger = logging.getLogger(__name__)
 
-# ── Strategy trainer dispatch ─────────────────────────────────────────────
-
-_TRAINER_REGISTRY: dict[str, Callable] = {}
-
-
-def _lazy_register():
-    """Lazy import to avoid circular deps and import errors when torch missing."""
-    if _TRAINER_REGISTRY:
-        return
-    try:
-        from app.services.bots.strategies_ml import train_ml_signal_model
-        _TRAINER_REGISTRY["ML_SIGNAL_BOOST"] = train_ml_signal_model
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.ml_lstm_trainer import train_lstm_signal_model
-        _TRAINER_REGISTRY["LSTM_DIRECTION"] = train_lstm_signal_model
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.rl_ppo_trainer import train_ppo_agent
-        _TRAINER_REGISTRY["RL_PPO_AGENT"] = train_ppo_agent
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.ml_tcn_trainer import train_tcn_model
-        _TRAINER_REGISTRY["TCN_MULTI_HORIZON"] = train_tcn_model
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.ml_vae_regime import train_vae_regime_model
-        _TRAINER_REGISTRY["VAE_REGIME_DETECTOR"] = train_vae_regime_model
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.ml_transformer_trainer import train_transformer_model
-        _TRAINER_REGISTRY["TRANSFORMER_SIGNAL"] = train_transformer_model
-    except ImportError:
-        pass
-    try:
-        from app.services.bots.ml_gnn_trainer import train_gnn_model
-        _TRAINER_REGISTRY["GNN_CROSS_ASSET"] = train_gnn_model
-    except ImportError:
-        pass
-
-
-def get_trainer(strategy: str) -> Callable | None:
-    """Get the trainer function for a strategy."""
-    _lazy_register()
-    return _TRAINER_REGISTRY.get(strategy.upper())
-
-
-ML_STRATEGIES = frozenset({
-    "ML_SIGNAL_BOOST", "LSTM_DIRECTION", "RL_PPO_AGENT",
-    "TCN_MULTI_HORIZON", "VAE_REGIME_DETECTOR",
-    "TRANSFORMER_SIGNAL", "GNN_CROSS_ASSET",
-})
-
-ENSEMBLE_STRATEGIES = frozenset({"HYBRID_ENSEMBLE"})
-
-
-def is_ml_strategy(strategy: str) -> bool:
-    """True for train/validate artifact strategies (not the hybrid ensemble wrapper)."""
-    return str(strategy).upper() in ML_STRATEGIES
-
-
-def is_ensemble_strategy(strategy: str) -> bool:
-    return str(strategy).upper() in ENSEMBLE_STRATEGIES
+# Re-export for back-compat
+__all__ = [
+    "ML_STRATEGIES",
+    "ENSEMBLE_STRATEGIES",
+    "get_trainer",
+    "is_ml_strategy",
+    "is_ensemble_strategy",
+    "_TRAINER_REGISTRY",
+]
 
 # ── Walk-forward fold generation ──────────────────────────────────────────
 

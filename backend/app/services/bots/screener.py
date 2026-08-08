@@ -235,14 +235,53 @@ class MarketScreenerService:
                 for col in adx.columns:
                     df[col] = adx[col]
 
+        if strat == "REGIME_STRATEGY_AGENT":
+            # Union of BRS + Supertrend + VWAP indicators using each child's
+            # merged defaults (parent REGIME keys only override shared lengths).
+            from app.services.bots.regime_classify import ALLOWLISTED_CHILDREN
+
+            shared_keys = (
+                "rsi_length", "atr_length", "adx_length",
+                "stoch_k", "stoch_d", "stoch_smooth",
+                "bb_length", "bb_std",
+                "st_length", "st_multiplier",
+                "rsi_oversold", "rsi_overbought", "stoch_oversold", "stoch_overbought",
+                "adx_threshold", "block_elevated_vol",
+                "use_rsi_confirmation", "rsi_overbought_gate", "rsi_oversold_gate",
+            )
+            overrides = {k: cfg[k] for k in shared_keys if k in (cfg or {})}
+            nested = (cfg or {}).get("child_config")
+            for child_id in ("BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK"):
+                child_over = dict(overrides)
+                if isinstance(nested, dict):
+                    patch = nested.get(child_id) or nested.get(child_id.lower())
+                    if isinstance(patch, dict):
+                        child_over.update(patch)
+                child_cfg = merge_strategy_config(child_id, child_over)
+                child_cfg = {**child_cfg, "filter_strategy": ""}
+                self._compute_for_strategy(df, child_id, child_cfg)
+            # Ensure allowlist stays documented for future children
+            _ = ALLOWLISTED_CHILDREN
+
+
+        if strat == "ABSORPTION_AGENT":
+            for length in (9, 21, 50):
+                df[f"EMA_{length}"] = ta.ema(df["close"], length=length)
+
         # Full suite for ICT / Donchian / MM and legacy paths
-        if strat not in ("MACD_RSI", "BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK", "CHART_AGENT"):
+        if strat not in (
+            "MACD_RSI",
+            "BRS_SCALPING",
+            "SUPERTREND_ADX",
+            "VWAP_PULLBACK",
+            "CHART_AGENT",
+            "REGIME_STRATEGY_AGENT",
+        ):
             self._compute_all(df, cfg)
 
         filter_name = str((cfg or {}).get("filter_strategy") or "").strip()
         if filter_name:
             from app.services.bots.strategies import normalize_strategy_name
-            from app.services.bots.indicators import merge_strategy_config
 
             fk = normalize_strategy_name(filter_name)
             if fk != strat:
@@ -280,22 +319,34 @@ class MarketScreenerService:
         self._compute_vwap(df)
 
     def _compute_vwap(self, df: pd.DataFrame) -> None:
-        if "time" not in df.columns or len(df) == 0:
+        if len(df) == 0:
             return
+        if "time" in df.columns:
+            try:
+                df_temp = df.copy()
+                first_ts = df_temp["time"].iloc[0]
+                unit = "ms" if first_ts > 1e11 else "s"
+                df_temp["datetime"] = pd.to_datetime(df_temp["time"], unit=unit)
+                df_temp.set_index("datetime", inplace=True)
+                df_temp.sort_index(inplace=True)
+                vwap = ta.vwap(
+                    df_temp["high"],
+                    df_temp["low"],
+                    df_temp["close"],
+                    df_temp["volume"],
+                )
+                if vwap is not None and not getattr(vwap, "isna", lambda: False)().all():
+                    df["VWAP"] = vwap.values
+                    if not df["VWAP"].isna().all():
+                        return
+            except Exception as vwap_err:
+                self.logger.warning(f"VWAP calculation skipped: {vwap_err}")
+        # Fallback: cumulative typical-price VWAP (works for 24/7 crypto / missing time)
         try:
-            df_temp = df.copy()
-            first_ts = df_temp["time"].iloc[0]
-            unit = "ms" if first_ts > 1e11 else "s"
-            df_temp["datetime"] = pd.to_datetime(df_temp["time"], unit=unit)
-            df_temp.set_index("datetime", inplace=True)
-            df_temp.sort_index(inplace=True)
-            vwap = ta.vwap(
-                df_temp["high"],
-                df_temp["low"],
-                df_temp["close"],
-                df_temp["volume"],
-            )
-            if vwap is not None:
-                df["VWAP"] = vwap.values
-        except Exception as vwap_err:
-            self.logger.warning(f"VWAP calculation skipped: {vwap_err}")
+            tp = (df["high"] + df["low"] + df["close"]) / 3.0
+            vol = df["volume"].clip(lower=0).fillna(0)
+            cum_vol = vol.cumsum().replace(0, pd.NA)
+            df["VWAP"] = (tp * vol).cumsum() / cum_vol
+            df["VWAP"] = df["VWAP"].ffill()
+        except Exception as fallback_err:
+            self.logger.warning(f"VWAP fallback skipped: {fallback_err}")

@@ -104,12 +104,14 @@ class TradingEnv:
         feature_lookback: int = 20,
         feat_mean=None,
         feat_std=None,
+        progress_path: str | None = None,
     ):
         self.candles = candles
         self.config = config or {}
         self.feature_lookback = feature_lookback
         self.n_candles = len(candles)
         self._symbol = str(self.config.get("symbol") or "").strip() or None
+        self._progress_path = progress_path
 
         # Pre-extract all feature vectors for speed
         self._feature_vectors: list[np.ndarray] = []
@@ -118,6 +120,7 @@ class TradingEnv:
         self._lows: list[float] = []
         self._allow_entry: list[bool] = []
 
+        _hb_t = 0.0
         for i in range(self.n_candles):
             c = candles[i]
             self._closes.append(_safe_float(c.get("close")))
@@ -131,6 +134,32 @@ class TradingEnv:
                 c, lookback_rows=lb_rows, symbol=self._symbol,
             )
             self._feature_vectors.append(signal_features_to_vector(features))
+
+            # Heartbeat so large feature builds don't look like a frozen job.
+            if self._progress_path and (i % 2000 == 0 or i == self.n_candles - 1):
+                import time as _time
+
+                now = _time.time()
+                if now - _hb_t >= 1.5:
+                    _hb_t = now
+                    try:
+                        from app.services.bots.ml_job_progress import (
+                            ml_cancel_requested,
+                            write_ml_progress,
+                        )
+
+                        if ml_cancel_requested(self._progress_path):
+                            raise InterruptedError("ml_cancel_requested")
+                        write_ml_progress(
+                            self._progress_path,
+                            pct=5,
+                            phase="env",
+                            detail=f"build features {i + 1}/{self.n_candles}",
+                        )
+                    except InterruptedError:
+                        raise
+                    except Exception:
+                        pass
 
         # Compute feature-wise mean/std for normalization
         if self._feature_vectors:

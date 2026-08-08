@@ -404,25 +404,13 @@ async def ml_model_status(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
 
     model_loaders = {
-        "ML_SIGNAL_BOOST": lambda s, tf: _ml_model_status_xgb(s, timeframe=tf),
-        "LSTM_DIRECTION": lambda s, tf: _ml_model_status_onnx(
-            s, "lstm_signal_models", onnx_name="lstm_direction.onnx", timeframe=tf,
-        ),
-        "RL_PPO_AGENT": lambda s, tf: _ml_model_status_onnx(
-            s, "rl_ppo_models", onnx_name="ppo_policy.onnx", timeframe=tf,
-        ),
-        "TCN_MULTI_HORIZON": lambda s, tf: _ml_model_status_onnx(
-            s, "tcn_signal_models", onnx_name="tcn_multi_horizon.onnx", timeframe=tf,
-        ),
-        "VAE_REGIME_DETECTOR": lambda s, tf: _ml_model_status_onnx(
-            s, "vae_regime_models", onnx_name="vae_regime.onnx", timeframe=tf,
-        ),
-        "TRANSFORMER_SIGNAL": lambda s, tf: _ml_model_status_onnx(
-            s, "transformer_signal_models", onnx_name="transformer_signal.onnx", timeframe=tf,
-        ),
-        "GNN_CROSS_ASSET": lambda s, tf: _ml_model_status_onnx(
-            s, "gnn_signal_models", onnx_name="gnn_cross_asset.onnx", timeframe=tf,
-        ),
+        "ML_SIGNAL_BOOST": lambda s, tf: _ml_model_status_for_strategy("ML_SIGNAL_BOOST", s, timeframe=tf),
+        "LSTM_DIRECTION": lambda s, tf: _ml_model_status_for_strategy("LSTM_DIRECTION", s, timeframe=tf),
+        "RL_PPO_AGENT": lambda s, tf: _ml_model_status_for_strategy("RL_PPO_AGENT", s, timeframe=tf),
+        "TCN_MULTI_HORIZON": lambda s, tf: _ml_model_status_for_strategy("TCN_MULTI_HORIZON", s, timeframe=tf),
+        "VAE_REGIME_DETECTOR": lambda s, tf: _ml_model_status_for_strategy("VAE_REGIME_DETECTOR", s, timeframe=tf),
+        "TRANSFORMER_SIGNAL": lambda s, tf: _ml_model_status_for_strategy("TRANSFORMER_SIGNAL", s, timeframe=tf),
+        "GNN_CROSS_ASSET": lambda s, tf: _ml_model_status_for_strategy("GNN_CROSS_ASSET", s, timeframe=tf),
     }
     loader = model_loaders.get(strategy)
     if not loader:
@@ -438,11 +426,19 @@ async def ml_model_status(request: Request) -> JSONResponse:
 def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
     from app.services.bots.ml_model_artifacts import (
         apply_validation_sidecar,
+        champion_sync_info,
         dataset_summary_from_metadata,
+        ensure_validation_sidecar,
         list_model_versions,
         validation_summary_from_metadata,
+        version_id_from_iso,
     )
 
+    # Best-effort: materialize sidecar from embedded WF/PBO if missing
+    try:
+        ensure_validation_sidecar(model_dir)
+    except Exception:
+        pass
     meta = apply_validation_sidecar(meta if isinstance(meta, dict) else {}, model_dir)
     versions = list_model_versions(model_dir)
     try:
@@ -463,11 +459,17 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         data_calendar = summarize_calendar_for_ui(load_data_calendar_from_metadata(meta))
     except Exception:
         data_calendar = None
+    trained_at = meta.get("trained_at")
+    version_id = meta.get("version_id") or (
+        version_id_from_iso(str(trained_at)) if trained_at else None
+    )
+    sync = champion_sync_info(model_dir)
     return {
         "trained": True,
-        "trained_at": meta.get("trained_at"),
-        "model_version": meta.get("trained_at"),
-        "version_id": meta.get("version_id"),
+        "trained_at": trained_at,
+        # Alias of trained_at for Lab pin / bot config (ISO string).
+        "model_version": trained_at,
+        "version_id": version_id,
         "metrics": meta.get("metrics", {}),
         "loss_history": meta.get("loss_history") or meta.get("train_history"),
         "train_history": meta.get("train_history"),
@@ -482,27 +484,49 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         "data_calendar": data_calendar,
         "fit_end_ts": meta.get("fit_end_ts"),
         "holdout_days": meta.get("holdout_days"),
+        "champion_desynced": bool(sync.get("desynced")),
+        "newest_version_id": sync.get("newest_version_id"),
+        "newest_trained_at": sync.get("newest_trained_at"),
     }
 
 
-def _ml_model_status_xgb(symbol: str, *, timeframe: str | None = None) -> dict:
-    import os, json
-    from app.services.bots.ml_model_artifacts import model_root_for
+def _ml_model_status_for_strategy(
+    strategy: str,
+    symbol: str,
+    *,
+    timeframe: str | None = None,
+) -> dict:
+    """Load model-status for any Lab ML strategy via registry + model_root_for."""
+    import os
+    import json
 
-    model_dir = model_root_for("ML_SIGNAL_BOOST", symbol, timeframe) or ""
+    from app.services.bots.ml_model_artifacts import model_root_for
+    from app.services.bots.ml_registry import model_type_label, primary_artifact_name
+
+    model_dir = model_root_for(strategy, symbol, timeframe) or ""
     meta_path = os.path.join(model_dir, "metadata.json") if model_dir else ""
     if not model_dir or not os.path.isfile(meta_path):
         return {"trained": False, "versions": [], "dataset": None}
     try:
         with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f)
-        artifact = "model.joblib"
-        art_path = os.path.join(model_dir, artifact)
-        out = _ml_status_enrich(model_dir, meta, artifact if os.path.isfile(art_path) else None)
-        out["model_type"] = meta.get("model_type") or "xgboost"
+        artifact = primary_artifact_name(strategy)
+        art_path = os.path.join(model_dir, artifact) if artifact else ""
+        out = _ml_status_enrich(
+            model_dir,
+            meta,
+            artifact if artifact and os.path.isfile(art_path) else None,
+        )
+        if not out.get("model_type"):
+            out["model_type"] = model_type_label(strategy)
         return out
     except Exception:
         return {"trained": False, "versions": [], "dataset": None}
+
+
+def _ml_model_status_signal_boost(symbol: str, *, timeframe: str | None = None) -> dict:
+    """Back-compat alias for ML_SIGNAL_BOOST status."""
+    return _ml_model_status_for_strategy("ML_SIGNAL_BOOST", symbol, timeframe=timeframe)
 
 
 def _ml_model_status_onnx(
@@ -511,8 +535,18 @@ def _ml_model_status_onnx(
     onnx_name: str = "model.onnx",
     *,
     timeframe: str | None = None,
+    strategy: str | None = None,
 ) -> dict:
-    import os, json
+    """Legacy helper — prefer ``_ml_model_status_for_strategy``."""
+    import os
+    import json
+
+    from app.services.bots.ml_model_artifacts import model_root_for
+
+    if strategy:
+        return _ml_model_status_for_strategy(strategy, symbol, timeframe=timeframe)
+
+    # Fallback when only subdir is known (tests / old callers)
     from app.config import BASE_DIR
     from app.services.bots.ml_model_artifacts import model_storage_key
 
@@ -597,16 +631,9 @@ async def ml_train_handler(request: Request) -> JSONResponse:
 
     # Fetch candles from live feed / archive sized to Lab training window + TF
     state: AppState = request.app.state.terminal
-    trainers = {
-        "ML_SIGNAL_BOOST": _train_xgb,
-        "LSTM_DIRECTION": _train_lstm,
-        "RL_PPO_AGENT": _train_ppo,
-        "TCN_MULTI_HORIZON": _train_tcn,
-        "VAE_REGIME_DETECTOR": _train_vae,
-        "TRANSFORMER_SIGNAL": _train_transformer,
-        "GNN_CROSS_ASSET": _train_gnn,
-    }
-    if strategy not in trainers:
+    from app.services.bots.ml_registry import is_ml_strategy
+
+    if not is_ml_strategy(strategy):
         from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
         return JSONResponse(
             {"ok": False, "error": lab_train_unsupported_error(strategy)},
@@ -623,12 +650,20 @@ async def ml_train_handler(request: Request) -> JSONResponse:
     from app.services.bots.ml_training_window import prepare_lab_champion_train_config
 
     config = prepare_lab_champion_train_config(config)
-    # Fill train knobs missing from the Lab request with the latest Optuna /
-    # auto-tune best_config (same behaviour as the scheduled retrain drain).
-    # Explicit UI / Apply & Retrain keys always win.
+    # Decay / queue retrain only (retrain_from_live_model): restore knobs from
+    # live champion metadata first, then fill remaining gaps from Optuna.
+    # Do NOT merge live HPs on bare champion_train (Apply & Retrain) — that would
+    # let stale metadata.config shadow Optuna best_config for overlapping keys.
     try:
-        from app.services.bots.optimization_store import merge_optimized_train_hyperparams
+        from app.services.bots.optimization_store import (
+            merge_live_model_train_hyperparams,
+            merge_optimized_train_hyperparams,
+        )
 
+        if config.get("retrain_from_live_model"):
+            config = merge_live_model_train_hyperparams(
+                config, symbol, strategy, timeframe=tf,
+            )
         config = merge_optimized_train_hyperparams(
             config, symbol, strategy, require_opt_in=True,
         )
@@ -636,7 +671,7 @@ async def ml_train_handler(request: Request) -> JSONResponse:
         # but be defensive if a future key leaks).
         config = prepare_lab_champion_train_config(config)
     except Exception:
-        logger.debug("Optimized hyperparam merge skipped", exc_info=True)
+        logger.debug("Hyperparam merge skipped", exc_info=True)
     config = {
         **config,
         "timeframe": tf,
@@ -1017,9 +1052,13 @@ async def _fetch_validate_candles_enough(
     return candles, win, vmax
 
 
-def _train_xgb(symbol, candles, config):
+def _train_ml_signal_boost(symbol, candles, config):
     from app.services.bots.strategies_ml import train_ml_signal_model
     return train_ml_signal_model(symbol, candles, config=config)
+
+
+# Back-compat alias
+_train_xgb = _train_ml_signal_boost
 
 
 def _train_lstm(symbol, candles, config):
@@ -1631,16 +1670,25 @@ async def ml_delete_version_handler(request: Request) -> JSONResponse:
 
     try:
         result = await asyncio.to_thread(
-            delete_model_version, strategy, symbol, model_version, timeframe,
+            delete_model_version,
+            strategy,
+            symbol,
+            model_version,
+            timeframe,
+            force=bool(body.get("force")),
         )
     except Exception as exc:
         logger.exception("delete-version failed for %s/%s", strategy, symbol)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     if not result.get("ok"):
-        # 409 when active; 404 when missing
+        # 409 when active/protected; 404 when missing
         err_msg = str(result.get("error") or "")
-        status = 409 if "active version" in err_msg.lower() else 404
+        low = err_msg.lower()
+        if "active version" in low or "protected" in low:
+            status = 409
+        else:
+            status = 404
         return JSONResponse(result, status_code=status)
 
     # Refresh status payload so the UI can drop the row in one round-trip.
@@ -1670,6 +1718,103 @@ async def ml_delete_version_handler(request: Request) -> JSONResponse:
         **enriched,
         "deleted_version_id": result.get("deleted_version_id"),
         "deleted_trained_at": result.get("deleted_trained_at"),
+    })
+
+
+async def ml_update_version_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/update-version — rename and/or protect a snapshot."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    model_version = str(
+        body.get("model_version") or body.get("version_id") or body.get("trained_at") or ""
+    ).strip()
+    from app.services.bots.ml_model_artifacts import (
+        model_root_for,
+        normalize_model_timeframe,
+        update_model_version_meta,
+    )
+
+    timeframe = normalize_model_timeframe(
+        body.get("timeframe")
+        or (body.get("config") if isinstance(body.get("config"), dict) else {}).get("timeframe")
+    )
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+    if not model_version:
+        return JSONResponse({"ok": False, "error": "model_version required"}, status_code=400)
+
+    if model_root_for(strategy, symbol, timeframe) is None:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown strategy {strategy}"},
+            status_code=400,
+        )
+
+    clear_name = bool(body.get("clear_display_name"))
+    display_name = body.get("display_name") if "display_name" in body else None
+    protected = body.get("protected") if "protected" in body else None
+    if protected is not None:
+        protected = bool(protected)
+
+    if display_name is None and not clear_name and protected is None:
+        return JSONResponse(
+            {"ok": False, "error": "display_name and/or protected required"},
+            status_code=400,
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            update_model_version_meta,
+            strategy,
+            symbol,
+            model_version,
+            display_name=None if clear_name else display_name,
+            clear_display_name=clear_name,
+            protected=protected,
+            timeframe=timeframe,
+        )
+    except Exception as exc:
+        logger.exception("update-version failed for %s/%s", strategy, symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=404)
+
+    root = model_root_for(strategy, symbol, timeframe)
+    artifact = None
+    if strategy == "ML_SIGNAL_BOOST":
+        art = "model.joblib"
+    else:
+        from app.services.bots.ml_model_artifacts import STRATEGY_ARTIFACTS
+        arts = STRATEGY_ARTIFACTS.get(strategy) or []
+        art = next((a for a in arts if a.endswith(".onnx")), arts[0] if arts else None)
+    if root and art and os.path.isfile(os.path.join(root, art)):
+        artifact = art
+
+    meta = {}
+    meta_path = os.path.join(root, "metadata.json") if root else ""
+    if meta_path and os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+
+    enriched = _ml_status_enrich(root or "", meta if isinstance(meta, dict) else {}, artifact)
+    return JSONResponse({
+        "ok": True,
+        **enriched,
+        "version_id": result.get("version_id"),
+        "display_name": result.get("display_name"),
+        "protected": result.get("protected"),
     })
 
 
@@ -3055,6 +3200,7 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/runs", ml_list_runs_handler, methods=["GET"]),
         Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
         Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),
+        Route("/api/v1/ml/update-version", ml_update_version_handler, methods=["POST"]),
         Route("/api/v1/agent/insights/{symbol}", list_agent_insights, methods=["GET"]),
         Route("/api/v1/news/market", get_market_news_handler, methods=["GET"]),
         Route("/api/v1/market/movers", get_market_movers_handler, methods=["GET"]),

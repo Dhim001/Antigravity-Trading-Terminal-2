@@ -50,10 +50,19 @@ describe('mlJobTimeouts', () => {
     expect(isTransientMlPollError(new Error(
       'Request timed out after 60000ms: /api/v1/ml/jobs/abc',
     ))).toBe(true);
+    expect(isTransientMlPollError(new Error('timeout'))).toBe(true);
     expect(isTransientMlPollError(new Error('HTTP 500'))).toBe(true);
     expect(isTransientMlPollError(new Error('HTTP 429'))).toBe(true);
     expect(isTransientMlPollError(new Error('HTTP 404'))).toBe(false);
     const budget = new MlJobPollBudgetError('budget', { jobId: 'x', budgetMs: 1 });
     expect(budget.code).toBe('ML_JOB_POLL_BUDGET');
+  });
+
+  it('flags bare client timeout messages for Lab recovery', async () => {
+    const { isMlClientTimeoutError, ML_VALIDATE_TIMEOUT_MS } = await import('./mlJobTimeouts');
+    expect(isMlClientTimeoutError('timeout')).toBe(true);
+    expect(isMlClientTimeoutError(new Error('Request timed out after 30000ms: /x'))).toBe(true);
+    expect(isMlClientTimeoutError('fold failed')).toBe(false);
+    expect(mlJobTimeoutMs('ML_SIGNAL_BOOST', 'validate')).toBe(ML_VALIDATE_TIMEOUT_MS.default);
   });
 });

@@ -25,15 +25,19 @@ import {
 
 const LATEST = '__latest__';
 
-function formatVersionLabel(v) {
+export function formatVersionLabel(v) {
   if (!v) return '—';
+  const name = v.display_name ? String(v.display_name) : null;
   const when = v.trained_at
     ? new Date(v.trained_at).toLocaleString()
     : (v.version_id || 'unknown');
   const acc = v.metrics?.val_accuracy ?? v.metrics?.accuracy;
   const accBit = acc != null ? ` · acc ${(Number(acc) * 100).toFixed(0)}%` : '';
   const cur = v.is_current ? ' (current)' : '';
-  return `${when}${accBit}${cur}`;
+  const keep = v.protected ? ' ★' : '';
+  return name
+    ? `${name}${keep}${cur} · ${when}${accBit}`
+    : `${when}${accBit}${cur}${keep}`;
 }
 
 export default function MlModelVersionSelect({

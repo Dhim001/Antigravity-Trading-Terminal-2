@@ -490,7 +490,9 @@ class BacktesterService:
             return {"error": "Not enough historical data"}
 
         # Copy so we can inject ML model lookup fields without mutating caller config.
-        cfg = dict(config or {})
+        from app.services.bots.indicators import merge_strategy_config as _merge_strat_cfg
+
+        cfg = _merge_strat_cfg(strategy_name, dict(config or {}))
         sym_u = str(symbol or "").upper()
         if sym_u:
             cfg.setdefault("symbol", sym_u)
@@ -1772,7 +1774,9 @@ class BacktesterService:
         cat_payload = cat_metrics.finalize(
             summary=summary,
             filter_rejects=filter_rejects,
-            feature_importance=load_ml_feature_importance(strat_key, symbol),
+            feature_importance=load_ml_feature_importance(
+                strat_key, symbol, timeframe=cfg.get("timeframe"),
+            ),
             oos_summary=cfg.get("_oos_summary") if isinstance(cfg.get("_oos_summary"), dict) else None,
             equity_curve=equity_curve,
         )

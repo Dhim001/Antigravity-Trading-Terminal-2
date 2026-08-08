@@ -67,7 +67,7 @@ import { getBotOwnedPositionView } from '@/lib/botAttribution';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode, usesNativeHtCharts } from '@/lib/massiveMarket';
 import { backtestFingerprint } from '@/lib/backtestDisplay';
-import { buildDeployPayload } from '@/lib/deployGate';
+import { backtestResultsMatchTarget, buildDeployPayload } from '@/lib/deployGate';
 import { evaluateAndMaybeDeploy } from '@/lib/pipelineAutoGate';
 import {
   advancePipeline,
@@ -676,6 +676,16 @@ export function AlgoTab({ hideToolbar = false }) {
     // Require a run that started after this pipeline entered BACKTESTING.
     // Without this, stale store results (often lacking finished_at) auto-gate/deploy.
     if (pipelineBtSawRunningRef.current !== mlPipeline.pipelineId) return;
+    // Wait until store results match this pipeline's symbol/strategy. Clearing
+    // backtestRunning before async result apply previously gated a prior run.
+    const pipeSym = mlPipeline.symbol || activeSymbol;
+    const pipeStrat = mlPipeline.strategy || botStrategy;
+    if (!backtestResultsMatchTarget(backtestResults, {
+      symbol: pipeSym,
+      strategy: pipeStrat,
+    })) {
+      return;
+    }
 
     pipelineGateDoneRef.current = mlPipeline.pipelineId;
     setPipelineBacktestResult(mlPipeline.pipelineId, backtestResults);
@@ -688,8 +698,8 @@ export function AlgoTab({ hideToolbar = false }) {
       autoDeployMode: mlPipeline.autoDeployMode || 'paper',
       executionMode,
       terminalMode,
-      symbol: mlPipeline.symbol || activeSymbol,
-      strategy: mlPipeline.strategy || botStrategy,
+      symbol: pipeSym,
+      strategy: pipeStrat,
       timeframe: mlPipeline.timeframe || botTimeframe,
       days: backtestDays,
       snapshot: backtestSnapshot,
@@ -1164,7 +1174,7 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectContent>
               </Select>
               <span className="algo-field-hint">
-                {isMlStrategy(botStrategy) || botStrategy === 'CHART_AGENT' || botStrategy === 'ABSORPTION_AGENT'
+                {isMlStrategy(botStrategy) || botStrategy === 'CHART_AGENT' || botStrategy === 'ABSORPTION_AGENT' || botStrategy === 'REGIME_STRATEGY_AGENT'
                   ? 'Live risk gate: LONG_ONLY blocks short entries; BOTH allows BUY and SELL signal strategies to open both sides.'
                   : 'Live risk gate: LONG_ONLY blocks short entries; BOTH allows long and short entries when the strategy emits them.'}
               </span>
@@ -1529,6 +1539,85 @@ export function AlgoTab({ hideToolbar = false }) {
                   />
                   Use LLM explanations on strong signals (Ollama local or OpenRouter when enabled)
                 </label>
+              </div>
+            )}
+
+            {botStrategy === 'REGIME_STRATEGY_AGENT' && (
+              <div className="algo-deploy-field space-y-2">
+                <Label className="algo-field-label">Regime Strategy Agent Settings</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-[0.62rem] text-muted-foreground">ATR elevated ratio</Label>
+                    <InputGroup className="mt-1 h-8">
+                      <InputGroupInput
+                        type="number"
+                        min={1}
+                        max={5}
+                        step={0.1}
+                        className="text-xs num-mono"
+                        value={botConfig?.atr_ratio_elevated ?? 1.5}
+                        onChange={(e) => updateBotConfig({
+                          atr_ratio_elevated: parseFloat(e.target.value) || 1.5,
+                        })}
+                        aria-label="ATR elevated ratio"
+                      />
+                    </InputGroup>
+                  </div>
+                  <div>
+                    <Label className="text-[0.62rem] text-muted-foreground">ADX trend</Label>
+                    <InputGroup className="mt-1 h-8">
+                      <InputGroupInput
+                        type="number"
+                        min={5}
+                        max={60}
+                        step={1}
+                        className="text-xs num-mono"
+                        value={botConfig?.adx_trend ?? 25}
+                        onChange={(e) => updateBotConfig({
+                          adx_trend: parseFloat(e.target.value) || 25,
+                        })}
+                        aria-label="ADX trend threshold"
+                      />
+                    </InputGroup>
+                  </div>
+                  <div>
+                    <Label className="text-[0.62rem] text-muted-foreground">Hysteresis bars</Label>
+                    <InputGroup className="mt-1 h-8">
+                      <InputGroupInput
+                        type="number"
+                        min={1}
+                        max={30}
+                        step={1}
+                        className="text-xs num-mono"
+                        value={botConfig?.regime_hysteresis_bars ?? 3}
+                        onChange={(e) => updateBotConfig({
+                          regime_hysteresis_bars: parseInt(e.target.value, 10) || 3,
+                        })}
+                        aria-label="Regime hysteresis bars"
+                      />
+                    </InputGroup>
+                  </div>
+                  <div>
+                    <Label className="text-[0.62rem] text-muted-foreground">Min hold bars</Label>
+                    <InputGroup className="mt-1 h-8">
+                      <InputGroupInput
+                        type="number"
+                        min={0}
+                        max={200}
+                        step={1}
+                        className="text-xs num-mono"
+                        value={botConfig?.regime_min_hold_bars ?? 15}
+                        onChange={(e) => updateBotConfig({
+                          regime_min_hold_bars: parseInt(e.target.value, 10) || 0,
+                        })}
+                        aria-label="Regime min hold bars"
+                      />
+                    </InputGroup>
+                  </div>
+                </div>
+                <span className="algo-field-hint">
+                  elevated_vol→VWAP · trending→Supertrend · ranging→BRS. Open positions keep original SL/TP on switch.
+                </span>
               </div>
             )}
 
@@ -2225,7 +2314,7 @@ export function AlgoTab({ hideToolbar = false }) {
                   };
                   return (
                     <div
-                      key={log.id ?? `${idx}-${display.slice(0, 24)}`}
+                      key={log.id ?? `log-${idx}-${display.slice(0, 24)}`}
                       className={cn(
                         logLineClassLocal(log),
                         showInsight && 'group relative cursor-pointer hover:bg-muted/30',

@@ -1,0 +1,83 @@
+{
+  "symbol": "BTC",
+  "feature_schema_version": 1,
+  "feature_names": [
+    "returns_1",
+    "returns_5",
+    "returns_15",
+    "log_return",
+    "atr_ratio",
+    "bb_width",
+    "rolling_vol_20",
+    "rsi_14",
+    "macd_hist",
+    "stoch_k",
+    "adx",
+    "volume_ratio",
+    "obv_slope",
+    "ema_cross_9_21",
+    "price_vs_vwap",
+    "supertrend_dir",
+    "atr_elevated",
+    "atr_compressed",
+    "trend_trending",
+    "trend_ranging",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "high_low_range",
+    "body_ratio",
+    "upper_shadow",
+    "lower_shadow",
+    "close_z_20",
+    "volume_z_20",
+    "consecutive_up",
+    "consecutive_down",
+    "is_buy_bias",
+    "momentum_alignment"
+  ],
+  "label_map": {
+    "1": 0,
+    "0": 1,
+    "-1": 2
+  },
+  "reverse_map": {
+    "0": "BUY",
+    "1": "NONE",
+    "2": "SELL"
+  },
+  "trained_at": "2026-07-15T23:45:07.127666Z",
+  "sample_count": 5050,
+  "label_distribution": {
+    "BUY": 1405,
+    "SELL": 849,
+    "NONE": 2846,
+    "invalid": 0
+  },
+  "metrics": {
+    "train_samples": 4040,
+    "val_samples": 1010,
+    "val_accuracy": 0.5614,
+    "val_log_loss": 1.2961,
+    "val_acc_buy": 0.5316,
+    "val_acc_none": 0.6546,
+    "val_acc_sell": 0.1145,
+    "fit_samples": 5050
+  },
+  "top_features": [],
+  "loss_history": [
+    {
+      "epoch": 1,
+      "train_loss": 1.2961,
+      "val_loss": 1.2961,
+      "val_accuracy": 0.5614
+    }
+  ],
+  "config": {
+    "atr_mult": 2.0,
+    "max_holding_bars": 30,
+    "min_train_samples": 80
+  },
+  "version_id": "20260715T2345071"
+}

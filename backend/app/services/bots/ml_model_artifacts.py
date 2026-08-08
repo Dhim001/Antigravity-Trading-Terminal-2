@@ -12,9 +12,18 @@ Layout (per strategy subdir + symbol[, timeframe])::
           metadata.json
           …artifacts…
 
+Identity contract
+-----------------
+- ``version_id`` — filesystem key under ``versions/`` (from ``version_id_from_iso``).
+- ``trained_at`` — ISO timestamp for display / Lab pin; also accepted as ``model_version``.
+- API may pass ``model_version``, ``version_id``, or ``trained_at``; resolve via
+  ``find_version_entry`` (matches either id or ISO).
+
 Training still writes to the current root first, then ``snapshot_current_version``
 copies artifacts into ``versions/<id>/``. Inference loaders can resolve a pinned
-``model_version`` (ISO ``trained_at``) via ``resolve_model_dir``.
+``model_version`` (ISO ``trained_at`` or ``version_id``) via ``resolve_model_dir``.
+
+Strategy → subdir / artifact maps live in ``ml_registry`` (re-exported here).
 """
 
 from __future__ import annotations
@@ -28,31 +37,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import BASE_DIR
+from app.services.bots.ml_registry import MODEL_SUBDIRS, STRATEGY_ARTIFACTS
 
 logger = logging.getLogger(__name__)
 
 MAX_KEPT_VERSIONS = 10
 
-# Strategy → artifact filenames expected under model root
-STRATEGY_ARTIFACTS: dict[str, list[str]] = {
-    "ML_SIGNAL_BOOST": ["model.joblib", "metadata.json"],
-    "LSTM_DIRECTION": ["lstm_direction.onnx", "scaler.json", "metadata.json"],
-    "RL_PPO_AGENT": ["ppo_policy.onnx", "scaler.json", "metadata.json"],
-    "TCN_MULTI_HORIZON": ["tcn_multi_horizon.onnx", "scaler.json", "metadata.json"],
-    "VAE_REGIME_DETECTOR": ["vae_regime.onnx", "scaler.json", "metadata.json"],
-    "TRANSFORMER_SIGNAL": ["transformer_signal.onnx", "scaler.json", "metadata.json"],
-    "GNN_CROSS_ASSET": ["gnn_cross_asset.onnx", "scaler.json", "metadata.json"],
-}
-
-MODEL_SUBDIRS = {
-    "ML_SIGNAL_BOOST": "ml_signal_models",
-    "LSTM_DIRECTION": "lstm_signal_models",
-    "RL_PPO_AGENT": "rl_ppo_models",
-    "TCN_MULTI_HORIZON": "tcn_signal_models",
-    "VAE_REGIME_DETECTOR": "vae_regime_models",
-    "TRANSFORMER_SIGNAL": "transformer_signal_models",
-    "GNN_CROSS_ASSET": "gnn_signal_models",
-}
+# Re-export for back-compat (prefer importing from ml_registry)
+__all__ = [
+    "MODEL_SUBDIRS",
+    "STRATEGY_ARTIFACTS",
+    "MAX_KEPT_VERSIONS",
+]
 
 
 def safe_symbol_key(symbol: str) -> str:
@@ -87,20 +83,38 @@ def model_storage_key(symbol: str, timeframe: str | None = None) -> str:
 
 
 def version_id_from_iso(trained_at: str | None) -> str:
-    """Normalize ISO timestamp into a filesystem-safe version id."""
+    """Normalize ISO timestamp into a filesystem-safe version id.
+
+    Fractional seconds are dropped (not concatenated) so::
+
+        2026-08-04T06:55:56.292031Z → 20260804T065556Z
+
+    Legacy mangled ids (e.g. ``20260804T0655562``) remain resolvable via
+    ``find_version_entry`` matching on ``trained_at``.
+    """
     raw = (trained_at or "").strip()
     if not raw:
         raw = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    # 2026-07-15T22:30:00.123456Z → 20260715T223000Z
-    cleaned = (
-        raw.replace("+00:00", "Z")
-        .replace("-", "")
-        .replace(":", "")
-        .replace(".", "")
-    )
+    raw = raw.replace("+00:00", "Z")
+    # Drop fractional seconds before stripping punctuation
+    if "." in raw:
+        head, _, frac = raw.partition(".")
+        # Keep trailing Z if present on the fractional part
+        suffix = "Z" if frac.upper().endswith("Z") or head.upper().endswith("Z") else ""
+        if head.upper().endswith("Z"):
+            head = head[:-1]
+        raw = f"{head}{suffix}" if suffix else head
+    cleaned = raw.replace("-", "").replace(":", "")
     if "T" in cleaned:
         date, _, rest = cleaned.partition("T")
-        time_part = "".join(c for c in rest if c.isalnum())[:7]  # HHMMSSZ
+        alnum = "".join(c for c in rest if c.isalnum())
+        # HHMMSS + optional Z
+        if alnum.upper().endswith("Z"):
+            time_part = alnum[:6] + "Z"
+        else:
+            time_part = alnum[:6]
+            if raw.upper().endswith("Z"):
+                time_part += "Z"
         return f"{date}T{time_part}" if time_part else date
     return "".join(c for c in cleaned if c.isalnum())[:24] or "unknown"
 
@@ -226,10 +240,14 @@ def resolve_model_dir(model_root: str, model_version: str | None = None) -> str:
     if not model_version:
         return model_root
     vid = version_id_from_iso(str(model_version))
-    # Exact dir
+    # Exact dir (new clean ids)
     candidate = os.path.join(versions_dir(model_root), vid)
     if os.path.isdir(candidate):
         return candidate
+    # Legacy mangled id folders (fractional digit glued on, e.g. …T0655562)
+    legacy = _legacy_version_dir(model_root, vid, str(model_version))
+    if legacy:
+        return legacy
     # Match by trained_at in index
     for entry in list_model_versions(model_root):
         if str(entry.get("trained_at")) == str(model_version) or entry.get("version_id") == vid:
@@ -245,19 +263,57 @@ def resolve_model_dir(model_root: str, model_version: str | None = None) -> str:
     return model_root
 
 
+def _legacy_version_dir(model_root: str, vid: str, needle: str) -> str | None:
+    """Find versions/<id> for clean vid or legacy mangled folder names.
+
+    Prefer exact matches; only use prefix when a single candidate exists so
+    coexisting ``…T065556Z`` and ``…T0655562`` do not resolve ambiguously.
+    """
+    vroot = versions_dir(model_root)
+    if not os.path.isdir(vroot):
+        return None
+    for key in (needle, vid):
+        if not key:
+            continue
+        direct = os.path.join(vroot, key)
+        if os.path.isdir(direct):
+            return direct
+    stem = vid.rstrip("Zz")
+    if len(stem) < 15:  # YYYYMMDDTHHMMSS
+        return None
+    matches: list[str] = []
+    for name in os.listdir(vroot):
+        path = os.path.join(vroot, name)
+        if name == "index.json" or not os.path.isdir(path):
+            continue
+        if name == vid or name.startswith(stem):
+            matches.append(path)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def find_version_entry(model_root: str, model_version: str | None) -> dict[str, Any] | None:
-    """Locate a version index row by trained_at or version_id."""
+    """Locate a version index row by trained_at or version_id (incl. legacy ids)."""
     if not model_root or not model_version:
         return None
     needle = str(model_version).strip()
     vid = version_id_from_iso(needle)
+    stem = vid.rstrip("Zz") if vid else ""
+    prefix_hits: list[dict[str, Any]] = []
     for entry in list_model_versions(model_root):
-        if str(entry.get("trained_at") or "") == needle or str(entry.get("version_id") or "") in (needle, vid):
+        eid = str(entry.get("version_id") or "")
+        if str(entry.get("trained_at") or "") == needle or eid in (needle, vid):
             return entry
-    # Direct directory even if index is stale
-    candidate = os.path.join(versions_dir(model_root), vid)
-    if os.path.isdir(candidate):
-        meta_path = os.path.join(candidate, "metadata.json")
+        # Legacy: index still has mangled id, pin uses clean id — only if unique
+        if stem and len(stem) >= 15 and eid.startswith(stem):
+            prefix_hits.append(entry)
+    if len(prefix_hits) == 1:
+        return prefix_hits[0]
+    legacy = _legacy_version_dir(model_root, vid, needle)
+    if legacy:
+        name = os.path.basename(legacy)
+        meta_path = os.path.join(legacy, "metadata.json")
         trained_at = None
         if os.path.isfile(meta_path):
             try:
@@ -266,11 +322,166 @@ def find_version_entry(model_root: str, model_version: str | None) -> dict[str, 
             except Exception:
                 pass
         return {
-            "version_id": vid,
+            "version_id": name,
             "trained_at": trained_at or needle,
-            "path": f"versions/{vid}",
+            "path": f"versions/{name}",
         }
     return None
+
+
+def champion_sync_info(model_root: str | None) -> dict[str, Any]:
+    """Compare live root version vs newest index entry (no auto-activate)."""
+    empty = {
+        "root_version_id": None,
+        "root_trained_at": None,
+        "newest_version_id": None,
+        "newest_trained_at": None,
+        "desynced": False,
+    }
+    if not model_root or not os.path.isdir(model_root):
+        return empty
+    root_vid = None
+    root_at = None
+    meta_path = os.path.join(model_root, "metadata.json")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+            root_at = meta.get("trained_at")
+            root_vid = meta.get("version_id") or (
+                version_id_from_iso(str(root_at)) if root_at else None
+            )
+        except Exception:
+            pass
+    versions = list_model_versions(model_root)
+    newest = versions[0] if versions else None
+    newest_vid = newest.get("version_id") if newest else None
+    newest_at = newest.get("trained_at") if newest else None
+    desynced = False
+    if root_at and newest_at and str(root_at) != str(newest_at):
+        desynced = True
+    elif root_vid and newest_vid and str(root_vid) != str(newest_vid):
+        # Same trained_at edge case unlikely; still flag id mismatch
+        if not root_at or not newest_at:
+            desynced = True
+    return {
+        "root_version_id": root_vid,
+        "root_trained_at": root_at,
+        "newest_version_id": newest_vid,
+        "newest_trained_at": newest_at,
+        "desynced": desynced,
+    }
+
+
+def migrate_bare_base_model_dirs(
+    *,
+    data_root: str | None = None,
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    """Archive bare crypto bases (e.g. BTC/) when BTCUSDT/ already exists.
+
+    Moves ``data/{subdir}/BTC`` → ``data/_orphans/{subdir}/BTC`` so Lab only
+    sees the normalized USDT tree. Returns a list of move records.
+    """
+    from app.services.bots.ml_registry import MODEL_SUBDIRS
+
+    base = data_root or os.path.join(BASE_DIR, "data")
+    moved: list[dict[str, Any]] = []
+    # Common bare bases that normalize to *USDT for Lab
+    bare_to_usdt = {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+        "BNB": "BNBUSDT",
+        "SOL": "SOLUSDT",
+        "XRP": "XRPUSDT",
+        "ADA": "ADAUSDT",
+        "DOGE": "DOGEUSDT",
+        "AVAX": "AVAXUSDT",
+        "BCH": "BCHUSDT",
+    }
+    for subdir in sorted(set(MODEL_SUBDIRS.values())):
+        sub_path = os.path.join(base, subdir)
+        if not os.path.isdir(sub_path):
+            continue
+        for bare, usdt in bare_to_usdt.items():
+            bare_path = os.path.join(sub_path, bare)
+            usdt_path = os.path.join(sub_path, usdt)
+            if not os.path.isdir(bare_path):
+                continue
+            if not os.path.isdir(usdt_path):
+                # Prefer renaming bare → USDT when target missing
+                dest = usdt_path
+                action = "rename_to_usdt"
+            else:
+                dest = os.path.join(base, "_orphans", subdir, bare)
+                action = "archive_orphan"
+            rec = {
+                "subdir": subdir,
+                "bare": bare,
+                "usdt": usdt,
+                "src": bare_path,
+                "dest": dest,
+                "action": action,
+            }
+            if dry_run:
+                moved.append(rec)
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if os.path.exists(dest):
+                # Avoid clobber — suffix with timestamp
+                dest = f"{dest}__{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+                rec["dest"] = dest
+            shutil.move(bare_path, dest)
+            logger.info("Migrated bare model dir %s → %s (%s)", bare_path, dest, action)
+            moved.append(rec)
+    return moved
+
+
+def ensure_validation_sidecar(model_root: str | None) -> bool:
+    """Write validation.json from embedded metadata fields when sidecar missing.
+
+    Always stamps ``trained_at`` / ``version_id`` so Activate / retrain cannot
+    leak an older WF/PBO stamp onto a different champion (see
+    ``read_validation_sidecar`` fingerprint checks).
+    """
+    if not model_root or not os.path.isdir(model_root):
+        return False
+    side = os.path.join(model_root, "validation.json")
+    if os.path.isfile(side):
+        return False
+    meta_path = os.path.join(model_root, "metadata.json")
+    if not os.path.isfile(meta_path):
+        return False
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(meta, dict):
+        return False
+    has_wf = isinstance(meta.get("walk_forward"), dict) and bool(meta.get("walk_forward"))
+    has_pbo = isinstance(meta.get("pbo"), dict) and bool(meta.get("pbo"))
+    if not has_wf and not has_pbo and not meta.get("validated_at"):
+        return False
+    trained_at = meta.get("trained_at")
+    version_id = meta.get("version_id") or (
+        version_id_from_iso(str(trained_at)) if trained_at else None
+    )
+    payload = {
+        "validated_at": meta.get("validated_at"),
+        "walk_forward": meta.get("walk_forward"),
+        "pbo": meta.get("pbo"),
+        "validation_fingerprint": meta.get("validation_fingerprint"),
+        "trained_at": trained_at,
+        "version_id": version_id,
+    }
+    try:
+        with open(side, "w", encoding="utf-8") as f:
+            json.dump(json_safe_value(payload), f, indent=2, allow_nan=False)
+        return True
+    except Exception:
+        logger.exception("Failed to write validation sidecar under %s", model_root)
+        return False
 
 
 def activate_model_version(
@@ -329,6 +540,16 @@ def activate_model_version(
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    # Invalidate root validation.json — it may stamp a previous champion.
+    # Embedded WF/PBO on the activated snapshot (if any) can be re-materialized
+    # by ensure_validation_sidecar on the next status read.
+    try:
+        side = validation_sidecar_path(root)
+        if os.path.isfile(side):
+            os.remove(side)
+    except Exception:
+        logger.debug("Failed to clear validation sidecar on activate", exc_info=True)
+
     # Keep index entry; refresh is_current via list_model_versions
     logger.info(
         "Activated model version %s for %s/%s (%d files)",
@@ -354,12 +575,15 @@ def delete_model_version(
     symbol: str,
     model_version: str,
     timeframe: str | None = None,
+    *,
+    force: bool = False,
 ) -> dict[str, Any]:
     """
     Remove a historical snapshot from disk and the version index.
 
     Refuses to delete the currently active version — activate another checkpoint
-    first. Never deletes the live model root files.
+    first. Never deletes the live model root files. Protected favorites also
+    refuse delete unless ``force=True``.
     """
     strat = str(strategy or "").upper()
     sym = str(symbol or "").upper()
@@ -370,6 +594,15 @@ def delete_model_version(
     entry = find_version_entry(root, model_version)
     if not entry:
         return {"ok": False, "error": f"Version not found: {model_version}"}
+
+    if entry.get("protected") and not force:
+        return {
+            "ok": False,
+            "error": (
+                "Cannot delete a protected (favorite) version. "
+                "Unpin/unprotect it first, then delete."
+            ),
+        }
 
     vid = str(entry.get("version_id") or "")
     for row in list_model_versions(root):
@@ -527,12 +760,28 @@ def snapshot_current_version(
         "model_type": meta.get("model_type"),
     }
 
-    index = [e for e in _read_index(model_root) if e.get("version_id") != vid]
+    prev_index = _read_index(model_root)
+    prev_same = next((e for e in prev_index if e.get("version_id") == vid), None)
+    if isinstance(prev_same, dict):
+        # Preserve user labels / favorites across re-snapshots of the same id.
+        if prev_same.get("display_name"):
+            entry["display_name"] = str(prev_same["display_name"])[:80]
+        if prev_same.get("protected"):
+            entry["protected"] = True
+
+    index = [e for e in prev_index if e.get("version_id") != vid]
     index.insert(0, json_safe_value(entry))
 
-    # Prune old versions
+    # Prune oldest unprotected versions only — favorites are retained.
     while len(index) > max_kept:
-        old = index.pop()
+        prune_at = None
+        for i in range(len(index) - 1, -1, -1):
+            if not index[i].get("protected"):
+                prune_at = i
+                break
+        if prune_at is None:
+            break
+        old = index.pop(prune_at)
         old_dir = os.path.join(model_root, old.get("path") or f"versions/{old.get('version_id')}")
         if os.path.isdir(old_dir):
             try:
@@ -1011,6 +1260,84 @@ def export_onnx_single_file(
 
 
 # ── Version status management (champion / challenger / retired) ──────────
+
+
+def update_model_version_meta(
+    strategy: str,
+    symbol: str,
+    model_version: str,
+    *,
+    display_name: str | None = None,
+    clear_display_name: bool = False,
+    protected: bool | None = None,
+    timeframe: str | None = None,
+) -> dict[str, Any]:
+    """Rename and/or favorite (protect) a version index entry.
+
+    ``version_id`` stays the immutable filesystem key; ``display_name`` is the
+    user-facing label. Protected versions are skipped by snapshot prune and
+    blocked from delete unless forced.
+    """
+    strat = str(strategy or "").upper()
+    sym = str(symbol or "").upper()
+    root = model_root_for(strat, sym, timeframe)
+    if not root or not os.path.isdir(root):
+        return {"ok": False, "error": f"No model directory for {strat}/{sym}"}
+
+    entry = find_version_entry(root, model_version)
+    if not entry:
+        return {"ok": False, "error": f"Version not found: {model_version}"}
+
+    vid = str(entry.get("version_id") or "")
+    index = _read_index(root)
+    updated = None
+    for row in index:
+        if str(row.get("version_id") or "") != vid and str(row.get("trained_at") or "") != str(
+            entry.get("trained_at") or ""
+        ):
+            continue
+        if clear_display_name:
+            row.pop("display_name", None)
+        elif display_name is not None:
+            name = str(display_name).strip()[:80]
+            if name:
+                row["display_name"] = name
+            else:
+                row.pop("display_name", None)
+        if protected is not None:
+            if protected:
+                row["protected"] = True
+            else:
+                row.pop("protected", None)
+        updated = dict(row)
+        break
+
+    if updated is None:
+        # Index miss but directory exists — append a row so rename still works.
+        updated = dict(entry)
+        if clear_display_name:
+            updated.pop("display_name", None)
+        elif display_name is not None:
+            name = str(display_name).strip()[:80]
+            if name:
+                updated["display_name"] = name
+        if protected is not None:
+            if protected:
+                updated["protected"] = True
+            else:
+                updated.pop("protected", None)
+        index.insert(0, updated)
+
+    _write_index(root, index)
+    return {
+        "ok": True,
+        "strategy": strat,
+        "symbol": sym,
+        "version_id": vid,
+        "display_name": updated.get("display_name"),
+        "protected": bool(updated.get("protected")),
+        "versions": list_model_versions(root),
+    }
 
 
 def update_version_status(

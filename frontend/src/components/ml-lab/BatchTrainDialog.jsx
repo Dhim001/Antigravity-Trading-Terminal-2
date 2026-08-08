@@ -35,7 +35,10 @@ import { cn } from '@/lib/utils';
 export { BATCH_SCOPES, selectStrategiesForScope };
 export { formatBatchTrainSummary, runBatchTrainQueue };
 
-function formatTrainedHint(row) {
+function formatTrainedHint(row, { trainingPct = null } = {}) {
+  if (trainingPct != null) {
+    return `training ${Math.round(trainingPct)}%`;
+  }
   if (!row?.trained) return 'not trained';
   const age = modelAgeHours(row);
   if (age == null) return 'trained';
@@ -75,19 +78,38 @@ export default function BatchTrainDialog({
     getMlTrainingSession,
     getMlTrainingSession,
   );
-  const activePct = running && progress.strategy
-    && mlSession.strategy === progress.strategy
-    ? Number(mlSession.serverProgress?.pct) || null
-    : null;
+  const activePct = (() => {
+    if (!running || !progress.strategy) return null;
+    if (mlSession.strategy !== progress.strategy) return null;
+    const raw = mlSession.serverProgress?.pct;
+    if (raw == null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  })();
 
+  const runningRef = useRef(false);
+  runningRef.current = running;
+
+  // Init when dialog opens or Automation posts a new initialScope.
+  // Never reset while a batch is in flight (inventory refreshAll must not
+  // wipe running/progress/custom selection — that looked like a "stale" stuck UI).
   useEffect(() => {
     if (!open) return;
+    if (runningRef.current) return;
     setScope(initialScope);
     setSelected(selectStrategiesForScope(inventory, initialScope));
-    setRunning(false);
     setProgress({ index: 0, total: 0, strategy: null });
     cancelRef.current = false;
-  }, [open, initialScope, inventory]);
+    // inventory captured at open / scope change only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialScope]);
+
+  // Idle inventory load/refresh: keep non-custom scopes in sync (e.g. open before rows arrive).
+  useEffect(() => {
+    if (!open || runningRef.current) return;
+    if (scope === 'custom') return;
+    setSelected(selectStrategiesForScope(inventory, scope));
+  }, [open, inventory, scope]);
 
   const applyScope = useCallback((nextScope) => {
     setScope(nextScope);
@@ -190,6 +212,8 @@ export default function BatchTrainDialog({
             const row = inventoryById.get(id);
             const meta = getStrategyMeta(id);
             const checked = selected.includes(id);
+            const isActiveTrain = running && progress.strategy === id;
+            const hintPct = isActiveTrain ? (activePct ?? 0) : null;
             return (
               <li key={id} className="flex items-center gap-2 text-xs">
                 <Checkbox
@@ -200,7 +224,9 @@ export default function BatchTrainDialog({
                 />
                 <Label htmlFor={`batch-strat-${id}`} className="flex-1 cursor-pointer font-normal">
                   <span className="font-medium">{meta?.shortLabel || id}</span>
-                  <span className="text-muted-foreground ml-2">{formatTrainedHint(row)}</span>
+                  <span className="text-muted-foreground ml-2">
+                    {formatTrainedHint(row, { trainingPct: hintPct })}
+                  </span>
                 </Label>
               </li>
             );
@@ -219,7 +245,9 @@ export default function BatchTrainDialog({
         {running && (
           <p className="text-[0.65rem] text-muted-foreground num-mono">
             Progress: Training {progress.index}/{progress.total}
-            {progress.strategy ? `: ${progress.strategy}` : ''}
+            {progress.strategy
+              ? `: ${getStrategyMeta(progress.strategy)?.shortLabel || progress.strategy}`
+              : ''}
             {activePct != null ? ` ${Math.round(activePct)}%` : ''}
           </p>
         )}

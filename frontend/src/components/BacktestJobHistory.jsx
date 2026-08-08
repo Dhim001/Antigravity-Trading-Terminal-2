@@ -246,7 +246,8 @@ export default function BacktestJobHistory() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((job) => {
+              {filtered.map((job, index) => {
+                const rowKey = job.id || `${job.created_at || 'job'}-${index}`;
                 const sym = job.request?.symbol ?? '—';
                 const m = extractMetrics(job);
                 const isActive = job.id === backtestJobId;
@@ -258,7 +259,7 @@ export default function BacktestJobHistory() {
 
                 return (
                   <tr
-                    key={job.id}
+                    key={rowKey}
                     className={cn(
                       'cursor-pointer hover:bg-muted/40',
                       isActive && 'bg-primary/5',

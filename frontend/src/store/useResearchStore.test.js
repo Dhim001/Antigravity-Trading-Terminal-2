@@ -50,8 +50,38 @@ describe('useResearchStore openBacktestLab', () => {
       expect(useResearchStore.getState().backtestResults.trades).toHaveLength(2);
     });
   });
-});
 
+  it('does not apply async restore after Lab is closed', async () => {
+    let resolveRestore;
+    resolveBacktestForLabAsync.mockImplementation(
+      () => new Promise((resolve) => { resolveRestore = resolve; }),
+    );
+
+    useResearchStore.setState({
+      backtestResults: {
+        run_id: 'run-2',
+        _offloaded: true,
+        trades: [],
+        total_pnl: 1,
+      },
+    });
+
+    useResearchStore.getState().openBacktestLab('results');
+    expect(resolveBacktestForLabAsync).toHaveBeenCalledOnce();
+
+    useResearchStore.getState().setBacktestLabOpen(false);
+    resolveRestore({
+      run_id: 'run-2',
+      total_pnl: 1,
+      trades: [{ id: 1 }],
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useResearchStore.getState().backtestResults._offloaded).toBe(true);
+    expect(useResearchStore.getState().backtestResults.trades).toEqual([]);
+  });
+});
 describe('backtest job slots', () => {
   beforeEach(() => {
     useResearchStore.setState({

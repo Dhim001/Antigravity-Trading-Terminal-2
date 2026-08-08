@@ -184,6 +184,74 @@ class PortfolioAnalyticsTests(unittest.TestCase):
         pnls = sorted(t["pnl"] for t in exits)
         self.assertEqual(pnls, [5.0, 10.0])
 
+    def test_bot_tagged_account_fill_skipped_when_covered(self):
+        """Bot fills already in bot_trades must not double-count in combined."""
+        ts = datetime.now(timezone.utc).isoformat()
+        history = {
+            "trades": [
+                {
+                    "id": "o2",
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 10.0,
+                    "timestamp": ts,
+                    "bot_id": self.bot_id,
+                },
+                {
+                    "id": "manual-1",
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 7.5,
+                    "timestamp": ts,
+                },
+            ],
+        }
+        trades = collect_exit_trades(history, source="combined")
+        # 2 bot exits from bot_trades + 1 manual; o2 account fill skipped
+        self.assertEqual(len(trades), 3)
+        self.assertEqual(sum(t["pnl"] for t in trades), 12.5)
+        account = [t for t in trades if t["source"] == "account"]
+        self.assertEqual(len(account), 1)
+        self.assertEqual(account[0]["id"], "manual-1")
+
+    def test_orphan_bot_account_fill_kept_as_fallback(self):
+        """Bot-tagged order missing from bot_trades still counts once via orders."""
+        ts = datetime.now(timezone.utc).isoformat()
+        history = {
+            "trades": [
+                {
+                    "id": "orphan-exit",
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 3.0,
+                    "timestamp": ts,
+                    "bot_id": self.bot_id,
+                },
+                {
+                    "id": "manual-1",
+                    "symbol": "ETHUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "realized_pnl": 7.5,
+                    "timestamp": ts,
+                },
+            ],
+        }
+        trades = collect_exit_trades(history, source="combined")
+        # 2 bot_trades exits + orphan fallback + manual
+        self.assertEqual(len(trades), 4)
+        orphan = next(t for t in trades if t["id"] == "orphan-exit")
+        self.assertEqual(orphan["source"], "bot")
+        self.assertEqual(orphan["strategy"], "MACD_RSI")
+        self.assertEqual(orphan["pnl"], 3.0)
+        # Manual filter must not include the orphan
+        manual = collect_exit_trades(history, source="account")
+        self.assertEqual(len(manual), 1)
+        self.assertEqual(manual[0]["id"], "manual-1")
+
     def test_correlation_respects_symbol_universe(self):
         from app.services.analytics.portfolio import get_correlation_matrix
 

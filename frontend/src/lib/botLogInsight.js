@@ -47,10 +47,18 @@ export function formatLogTimestamp(ts) {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString();
 }
 
+/** Monotonic suffix so same-ms live flushes never collide in React keys. */
+let _botLogSeq = 0;
+
+function nextBotLogId(prefix = 'log') {
+  _botLogSeq += 1;
+  return `${prefix}-${Date.now()}-${_botLogSeq}`;
+}
+
 export function normalizeBotLogEntry(log, index = 0) {
   if (typeof log === 'string') {
     return {
-      id: `legacy-${index}-${log.slice(0, 16)}`,
+      id: nextBotLogId(`legacy-${index}`),
       bot_id: null,
       level: 'INFO',
       message: log.replace(/^\[[^\]]+\]\s*/, ''),
@@ -63,8 +71,14 @@ export function normalizeBotLogEntry(log, index = 0) {
   const botTag = log.bot_id ? `[${String(log.bot_id).slice(0, 8)}] ` : '';
   const level = log.level ? `${log.level} - ` : '';
   const line = `[${time}] ${botTag}${level}${log.message || ''}`;
+  // Prefer stable server/DB ids. Never key only on bot+clock — batched live
+  // publishes share the same ms and were duplicating React children.
+  const rawId = log.id ?? log.log_id;
+  const id = rawId != null && rawId !== ''
+    ? String(rawId)
+    : nextBotLogId(`${log.bot_id ?? 'log'}-${index}`);
   return {
-    id: log.id ?? `${log.bot_id ?? 'log'}-${log.timestamp ?? time}-${index}`,
+    id,
     bot_id: log.bot_id ?? null,
     level: log.level ?? 'INFO',
     message: log.message ?? '',

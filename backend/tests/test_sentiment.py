@@ -138,11 +138,12 @@ class SentimentRuleEngineTests(unittest.TestCase):
 
 
 class SentimentProviderMergeTests(unittest.TestCase):
+    @patch("app.services.altdata.sentiment_provider.fetch_alpaca_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_finnhub_sentiment")
     @patch("app.services.altdata.sentiment_provider.fetch_gnews_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_polygon_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_yfinance_news", return_value=[])
-    def test_finnhub_merged_when_configured(self, _yf, _massive, _gnews, mock_finn):
+    def test_finnhub_merged_when_configured(self, _yf, _massive, _gnews, mock_finn, _alpaca):
         mock_finn.return_value = [{
             "id": "finnhub_news:AAPL:1",
             "symbol": "AAPL",
@@ -160,11 +161,12 @@ class SentimentProviderMergeTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source"], "finnhub_news")
 
+    @patch("app.services.altdata.sentiment_provider.fetch_alpaca_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_finnhub_sentiment", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_polygon_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_yfinance_news", return_value=[])
     @patch("app.services.altdata.sentiment_provider.fetch_gnews_news")
-    def test_gnews_merged_when_enabled(self, mock_gnews, _yf, _poly, _finn):
+    def test_gnews_merged_when_enabled(self, mock_gnews, _yf, _poly, _finn, _alpaca):
         mock_gnews.return_value = [{
             "id": "gnews:ETHUSDT:1",
             "symbol": "ETHUSDT",

@@ -186,10 +186,22 @@ class VPINTracker:
             self.bucket_vol = vol  # first bar's volume → one bucket per bar
         target = self.bucket_vol if self.bucket_vol > 0 else vol
         remaining_buy, remaining_sell = buy, sell
+        # Cap bucket closes per ingest. A volume spike against a small
+        # auto-sized bucket would otherwise close thousands of buckets in one
+        # bar — the deque only retains the last n_buckets anyway — which hung
+        # 50k-bar training feature builds (2026-08-08).
+        closes_left = self.n_buckets + 1
         while remaining_buy + remaining_sell > 0:
+            if closes_left <= 0:
+                # Overflow: fold the spike remainder into the current bucket.
+                self._current.buy += remaining_buy
+                self._current.sell += remaining_sell
+                self._current.vol += remaining_buy + remaining_sell
+                break
             space = max(0.0, target - self._current.vol)
             if space <= 0:
                 self._close_bucket()
+                closes_left -= 1
                 continue
             take = min(remaining_buy + remaining_sell, space)
             # Proportional split of the take between buy and sell
@@ -203,6 +215,7 @@ class VPINTracker:
             remaining_sell -= s_take
             if self._current.vol >= target - 1e-9:
                 self._close_bucket()
+                closes_left -= 1
 
     def _close_bucket(self) -> None:
         if self._current.vol <= 0:

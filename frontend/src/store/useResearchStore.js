@@ -20,9 +20,11 @@ const MAX_BACKTEST_JOB_SLOTS = 12;
  * next partial report instead of merged into (bounds merge accumulation). */
 const ANALYTICS_REPORT_TTL_MS = 30 * 60 * 1000;
 
-/** Only apply IDB restore when store still holds the same offloaded run. */
+/** Only apply IDB restore when store still holds the same offloaded run AND Lab is open. */
 function shouldApplyAsyncBacktestRestore(get, expectedRunId) {
-  const cur = get().backtestResults;
+  const state = get();
+  if (!state.backtestLabOpen) return false;
+  const cur = state.backtestResults;
   return Boolean(expectedRunId && cur?._offloaded && cur.run_id === expectedRunId);
 }
 

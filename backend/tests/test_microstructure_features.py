@@ -160,6 +160,23 @@ def test_vpin_update_bar_returns_vpin():
     assert 0.0 <= v <= 1.0
 
 
+def test_vpin_volume_spike_bounded_closes():
+    """A huge volume spike vs a small auto-sized bucket must not spin the
+    bucket-close loop unboundedly (hang on 50k-bar training feature builds)."""
+    t = mf.VPINTracker(n_buckets=50, bucket_vol=0.0)
+    # First bar auto-sizes the bucket small.
+    t.update_bar(open_=100, close=101, high=102, low=99, volume=10)
+    assert t.bucket_vol == pytest.approx(10.0)
+    # Spike: 1e6 volume against a 10-vol bucket would be 100k closes uncapped.
+    v = t.update_bar(open_=101, close=102, high=103, low=100, volume=1_000_000)
+    assert 0.0 <= v <= 1.0
+    # Closed buckets retained in the deque can never exceed n_buckets.
+    assert t.n_filled_buckets <= 50
+    # Still responsive afterward.
+    v2 = t.update_bar(open_=102, close=101, high=103, low=100, volume=10)
+    assert 0.0 <= v2 <= 1.0
+
+
 # --- Batch series --------------------------------------------------------
 
 

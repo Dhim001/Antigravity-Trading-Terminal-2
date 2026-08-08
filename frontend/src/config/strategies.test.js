@@ -25,7 +25,9 @@ describe('getStrategyCategory', () => {
   it('classifies agent strategies as agent', () => {
     expect(getStrategyCategory('CHART_AGENT')).toBe('agent');
     expect(getStrategyCategory('ABSORPTION_AGENT')).toBe('agent');
+    expect(getStrategyCategory('REGIME_STRATEGY_AGENT')).toBe('agent');
     expect(getStrategyMeta('CHART_AGENT').style).toBe('agent');
+    expect(getStrategyMeta('REGIME_STRATEGY_AGENT').style).toBe('agent');
   });
 
   it('keeps microstructure / SMC templates out of the agentic tab', () => {

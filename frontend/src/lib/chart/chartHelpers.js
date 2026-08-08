@@ -653,12 +653,14 @@ export function findBarIndexForTrade(candles, timestamp, bucketSecs = 60) {
 }
 
 export function toSignalScatterPoint(candles, barIndex, yPrice, { value, symbol, symbolSize, itemStyle }) {
-  if (barIndex < 0) return null;
+  if (barIndex < 0 || !candles?.length) return null;
   const clamped = Math.max(0, Math.min(barIndex, candles.length - 1));
-  const cat = toUnixSeconds(candles[clamped]?.time);
-  if (cat == null) return null;
+  // Category-axis scatter must use the bar *index* (same array as xAxis.data).
+  // Unix category keys break when the chart is conflated (MEMORY #23) or when
+  // Float64 times don't strictly equal axis labels — markers silently vanish.
+  if (toUnixSeconds(candles[clamped]?.time) == null) return null;
   return {
-    value: [cat, yPrice],
+    value: [clamped, yPrice],
     name: value,
     symbol,
     symbolSize,
@@ -730,13 +732,30 @@ export function mapBacktestEquityLine(equityCurve, candles) {
   return padIndicatorValues(data);
 }
 
+/** Match chart symbol to trade/OMS symbols (BTCUSDT ↔ BTC/USD ↔ BTCUSD). */
+export function tradeSymbolsMatch(tradeSymbol, activeSymbol) {
+  const left = String(tradeSymbol ?? '').trim().toUpperCase();
+  const right = String(activeSymbol ?? '').trim().toUpperCase();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const strip = (s) => s.replace(/\//g, '');
+  const a = strip(left);
+  const b = strip(right);
+  if (a === b) return true;
+  const toUsdt = (s) => (
+    s.endsWith('USDT') ? s : (s.endsWith('USD') ? `${s.slice(0, -3)}USDT` : s)
+  );
+  return toUsdt(a) === toUsdt(b);
+}
+
 export function buildTradeMarkers(tradeHistory, activeSymbol, candles, bucketSecs, { excludeBotId } = {}) {
+  if (!Array.isArray(tradeHistory) || !candles?.length) return [];
   return tradeHistory
-    .filter((t) => t.symbol === activeSymbol && t.status === 'FILLED')
+    .filter((t) => tradeSymbolsMatch(t.symbol, activeSymbol) && String(t.status || '').toUpperCase() === 'FILLED')
     .filter((t) => !(excludeBotId && t.bot_id === excludeBotId))
     .map((t) => {
       const price = t.average_fill_price || t.price;
-      const qty = (t.filled_quantity ?? t.quantity)?.toFixed(4);
+      const qty = (t.filled_quantity ?? t.quantity)?.toFixed?.(4) ?? t.filled_quantity ?? t.quantity;
       return tradeMarkerPoint(candles, t.timestamp, price, bucketSecs, {
         side: t.side,
         value: `${t.side} ${qty}`,

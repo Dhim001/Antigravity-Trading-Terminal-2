@@ -24,7 +24,7 @@ describe('analytics helpers', () => {
     });
     const afterTrade = buildPortfolioInvalidateKey({
       tradeHistory: [{ timestamp: 1, realized_pnl: 5 }],
-      tradeStats: { total_pnl: 5, total_sells: 1 },
+      tradeStats: { total_pnl: 5, total_exits: 1 },
       symbolsList: ['AAPL'],
     });
     const afterSymbol = buildPortfolioInvalidateKey({

@@ -143,9 +143,11 @@ def train_vae_regime_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("VAE_REGIME_DETECTOR", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import apply_champion_train_overrides
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     epochs = int(cfg.get("epochs", epochs))
     hidden_dim = int(cfg.get("hidden_dim", 128))
     latent_dim = int(cfg.get("latent_dim", LATENT_DIM))
@@ -426,9 +428,14 @@ class VaeModelStore:
 
         scaler = self._scalers.get(key)
         if scaler:
-            mean = np.array(scaler["mean"], dtype=np.float32)
-            std = np.array(scaler["std"], dtype=np.float32)
-            features = (features.astype(np.float32) - mean) / std
+            from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+            features = apply_feature_scaler(
+                features,
+                scaler["mean"],
+                scaler["std"],
+                log_label=f"VAE[{symbol}]",
+            )
 
         try:
             recon = session.run(None, {"input": features.reshape(1, -1).astype(np.float32)})[0][0]

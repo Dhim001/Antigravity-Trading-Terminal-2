@@ -110,6 +110,17 @@ ML_EXPLORATORY_SIM_MODE = os.environ.get("ML_EXPLORATORY_SIM_MODE", "").strip().
 ML_TRAIN_TORCH_IN_PROCESS = os.environ.get("ML_TRAIN_TORCH_IN_PROCESS", "false").lower() in (
     "1", "true", "yes"
 )
+# Per-strategy in-process overrides. RL_PPO_AGENT hangs on Windows spawn+CUDA
+# (worker alive, CPU busy, but no progress past "bars loaded") — observed twice
+# on 2026-08-08 — so it trains in a thread by default. Set
+# ML_TRAIN_IN_PROCESS_STRATEGIES="" to force everything back into the pool.
+ML_TRAIN_IN_PROCESS_STRATEGIES = frozenset(
+    s.strip().upper()
+    for s in os.environ.get(
+        "ML_TRAIN_IN_PROCESS_STRATEGIES", "RL_PPO_AGENT"
+    ).split(",")
+    if s.strip()
+)
 # Training device override: empty = auto (CUDA if available). Example: ML_TRAIN_DEVICE=cpu
 # Live inference stays CPU ONNX regardless.
 # Drain MlRetrainScheduler pending queue into real train jobs (APP_SCAN #6).

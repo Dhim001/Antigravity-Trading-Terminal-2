@@ -295,9 +295,19 @@ def train_ppo_agent(
             "symbol": symbol,
         }
 
-    # Create environment (numpy / CPU)
+    # Create environment (numpy / CPU) — heartbeat so large feature builds
+    # don't sit at a frozen 5% while the pool worker is alive.
+    from app.services.bots.ml_job_progress import (
+        cancelled_train_result,
+        progress_path_from_config as _ppfc,
+    )
+
     cfg.setdefault("symbol", symbol)
-    env = TradingEnv(candles, config=cfg)
+    _ppo_progress_path = _ppfc(cfg)
+    try:
+        env = TradingEnv(candles, config=cfg, progress_path=_ppo_progress_path)
+    except InterruptedError:
+        return cancelled_train_result(symbol, "RL_PPO_AGENT")
 
     # Build model on train device
     model = _build_actor_critic(
@@ -323,6 +333,16 @@ def train_ppo_agent(
 
     progress_path = progress_path_from_config(cfg)
     _last_progress_t = 0.0
+
+    # Mark step-loop entry so the UI shows training actually began (a job that
+    # never leaves phase "train"/"env" at 5% is stuck in setup, not training).
+    if progress_path:
+        write_ml_progress(
+            progress_path,
+            pct=5,
+            phase="ppo",
+            detail=f"step 0/{total_timesteps} · ep 0",
+        )
 
     while total_steps < total_timesteps:
         if ml_cancel_requested(progress_path):

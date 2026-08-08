@@ -111,6 +111,7 @@ export default function useMlLabState() {
   const panelScrollRef = useRef(null);
   const [activatingVersionId, setActivatingVersionId] = useState(null);
   const [deletingVersionId, setDeletingVersionId] = useState(null);
+  const [updatingVersionId, setUpdatingVersionId] = useState(null);
   const [challengerDismissed, setChallengerDismissed] = useState(false);
   const [showPollLog, setShowPollLog] = useState(() => {
     try {
@@ -507,6 +508,8 @@ export default function useMlLabState() {
     setActivatingVersionId,
     deletingVersionId,
     setDeletingVersionId,
+    updatingVersionId,
+    setUpdatingVersionId,
     showPollLog,
     setShowPollLog,
     challengerDismissed,

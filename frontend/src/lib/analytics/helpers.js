@@ -73,7 +73,7 @@ export function buildPortfolioInvalidateKey({
     tradeHistory.length,
     last?.timestamp ?? 0,
     tradeStats?.total_pnl ?? 0,
-    tradeStats?.total_sells ?? 0,
+    tradeStats?.total_exits ?? 0,
     posSig,
     botsSig,
     [...symbolsList].sort().join(','),

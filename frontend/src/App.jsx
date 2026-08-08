@@ -50,8 +50,13 @@ import IbFeedStatusBanner from './components/IbFeedStatusBanner';
 import MassiveFeedStatusBanner from './components/MassiveFeedStatusBanner';
 import AlpacaFeedStatusBanner from './components/AlpacaFeedStatusBanner';
 import { getStoreActions } from './api/dispatch';
-import { openBacktestLabResults, openBacktestLabStandalone } from './lib/backtestLab';
-import { openStandaloneWindow } from './lib/standalonePanels';
+import {
+  openBacktestLabResults,
+  openBacktestLabStandalone,
+  openBacktestLabWithRun,
+} from './lib/backtestLab';
+import { openStandaloneWindow, subscribeStandaloneEvents } from './lib/standalonePanels';
+import { useResearchStore } from './store/useResearchStore';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -220,6 +225,24 @@ export default function App() {
         if (sym && sym !== useStore.getState().activeSymbol) {
           useStore.getState().setActiveSymbol(sym);
         }
+      }
+    });
+  }, []);
+
+  // Backtest Lab standalone has no dock tab — Reattach must open the sheet (+ run).
+  useEffect(() => {
+    return subscribeStandaloneEvents('backtest-lab', (msg) => {
+      if (msg?.type !== 'reattach') return;
+      const tab = ['results', 'optimizer', 'jobs'].includes(msg.labTab)
+        ? msg.labTab
+        : 'results';
+      const runId = msg.runId;
+      if (runId) {
+        openBacktestLabWithRun(String(runId), tab).catch(() => {
+          useResearchStore.getState().openBacktestLab(tab);
+        });
+      } else {
+        useResearchStore.getState().openBacktestLab(tab);
       }
     });
   }, []);

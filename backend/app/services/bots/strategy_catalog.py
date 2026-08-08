@@ -98,7 +98,14 @@ _BAR_BUILTIN = [
     {
         "id": "ABSORPTION_AGENT",
         "name": "Absorption Agent",
-        "description": "Multi-domain bot that scores volume absorption and exhaustion to spot institutional footprints.",
+        "description": "Scores volume absorption, exhaustion, structure, and trend context (order book when live).",
+        "category": "agent",
+        "execution_mode": "BAR_CLOSE",
+    },
+    {
+        "id": "REGIME_STRATEGY_AGENT",
+        "name": "Regime Strategy Agent",
+        "description": "Classifies ATR/ADX regime with hysteresis and delegates to BRS, Supertrend, or VWAP specialists.",
         "category": "agent",
         "execution_mode": "BAR_CLOSE",
     },

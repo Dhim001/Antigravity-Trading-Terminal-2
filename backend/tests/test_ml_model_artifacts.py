@@ -21,9 +21,10 @@ from app.services.bots.ml_model_artifacts import (
 
 def test_version_id_from_iso_normalizes():
     vid = version_id_from_iso("2026-07-15T22:30:00.123456Z")
-    assert vid.startswith("20260715T")
+    assert vid == "20260715T223000Z"
     assert ":" not in vid
     assert "-" not in vid
+    assert vid.startswith("20260715T")
 
 
 def test_snapshot_and_resolve(tmp_path):
@@ -31,7 +32,7 @@ def test_snapshot_and_resolve(tmp_path):
     root.mkdir()
     meta = {
         "trained_at": "2026-07-15T12:00:00Z",
-        "model_type": "xgboost",
+        "model_type": "ml_signal_boost",
         "sample_count": 1000,
         "label_distribution": {"BUY": 100, "SELL": 90, "NONE": 810},
         "feature_names": ["rsi", "macd"],
@@ -94,14 +95,14 @@ def test_activate_model_version_promotes_snapshot(tmp_path):
     root = tmp_path / "BNBUSDT"
     root.mkdir()
     # v1 current
-    meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "xgboost", "tag": "v1"}
+    meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v1"}
     (root / "metadata.json").write_text(json.dumps(meta1), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v1")
     e1 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
     assert e1 is not None
 
     # v2 current
-    meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "xgboost", "tag": "v2"}
+    meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v2"}
     (root / "metadata.json").write_text(json.dumps(meta2), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v2")
     e2 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
@@ -128,12 +129,12 @@ def test_activate_model_version_promotes_snapshot(tmp_path):
 def test_delete_model_version_removes_snapshot(tmp_path):
     root = tmp_path / "SOLUSDT"
     root.mkdir()
-    meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "xgboost", "tag": "v1"}
+    meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v1"}
     (root / "metadata.json").write_text(json.dumps(meta1), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v1")
     e1 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
 
-    meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "xgboost", "tag": "v2"}
+    meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v2"}
     (root / "metadata.json").write_text(json.dumps(meta2), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v2")
     e2 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
@@ -266,3 +267,127 @@ def test_persist_validation_sidecar_survives_metadata_wipe(tmp_path, monkeypatch
 
     arts.clear_ml_validation_stamp(str(root))
     assert not (root / "validation.json").is_file()
+
+
+def test_protected_versions_skip_prune_and_block_delete(tmp_path):
+    root = tmp_path / "ADAUSDT"
+    root.mkdir()
+    ids = []
+    for i in range(4):
+        meta = {"trained_at": f"2026-08-0{i + 1}T10:00:00Z", "model_type": "test"}
+        (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+        (root / "model.joblib").write_bytes(b"x")
+        entry = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST", max_kept=2)
+        ids.append(entry["version_id"])
+
+    # Protect the oldest remaining unprotected by renaming first snapshot we still have
+    with patch(
+        "app.services.bots.ml_model_artifacts.model_root_for",
+        return_value=str(root),
+    ):
+        from app.services.bots.ml_model_artifacts import update_model_version_meta
+
+        versions = list_model_versions(str(root))
+        assert len(versions) <= 2
+        keep_id = versions[-1]["version_id"]
+        updated = update_model_version_meta(
+            "ML_SIGNAL_BOOST",
+            "ADAUSDT",
+            keep_id,
+            display_name="My best ADA",
+            protected=True,
+        )
+        assert updated["ok"] is True
+        assert updated["display_name"] == "My best ADA"
+        assert updated["protected"] is True
+
+        # Add more snapshots — protected must survive prune
+        for i in range(4, 8):
+            meta = {"trained_at": f"2026-08-1{i}T10:00:00Z", "model_type": "test"}
+            (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+            (root / "model.joblib").write_bytes(b"x")
+            snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST", max_kept=2)
+
+        versions = list_model_versions(str(root))
+        kept = [v for v in versions if v.get("version_id") == keep_id]
+        assert len(kept) == 1
+        assert kept[0].get("protected") is True
+        assert kept[0].get("display_name") == "My best ADA"
+
+        blocked = delete_model_version("ML_SIGNAL_BOOST", "ADAUSDT", keep_id)
+        assert blocked["ok"] is False
+        assert "protected" in blocked["error"].lower()
+
+
+def test_merge_live_model_train_hyperparams(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    def fake_meta(strategy, symbol, timeframe=None):
+        return {
+            "config": {
+                "gbm_max_depth": 7,
+                "gbm_learning_rate": 0.05,
+                "gbm_max_iter": 400,
+            },
+            "trained_at": "2026-08-01T00:00:00Z",
+        }
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+        fake_meta,
+    )
+    out = store.merge_live_model_train_hyperparams(
+        {"timeframe": "1m", "champion_train": True},
+        "BTCUSDT",
+        "ML_SIGNAL_BOOST",
+        timeframe="1m",
+    )
+    assert out["gbm_max_depth"] == 7
+    assert out["gbm_learning_rate"] == 0.05
+    assert out["retrain_from_live_model"] is True
+    # Explicit client key wins
+    out2 = store.merge_live_model_train_hyperparams(
+        {"gbm_max_depth": 3},
+        "BTCUSDT",
+        "ML_SIGNAL_BOOST",
+    )
+    assert out2["gbm_max_depth"] == 3
+
+
+def test_live_hyperparams_do_not_block_optuna_when_not_requested(monkeypatch):
+    """Apply & Retrain: bare champion_train must not inject live HPs before Optuna."""
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+        lambda *a, **k: {"config": {"gbm_learning_rate": 0.3, "gbm_max_depth": 9}},
+    )
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda *a, **k: {"gbm_learning_rate": 0.02, "gbm_max_iter": 250},
+    )
+    # Mimic /ml/train gate: only merge live when flag is set.
+    cfg = {"champion_train": True, "use_optimized_hyperparams": True}
+    if cfg.get("retrain_from_live_model"):
+        cfg = store.merge_live_model_train_hyperparams(cfg, "BTCUSDT", "ML_SIGNAL_BOOST")
+    cfg = store.merge_optimized_train_hyperparams(
+        cfg, "BTCUSDT", "ML_SIGNAL_BOOST", require_opt_in=True,
+    )
+    assert cfg["gbm_learning_rate"] == 0.02
+    assert cfg["gbm_max_iter"] == 250
+    assert "gbm_max_depth" not in cfg  # live must not have injected depth=9
+
+    # Queue path: live first, then Optuna gap-fill only.
+    q = {
+        "champion_train": True,
+        "retrain_from_live_model": True,
+        "use_optimized_hyperparams": True,
+    }
+    q = store.merge_live_model_train_hyperparams(q, "BTCUSDT", "ML_SIGNAL_BOOST")
+    q = store.merge_optimized_train_hyperparams(
+        q, "BTCUSDT", "ML_SIGNAL_BOOST", require_opt_in=True,
+    )
+    assert q["gbm_learning_rate"] == 0.3  # live wins
+    assert q["gbm_max_depth"] == 9
+    assert q["gbm_max_iter"] == 250  # Optuna fills gap

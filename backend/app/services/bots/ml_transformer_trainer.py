@@ -589,10 +589,16 @@ class TransformerModelStore:
         if session is None:
             return None
         scaler = self._scalers.get(key)
-        if scaler:
-            m, s = np.array(scaler["mean"], dtype=np.float32), np.array(scaler["std"], dtype=np.float32)
-            window = (window.astype(np.float32) - m) / s
         try:
+            if scaler:
+                from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+                window = apply_feature_scaler(
+                    window,
+                    scaler["mean"],
+                    scaler["std"],
+                    log_label=f"Transformer[{symbol}]",
+                )
             logits = session.run(None, {"input": window.reshape(1, *window.shape).astype(np.float32)})[0][0]
             x = logits - logits.max()
             proba = np.exp(x) / np.exp(x).sum()
@@ -650,9 +656,13 @@ class TransformerModelStore:
                 raise InterruptedError("ml_batch_cancel_requested")
             end = min(start + bs, n)
             chunk = windows[start:end].astype(np.float32)
-            if mean is not None and std is not None:
-                chunk = (chunk - mean) / std
             try:
+                if mean is not None and std is not None:
+                    from app.services.bots.ml_feature_engineering import apply_feature_scaler
+
+                    chunk = apply_feature_scaler(
+                        chunk, mean, std, log_label=f"Transformer[{symbol}]",
+                    )
                 logits = session.run(None, {"input": chunk})[0]
             except Exception as exc:
                 logger.warning(
@@ -666,6 +676,16 @@ class TransformerModelStore:
                 idx = int(np.argmax(proba))
                 out[start + j] = (rmap.get(str(idx), "NONE"), float(proba[idx]))
         return out
+
+    def get_metadata(
+        self,
+        symbol,
+        model_version=None,
+        *,
+        timeframe=None,
+    ):
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        return self._metadata.get(self._session_key(symbol, model_version, timeframe))
 
     def _ensure_loaded(
         self,

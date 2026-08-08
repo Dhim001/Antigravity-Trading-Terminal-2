@@ -98,16 +98,14 @@ def train_ml_signal_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("ML_SIGNAL_BOOST", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import (
+        apply_champion_train_overrides,
+        skip_live_artifact_writes,
+    )
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
-    # Apply & Retrain / Lab Trigger champion trains must never take the WF/trial path.
-    if cfg.get("champion_train") or raw_cfg.get("champion_train"):
-        cfg["champion_train"] = True
-        cfg.pop("_wf_mode", None)
-        cfg.pop("wf_mode", None)
-        cfg["skip_persist"] = False
-        cfg["skip_snapshot"] = False
+    cfg = apply_champion_train_overrides(cfg, raw_cfg)
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
     if cfg.get("champion_train"):
         wf_mode = False
@@ -139,8 +137,6 @@ def train_ml_signal_model(
     skip_refit = bool(cfg.get("skip_refit", wf_mode or _cal_skip))
     skip_snapshot = bool(cfg.get("skip_snapshot", wf_mode))
     # Persist champion unless WF / skip_live_artifact_writes (decoupled from skip_refit).
-    from app.services.bots.ml_training_window import skip_live_artifact_writes
-
     skip_persist = bool(wf_mode or skip_live_artifact_writes(cfg) or cfg.get("skip_persist"))
     if cfg.get("champion_train"):
         # Apply & Retrain / Lab Trigger must always write the live champion.

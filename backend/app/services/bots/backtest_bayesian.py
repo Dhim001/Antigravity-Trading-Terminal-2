@@ -325,7 +325,12 @@ def run_bayesian_sweep(
         "converged": bool(early_stopped and best_score > -1e17 and no_improve >= patience),
         **budget_meta,
     }
-    return sort_sweep_rows(rows, objective=objective, min_trades=min_trades), meta
+    # Keep ineligible / error rows so walk-forward and UI can diagnose
+    # "0 trades" vs "all below min_trades" instead of returning [].
+    eligible = sort_sweep_rows(rows, objective=objective, min_trades=min_trades)
+    eligible_ids = {id(r) for r in eligible}
+    rest = [r for r in rows if id(r) not in eligible_ids]
+    return eligible + rest, meta
 
 
 def ensure_bayesian_mode_registered() -> None:

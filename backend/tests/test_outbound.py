@@ -30,6 +30,19 @@ class TestOutboundFrames(unittest.TestCase):
         payload = bot_log("bot-1", "INFO", "hello")
         self.assertEqual(payload["type"], MessageType.BOT_LOG)
         self.assertEqual(payload["data"]["bot_id"], "bot-1")
+        self.assertNotIn("id", payload["data"])
+        self.assertNotIn("timestamp", payload["data"])
+
+    def test_bot_log_includes_id_and_timestamp(self):
+        payload = bot_log(
+            "bot-1",
+            "INFO",
+            "hello",
+            log_id=42,
+            timestamp="2026-08-08 11:45:00",
+        )
+        self.assertEqual(payload["data"]["id"], 42)
+        self.assertEqual(payload["data"]["timestamp"], "2026-08-08 11:45:00")
 
     def test_market_update(self):
         payload = market_update({"AAPL": {"price": 100}})

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from app.db.async_bridge import run_db
 
 from app.config import TERMINAL_MODE, ALLOW_LIVE_BOTS, BOT_LOG_RETENTION
-from app.services.bots.execution_mode import runs_live_feed_bot_ticks, uses_paper_oms
+from app.services.bots.execution_mode import is_live_massive, runs_live_feed_bot_ticks, uses_paper_oms
 from app.database import get_connection
 from app.api.outbound import publish_bot_detail, publish_bot_log, publish_bots_update, publish_post_trade_bundle
 from app.observability.metrics import inc
@@ -282,13 +282,30 @@ class BotManagerService:
             return
         batch = self._log_buffer[:]
         self._log_buffer.clear()
+        published: list[tuple[str, str, str, str | None, int | None, str | None]] = []
         conn = get_connection()
         cursor = conn.cursor()
         try:
-            cursor.executemany(
-                "INSERT INTO bot_logs (bot_id, level, message, meta) VALUES (?, ?, ?, ?)",
-                batch,
-            )
+            # Insert row-by-row so we can stamp each live WS frame with the
+            # DB id (batched same-ms publishes used to collide in the UI).
+            for bot_id, level, message, meta_json in batch:
+                cursor.execute(
+                    "INSERT INTO bot_logs (bot_id, level, message, meta) VALUES (?, ?, ?, ?)",
+                    (bot_id, level, message, meta_json),
+                )
+                log_id = cursor.lastrowid
+                ts = None
+                try:
+                    cursor.execute(
+                        "SELECT timestamp FROM bot_logs WHERE id = ?",
+                        (log_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        ts = row[0] if not isinstance(row, dict) else row.get("timestamp")
+                except Exception:
+                    ts = None
+                published.append((bot_id, level, message, meta_json, log_id, ts))
             conn.commit()
             self._log_writes += len(batch)
             if self._log_writes % 25 == 0:
@@ -296,10 +313,17 @@ class BotManagerService:
         finally:
             conn.close()
 
-        for entry in batch:
-            bot_id, level, message, meta_json = entry
+        for bot_id, level, message, meta_json, log_id, ts in published:
             meta = json.loads(meta_json) if meta_json else None
-            await publish_bot_log(self.broadcast_cb, bot_id, level, message, meta=meta)
+            await publish_bot_log(
+                self.broadcast_cb,
+                bot_id,
+                level,
+                message,
+                meta=meta,
+                log_id=log_id,
+                timestamp=str(ts) if ts else None,
+            )
 
     async def _schedule_log_flush(self):
         if self._log_flush_task and not self._log_flush_task.done():
@@ -448,8 +472,8 @@ class BotManagerService:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT bot_id, level, message, timestamp, meta
-            FROM bot_logs ORDER BY timestamp DESC LIMIT ?
+            SELECT id, bot_id, level, message, timestamp, meta
+            FROM bot_logs ORDER BY timestamp DESC, id DESC LIMIT ?
             """,
             (limit,),
         )
@@ -1039,8 +1063,8 @@ class BotManagerService:
                             )
                         continue
 
-                # Order-flow strategies need live L2; inject feed book when available.
-                if strat_key == "ORDERFLOW_IMBALANCE":
+                # Order-flow / absorption need live L2; inject feed book when available.
+                if strat_key in ("ORDERFLOW_IMBALANCE", "ABSORPTION_AGENT"):
                     feed = getattr(self.oms, "feed", None)
                     books = getattr(feed, "order_books", None) if feed is not None else None
                     if isinstance(books, dict):

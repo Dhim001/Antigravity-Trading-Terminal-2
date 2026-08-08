@@ -32,6 +32,39 @@ class AlpacaOMSService(BaseOMSService):
     def register_broadcast_callback(self, callback) -> None:
         self.broadcast_callback = callback
 
+    @staticmethod
+    def _to_terminal_symbol(symbol: str | None) -> str:
+        """Map Alpaca wire symbols (BTC/USD) to terminal keys (BTCUSDT)."""
+        from app.services.alpaca_data import alpaca_crypto_to_terminal, is_option_symbol
+
+        raw = str(symbol or "").strip().upper()
+        if not raw:
+            return ""
+        if is_option_symbol(raw) or "/" not in raw:
+            # Equities / OCC / already-terminal crypto stay as-is; still map BTCUSD.
+            if "/" not in raw and raw.endswith("USD") and not raw.endswith("USDT"):
+                return alpaca_crypto_to_terminal(raw)
+            return raw
+        return alpaca_crypto_to_terminal(raw)
+
+    @staticmethod
+    def _to_alpaca_symbol(symbol: str | None) -> str:
+        """Map terminal BTCUSDT → Alpaca BTC/USD for REST order payloads."""
+        from app.services.alpaca_data import is_option_symbol, terminal_to_alpaca_crypto
+
+        raw = str(symbol or "").strip().upper()
+        if not raw or is_option_symbol(raw):
+            return raw
+        # Equities (AAPL) and already-wire crypto (BTC/USD) pass through.
+        if "/" in raw or (not raw.endswith("USDT") and not raw.endswith("USD")):
+            if len(raw) <= 6 and raw.isalpha():
+                return raw
+            if "/" in raw:
+                return raw
+        if raw.endswith("USDT") or (raw.endswith("USD") and not raw.endswith("USDT")):
+            return terminal_to_alpaca_crypto(raw)
+        return raw
+
     async def initialize(self) -> None:
         if self.use_fallback:
             await self.fallback_oms.initialize()
@@ -86,7 +119,7 @@ class AlpacaOMSService(BaseOMSService):
             for o in raw_orders:
                 orders.append({
                     "id": o.get("id"),
-                    "symbol": o.get("symbol"),
+                    "symbol": self._to_terminal_symbol(o.get("symbol")),
                     "type": o.get("type", "").upper(),
                     "side": o.get("side", "").upper(),
                     "price": float(o.get("limit_price")) if o.get("limit_price") else None,
@@ -122,7 +155,7 @@ class AlpacaOMSService(BaseOMSService):
                 fill_price = float(o.get("filled_avg_price", 0.0)) if o.get("filled_avg_price") else 0.0
                 trades.append({
                     "id": o.get("id"),
-                    "symbol": o.get("symbol"),
+                    "symbol": self._to_terminal_symbol(o.get("symbol")),
                     "type": o.get("type", "").upper(),
                     "side": o.get("side", "").upper(),
                     "price": float(o.get("limit_price")) if o.get("limit_price") else None,
@@ -130,7 +163,7 @@ class AlpacaOMSService(BaseOMSService):
                     "status": "FILLED",
                     "filled_quantity": fill_qty,
                     "average_fill_price": fill_price,
-                    "timestamp": int(datetime_to_epoch(o.get("created_at"))),
+                    "timestamp": int(datetime_to_epoch(o.get("filled_at") or o.get("created_at"))),
                     "trade_value": round(fill_qty * fill_price, 2),
                     "realized_pnl": None, # bracket cost-basis calculations not available from broker list
                     "cost_basis": None
@@ -160,7 +193,7 @@ class AlpacaOMSService(BaseOMSService):
                 size = qty if side == "long" else -qty
                 
                 positions.append({
-                    "symbol": p.get("symbol"),
+                    "symbol": self._to_terminal_symbol(p.get("symbol")),
                     "size": size,
                     "avg_price": avg_price,
                     "stop_loss_percent": None,
@@ -198,6 +231,7 @@ class AlpacaOMSService(BaseOMSService):
             return await self.fallback_oms.place_order(order_req)
             
         symbol = order_req.get("symbol")
+        alpaca_symbol = self._to_alpaca_symbol(symbol)
         order_type = order_req.get("type").lower()
         side = order_req.get("side").lower()
         price = order_req.get("price")
@@ -209,7 +243,7 @@ class AlpacaOMSService(BaseOMSService):
         
         # Formulate bracket payload if SL or TP is specified
         payload = {
-            "symbol": symbol,
+            "symbol": alpaca_symbol,
             "qty": str(quantity),
             "side": side,
             "type": order_type,

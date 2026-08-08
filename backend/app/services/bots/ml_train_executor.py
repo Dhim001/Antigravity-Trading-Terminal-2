@@ -114,13 +114,21 @@ def use_process_pool_for_strategy(strategy: str | None) -> bool:
     Default (MEMORY #41): everything pool-bound, including Torch/CUDA jobs, so
     deep-train RSS spikes stay out of the live feed/OMS process. Operators can
     opt Torch strategies back into in-process threads
-    (``ML_TRAIN_TORCH_IN_PROCESS=1``) for debugging.
+    (``ML_TRAIN_TORCH_IN_PROCESS=1``) for debugging. Individual strategies that
+    are unstable under spawn (``ML_TRAIN_IN_PROCESS_STRATEGIES``, default
+    RL_PPO_AGENT) stay in-process regardless.
     """
-    from app.config import ML_TRAIN_PROCESS_ISOLATION, ML_TRAIN_TORCH_IN_PROCESS
+    from app.config import (
+        ML_TRAIN_IN_PROCESS_STRATEGIES,
+        ML_TRAIN_PROCESS_ISOLATION,
+        ML_TRAIN_TORCH_IN_PROCESS,
+    )
 
     if not ML_TRAIN_PROCESS_ISOLATION:
         return False
     strat = str(strategy or "").upper()
+    if strat in ML_TRAIN_IN_PROCESS_STRATEGIES:
+        return False
     if strat in TORCH_TRAIN_STRATEGIES and ML_TRAIN_TORCH_IN_PROCESS:
         return False
     return True
@@ -225,16 +233,9 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
     candles = bars
     cfg.setdefault("symbol", symbol)
 
-    trainers = {
-        "ML_SIGNAL_BOOST": ("app.services.bots.strategies_ml", "train_ml_signal_model"),
-        "LSTM_DIRECTION": ("app.services.bots.ml_lstm_trainer", "train_lstm_signal_model"),
-        "RL_PPO_AGENT": ("app.services.bots.rl_ppo_trainer", "train_ppo_agent"),
-        "TCN_MULTI_HORIZON": ("app.services.bots.ml_tcn_trainer", "train_tcn_model"),
-        "VAE_REGIME_DETECTOR": ("app.services.bots.ml_vae_regime", "train_vae_regime_model"),
-        "TRANSFORMER_SIGNAL": ("app.services.bots.ml_transformer_trainer", "train_transformer_model"),
-        "GNN_CROSS_ASSET": ("app.services.bots.ml_gnn_trainer", "train_gnn_model"),
-    }
-    entry = trainers.get(strat)
+    from app.services.bots.ml_registry import get_trainer_import
+
+    entry = get_trainer_import(strat)
     if not entry:
         from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
         return {"ok": False, "error": lab_train_unsupported_error(strat)}

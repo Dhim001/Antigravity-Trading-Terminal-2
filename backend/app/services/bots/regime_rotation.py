@@ -91,18 +91,15 @@ class RegimeRotationAgent:
             if adx_val is None or atr_val is None or not median_atr:
                 continue
 
-            # 2. Classify market regime
-            ratio = float(atr_val) / float(median_atr) if median_atr > 0 else 1.0
+            # 2. Classify market regime (shared with REGIME_STRATEGY_AGENT)
+            from app.services.bots.regime_classify import (
+                DEFAULT_REGIME_STRATEGY_MAP,
+                classify_atr_adx_regime,
+            )
 
-            if ratio >= 1.5:
-                regime = "elevated_vol"
-                target_strategy = "VWAP_PULLBACK"
-            elif float(adx_val) > 25:
-                regime = "trending"
-                target_strategy = "SUPERTREND_ADX"
-            else:
-                regime = "ranging"
-                target_strategy = "BRS_SCALPING"
+            regime = classify_atr_adx_regime(row)
+            target_strategy = DEFAULT_REGIME_STRATEGY_MAP.get(regime, "BRS_SCALPING")
+            ratio = float(atr_val) / float(median_atr) if float(median_atr) > 0 else 1.0
 
             # 2b. VAE meta hint — suppress rotation in unstable regimes;
             # accelerate confirmation when anomalous (proposal §2.6).

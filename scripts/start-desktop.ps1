@@ -38,8 +38,12 @@ if ($key -eq 'alpaca') {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+$forceBackendRestart = $false
 if ($Restart -or $Recycle) {
     Stop-TerminalProfileListeners -ProfileKey $key
+    # Match start-alpaca.ps1: Recycle must start a new process even if the old
+    # listener briefly still answers /health (otherwise code changes never load).
+    $forceBackendRestart = $true
 }
 
 function Wait-DevServer {
@@ -86,12 +90,17 @@ function Ensure-DesktopDeps {
 
 # --- Backend ---
 $backendHealthy = Test-BackendHealth -HttpPort $http
-$needsBackendStart = -not $backendHealthy
+$needsBackendStart = $forceBackendRestart -or (-not $backendHealthy)
 
 if ($needsBackendStart) {
     if (Test-TcpPort -HostName '127.0.0.1' -Port $ws) {
-        Write-Host "Recycling unhealthy $($ports.Label) backend..." -ForegroundColor DarkYellow
+        Write-Host "Recycling $($ports.Label) backend..." -ForegroundColor DarkYellow
         Stop-ProfileBackend -ProfileKey $key
+        # Wait for ports to free before start-backend.ps1 (it exits early if still bound).
+        for ($i = 0; $i -lt 30; $i++) {
+            if ((Test-BackendPortFree -Port $ws) -and (Test-BackendPortFree -Port $http)) { break }
+            Start-Sleep -Milliseconds 400
+        }
     }
     Write-Host "Starting $($ports.Label) backend (WS :$ws, HTTP :$http)..." -ForegroundColor DarkGray
     Start-Process powershell -ArgumentList @(

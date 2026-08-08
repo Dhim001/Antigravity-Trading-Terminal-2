@@ -4,6 +4,8 @@ import {
   extractBacktestSimMode,
   extractBacktestDirectionMode,
   normalizeDirectionMode,
+  backtestResultsMatchTarget,
+  buildDeployPayload,
 } from './deployGate';
 
 const baseResults = {
@@ -13,6 +15,8 @@ const baseResults = {
   trade_count: 5,
   summary: { total_trades: 5, total_pnl: 100 },
   meta: {
+    symbol: 'AAPL',
+    strategy: 'ML_SIGNAL_BOOST',
     config: {
       direction_mode: 'LONG_ONLY',
       sim_mode: 'live_aligned',
@@ -84,5 +88,66 @@ describe('evaluateDeployGate', () => {
     });
     expect(gate.checks.some((c) => c.id === 'direction_mode_mismatch')).toBe(false);
     expect(gate.checks.some((c) => c.id === 'research_sim_mode')).toBe(false);
+  });
+
+  it('blocks when results symbol/strategy do not match deploy target', () => {
+    const gate = evaluateDeployGate({
+      results: baseResults,
+      symbol: 'AMZN',
+      strategy: 'ML_SIGNAL_BOOST',
+      config: { direction_mode: 'LONG_ONLY' },
+    });
+    expect(gate.blocking).toBe(true);
+    expect(gate.checks.some((c) => c.id === 'result_identity' && !c.ok)).toBe(true);
+  });
+});
+
+describe('backtestResultsMatchTarget', () => {
+  it('rejects stale symbol/strategy pairs', () => {
+    expect(backtestResultsMatchTarget(baseResults, {
+      symbol: 'AMZN',
+      strategy: 'ML_SIGNAL_BOOST',
+    })).toBe(false);
+    expect(backtestResultsMatchTarget(baseResults, {
+      symbol: 'AAPL',
+      strategy: 'LSTM_DIRECTION',
+    })).toBe(false);
+  });
+
+  it('accepts matching identity', () => {
+    expect(backtestResultsMatchTarget(baseResults, {
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
+    })).toBe(true);
+  });
+});
+
+describe('buildDeployPayload', () => {
+  it('does not inherit stale config.backtest_run_id', () => {
+    const payload = buildDeployPayload({
+      strategy: 'ML_SIGNAL_BOOST',
+      symbol: 'AMZN',
+      timeframe: '1m',
+      allocation: 2000,
+      executionMode: 'BAR_CLOSE',
+      config: { backtest_run_id: 'stale-btc-run', direction_mode: 'BOTH' },
+      results: { ...baseResults, run_id: undefined, meta: { ...baseResults.meta, symbol: 'AMZN' } },
+      days: 'holdout',
+    });
+    expect(payload.config.backtest_run_id).toBeNull();
+  });
+
+  it('stamps results.run_id when present', () => {
+    const payload = buildDeployPayload({
+      strategy: 'ML_SIGNAL_BOOST',
+      symbol: 'AAPL',
+      timeframe: '1m',
+      allocation: 2000,
+      executionMode: 'BAR_CLOSE',
+      config: { backtest_run_id: 'stale-run' },
+      results: baseResults,
+      days: '14',
+    });
+    expect(payload.config.backtest_run_id).toBe('run-1');
   });
 });

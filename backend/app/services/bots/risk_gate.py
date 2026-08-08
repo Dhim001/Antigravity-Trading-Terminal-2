@@ -562,7 +562,7 @@ class RiskGate:
             except (json.JSONDecodeError, TypeError):
                 bot_cfg = {}
 
-        direction_mode = bot_cfg.get("direction_mode", "LONG_ONLY").upper()
+        direction_mode = str(bot_cfg.get("direction_mode") or "LONG_ONLY").upper()
         if direction_mode not in ("LONG_ONLY", "SHORT_ONLY", "BOTH"):
             direction_mode = "LONG_ONLY"
 

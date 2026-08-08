@@ -37,7 +37,7 @@
 |-----|------------|
 | **Normal** | TA, SMC, microstructure, market making, tick |
 | **ML / AI** | GBDT, LSTM, TCN, Transformer, GNN, VAE, RL, Hybrid Ensemble |
-| **Agentic** | Chart Analyst, Absorption Agent |
+| **Agentic** | Chart Analyst, Absorption Agent, Regime Strategy Agent |
 
 **Execution modes:** `BAR_CLOSE` (default) vs `TICK` (tick strategies only — switch mode, stay on Normal).
 
@@ -120,9 +120,22 @@ Trained ML/RL artifacts live under `backend/data/{ml_signal_models|lstm_…|rl_p
 | ID | Name | How it trades | Focus parameters |
 |----|------|---------------|------------------|
 | `CHART_AGENT` | Chart Analyst Agent | Multi-domain chart score + optional LLM; confidence gate | `min_confidence`, `require_trend_alignment`, calibration / meta-label, trailing |
-| `ABSORPTION_AGENT` | Absorption Agent | Scores absorption/exhaustion across domains | `min_confidence`, `min_score`, trailing |
+| `ABSORPTION_AGENT` | Absorption Agent | Scores absorption, exhaustion, structure, trend (+ live order book when present) | `min_confidence`, `min_score`, `exhaustion_bars`, `structure_lookback`, trailing |
+| `REGIME_STRATEGY_AGENT` | Regime Strategy Agent | ATR/ADX regime with hysteresis → exclusive TA specialist (`VWAP` / `Supertrend` / `BRS`) | `atr_ratio_elevated`, `adx_trend`, `regime_hysteresis_bars`, `regime_min_hold_bars`, trailing |
 
 **How to use:** raise `min_confidence` until trade count is sane; enable calibration/meta-label after you have closed-trade history. LLM improves narration more than raw edge — keep it optional for latency/cost.
+
+**Regime Strategy Agent vs Chart Agent vs Regime Rotation**
+
+| Mechanism | What it does | Strategy key on the bot |
+|-----------|--------------|-------------------------|
+| `REGIME_STRATEGY_AGENT` | One bot; each bar classifies regime and calls one TA specialist | Stays `REGIME_STRATEGY_AGENT` |
+| `CHART_AGENT` | Insight/cache scoring (MACD/RSI/trend domains); optional regime **threshold** routing | Stays `CHART_AGENT` |
+| Regime Rotation (ops agent) | Background loop can **swap** a bot’s strategy key when `regime_rotation_enabled` | Changes over time |
+
+Use `REGIME_STRATEGY_AGENT` when you want a single deployable agent with a TA arsenal. Use Regime Rotation when you want existing bots to rotate their identity. Do not enable both on the same bot unless you intentionally want outer rotation of the router itself.
+
+v1: open positions keep original SL/TP when the specialist switches; router knobs are excluded from the optimizer sweep grid.
 
 ---
 
@@ -312,7 +325,7 @@ the streak.
 | Intraday TA | VWAP, MACD, VPOC | ~1,500–2,000 |
 | Trend / breakout | Supertrend, Donchian | ~3,000–5,000 |
 | Market making | MM | ~5,000 |
-| Agents | Chart / Absorption | ~2,000 |
+| Agents | Chart / Absorption / Regime | ~2,000 |
 | ML / ensemble / RL | ML stack, Hybrid | ~2,000–3,000 |
 
 ---

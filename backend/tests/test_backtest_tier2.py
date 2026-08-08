@@ -65,6 +65,36 @@ class TestBayesianSweep(unittest.TestCase):
         self.assertEqual(meta["sweep_mode"], "bayesian")
         self.assertGreater(calls["n"], 0)
 
+    def test_run_bayesian_sweep_keeps_below_min_trade_rows(self):
+        """Ineligible trials must remain so WF can report best trade count."""
+        def evaluate(cfg):
+            return {
+                "summary": {"total_pnl": 1.0, "total_trades": 0},
+                "total_pnl": 1.0,
+                "trade_count": 0,
+            }
+
+        try:
+            rows, meta = run_bayesian_sweep(
+                base_config={"allocation": 1000, "trailing_stop_percent": 2},
+                sweep={
+                    "sweep_mode": "bayesian",
+                    "max_combos": 4,
+                    "bayesian_patience": 10,
+                    "bayesian_startup_trials": 2,
+                    "sweep_seed": 1,
+                    "trailing_stop_percent": [1, 2, 3],
+                },
+                evaluate_fn=evaluate,
+                objective="total_pnl",
+                min_trades=5,
+            )
+        except RuntimeError:
+            self.skipTest("optuna not installed")
+        self.assertGreater(len(rows), 0)
+        self.assertTrue(all(int(r.get("trade_count") or 0) < 5 for r in rows))
+        self.assertEqual(meta["sweep_mode"], "bayesian")
+
 
 class TestParamStability(unittest.TestCase):
     def test_centroid_numeric(self):

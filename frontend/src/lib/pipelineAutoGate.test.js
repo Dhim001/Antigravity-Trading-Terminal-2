@@ -9,6 +9,8 @@ const baseResults = {
   trade_count: 5,
   summary: { total_trades: 5, total_pnl: 100 },
   meta: {
+    symbol: 'AAPL',
+    strategy: 'ML_SIGNAL_BOOST',
     config: {
       direction_mode: 'LONG_ONLY',
       sim_mode: 'live_aligned',
@@ -43,6 +45,8 @@ describe('evaluateAndMaybeDeploy', () => {
       },
       config: baseConfig,
       autoDeployMode: 'full_auto',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs,
     });
     expect(out.deployed).toBe(false);
@@ -50,6 +54,25 @@ describe('evaluateAndMaybeDeploy', () => {
     expect(cbs.onGateFailed).toHaveBeenCalledOnce();
     expect(cbs.onAutoDeploy).not.toHaveBeenCalled();
     expect(cbs.onGatePassed).not.toHaveBeenCalled();
+  });
+
+  it('blocks when results belong to a different symbol/strategy', () => {
+    const cbs = makeCallbacks();
+    const out = evaluateAndMaybeDeploy({
+      backtestResults: baseResults,
+      config: baseConfig,
+      autoDeployMode: 'full_auto',
+      symbol: 'AMZN',
+      strategy: 'ML_SIGNAL_BOOST',
+      terminalMode: 'SIMULATED',
+      executionMode: 'paper',
+      ...cbs,
+    });
+    expect(out.deployed).toBe(false);
+    expect(out.gateResult.blocking).toBe(true);
+    expect(out.gateResult.block_reason).toMatch(/do not match/i);
+    expect(cbs.onGateFailed).toHaveBeenCalledOnce();
+    expect(cbs.onAutoDeploy).not.toHaveBeenCalled();
   });
 
   it('paper mode auto-deploys only in paper execution', () => {
@@ -60,6 +83,8 @@ describe('evaluateAndMaybeDeploy', () => {
       autoDeployMode: 'paper',
       terminalMode: 'SIMULATED',
       executionMode: 'paper',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs,
     });
     expect(paper.deployed).toBe(true);
@@ -74,6 +99,8 @@ describe('evaluateAndMaybeDeploy', () => {
       autoDeployMode: 'paper',
       terminalMode: 'LIVE_ALPACA',
       executionMode: 'broker',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs2,
     });
     expect(live.deployed).toBe(false);
@@ -90,6 +117,8 @@ describe('evaluateAndMaybeDeploy', () => {
       autoDeployMode: 'approval',
       terminalMode: 'SIMULATED',
       executionMode: 'paper',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs,
     });
     expect(out.deployed).toBe(false);
@@ -106,6 +135,8 @@ describe('evaluateAndMaybeDeploy', () => {
       autoDeployMode: 'full_auto',
       terminalMode: 'LIVE_ALPACA',
       executionMode: 'broker',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs,
     });
     expect(out.deployed).toBe(true);
@@ -119,6 +150,8 @@ describe('evaluateAndMaybeDeploy', () => {
       backtestResults: baseResults,
       config: baseConfig,
       autoDeployMode: 'mystery',
+      symbol: 'AAPL',
+      strategy: 'ML_SIGNAL_BOOST',
       ...cbs,
     });
     expect(out.deployed).toBe(false);

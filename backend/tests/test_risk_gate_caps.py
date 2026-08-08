@@ -281,6 +281,43 @@ class RiskGateBacktestModeTests(unittest.TestCase):
         self.assertFalse(live.allowed)
         self.assertTrue(bt.allowed)
 
+    def test_null_direction_mode_does_not_crash(self):
+        """Explicit JSON null must not raise AttributeError on .upper()."""
+        bot = {
+            "id": "bot-null-dir",
+            "status": "RUNNING",
+            "allocation": 1000.0,
+            "config": {"direction_mode": None},
+            "symbol": "ETHUSDT",
+        }
+        decision = self.gate.validate_trade(
+            bot,
+            "BUY",
+            0.1,
+            3000.0,
+            is_exit=False,
+            daily_pnl=0.0,
+            position_size=0.0,
+            backtest=True,
+        )
+        self.assertTrue(decision.allowed)
+
+
+class MergeStrategyConfigNullTests(unittest.TestCase):
+    def test_null_overlay_keeps_default_direction_mode(self):
+        from app.services.bots.indicators import merge_strategy_config
+
+        cfg = merge_strategy_config("ML_SIGNAL_BOOST", {"direction_mode": None})
+        self.assertIsNotNone(cfg.get("direction_mode"))
+        self.assertEqual(str(cfg["direction_mode"]).upper(), cfg["direction_mode"].upper())
+
+    def test_none_strategy_does_not_crash(self):
+        from app.services.bots.indicators import merge_strategy_config
+        from app.services.bots.strategies import normalize_strategy_name
+
+        self.assertEqual(merge_strategy_config(None, {}), {})
+        self.assertEqual(normalize_strategy_name(None), "")
+
 
 if __name__ == "__main__":
     unittest.main()

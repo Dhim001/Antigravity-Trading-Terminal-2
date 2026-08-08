@@ -18,7 +18,7 @@ A full-stack, real-time trading terminal with a Python WebSocket/HTTP backend an
 | Charting (ECharts) + overlays + signal badge + footprint | Done |
 | Multi-chart grid + FlexLayout workspace panels | Done |
 | Grouped bottom dock (Portfolio · Intelligence · Automation · Data) | Done |
-| Algo bot engine (TA + tick + CHART_AGENT / ABSORPTION_AGENT + CUSTOM plugins) | Done |
+| Algo bot engine (TA + tick + CHART_AGENT / ABSORPTION_AGENT / REGIME_STRATEGY_AGENT + CUSTOM plugins) | Done |
 | ML / DL / RL strategies (XGBoost, LSTM, TCN, VAE, Transformer, GNN, PPO) | Done |
 | Model Training dock (train / validate / version activate-delete) + `/api/v1/ml/*` | Done |
 | Backtest Lab (Results / Optimizer / Jobs), sweep, walk-forward, portfolio | Done |
@@ -115,7 +115,7 @@ graph TD
 - **Built-in bar strategies** (catalog in `strategy_catalog.py` + `GET /api/v1/strategies`), including:
   - Core TA: `MACD_RSI`, `BRS_SCALPING`, `SUPERTREND_ADX`, `VWAP_PULLBACK`
   - Structure / flow: `ICT_SMC`, `DONCHIAN_BREAKOUT`, `MARKET_MAKING`, `CVD_DIVERGENCE`, `WYCKOFF_SPRING`, `VPOC_REVERSION`, `ORDERFLOW_IMBALANCE`
-  - Agentic: `CHART_AGENT`, `ABSORPTION_AGENT`
+  - Agentic: `CHART_AGENT`, `ABSORPTION_AGENT`, `REGIME_STRATEGY_AGENT`
   - Tick strategies: `TICK_MOMENTUM`, `TICK_MEAN_REVERT`, `TICK_BREAKOUT`
   - **ML / DL / RL** (optional `torch` + `onnxruntime`): `ML_SIGNAL_BOOST`, `LSTM_DIRECTION`, `TCN_MULTI_HORIZON`, `VAE_REGIME_DETECTOR`, `TRANSFORMER_SIGNAL`, `GNN_CROSS_ASSET`, `RL_PPO_AGENT`
 - **Backtester / optimizer** — offline evaluation, sweeps, walk-forward, Monte Carlo; category-aware Lab (TA / ML / Agent); portfolio baskets with contribution % and correlation; heavy jobs can defer in-process or enqueue to **RQ** when `REDIS_URL` is set

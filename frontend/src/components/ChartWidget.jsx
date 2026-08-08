@@ -96,6 +96,8 @@ export default function ChartWidget() {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const candlesRef = useRef([]);
+  /** Bars actually plotted on the category x-axis (post-conflation). Markers must use these. */
+  const chartCategoryBarsRef = useRef([]);
   const displayBarsRef = useRef([]);
   const conflationFactorRef = useRef(1);
   const conflationLiveRafRef = useRef(null);
@@ -154,9 +156,14 @@ export default function ChartWidget() {
   const tradeOverlayKey = useStore(state => {
     let key = '';
     for (const t of state.tradeHistory) {
-      if (t.symbol === activeSymbol && t.status === 'FILLED') {
-        key += `${t.timestamp}:${t.side}:${t.filled_quantity ?? t.quantity}:${t.average_fill_price ?? t.price};`;
-      }
+      if (String(t.status || '').toUpperCase() !== 'FILLED') continue;
+      // Loose symbol match so Alpaca wire symbols (BTC/USD) still refresh markers.
+      const sym = String(t.symbol || '').toUpperCase().replace(/\//g, '');
+      const active = String(activeSymbol || '').toUpperCase().replace(/\//g, '');
+      const symUsdt = sym.endsWith('USDT') ? sym : (sym.endsWith('USD') ? `${sym.slice(0, -3)}USDT` : sym);
+      const actUsdt = active.endsWith('USDT') ? active : (active.endsWith('USD') ? `${active.slice(0, -3)}USDT` : active);
+      if (sym !== active && symUsdt !== actUsdt) continue;
+      key += `${t.timestamp}:${t.side}:${t.filled_quantity ?? t.quantity}:${t.average_fill_price ?? t.price};`;
     }
     return key;
   });
@@ -755,6 +762,7 @@ export default function ChartWidget() {
       `${activeSymbol}|${timeframe}|${sourceCandles.length}|${sourceCandles[sourceCandles.length - 1]?.time}|z${zoomBucket}`,
     );
     conflationFactorRef.current = conflationFactor;
+    chartCategoryBarsRef.current = candles;
 
     const categoryData = buildCategoryAxisData(candles);
 
@@ -1213,11 +1221,14 @@ export default function ChartWidget() {
   // Lightweight overlay patch — SL/TP lines and trade markers only
   const applyOverlayPatch = useCallback(() => {
     const chart = chartRef.current;
-    const bars = candlesRef.current;
+    // Must match the category axis built in configureChart (conflated bars), not raw displayBars.
+    const bars = chartCategoryBarsRef.current?.length
+      ? chartCategoryBarsRef.current
+      : candlesRef.current;
     if (isChartDisposed(chart) || !bars.length || !chartReadyRef.current || chartConfiguringRef.current) return;
 
     const cfg = TF_CONFIGS.find((t) => t.label === timeframe) || TF_CONFIGS[0];
-    const bucketSecs = cfg.secs;
+    const bucketSecs = Math.max(cfg.secs, (conflationFactorRef.current || 1) * cfg.secs);
     const dec = getPriceDecimals(bars[bars.length - 1]?.close);
     const overlays = settings.chartLayout?.overlays ?? DEFAULT_TERMINAL_SETTINGS.chartLayout.overlays;
     const markLineData = [
@@ -1261,7 +1272,12 @@ export default function ChartWidget() {
           },
           {
             id: 'signal-markers',
+            type: 'scatter',
             data: scatterData,
+            symbolSize: 10,
+            z: 6,
+            clip: true,
+            animation: false,
           },
         ],
       }, { lazyUpdate: false });
@@ -1632,11 +1648,18 @@ export default function ChartWidget() {
     };
   }, [configureRevision]);
 
-  // Lightweight overlay patch — trades, positions, and after full rebuild
+  // Lightweight overlay patch — trades, positions, settings toggles, after full rebuild
   useEffect(() => {
     if (!chartReadyRef.current) return;
     applyOverlayPatchRef.current?.();
-  }, [positionOverlayKey, tradeOverlayKey, botOverlayKey, backtestOverlayKey]);
+  }, [
+    positionOverlayKey,
+    tradeOverlayKey,
+    botOverlayKey,
+    backtestOverlayKey,
+    agentOverlayKey,
+    settings.chartLayout?.overlays,
+  ]);
 
   // Re-render the graphic overlay (Volume Profile + drawings) on state changes.
   useEffect(() => {
@@ -1796,6 +1819,10 @@ export default function ChartWidget() {
     }
 
     candlesRef.current = bars;
+    // Keep category-bar ref in sync when not conflated (configure owns it otherwise).
+    if ((conflationFactorRef.current || 1) <= 1) {
+      chartCategoryBarsRef.current = bars;
+    }
     const cache = liveSeriesCacheRef.current;
     const liveChartType = chartTypeRef.current;
     const isTransformed = liveChartType === 'heikin' || liveChartType === 'renko';

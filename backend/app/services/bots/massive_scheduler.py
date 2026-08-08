@@ -11,6 +11,7 @@ from typing import Any
 
 from app.config import ALLOW_LIVE_BOTS
 from app.services.bots.execution_mode import (
+    is_live_massive,
     runs_live_feed_bot_ticks,
     uses_paper_oms,
 )

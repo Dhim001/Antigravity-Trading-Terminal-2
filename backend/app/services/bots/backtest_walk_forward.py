@@ -643,13 +643,39 @@ def _format_no_valid_is_error(
         if fold_idx is not None
         else "Walk-forward sweep"
     )
-    msg = (
-        f"{prefix} produced no valid in-sample runs "
-        f"({total} tested: {errs} errors, {below} below min {effective_min} trades; "
-        f"best IS trade count: {best_trades}). "
-        f"Floor is max(requested min, {per_param}×{axes} varying sweep params). "
-        f"Try more days, lower min trades, fewer swept params, or disable final holdout."
-    )
+    if total == 0:
+        msg = (
+            f"{prefix} produced no in-sample trial rows "
+            f"(Bayesian/grid returned empty — check base config and sweep axes). "
+            f"Floor would be max(requested min, {per_param}×{axes} varying sweep params)."
+        )
+    else:
+        msg = (
+            f"{prefix} produced no valid in-sample runs "
+            f"({total} tested: {errs} errors, {below} below min {effective_min} trades; "
+            f"best IS trade count: {best_trades}). "
+            f"Floor is max(requested min, {per_param}×{axes} varying sweep params). "
+            f"Try more days, lower min trades, fewer swept params, or disable final holdout."
+        )
+    # Surface dominant reject / error signals (e.g. missing ML model).
+    reject_totals: dict[str, int] = {}
+    for r in sweep_rows:
+        if r.get("error"):
+            key = str(r["error"]).split(":")[0].strip()[:80] or "error"
+            reject_totals[f"error:{key}"] = reject_totals.get(f"error:{key}", 0) + 1
+            continue
+        fr = (r.get("summary") or {}).get("filter_rejects") or {}
+        if isinstance(fr, dict):
+            for k, v in fr.items():
+                n = int(v or 0)
+                if n > 0:
+                    reject_totals[str(k)] = reject_totals.get(str(k), 0) + n
+    if reject_totals:
+        top = sorted(reject_totals.items(), key=lambda kv: -kv[1])[:4]
+        bits = ", ".join(f"{k}×{v}" for k, v in top)
+        msg = f"{msg} Top rejects/errors: {bits}."
+        if any("ml_model_missing" in k for k in reject_totals):
+            msg = f"{msg} Train or select a model for this symbol/timeframe first."
     cm = candle_meta or {}
     detail_bits: list[str] = []
     if train_bars is not None:
@@ -666,6 +692,13 @@ def _format_no_valid_is_error(
     if detail_bits:
         msg = f"{msg} Data: {' · '.join(detail_bits)}."
     return msg
+
+
+def _resolve_is_sweep_base(base_config: dict | None, configs: list[dict]) -> dict:
+    """Bayesian expand_sweep_grid returns [] — must fall back to the real base config."""
+    if configs:
+        return configs[0]
+    return _ensure_live_parity(base_config or {})
 
 
 def _run_oos_backtest(
@@ -759,6 +792,7 @@ def _run_single_walk_forward(
     cancel_cb=None,
     sweep: dict | None = None,
     wf_options: dict | None = None,
+    base_config: dict | None = None,
 ) -> dict[str, Any]:
     """Single 70/30 split — original walk-forward behavior."""
     configs = [_ensure_live_parity(c) for c in configs]
@@ -783,7 +817,7 @@ def _run_single_walk_forward(
         run_offset=0,
         total_runs=total_runs,
         sweep=sweep,
-        base_config=configs[0] if configs else {},
+        base_config=_resolve_is_sweep_base(base_config, configs),
         min_trades=effective_min,
     )
     if cancel_cb and cancel_cb():
@@ -1060,6 +1094,7 @@ def run_walk_forward(
             cancel_cb=cancel_cb,
             sweep=sweep,
             wf_options=wf_options,
+            base_config=base_config,
         )
         if (
             fold_checkpoint_cb
@@ -1117,7 +1152,7 @@ def run_walk_forward(
             run_offset=run_offset,
             total_runs=total_is_runs,
             sweep=sweep,
-            base_config=configs[0] if configs else {},
+            base_config=_resolve_is_sweep_base(base_config, configs),
             min_trades=effective_min,
         )
         if cancel_cb and cancel_cb():
@@ -1205,9 +1240,43 @@ def run_walk_forward(
                 "trade_count": (fold_entries[-1].get("in_sample") or {}).get("trade_count"),
             }]
 
-    # Pick config with best mean OOS objective across all folds (not just last-fold IS winner)
+    # Pick config with best mean OOS objective across all folds (not just last-fold IS winner).
+    # Bayesian expand_sweep_grid returns [] and the HTTP handler pads configs=[base], so we
+    # must still rank fold Optuna winners — otherwise Deploy ships the unoptimized base.
+    from app.services.bots.backtest_bayesian import is_bayesian_sweep
+
+    rank_configs = list(configs)
+    if is_bayesian_sweep(sweep) or not rank_configs:
+        seen_keys: set[str] = set()
+        seeded: list[dict] = []
+        for entry in fold_entries:
+            cfg = entry.get("best_config")
+            if not isinstance(cfg, dict):
+                continue
+            key = _config_key(cfg)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            seeded.append(cfg)
+        if not seeded:
+            for row in last_sweep_rows or []:
+                if not isinstance(row, dict) or row.get("error"):
+                    continue
+                if _row_trade_count(row) < effective_min:
+                    continue
+                cfg = row.get("config")
+                if not isinstance(cfg, dict):
+                    continue
+                key = _config_key(cfg)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                seeded.append(cfg)
+        if seeded:
+            rank_configs = seeded
+
     config_oos_scores: dict[str, dict] = {}
-    for cfg in configs:
+    for cfg in rank_configs:
         key = _config_key(cfg)
         oos_values: list[float] = []
         for fold_idx, (train, test, _, _) in enumerate(windows):
@@ -1240,10 +1309,11 @@ def run_walk_forward(
 
     best_entry = max(config_oos_scores.values(), key=lambda e: e["mean_oos"])
     best_config = best_entry["config"]
+    tested_n = len(rank_configs) or len(last_sweep_rows) or len(configs)
     aggregate = aggregate_fold_oos(
         fold_entries,
         objective=sweep_objective,
-        num_trials=len(configs),
+        num_trials=tested_n,
     )
     aggregate["mean_oos_objective"] = best_entry["mean_oos"]
 
@@ -1278,7 +1348,7 @@ def run_walk_forward(
     merged["meta"]["rolling_folds"] = total_folds
     merged["meta"]["min_trades"] = min_meta
     merged["sweep"] = {
-        "configs_tested": len(configs),
+        "configs_tested": tested_n,
         "best_config": best_config,
         "objective": sweep_objective,
         "min_trades": effective_min,

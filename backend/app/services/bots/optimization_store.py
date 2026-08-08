@@ -338,6 +338,48 @@ ML_TRAIN_HYPERPARAM_KEYS = frozenset({
 })
 
 
+def merge_live_model_train_hyperparams(
+    config: dict[str, Any] | None,
+    symbol: str,
+    strategy: str,
+    *,
+    timeframe: str | None = None,
+) -> dict[str, Any]:
+    """Fill missing train knobs from the live champion ``metadata.json`` config.
+
+    Used by alpha-decay / queue retrain so the model is rebuilt with the same
+    hyperparameters that produced the current artifact. Explicit client keys
+    always win. Opt-out with ``skip_live_model_hyperparams: true``.
+    """
+    cfg = dict(config or {})
+    if cfg.get("skip_live_model_hyperparams"):
+        return cfg
+    try:
+        from app.services.bots.ml_retrain_scheduler import get_model_metadata
+
+        meta = get_model_metadata(strategy, symbol, timeframe=timeframe) or {}
+    except Exception:
+        return cfg
+    if not isinstance(meta, dict):
+        return cfg
+    src = meta.get("config") if isinstance(meta.get("config"), dict) else {}
+    applied: dict[str, Any] = {}
+    for key in ML_TRAIN_HYPERPARAM_KEYS:
+        if key in cfg:
+            continue
+        if key in src and src[key] is not None:
+            applied[key] = src[key]
+        elif key in meta and meta[key] is not None and key not in (
+            "feature_names", "metrics", "label_distribution",
+        ):
+            applied[key] = meta[key]
+    if applied:
+        cfg.update(applied)
+        cfg["retrain_from_live_model"] = True
+        cfg["_live_model_hyperparams_applied"] = sorted(applied.keys())
+    return cfg
+
+
 def merge_optimized_train_hyperparams(
     config: dict[str, Any] | None,
     symbol: str,

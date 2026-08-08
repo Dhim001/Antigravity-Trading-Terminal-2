@@ -141,19 +141,23 @@ export default function MlModelStatusBadge({
   if (status?.trained) {
     const pin = String(modelVersion || '').trim();
     const short = formatPinnedVersionShort(pin, status.trained_at);
+    const desync = status.champion_desynced
+      ? ` · newest ≠ live (${status.newest_version_id || '…'})`
+      : '';
     const title = pin
-      ? `Pinned ${tf} model ${pin}`
-      : `Using latest ${tf} model${status.trained_at ? ` (${status.trained_at})` : ''}`;
+      ? `Pinned ${tf} model ${pin}${desync}`
+      : `Using latest ${tf} model${status.trained_at ? ` (${status.trained_at})` : ''}${desync}`;
     return (
       <span
         className={cn(
           'ml-model-badge ml-model-badge--trained',
           pin && 'ml-model-badge--pinned',
+          status.champion_desynced && 'ml-model-badge--desynced',
         )}
         title={title}
       >
         {pin ? <Pin size={10} /> : <CheckCircle2 size={10} />}
-        {!compact && <span>{pin ? `v ${short}` : short}</span>}
+        {!compact && <span>{pin ? `v ${short}` : short}{status.champion_desynced ? '≠' : ''}</span>}
         {compact && <span className="ml-model-badge__ver">{short}</span>}
       </span>
     );
