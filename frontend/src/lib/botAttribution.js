@@ -11,7 +11,20 @@ const BOT_STATUS_LABEL = {
   RUNNING: 'Running',
   PAUSED: 'Paused',
   STOPPED: 'Stopped',
+  ERROR: 'Error',
 };
+
+/** Canonical bot status: RUNNING | PAUSED | STOPPED | ERROR | raw uppercased. */
+export function normalizeBotStatus(status) {
+  const s = String(status || '').trim().toUpperCase();
+  if (s === 'RUNNING' || s === 'PAUSED' || s === 'STOPPED' || s === 'ERROR') return s;
+  return s || '';
+}
+
+export function botStatusLabel(status) {
+  const s = normalizeBotStatus(status);
+  return BOT_STATUS_LABEL[s] || s || '—';
+}
 
 /** Index bots by id and by symbol (prefers RUNNING over PAUSED). */
 export function buildBotLookup(activeBots = [], botHistory = []) {

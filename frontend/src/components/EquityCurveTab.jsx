@@ -35,8 +35,8 @@ export default function EquityCurveTab() {
     const selectedPeriod = PERIODS.find(p => p.label === period);
     const cutoff = selectedPeriod?.days === Infinity ? 0 : now - selectedPeriod.days * 86400000;
 
-    const filledSells = tradeHistory
-      .filter(t => t.status === 'FILLED' && t.side === 'SELL' && t.realized_pnl != null && t.timestamp >= cutoff)
+    const filledExits = tradeHistory
+      .filter(t => t.status === 'FILLED' && t.realized_pnl != null && t.timestamp >= cutoff)
       .sort((a, b) => a.timestamp - b.timestamp);
 
     let cumPnl = 0;
@@ -47,25 +47,25 @@ export default function EquityCurveTab() {
 
     const eqSeries = [];
 
-    filledSells.forEach(t => {
+    filledExits.forEach(t => {
       cumPnl += t.realized_pnl;
       if (cumPnl > peak) peak = cumPnl;
       const dd = peak > 0 ? ((peak - cumPnl) / peak) * 100 : 0;
       if (dd > maxDrawdown) maxDrawdown = dd;
       if (t.realized_pnl > 0) wins++;
-      else losses++;
+      else if (t.realized_pnl < 0) losses++;
 
       const tsec = Math.floor(t.timestamp / 1000);
       eqSeries.push({ time: tsec, value: parseFloat(cumPnl.toFixed(2)) });
     });
 
-    const totalPnl = filledSells.reduce((s, t) => s + t.realized_pnl, 0);
+    const totalPnl = filledExits.reduce((s, t) => s + t.realized_pnl, 0);
     const winRate = wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0;
-    const gross = filledSells.reduce((s, t) => s + (t.trade_value || 0), 0);
+    const gross = filledExits.reduce((s, t) => s + (t.trade_value || 0), 0);
 
     return {
       equitySeries: eqSeries,
-      filteredStats: { totalPnl, maxDrawdown, winRate, wins, losses, gross, count: filledSells.length },
+      filteredStats: { totalPnl, maxDrawdown, winRate, wins, losses, gross, count: filledExits.length },
     };
   }, [tradeHistory, period]);
 

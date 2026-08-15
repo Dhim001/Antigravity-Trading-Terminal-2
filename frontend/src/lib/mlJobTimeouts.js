@@ -124,6 +124,19 @@ export function mlJobPollDeadlineMs(strategy, kind = 'validate', opts = {}) {
 }
 
 /**
+ * Client poll window for Optuna Auto-Tune.
+ * Optuna's ``time_budget_sec`` stops *new* trials; the in-flight screen/promote
+ * often overruns by a few minutes. A 60s pad was marking successful 12-min
+ * sweeps as timed out. Match train/validate: budget + 15 min buffer.
+ * @param {number} [timeBudgetSec=600]
+ */
+export function mlHyperparamSweepPollDeadlineMs(timeBudgetSec = 600) {
+  const raw = Number(timeBudgetSec);
+  const budgetMs = Math.max(Number.isFinite(raw) && raw > 0 ? raw * 1000 : 600_000, 120_000);
+  return budgetMs + ML_JOB_POLL_BUFFER_MS;
+}
+
+/**
  * Poll interval — slightly slower for long GPU / long-window jobs to cut chatter.
  * @param {number} elapsedMs
  * @param {number} budgetMs

@@ -250,6 +250,36 @@ async def live_ib_market_broadcast_loop():
         await asyncio.sleep(IB_BROADCAST_INTERVAL_SEC)
 
 
+async def live_alpaca_orderbook_loop():
+    """Push L2 for the client's subscribed symbol (IB/Massive/sim parity).
+
+    Alpaca's coalesced market_update is slim — no books — so Book/Depth only
+    received a one-shot snapshot on SUBSCRIBE_SYMBOL.
+    """
+    from app.config import ALPACA_BROADCAST_INTERVAL_SEC
+
+    logging.info(
+        "Starting LIVE_ALPACA orderbook loop (interval=%ss)...",
+        ALPACA_BROADCAST_INTERVAL_SEC,
+    )
+    feed = state.feed
+    manager = state.manager
+    interval = max(0.5, float(ALPACA_BROADCAST_INTERVAL_SEC))
+    while True:
+        try:
+            for client in list(manager.connected_clients):
+                sym = manager.client_symbols.get(client)
+                if not sym:
+                    continue
+                md = feed.get_market_data(sym) if feed else None
+                ob = md.get("orderbook") if md else None
+                if ob and ob.get("bids") and ob.get("asks"):
+                    await manager.send_to(client, orderbook_update({sym: ob}))
+        except Exception as e:
+            logging.error("Error in LIVE_ALPACA orderbook loop: %s", e)
+        await asyncio.sleep(interval)
+
+
 async def live_alpaca_bot_tick_loop():
     """TICK bots + HT BAR_CLOSE on Alpaca broadcast cadence (no paper OMS)."""
     from app.config import ALPACA_BROADCAST_INTERVAL_SEC, ALLOW_LIVE_BOTS
@@ -485,6 +515,42 @@ async def heartbeat_loop():
         logging.info("Heartbeat: Server is running...")
 
 
+async def pnl_integrity_loop(interval_sec: float = 3600.0):
+    """Nightly-style PnL/streak integrity job (hourly cadence).
+
+    Compares the bot_trades exit-PnL authority against the orders.realized_pnl
+    read cache and alerts (log + metric) on divergence — catches History
+    inflation / equity mismatch regressions between deploys.
+    """
+    import asyncio as _a
+    from app.database import get_connection
+    from app.services.fifo_pnl import pnl_authority_integrity
+
+    while True:
+        await _a.sleep(interval_sec)
+        try:
+            conn = get_connection()
+            try:
+                report = await _a.to_thread(pnl_authority_integrity, conn.cursor())
+            finally:
+                conn.close()
+            if not report.get("ok", True):
+                logging.warning(
+                    "PnL authority divergence: bot_exits=%s order_cache=%s diverged=%s",
+                    report.get("bot_exit_total"),
+                    report.get("order_cache_total"),
+                    report.get("diverged_symbols"),
+                )
+                try:
+                    from app.observability.metrics import inc
+
+                    inc("pnl_authority_divergence_total", value=1)
+                except Exception:
+                    pass
+        except Exception:
+            logging.exception("pnl_integrity_loop error")
+
+
 async def main():
     from app.db.connection import warm_pool
 
@@ -619,6 +685,7 @@ async def main():
                     tasks.append(asyncio.create_task(bot_market_loop(state.bot_manager, state.feed)))
                 tasks.append(asyncio.create_task(bot_snapshot_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(risk_monitor_loop(state.bot_manager)))
+                tasks.append(asyncio.create_task(pnl_integrity_loop()))
                 tasks.append(asyncio.create_task(calibration_refresh_loop()))
                 tasks.append(asyncio.create_task(regime_rotation_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(alpha_decay_loop(state.bot_manager)))
@@ -654,6 +721,7 @@ async def main():
                 tasks.append(asyncio.create_task(live_massive_market_broadcast_loop()))
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
             elif TERMINAL_MODE == "LIVE_ALPACA":
+                tasks.append(asyncio.create_task(live_alpaca_orderbook_loop()))
                 tasks.append(asyncio.create_task(live_alpaca_bot_tick_loop()))
                 tasks.append(asyncio.create_task(diagnostics_broadcast_loop()))
             else:

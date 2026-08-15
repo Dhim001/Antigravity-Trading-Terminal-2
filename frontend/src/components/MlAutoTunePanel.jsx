@@ -1,9 +1,8 @@
 /**
  * ML training hyperparameter auto-tune (Optuna) — Model Training Lab.
- * Progress UI matches Train / Walk-forward (bar + optional poll log).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Loader2, Sparkles, Wand2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Loader2, RefreshCw, Sparkles, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiRequest, isAbortError } from '@/api/client';
 import { Button } from '@/components/ui/button';
@@ -11,7 +10,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
-import { cancelMlJob } from '@/lib/mlLabApi';
+import { cancelMlJob, fetchLatestMlHyperparamSweep } from '@/lib/mlLabApi';
+import { mlHyperparamSweepPollDeadlineMs } from '@/lib/mlJobTimeouts';
 import {
   isMlHyperparamSweepPolling,
   startMlHyperparamSweepPolling,
@@ -19,9 +19,9 @@ import {
 import {
   appendMlPollLog,
   beginMlJob,
-  clearMlPollLog,
   finishMlJob,
   getMlTrainingSession,
+  hydrateMlTuneSession,
   setMlJobId,
   setMlServerProgress,
   subscribeMlTrainingSession,
@@ -86,28 +86,12 @@ const DEFAULT_HP = {
   },
 };
 
-const POLL_LOG_PREF_KEY = 'ml-lab-autotune-show-poll-log';
-
 const SWEEP_PHASES = [
   { until: 8, label: 'Queuing Optuna study…' },
   { until: 25, label: 'Loading candles & feature space…' },
   { until: 75, label: 'Running hyperparam trials…' },
   { until: 92, label: 'Promoting top trials (full fidelity)…' },
   { until: 100, label: 'Ranking importance & finalizing…' },
-];
-
-const SNAPSHOT_METRIC_ORDER = [
-  ['best_score', 'Best'],
-  ['last_score', 'Last'],
-  ['trial', 'Trial'],
-  ['accuracy', 'Acc'],
-  ['f1', 'F1'],
-  ['oos_accuracy', 'OOS Acc'],
-  ['oos_f1', 'OOS F1'],
-  ['sharpe', 'Sharpe'],
-  ['pbo', 'PBO'],
-  ['mean_return', 'Mean ret'],
-  ['profit_factor', 'PF'],
 ];
 
 function formatElapsed(ms) {
@@ -126,42 +110,15 @@ function formatBudgetLabel(sec) {
   return `${s}s`;
 }
 
-function formatPollLogTime(ts) {
-  try {
-    return new Date(ts).toLocaleTimeString(undefined, { hour12: false });
-  } catch {
-    return '—';
+function hasSweepOutcome(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.ok === false) return false;
+  if (result.ok === true) return true;
+  if (result.best_hyperparams && typeof result.best_hyperparams === 'object'
+    && Object.keys(result.best_hyperparams).length) {
+    return true;
   }
-}
-
-function formatPollLogLine(entry) {
-  const bits = [formatPollLogTime(entry.t)];
-  if (entry.level === 'warn') bits.push('WARN');
-  if (entry.status) bits.push(`status=${entry.status}`);
-  if (entry.pct != null) bits.push(`pct=${Math.round(entry.pct)}`);
-  if (entry.phase) bits.push(`phase=${entry.phase}`);
-  if (entry.trial != null && entry.max_trials != null) {
-    bits.push(`trial=${entry.trial}/${entry.max_trials}`);
-  } else if (entry.trial != null) {
-    bits.push(`trial=${entry.trial}`);
-  }
-  if (entry.best_score != null) bits.push(`best=${entry.best_score}`);
-  if (entry.last_score != null) bits.push(`score=${entry.last_score}`);
-  if (entry.detail) bits.push(`detail=${entry.detail}`);
-  if (entry.warning) bits.push(`warning=${entry.warning}`);
-  if (entry.note) bits.push(entry.note);
-  return bits.join(' ');
-}
-
-function formatSnapValue(key, value) {
-  if (value == null || value === '') return '—';
-  if (key === 'trial' && typeof value === 'string') return value;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return String(value);
-  if (key === 'trial') return String(Math.round(n));
-  if (Math.abs(n) >= 100) return n.toFixed(1);
-  if (Math.abs(n) >= 1) return n.toFixed(3);
-  return n.toFixed(4);
+  return result.best_score != null || Number(result.trials_completed) > 0;
 }
 
 function ConvergenceSparkline({ points }) {
@@ -262,124 +219,12 @@ function DiffTable({ defaults, best }) {
   );
 }
 
-function SweepSnapshotChips({ progress }) {
-  if (!progress) return null;
-  const metrics = progress.metrics && typeof progress.metrics === 'object' ? progress.metrics : {};
-  const bag = {
-    best_score: progress.best_score,
-    last_score: progress.last_score,
-    trial: progress.trial != null && progress.max_trials != null
-      ? `${progress.trial}/${progress.max_trials}`
-      : progress.trial,
-    ...metrics,
-  };
-  const chips = SNAPSHOT_METRIC_ORDER
-    .map(([key, label]) => {
-      const raw = bag[key];
-      if (raw == null || raw === '') return null;
-      return { key, label, value: formatSnapValue(key, raw) };
-    })
-    .filter(Boolean);
-  if (progress.fidelity_phase) {
-    chips.unshift({
-      key: 'fidelity',
-      label: 'Fidelity',
-      value: String(progress.fidelity_phase),
-    });
-  }
-  if (progress.objective_kind) {
-    chips.push({
-      key: 'objective',
-      label: 'Obj',
-      value: String(progress.objective_kind),
-    });
-  }
-  if (progress.no_improve_streak != null && Number(progress.no_improve_streak) > 0) {
-    chips.push({
-      key: 'streak',
-      label: 'No↑',
-      value: String(progress.no_improve_streak),
-    });
-  }
-  if (!chips.length) return null;
-  return (
-    <div className="ml-training__metrics mt-2" aria-label="Auto-tune snapshot metrics">
-      {chips.slice(0, 10).map((chip, i) => (
-        <div
-          key={chip.key}
-          className={cn('ml-training__metric-chip', i === 0 && 'ml-training__metric-chip--primary')}
-        >
-          <span className="ml-training__metric-key">{chip.label}</span>
-          <strong className="num-mono">{chip.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SweepPollLog({ entries, enabled, onEnabledChange, onClear }) {
-  const logRef = useRef(null);
-  const lines = Array.isArray(entries) ? entries : [];
-
-  useEffect(() => {
-    if (!enabled || !logRef.current) return;
-    logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [enabled, lines.length, lines[lines.length - 1]?.t]);
-
-  return (
-    <div className="ml-training__poll-log">
-      <div className="ml-training__poll-log-head">
-        <label className="ml-training__poll-log-toggle">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => onEnabledChange(Boolean(e.target.checked))}
-          />
-          <span>Show poll log</span>
-        </label>
-        {enabled && (
-          <div className="ml-training__poll-log-actions">
-            <span className="ml-training__header-meta num-mono">{lines.length} lines</span>
-            {lines.length > 0 && typeof onClear === 'function' && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-[0.6rem]"
-                onClick={onClear}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-      {enabled && (
-        <pre
-          ref={logRef}
-          className="ml-training__poll-log-body num-mono"
-          aria-label="Auto-tune hyperparam sweep poll log"
-        >
-          {lines.length === 0
-            ? '# Poll snapshots appear while Auto-Tune runs…'
-            : lines.map(formatPollLogLine).join('\n')}
-        </pre>
-      )}
-    </div>
-  );
-}
-
 function SweepProgressBar({
   active,
   label,
   startedAt,
   budgetSec,
   serverProgress,
-  jobId,
-  symbol,
-  strategy,
-  onCancel,
-  cancelling,
 }) {
   const [now, setNow] = useState(() => Date.now());
 
@@ -406,18 +251,14 @@ function SweepProgressBar({
   const phaseIdx = SWEEP_PHASES.findIndex((p) => pct < p.until);
   const phase = SWEEP_PHASES[phaseIdx >= 0 ? phaseIdx : Math.max(SWEEP_PHASES.length - 1, 0)];
   const phaseLabel = hasServerPct
-    ? (
-      serverProgress.resuming || serverProgress.phase === 'hyperparam_resume'
-        ? (
-          serverProgress.trial != null && serverProgress.max_trials != null
-            ? `Resuming trial ${serverProgress.trial}/${serverProgress.max_trials}…`
-            : (serverProgress.detail || 'Resuming from checkpoint…')
-        )
-        : [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ')
-    ) || phase?.label
+    ? [serverProgress.phase, serverProgress.detail].filter(Boolean).join(' · ') || phase?.label
     : phase?.label;
-  const jobShort = jobId ? String(jobId).slice(0, 8) : null;
-  const identity = [symbol, strategy].filter(Boolean).join(' · ');
+  const trialBit = serverProgress?.trial != null && serverProgress?.max_trials != null
+    ? ` · trial ${serverProgress.trial}/${serverProgress.max_trials}`
+    : '';
+  const bestBit = serverProgress?.best_score != null
+    ? ` · best ${serverProgress.best_score}`
+    : '';
 
   return (
     <div className="ml-training__progress" role="status" aria-live="polite">
@@ -429,7 +270,6 @@ function SweepProgressBar({
         <span className="ml-training__progress-meta num-mono">
           {pct}% · {formatElapsed(elapsed)}
           {timeoutMs >= 60_000 ? ` / ~${formatBudgetLabel(timeoutMs / 1000)}` : ''}
-          {hasServerPct ? ' · live' : ''}
         </span>
       </div>
       <div
@@ -442,45 +282,11 @@ function SweepProgressBar({
       >
         <div className="ml-training__progress-fill" style={{ width: `${pct}%` }} />
       </div>
-      <div className="ml-training__progress-foot">
-        {phaseLabel && (
-          <p className="ml-training__progress-phase">{phaseLabel}</p>
-        )}
-        {typeof onCancel === 'function' && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 text-[0.65rem] shrink-0"
-            disabled={cancelling || !jobId}
-            onClick={onCancel}
-          >
-            {cancelling ? <Loader2 size={12} className="animate-spin" /> : null}
-            Cancel
-          </Button>
-        )}
-      </div>
-      {(identity || jobShort || serverProgress?.trial != null) && (
-        <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
-          {identity || 'Auto-tune'}
-          {jobShort ? ` · job ${jobShort}` : ''}
-          {' · background (safe to switch tabs)'}
-          {serverProgress?.trial != null && serverProgress?.max_trials != null
-            ? ` · trial ${serverProgress.trial}/${serverProgress.max_trials}`
-            : serverProgress?.trial != null
-              ? ` · trial ${serverProgress.trial}`
-              : ''}
-          {serverProgress?.best_score != null
-            ? ` · best ${serverProgress.best_score}`
-            : ''}
+      {phaseLabel && (
+        <p className="ml-training__progress-phase mt-1">
+          {phaseLabel}{trialBit}{bestBit}
         </p>
       )}
-      {serverProgress?.warning && (
-        <p className="mt-1 text-[10px] text-amber-400/90">
-          Warning: {serverProgress.warning}
-        </p>
-      )}
-      <SweepSnapshotChips progress={serverProgress} />
     </div>
   );
 }
@@ -498,24 +304,20 @@ export default function MlAutoTunePanel({
   const [multiFidelity, setMultiFidelity] = useState(true);
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [showPollLog, setShowPollLog] = useState(() => {
-    try {
-      return sessionStorage.getItem(POLL_LOG_PREF_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
+  const [refreshing, setRefreshing] = useState(false);
 
   const mlSession = useSyncExternalStore(
     subscribeMlTrainingSession,
     getMlTrainingSession,
     getMlTrainingSession,
   );
-  const sessionMatches = mlSession.symbol === symbol && mlSession.strategy === strategy;
+  const sessionMatches = (
+    String(mlSession.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()
+    && String(mlSession.strategy || '').toUpperCase() === String(strategy || '').toUpperCase()
+  );
   const sessionTuning = Boolean(sessionMatches && mlSession.tuning);
   const running = starting || sessionTuning;
   const progress = sessionMatches ? mlSession.serverProgress : null;
-  const pollLog = sessionMatches ? (mlSession.pollLog || []) : [];
   const result = sessionMatches ? mlSession.tuneResult : null;
   const jobId = sessionMatches ? mlSession.jobId : null;
   const startedAt = sessionMatches
@@ -543,14 +345,83 @@ export default function MlAutoTunePanel({
     [strategy],
   );
 
-  const onPollLogEnabled = useCallback((on) => {
-    setShowPollLog(on);
-    try {
-      sessionStorage.setItem(POLL_LOG_PREF_KEY, on ? '1' : '0');
-    } catch {
-      /* ignore */
+  const handleRefresh = useCallback(async () => {
+    if (!symbol || !strategy || refreshing) return;
+    const sess = getMlTrainingSession();
+    if (sess.training || sess.validating) {
+      toast.message('Wait for the current train/validate job to finish');
+      return;
     }
-  }, []);
+    const watching = sess.tuning && isMlHyperparamSweepPolling(sess.jobId);
+    if (watching) {
+      toast.message('Sweep still running — results will appear when it finishes');
+      return;
+    }
+    setRefreshing(true);
+    try {
+      const job = await fetchLatestMlHyperparamSweep(symbol, strategy);
+      if (!job) {
+        toast.message('No auto-tune job found for this symbol and strategy');
+        return;
+      }
+      const status = String(job.status || '').toLowerCase();
+      const jobId = job.job_id || job.id;
+      if (status === 'queued' || status === 'running') {
+        if (sess.tuning && sess.jobId === jobId) {
+          toast.message('Sweep still running');
+          return;
+        }
+        const { jobToken } = beginMlJob({
+          kind: 'hyperparam_sweep',
+          strategy,
+          symbol,
+          jobId,
+          jobProgress: {
+            active: true,
+            kind: 'hyperparam_sweep',
+            startedAt: Date.now(),
+            timeoutMs: mlHyperparamSweepPollDeadlineMs(Number(timeBudget) || 600),
+            label: `Auto-tune · ${strategy}`,
+            phases: SWEEP_PHASES,
+          },
+        });
+        if (job.progress && typeof job.progress === 'object') {
+          setMlServerProgress({ ...job.progress, status: job.status });
+        }
+        startMlHyperparamSweepPolling(jobId, {
+          jobToken,
+          timeBudgetSec: Number(timeBudget) || 600,
+        });
+        toast.message(`Reattached auto-tune · job ${String(jobId).slice(0, 8)}…`);
+        return;
+      }
+      const res = job.result && typeof job.result === 'object' ? job.result : {};
+      if (status === 'cancelled' || res.cancelled) {
+        hydrateMlTuneSession({ symbol, strategy, result: null, lastError: null });
+        toast.message('Latest auto-tune was cancelled');
+        return;
+      }
+      if (status === 'error' || res.ok === false) {
+        const err = res.error || job.error || 'Hyperparam sweep failed';
+        hydrateMlTuneSession({ symbol, strategy, result: res, lastError: err });
+        toast.error(err);
+        return;
+      }
+      if (status === 'done' || hasSweepOutcome(res)) {
+        const outcome = { ...res, ok: res.ok !== false };
+        hydrateMlTuneSession({ symbol, strategy, result: outcome, lastError: null });
+        toast.success(
+          `Loaded sweep · best ${outcome.best_score ?? '—'} · ${outcome.trials_completed ?? 0} trials`,
+        );
+        return;
+      }
+      toast.message('Latest auto-tune has no result yet');
+    } catch (err) {
+      if (!isAbortError(err)) toast.error(err?.message || 'Failed to refresh auto-tune');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [symbol, strategy, refreshing, timeBudget]);
 
   const handleCancel = useCallback(async () => {
     const id = getMlTrainingSession().jobId;
@@ -583,7 +454,7 @@ export default function MlAutoTunePanel({
         active: true,
         kind: 'hyperparam_sweep',
         startedAt: Date.now(),
-        timeoutMs: Math.max(Number(timeBudget) * 1000, 120_000) + 60_000,
+        timeoutMs: mlHyperparamSweepPollDeadlineMs(Number(timeBudget) || 600),
         label: `Auto-tune · ${strategy}`,
         phases: SWEEP_PHASES,
       },
@@ -793,6 +664,21 @@ export default function MlAutoTunePanel({
           type="button"
           size="sm"
           variant="outline"
+          className="h-8 gap-1"
+          disabled={refreshing || starting || !symbol || !strategy}
+          aria-busy={refreshing}
+          onClick={handleRefresh}
+          title="Load the latest sweep result from the server"
+        >
+          {refreshing
+            ? <Loader2 size={14} className="animate-spin" />
+            : <RefreshCw size={14} />}
+          Refresh
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
           className="h-8"
           disabled={!result?.best_hyperparams || running || disabled || !onApplyAndRetrain}
           onClick={applyRetrain}
@@ -801,31 +687,23 @@ export default function MlAutoTunePanel({
         </Button>
       </div>
 
+      {sessionMatches && !running && /hyperparam|sweep|auto-tune/i.test(String(mlSession.lastError || '')) && (
+        <p className="text-[10px] text-amber-400/90 mb-2" role="status">
+          {mlSession.lastError}
+          {' — '}
+          use Refresh to load the latest server result.
+        </p>
+      )}
+
       <SweepProgressBar
         active={running}
         label={`Auto-tune · ${strategy}`}
         startedAt={startedAt}
         budgetSec={Number(timeBudget) || 600}
         serverProgress={progress}
-        jobId={jobId}
-        symbol={symbol}
-        strategy={strategy}
-        onCancel={jobId ? handleCancel : undefined}
-        cancelling={cancelling}
       />
 
-      {(running || pollLog.length > 0) && (
-        <div className="mt-2">
-          <SweepPollLog
-            entries={pollLog}
-            enabled={showPollLog}
-            onEnabledChange={onPollLogEnabled}
-            onClear={() => clearMlPollLog()}
-          />
-        </div>
-      )}
-
-      {result?.ok && (
+      {hasSweepOutcome(result) && (
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
           <div>
             <p className="text-[10px] uppercase text-muted-foreground mb-1">Convergence</p>

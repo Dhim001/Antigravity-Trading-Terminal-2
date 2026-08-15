@@ -47,7 +47,10 @@ export function matchesRetrainTarget(entry, symbol, strategy, timeframe = '1m') 
  */
 export function sessionMatchesLab(mlSession, activeSymbol, strategy) {
   if (!mlSession) return false;
-  return mlSession.symbol === activeSymbol && mlSession.strategy === strategy;
+  return (
+    String(mlSession.symbol || '').toUpperCase() === String(activeSymbol || '').toUpperCase()
+    && String(mlSession.strategy || '').toUpperCase() === String(strategy || '').toUpperCase()
+  );
 }
 
 /**
@@ -67,21 +70,28 @@ export function sessionMatchesLab(mlSession, activeSymbol, strategy) {
  */
 export function deriveMlLabJobFlags(mlSession, activeSymbol, strategy) {
   const jobMatches = sessionMatchesLab(mlSession, activeSymbol, strategy);
+  const tuning = Boolean(jobMatches && mlSession?.tuning);
+  // Auto-Tune owns its own progress UI — do not also drive the Train/Validate bar.
+  const trainOrValidate = Boolean(
+    jobMatches
+    && !mlSession?.tuning
+    && (mlSession?.training || mlSession?.validating)
+  );
   return {
     jobMatches,
-    training: Boolean(jobMatches && mlSession?.training),
-    validating: Boolean(jobMatches && mlSession?.validating),
-    jobProgress: jobMatches ? (mlSession?.jobProgress ?? null) : null,
-    serverProgress: jobMatches ? (mlSession?.serverProgress ?? null) : null,
-    pollLog: jobMatches ? (mlSession?.pollLog || []) : [],
-    activeJobId: jobMatches ? (mlSession?.jobId ?? null) : null,
+    training: Boolean(trainOrValidate && mlSession?.training),
+    validating: Boolean(trainOrValidate && mlSession?.validating),
+    jobProgress: trainOrValidate ? (mlSession?.jobProgress ?? null) : null,
+    serverProgress: trainOrValidate ? (mlSession?.serverProgress ?? null) : null,
+    pollLog: trainOrValidate ? (mlSession?.pollLog || []) : [],
+    activeJobId: trainOrValidate ? (mlSession?.jobId ?? null) : null,
     validation: jobMatches ? (mlSession?.validation ?? null) : null,
     busyElsewhere: Boolean(
       (mlSession?.training || mlSession?.validating || mlSession?.tuning)
       && !jobMatches
       && (mlSession?.symbol || mlSession?.strategy),
     ),
-    sessionTuningHint: Boolean(jobMatches && mlSession?.tuning),
+    sessionTuningHint: tuning,
   };
 }
 

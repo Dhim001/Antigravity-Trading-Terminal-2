@@ -436,7 +436,11 @@ class RiskGate:
         from app.config import RISK_MARGIN_ENABLED
         from app.services.bots.margin_risk import build_margin_snapshot
 
-        margin = build_margin_snapshot(oms, snapshot) if RISK_MARGIN_ENABLED else None
+        margin = (
+            build_margin_snapshot(oms, snapshot, symbol=symbol)
+            if RISK_MARGIN_ENABLED
+            else None
+        )
         allowed, reason, capped = validate_portfolio_entry(
             snapshot,
             symbol,

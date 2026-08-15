@@ -325,14 +325,24 @@ class FeatureDriftMonitor:
         )
 
     def _load_training_baseline(self, symbol: str, strategy: str) -> np.ndarray | None:
-        """Try loading training feature baseline from model scaler/metadata."""
+        """Load the real training feature baseline; fall back to Gaussian approx."""
         try:
             from app.services.bots.ml_model_artifacts import model_root_for
             root = model_root_for(strategy, symbol)
             if not root:
                 return None
 
-            # Try scaler.json (contains mean/std from training)
+            # Prefer the real persisted training sample (no synthetic drift noise).
+            baseline_path = os.path.join(root, "feature_baseline.json")
+            if os.path.isfile(baseline_path):
+                with open(baseline_path, encoding="utf-8") as fh:
+                    payload = json.load(fh)
+                feats = np.array(payload.get("features", []), dtype=np.float32)
+                if feats.ndim == 2 and feats.shape[0] > 10 and feats.shape[1] > 0:
+                    return feats
+
+            # Legacy fallback: synthesize from scaler mean/std (approximate —
+            # kept for models trained before feature_baseline.json existed).
             scaler_path = os.path.join(root, "scaler.json")
             if os.path.isfile(scaler_path):
                 with open(scaler_path, encoding="utf-8") as fh:
@@ -340,8 +350,6 @@ class FeatureDriftMonitor:
                 mean = np.array(scaler.get("mean", []), dtype=np.float32)
                 std = np.array(scaler.get("std", []), dtype=np.float32)
                 if len(mean) > 0:
-                    # Synthesize a training baseline from mean/std
-                    # (approximation — Gaussian samples around training distribution)
                     rng = np.random.default_rng(42)
                     n_synth = 200
                     baseline = rng.normal(

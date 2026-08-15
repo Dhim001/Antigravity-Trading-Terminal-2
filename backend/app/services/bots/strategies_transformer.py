@@ -36,7 +36,8 @@ class TransformerSignalStrategy(BaseStrategy):
         self._cfg = merge_strategy_config("TRANSFORMER_SIGNAL", config or {})
         self._lookback = int(self._cfg.get("lookback", 60))
         self._window: deque = deque(maxlen=self._lookback)
-        self._bar_history: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         self._lookback_synced = False
 
     def _model_timeframe(self) -> str:
@@ -162,7 +163,9 @@ class TransformerSignalStrategy(BaseStrategy):
 
         self._bar_history.clear()
         self._window.clear()
-        for row in rows[-25:]:
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        hist_n = EVAL_HISTORY_LOOKBACK + 1
+        for row in rows[-hist_n:]:
             self._bar_history.append(dict(row))
         for vec in vecs[-lookback:]:
             self._window.append(vec)

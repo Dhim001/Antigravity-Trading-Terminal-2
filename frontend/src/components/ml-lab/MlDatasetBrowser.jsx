@@ -51,7 +51,7 @@ export function DatasetBrowser({
       <div className="ml-training__card-head">
         <h4 className="ml-training__section-title">Dataset & versions</h4>
         <span className="ml-training__header-meta">
-          Star = keep (skip prune) · Rename for a friendly label · Activate sets live root
+          Retrain updates the active version in place · Star = keep · Activate sets live root
         </span>
       </div>
       <div className="ml-training__dataset-grid">
@@ -182,7 +182,10 @@ export function DatasetBrowser({
                           </span>
                           <span className="text-muted-foreground num-mono text-[0.6rem]">
                             {v.display_name ? `${v.version_id || '—'} · ` : ''}
-                            {v.trained_at ? new Date(v.trained_at).toLocaleString() : '—'}
+                            {(v.retrained_at || v.trained_at)
+                              ? new Date(v.retrained_at || v.trained_at).toLocaleString()
+                              : '—'}
+                            {v.retrained_at ? ' · retrained' : ''}
                             {v.is_current ? ' · current' : ''}
                             {v.protected ? ' · kept' : ''}
                             {v.sample_count != null ? ` · n=${v.sample_count}` : ''}

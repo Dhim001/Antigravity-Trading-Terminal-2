@@ -1,5 +1,34 @@
 import { describe, it, expect } from 'vitest';
-import { positionUnrealizedPnl, positionReturnPct } from './dockFormatters';
+import {
+  buildBalanceView,
+  positionUnrealizedPnl,
+  positionReturnPct,
+} from './dockFormatters';
+
+describe('buildBalanceView', () => {
+  it('sums dual USD+USDT cash and shows both rows even when balances match', () => {
+    const { rows, stats } = buildBalanceView({
+      USD: { balance: 100_000, locked: 0 },
+      USDT: { balance: 100_000, locked: 0 },
+      BTC: { balance: 0.5, locked: 0 },
+    }, { BTC: 60_000 });
+
+    expect(stats.cashAvailable).toBe(200_000);
+    expect(stats.holdingsUsd).toBe(30_000);
+    expect(stats.totalEquity).toBe(230_000);
+    expect(rows.map((r) => r.asset).sort()).toEqual(['BTC', 'USD', 'USDT']);
+  });
+
+  it('does not treat equal quote balances as a single alias row', () => {
+    const { rows, stats } = buildBalanceView({
+      USD: { balance: 50_000, locked: 1_000 },
+      USDT: { balance: 50_000, locked: 1_000 },
+    }, {});
+    expect(rows).toHaveLength(2);
+    expect(stats.cashAvailable).toBe(98_000);
+    expect(stats.cashLocked).toBe(2_000);
+  });
+});
 
 describe('positionUnrealizedPnl', () => {
   it('profits long when mark rises', () => {

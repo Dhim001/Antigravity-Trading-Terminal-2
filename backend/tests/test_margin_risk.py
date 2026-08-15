@@ -117,6 +117,32 @@ class MarginRiskTests(unittest.TestCase):
         self.assertEqual(margin.margin_used, 60_000)
         self.assertEqual(margin.utilization_pct, 60.0)
 
+    def test_build_margin_snapshot_uses_usdt_for_crypto_symbol(self):
+        oms = _FakeOms({
+            "balances": {
+                "USD": {"balance": 10_000, "locked": 0},
+                "USDT": {"balance": 100_000, "locked": 1_000},
+            },
+            "positions": {},
+        })
+        portfolio = PortfolioSnapshot(
+            account_equity=109_000,
+            gross_exposure=0,
+            group_exposure={},
+            symbol_exposure={},
+        )
+        crypto = build_margin_snapshot(oms, portfolio, symbol="BTCUSDT")
+        self.assertEqual(crypto.quote_asset, "USDT")
+        self.assertEqual(crypto.available_cash, 99_000)
+
+        equity = build_margin_snapshot(oms, portfolio, symbol="AAPL")
+        self.assertEqual(equity.quote_asset, "USD")
+        self.assertEqual(equity.available_cash, 10_000)
+
+        both = build_margin_snapshot(oms, portfolio)
+        self.assertIsNone(both.quote_asset)
+        self.assertEqual(both.available_cash, 109_000)
+
 
 if __name__ == "__main__":
     unittest.main()

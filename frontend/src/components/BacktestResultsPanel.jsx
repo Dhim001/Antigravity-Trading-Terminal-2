@@ -53,6 +53,7 @@ import {
   notifyBacktestOverlayChanged,
   ensureBacktestChartHistory,
   resolveBacktestRange,
+  resolveBacktestResultIdentity,
   symbolsMatch,
 } from '@/lib/backtestDisplay';
 import { exportBacktestPdf } from '@/lib/backtestExport';
@@ -128,20 +129,28 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
   const range = fmtBacktestRange(meta);
   const rangeInfo = resolveBacktestRange(meta);
   const allocation = results?.allocation ?? results?.starting_equity ?? results?.starting_capital;
-  const isPortfolio = Boolean(results?.portfolio || meta?.portfolio);
-  const portfolioSymbols = meta?.portfolio_symbols;
+  const identity = resolveBacktestResultIdentity(results, {
+    symbol,
+    strategy,
+    timeframe: backtestTimeframe,
+    days: backtestDays,
+  });
+  const isPortfolio = identity.portfolio;
+  const portfolioSymbols = identity.portfolioSymbols;
   const symbolChip = isPortfolio
-    ? (meta?.portfolio_label
+    ? (identity.portfolioLabel
       || (Array.isArray(portfolioSymbols)
         ? `Portfolio · ${portfolioSymbols.length}`
         : 'Portfolio'))
-    : symbol;
+    : (identity.symbol || symbol || '—');
+  const strategyChip = identity.strategy || strategy || '—';
+  const timeframeChip = identity.timeframe || meta.timeframe || backtestTimeframe;
 
   return (
     <div className="algo-backtest-lab__meta">
       <div className="algo-backtest-lab__meta-chips">
         <span className="algo-backtest-lab__chip algo-backtest-lab__chip--symbol">{symbolChip}</span>
-        <span className="algo-backtest-lab__chip">{strategy}</span>
+        <span className="algo-backtest-lab__chip">{strategyChip}</span>
         <span
           className={cn(
             'algo-backtest-lab__chip',
@@ -149,9 +158,9 @@ function BacktestMetaLine({ results, backtestDays, backtestTimeframe, symbol, st
           )}
           title={rangeInfo.hasMismatch ? formatBacktestRangeLabel(meta, { fallbackDays: backtestDays }) : undefined}
         >
-          {formatBacktestDaysChip(meta, backtestDays)}
+          {formatBacktestDaysChip(meta, identity.days ?? backtestDays)}
         </span>
-        <span className="algo-backtest-lab__chip">{meta.timeframe ?? backtestTimeframe}</span>
+        <span className="algo-backtest-lab__chip">{timeframeChip}</span>
         {allocation != null && (
           <span className="algo-backtest-lab__chip num-mono" title={isPortfolio ? 'Basket capital' : 'Max notional cap'}>
             cap ${Number(allocation).toLocaleString()}
@@ -604,13 +613,25 @@ export default function BacktestResultsPanel({
   const [selectedTrade, setSelectedTrade] = useState(null);
   const loadRef = useRef(0);
 
+  const identity = useMemo(
+    () => resolveBacktestResultIdentity(results, {
+      symbol,
+      strategy,
+      timeframe: backtestTimeframe,
+      days: backtestDays,
+    }),
+    [results, symbol, strategy, backtestTimeframe, backtestDays],
+  );
+  const displaySymbol = identity.symbol || symbol;
+  const displayStrategy = identity.strategy || strategy;
+
   const isFull = variant === 'full';
   const summary = results?.summary;
-  const isPortfolio = Boolean(results?.portfolio || results?.meta?.portfolio);
+  const isPortfolio = identity.portfolio;
   const tradesTotal = results?.trades_total ?? results?.trade_count ?? results?.trades?.length ?? 0;
   const previewTrades = results?.trades ?? EMPTY_TRADES;
   const resolvedCategory = strategyCategory
-    ?? getStrategyCategory(strategy ?? results?.meta?.strategy);
+    ?? getStrategyCategory(displayStrategy ?? results?.meta?.strategy);
   const isMlCategory = resolvedCategory === 'ml';
   const isAgentCategory = resolvedCategory === 'agent';
   const showAdvisor = !isMlCategory;
@@ -713,7 +734,7 @@ export default function BacktestResultsPanel({
       return;
     }
 
-    const targetSymbol = normalizeTradingSymbol(results?.meta?.symbol ?? symbol);
+    const targetSymbol = normalizeTradingSymbol(results?.meta?.symbol ?? displaySymbol);
     let trades = displayTrades;
     if (results?.run_id && tradesTotal > trades.length) {
       try {
@@ -754,10 +775,10 @@ export default function BacktestResultsPanel({
     backtestOverlay,
     chartOn,
     displayTrades,
+    displaySymbol,
     results,
     setActiveSymbol,
     setBacktestOverlay,
-    symbol,
     tradesTotal,
   ]);
 
@@ -772,10 +793,10 @@ export default function BacktestResultsPanel({
     }
     exportTradesCsv(
       exportTrades,
-      symbol ?? results?.meta?.symbol ?? 'sym',
-      strategy ?? results?.meta?.strategy ?? 'strategy',
+      displaySymbol ?? results?.meta?.symbol ?? 'sym',
+      displayStrategy ?? results?.meta?.strategy ?? 'strategy',
     );
-  }, [fullTrades, previewTrades, results, symbol, strategy]);
+  }, [fullTrades, previewTrades, results, displaySymbol, displayStrategy]);
 
   const onExportPdf = useCallback(async () => {
     let exportTrades = fullTrades ?? previewTrades;
@@ -985,10 +1006,10 @@ export default function BacktestResultsPanel({
           </h3>
           <BacktestMetaLine
             results={results}
-            backtestDays={backtestDays}
-            backtestTimeframe={backtestTimeframe}
-            symbol={symbol}
-            strategy={strategy}
+            backtestDays={identity.days ?? backtestDays}
+            backtestTimeframe={identity.timeframe || backtestTimeframe}
+            symbol={displaySymbol}
+            strategy={displayStrategy}
           />
         </div>
 

@@ -7,6 +7,7 @@ import {
   autoAggStep,
   useOrderBookDepth,
 } from '../hooks/useOrderBookDepth';
+import { useOrderBookInterest } from '../hooks/useOrderBookInterest';
 import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
 import { useAlpacaHealth } from '../hooks/useAlpacaHealth';
@@ -31,6 +32,7 @@ const AGG_OPTIONS = [
 ];
 
 export default function DepthChartWidget() {
+  useOrderBookInterest();
   const activeSymbol = useStore((state) => state.activeSymbol);
   const terminalMode = useStore((state) => state.terminalMode);
   const massiveHealth = useMassiveHealth();

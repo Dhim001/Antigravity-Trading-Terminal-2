@@ -92,6 +92,10 @@ describe('sessionMatchesLab / deriveMlLabJobFlags', () => {
     );
     expect(flags.sessionTuningHint).toBe(true);
     expect(flags.busyElsewhere).toBe(false);
+    expect(flags.jobProgress).toBeNull();
+    expect(flags.serverProgress).toBeNull();
+    expect(flags.pollLog).toEqual([]);
+    expect(flags.activeJobId).toBeNull();
   });
 });
 

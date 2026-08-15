@@ -22,6 +22,7 @@ import {
   restoreFlexLayoutSelection,
 } from '../lib/flexlayoutPersist';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useOrderBookInterest } from '../hooks/useOrderBookInterest';
 import ChartContextStrip from './ChartContextStrip';
 import MountWhenVisible from './MountWhenVisible';
 import MlTrainingFlexPanel from './dock/MlTrainingFlexPanel';
@@ -179,6 +180,9 @@ const RIGHT_PANEL_TAB_MAP = {
 
 export default function WorkspaceGrid({ viewMode }) {
   const { attach } = useDetachedPanels();
+  // Retain L2 while the trading workspace is up — Book/Depth are FlexLayout
+  // tabs and unmount when hidden, so widget-only interest was always 0.
+  useOrderBookInterest();
 
   const [model] = useState(() => {
     const m = Model.fromJson(DEFAULT_LAYOUT);

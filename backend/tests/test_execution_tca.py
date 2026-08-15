@@ -68,6 +68,7 @@ def tmp_tca_db(monkeypatch):
             arrival_bid REAL,
             arrival_ask REAL,
             exec_algo TEXT,
+            created_at_epoch REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)

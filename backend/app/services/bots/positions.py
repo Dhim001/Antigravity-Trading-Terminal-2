@@ -108,10 +108,34 @@ def evaluate_risk_trigger(
     updated_high = high_watermark
     updated_low = low_watermark
 
+    # Always track excursion marks (MAE/MFE). Previously only the chandelier
+    # branch updated these, so signal / %-stop exits reported mfe=0 forever.
+    if size > 0:
+        updated_high = (
+            max(float(high_watermark), market_price)
+            if high_watermark is not None
+            else market_price
+        )
+        updated_low = (
+            min(float(low_watermark), market_price)
+            if low_watermark is not None
+            else market_price
+        )
+    else:
+        updated_high = (
+            max(float(high_watermark), market_price)
+            if high_watermark is not None
+            else market_price
+        )
+        updated_low = (
+            min(float(low_watermark), market_price)
+            if low_watermark is not None
+            else market_price
+        )
+
     if chandelier_stop_enabled:
         atr = current_atr if current_atr is not None and current_atr > 0 else (entry_atr or 0.0)
         if size > 0:
-            updated_high = max(high_watermark, market_price) if high_watermark is not None else market_price
             if atr > 0:
                 profit_atr_units = (updated_high - avg_price) / atr
                 effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
@@ -122,7 +146,6 @@ def evaluate_risk_trigger(
             elif tp_price is not None and market_price >= tp_price:
                 trigger_type = "TP"
         elif size < 0:
-            updated_low = min(low_watermark, market_price) if low_watermark is not None else market_price
             if atr > 0:
                 profit_atr_units = (avg_price - updated_low) / atr
                 effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
@@ -452,13 +475,9 @@ def apply_fill(
         cursor.execute("SELECT config, timeframe FROM bots WHERE id = ?", (bot_id,))
         bot_row = cursor.fetchone()
         entry_atr = None
-        high_watermark = None
-        low_watermark = None
-
-        if side == "BUY":
-            high_watermark = price
-        else:
-            low_watermark = price
+        # Seed both excursion marks at fill price; evaluate_risk_trigger expands them.
+        high_watermark = price
+        low_watermark = price
 
         if bot_row:
             bot_config = json.loads(bot_row["config"]) if bot_row["config"] else {}
@@ -522,18 +541,15 @@ def apply_fill(
                 flipped = (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0)
                 if flipped:
                     opened_at = now
+                    # New direction — reset excursion window at this fill.
+                    high_watermark = price
+                    low_watermark = price
                 else:
                     opened_at = float(row["opened_at"]) if row["opened_at"] is not None else now
-
-                if row["high_watermark"] is not None:
-                    high_watermark = max(float(row["high_watermark"]), price) if side == "BUY" else row["high_watermark"]
-                else:
-                    high_watermark = price if side == "BUY" else None
-
-                if row["low_watermark"] is not None:
-                    low_watermark = min(float(row["low_watermark"]), price) if side == "SELL" else row["low_watermark"]
-                else:
-                    low_watermark = price if side == "SELL" else None
+                    prev_hi = row["high_watermark"]
+                    prev_lo = row["low_watermark"]
+                    high_watermark = max(float(prev_hi), price) if prev_hi is not None else price
+                    low_watermark = min(float(prev_lo), price) if prev_lo is not None else price
 
                 entry_atr = row["entry_atr"] if row["entry_atr"] is not None else entry_atr
 

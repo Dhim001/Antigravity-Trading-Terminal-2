@@ -32,6 +32,141 @@ TORCH_TRAIN_STRATEGIES = frozenset({
 })
 
 
+def _assess_candle_integrity(candles: list, timeframe: str | None = None) -> dict[str, Any]:
+    """Compute candle integrity metrics for the train-time DQ gate.
+
+    Crypto 1m feeds routinely skip empty minutes, so a naive ``delta > 1.5×``
+    gap *count* rate falsely flags healthy histories (e.g. ADA 50k bars at
+    ~20% mild gaps). We therefore report:
+
+    - ``gap_rate``: mild gaps (>1.5× expected) — soft warning only
+    - ``severe_gap_rate``: large holes (>5× expected) — hard-gate candidate
+    - ``missing_frac``: 1 − coverage over the span — hard-gate candidate
+
+    Returns bars/gaps/severe_gaps/gap_rate/severe_gap_rate/coverage/missing_frac.
+    """
+    times = []
+    for c in candles or []:
+        if not isinstance(c, dict):
+            continue
+        t = c.get("time") or c.get("timestamp") or c.get("t")
+        if t is None:
+            continue
+        try:
+            times.append(float(t))
+        except (TypeError, ValueError):
+            continue
+    n = len(times)
+    empty = {
+        "bars": n,
+        "gaps": 0,
+        "severe_gaps": 0,
+        "gap_rate": 0.0,
+        "severe_gap_rate": 0.0,
+        "coverage": 1.0,
+        "missing_frac": 0.0,
+        "expected_sec": _tf_seconds(timeframe),
+    }
+    if n < 2:
+        return empty
+
+    times.sort()
+    # Normalize ms → seconds when the series looks like epoch-ms.
+    if times[-1] > 1e12:
+        times = [t / 1000.0 for t in times]
+
+    deltas = [times[i + 1] - times[i] for i in range(n - 1)]
+    deltas = [d for d in deltas if d > 0]
+    if not deltas:
+        return empty
+
+    # Prefer configured TF interval; fall back to median when TF is unknown /
+    # wrong so irregular series still get a sensible baseline.
+    expected = _tf_seconds(timeframe)
+    # Robust median without importing pandas (worker cold-start).
+    sd = sorted(deltas)
+    median = sd[len(sd) // 2]
+    if expected <= 0:
+        expected = median
+    # If median is wildly different from TF (e.g. HT bars labeled 1m), trust median.
+    if median > 0 and (median < expected * 0.4 or median > expected * 2.5):
+        expected = median
+
+    mild_thresh = expected * 1.5
+    severe_thresh = expected * 5.0
+    mild = sum(1 for d in deltas if d > mild_thresh)
+    severe = sum(1 for d in deltas if d > severe_thresh)
+    span = times[-1] - times[0]
+    expected_bars = (span / expected) + 1.0 if expected > 0 else float(n)
+    coverage = min(1.0, n / expected_bars) if expected_bars > 0 else 1.0
+    missing_frac = max(0.0, 1.0 - coverage)
+    return {
+        "bars": n,
+        "gaps": mild,
+        "severe_gaps": severe,
+        "gap_rate": round(mild / max(1, len(deltas)), 4),
+        "severe_gap_rate": round(severe / max(1, len(deltas)), 4),
+        "coverage": round(coverage, 4),
+        "missing_frac": round(missing_frac, 4),
+        "expected_sec": expected,
+    }
+
+
+def _tf_seconds(timeframe: str | None) -> float:
+    tf = str(timeframe or "1m").strip().lower()
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        unit = tf[-1]
+        val = float(tf[:-1]) if len(tf) > 1 else 1.0
+        return val * mult.get(unit, 60)
+    except (ValueError, IndexError):
+        return 60.0
+
+
+def _dq_train_should_block(dq: dict[str, Any], cfg: dict) -> tuple[bool, str]:
+    """Decide whether integrity metrics warrant a hard training block.
+
+    Mild empty-minute gaps (common on crypto) only warn. Hard-block when the
+    series is actually sparse: high missing coverage or frequent severe holes.
+    Default mode is soft-warn (``"warn"`` / unset) — never blocks.
+    """
+    mode = cfg.get("dq_train_gate", "warn")
+    if mode in (False, 0, "0", "false", "False", "off", "warn", "Warn", "WARN", None):
+        return False, ""
+
+    max_missing = float(cfg.get("dq_max_missing_frac", 0.40))
+    max_severe = float(cfg.get("dq_max_severe_gap_rate", 0.10))
+    # strict / hard: also fail on mild gap_rate (legacy 5% behaviour).
+    # true / True / 1 / "on": hard-block on coverage/severe only (not mild).
+    strict = str(mode).lower() in ("strict", "hard")
+    enabled = strict or mode in (True, 1, "1", "true", "True", "on", "yes")
+    if not enabled:
+        return False, ""
+
+    max_mild = float(cfg.get("dq_max_gap_rate", 0.05))
+
+    missing = float(dq.get("missing_frac") or 0.0)
+    severe = float(dq.get("severe_gap_rate") or 0.0)
+    mild = float(dq.get("gap_rate") or 0.0)
+
+    if missing > max_missing:
+        return True, (
+            f"missing_frac={missing:.3f} over {dq.get('bars')} bars "
+            f"(max {max_missing:.3f})"
+        )
+    if severe > max_severe:
+        return True, (
+            f"severe_gap_rate={severe:.3f} over {dq.get('bars')} bars "
+            f"(max {max_severe:.3f})"
+        )
+    if strict and mild > max_mild:
+        return True, (
+            f"gap_rate={mild:.3f} over {dq.get('bars')} bars "
+            f"(strict max {max_mild:.3f})"
+        )
+    return False, ""
+
+
 def _backup_live_champion(strategy: str, symbol: str, timeframe: str | None) -> dict[str, Any] | None:
     """Copy live root files aside so WF fold exports cannot leave a tiny champion."""
     import os
@@ -233,6 +368,42 @@ def run_train_job(strategy: str, symbol: str, candles: list, config: dict | None
     candles = bars
     cfg.setdefault("symbol", symbol)
 
+    # Train-time data-quality gate. Crypto 1m histories skip empty minutes, so
+    # mild gap_rate alone must not abort Apply & Retrain / champion trains.
+    # Default is soft-warn only (dq_train_gate="warn"); hard-block requires
+    # dq_train_gate=true/strict. Skipped for walk-forward fold exports.
+    gate_mode = cfg.get("dq_train_gate", "warn")
+    if gate_mode not in (False, 0, "0", "false", "False", "off", None) and not cfg.get("_wf_mode") and candles:
+        try:
+            dq = _assess_candle_integrity(candles, cfg.get("timeframe"))
+            # Preserve explicit True as "enabled hard-ish" via should_block defaults.
+            block_cfg = {**cfg, "dq_train_gate": gate_mode}
+            block, reason = _dq_train_should_block(dq, block_cfg)
+            if block:
+                write_ml_progress(progress_path, pct=100, phase="dq_blocked", detail=symbol)
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Data-quality gate blocked training for {symbol}: {reason}. "
+                        "Re-ingest candles or set dq_train_gate=false to override."
+                    ),
+                    "dq": dq,
+                    "symbol": symbol,
+                }
+            mild = float(dq.get("gap_rate") or 0.0)
+            if mild > float(cfg.get("dq_max_gap_rate", 0.05)):
+                logger.warning(
+                    "DQ soft-warn %s: mild gap_rate=%.3f coverage=%.3f severe=%.3f "
+                    "(training continues; set dq_train_gate=strict to hard-fail)",
+                    symbol,
+                    mild,
+                    float(dq.get("coverage") or 0.0),
+                    float(dq.get("severe_gap_rate") or 0.0),
+                )
+                cfg["_dq_soft_warn"] = dq
+        except Exception:
+            logger.debug("DQ train gate skipped", exc_info=True)
+
     from app.services.bots.ml_registry import get_trainer_import
 
     entry = get_trainer_import(strat)
@@ -396,6 +567,7 @@ def run_validate_job(
         cfg.setdefault("wf_use_gpu", True)
         cfg.setdefault("skip_onnx_export", True)
         cfg.setdefault("skip_snapshot", True)
+        cfg.setdefault("max_episode_steps", 2048)
         if wf_parity:
             # Match Lab Train Advanced defaults unless the request already set them.
             cfg.setdefault("total_timesteps", 200_000)

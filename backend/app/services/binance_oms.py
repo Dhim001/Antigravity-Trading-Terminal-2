@@ -189,9 +189,9 @@ class BinanceOMSService(BaseOMSService):
                         "balance": free + locked,
                         "locked": locked
                     }
-            # Add USD mappings to USDT for compatibility
-            if "USDT" in balances:
-                balances["USD"] = balances["USDT"]
+            # Do not mirror USDT → USD. Dual-ledger UIs treat equal USD/USDT as
+            # two independent cash buckets; a synthetic copy double-counts.
+            # Equity quote resolution falls back via account_cash.resolve_quote_asset.
             return balances
         except Exception as e:
             logging.error(f"Error getting Binance balances: {str(e)}")

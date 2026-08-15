@@ -142,3 +142,34 @@ export async function pollMlJob(jobId) {
     timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
   });
 }
+
+function jobIdOf(job) {
+  return String(job?.job_id || job?.id || '').trim();
+}
+
+/**
+ * Latest hyperparam-sweep job for symbol+strategy (newest-first job list),
+ * then GET the full payload (list rows omit `result`).
+ */
+export async function fetchLatestMlHyperparamSweep(symbol, strategy) {
+  const sym = String(symbol || '').toUpperCase();
+  const strat = String(strategy || '').toUpperCase();
+  if (!sym || !strat) return null;
+  const list = await apiRequest('/api/v1/ml/jobs?limit=50', {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+  const jobs = Array.isArray(list?.jobs) ? list.jobs : [];
+  const match = jobs.find((j) => {
+    const kind = String(j?.kind || '').toLowerCase();
+    return kind === 'hyperparam_sweep'
+      && String(j?.symbol || '').toUpperCase() === sym
+      && String(j?.strategy || '').toUpperCase() === strat;
+  });
+  if (!match) return null;
+  const id = jobIdOf(match);
+  if (!id) return match;
+  const full = await apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(id)}`, {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+  return full?.job || match;
+}

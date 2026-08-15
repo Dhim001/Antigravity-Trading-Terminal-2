@@ -2,6 +2,26 @@ import React from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
+function reportClientError(error, info, component) {
+  // Fire-and-forget — error reporting must never throw inside an error boundary.
+  try {
+    fetch('/api/v1/client-errors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: error?.name || 'Error',
+        message: String(error?.message || error || ''),
+        stack: String(error?.stack || '').slice(0, 2000),
+        component: component || 'unknown',
+        componentStack: String(info?.componentStack || '').slice(0, 2000),
+        url: typeof window !== 'undefined' ? window.location?.href : null,
+      }),
+    }).catch(() => {});
+  } catch {
+    /* reporting is best-effort */
+  }
+}
+
 function isChunkLoadError(error) {
   const message = String(error?.message || error || '');
   return /fetch dynamically imported module|Loading chunk|Failed to fetch/i.test(message);
@@ -22,6 +42,7 @@ export default class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, info) {
     console.error(`[ErrorBoundary:${this.props.name || 'widget'}]`, error, info);
+    reportClientError(error, info, this.props.name || 'widget');
   }
 
   handleRetry = () => {

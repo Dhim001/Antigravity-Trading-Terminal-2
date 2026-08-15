@@ -338,11 +338,40 @@ def set_bot_streak_cooldown(bot: dict, cooldown_sec: int, *, now: float | None =
     return bot["_pretrade_streak_cool_until"]
 
 
+def clear_bot_streak_cooldown(bot: dict) -> None:
+    """Drop armed Pre-Trade cool-down + streak count (streak no longer applies)."""
+    bot.pop("_pretrade_streak_cool_until", None)
+    bot.pop("_pretrade_pending_cooldown_sec", None)
+    bot["_pretrade_streak_count"] = 0
+
+
 def get_bot_streak_cooldown_hold(bot: dict, *, now: float | None = None) -> dict[str, Any] | None:
-    """UI / risk hold payload for Pre-Trade streak cool-down."""
+    """UI / risk hold payload for Pre-Trade streak cool-down.
+
+    Drops the hold when this bot's live consecutive losses no longer meet the
+    Pre-Trade fail limit (e.g. cool-down was armed from a cross-bot false streak).
+    """
     until = bot.get("_pretrade_streak_cool_until")
     if not is_cool_until_active(until, now=now):
         return None
+
+    # Re-validate against this bot's exits so a one-exit bot cannot stay paused
+    # from another bot's strategy/symbol losses.
+    try:
+        from app.services.bots.analytics import get_recent_consecutive_losses
+
+        bot_id = bot.get("id")
+        cfg = bot.get("config") if isinstance(bot.get("config"), dict) else {}
+        fail_limit = int(cfg.get("pretrade_setup_fail_limit", PRETRADE_SETUP_FAIL_LIMIT))
+        if bot_id and fail_limit > 0:
+            live_streak = int(get_recent_consecutive_losses(str(bot_id)) or 0)
+            if live_streak < fail_limit:
+                clear_bot_streak_cooldown(bot)
+                return None
+            bot["_pretrade_streak_count"] = live_streak
+    except Exception:
+        pass
+
     now_f = float(now if now is not None else time.time())
     until_f = float(until)
     remaining = max(0, int(until_f - now_f))

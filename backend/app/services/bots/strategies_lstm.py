@@ -294,7 +294,8 @@ class LstmModelStore:
         try:
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
-            if int(meta.get("feature_schema_version", 0)) != SIGNAL_FEATURE_VERSION:
+            from app.services.bots.ml_feature_engineering import is_compatible_feature_schema
+            if not is_compatible_feature_schema(int(meta.get("feature_schema_version", 0))):
                 logger.warning(
                     "LSTM model schema mismatch for %s — retrain required", key
                 )
@@ -355,7 +356,8 @@ class LstmDirectionStrategy(BaseStrategy):
         # Window stores raw feature vectors (unscaled — scaling happens at predict time)
         self._window: deque = deque(maxlen=self._lookback)
         # Lookback for bar_to_signal_features rolling computation
-        self._bar_history: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         self._lookback_synced = False
 
     def _model_timeframe(self) -> str:
@@ -526,7 +528,9 @@ class LstmDirectionStrategy(BaseStrategy):
 
         self._bar_history.clear()
         self._window.clear()
-        for row in rows[-25:]:
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        hist_n = EVAL_HISTORY_LOOKBACK + 1
+        for row in rows[-hist_n:]:
             self._bar_history.append(dict(row))
         if len(vecs) >= lookback:
             for vec in vecs[-lookback:]:

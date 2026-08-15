@@ -16,6 +16,55 @@ export function symbolsMatch(a, b) {
   return Boolean(left && right && left === right);
 }
 
+/**
+ * Identity of a completed backtest run — always prefer payload meta over live UI
+ * selection so Algo mini results do not relabel when the ticker changes.
+ */
+export function resolveBacktestResultIdentity(results, fallbacks = {}) {
+  const meta = results?.meta && typeof results.meta === 'object' ? results.meta : {};
+  const portfolio = Boolean(results?.portfolio || meta.portfolio);
+  const symbol = normalizeTradingSymbol(
+    meta.symbol || results?.symbol || fallbacks.symbol || '',
+  );
+  const strategy = String(
+    meta.strategy || results?.strategy || fallbacks.strategy || '',
+  ).trim().toUpperCase();
+  const timeframe = String(
+    meta.timeframe || fallbacks.timeframe || '1m',
+  ).trim() || '1m';
+  const days = meta.days_requested ?? meta.days ?? fallbacks.days ?? null;
+  return {
+    symbol: symbol || null,
+    strategy: strategy || null,
+    timeframe,
+    days,
+    portfolio,
+    portfolioLabel: meta.portfolio_label || null,
+    portfolioSymbols: Array.isArray(meta.portfolio_symbols) ? meta.portfolio_symbols : null,
+  };
+}
+
+/**
+ * True when live Algo selection no longer matches the stored run (misleading if
+ * chips used live symbol). Portfolio runs are not keyed to a single ticker.
+ */
+export function backtestContextMismatch(results, { symbol, strategy } = {}) {
+  if (!results || typeof results !== 'object') return null;
+  const id = resolveBacktestResultIdentity(results);
+  if (id.portfolio) return null;
+  const wantSym = normalizeTradingSymbol(symbol);
+  const wantStrat = String(strategy || '').trim().toUpperCase();
+  const issues = [];
+  if (wantSym && id.symbol && !symbolsMatch(wantSym, id.symbol)) {
+    issues.push({ field: 'symbol', result: id.symbol, current: wantSym });
+  }
+  if (wantStrat && id.strategy && wantStrat !== id.strategy) {
+    issues.push({ field: 'strategy', result: id.strategy, current: wantStrat });
+  }
+  if (!issues.length) return null;
+  return { identity: id, issues };
+}
+
 export function notifyBacktestOverlayChanged() {
   window.dispatchEvent(new CustomEvent(BACKTEST_OVERLAY_EVENT));
 }
@@ -154,6 +203,16 @@ export function backtestFingerprint({
     min_confidence: config.min_confidence,
     direction_mode: normalizeDirectionMode(config.direction_mode),
     sim_mode: String(simMode ?? config.sim_mode ?? 'live_aligned').toLowerCase(),
+    // Cost/execution realism — fee/slippage/latency/participation drift must
+    // invalidate a backtest even when the strategy params are unchanged.
+    fee_bps: config.fee_bps ?? null,
+    slippage_bps: config.slippage_bps ?? null,
+    latency_bars: config.latency_bars ?? null,
+    participation_rate: config.participation_rate ?? null,
+    max_fill_participation: config.max_fill_participation ?? null,
+    // Risk-gate flags change live parity; a backtest that skipped them is stale.
+    live_parity: config.live_parity ?? null,
+    risk_gates: config.risk_gates ?? null,
     // ML identity — retrain / pin must invalidate Lab metrics.
     model_version: config.model_version ?? null,
     model_artifact: config.model_artifact ?? null,
@@ -174,6 +233,12 @@ export function backtestStaleReason(snapshot, current) {
     const b = JSON.parse(current);
     const changed = Object.keys({ ...a, ...b }).filter((k) => a[k] !== b[k]);
     if (!changed.length) return 'config';
+    if (changed.includes('symbol') && changed.every((k) => k === 'symbol' || ML_FINGERPRINT_KEYS.includes(k))) {
+      return changed.some((k) => ML_FINGERPRINT_KEYS.includes(k)) ? 'model' : 'symbol';
+    }
+    if (changed.includes('symbol')) return 'symbol';
+    if (changed.includes('strategy') && changed.every((k) => k === 'strategy')) return 'strategy';
+    if (changed.includes('strategy')) return 'strategy';
     if (changed.every((k) => ML_FINGERPRINT_KEYS.includes(k))) return 'model';
     if (changed.some((k) => ML_FINGERPRINT_KEYS.includes(k))) return 'model';
     return 'config';

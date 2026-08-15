@@ -326,6 +326,33 @@ export function setMlTuneResult(result) {
   return patch({ tuneResult: result && typeof result === 'object' ? result : null });
 }
 
+/**
+ * Bind a completed Auto-Tune payload without beginMlJob (which would wipe
+ * tuneResult and bump jobToken). Used by the Auto-Tune Refresh button.
+ * Does not clobber an in-flight train/validate/tune job.
+ */
+export function hydrateMlTuneSession({
+  symbol,
+  strategy,
+  result,
+  lastError = null,
+} = {}) {
+  const busy = Boolean(session.training || session.validating || session.tuning);
+  return patch({
+    ...(symbol && !busy ? { symbol } : {}),
+    ...(strategy && !busy ? { strategy } : {}),
+    tuneResult: result && typeof result === 'object' ? result : null,
+    lastError,
+    ...(!busy ? {
+      jobId: null,
+      serverProgress: null,
+      jobProgress: session.jobProgress
+        ? { ...session.jobProgress, active: false }
+        : null,
+    } : {}),
+  });
+}
+
 /** Explicit poll-log row (timeouts / notes that are not a progress snapshot). */
 export function appendMlPollLog(entry) {
   return patch({ pollLog: nextPollLog(session.pollLog, entry) });
@@ -375,17 +402,15 @@ export function applyMlJobProgressMessage(data) {
 
 /**
  * Rehydrate Lab session from bootstrap /api/v1/session active ML jobs.
- * Picks the newest queued/running job so tab refresh can reattach polling.
- * Also reattaches interrupted/failed jobs with checkpoint.resume_ok.
+ * Only reattaches jobs that are actually queued/running — interrupted
+ * ``error`` + ``resumable`` rows must NOT flip validating/training busy flags
+ * (that caused a sticky "Job running for …" banner on every app restart).
  */
 export function resumeActiveMlJobs(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
   const active = list.filter((j) => {
     const status = String(j?.status || '').toLowerCase();
-    if (['queued', 'running'].includes(status)) return true;
-    const cp = j?.checkpoint;
-    const resumeOk = Boolean(j?.resumable) || (cp && typeof cp === 'object' && cp.resume_ok);
-    return resumeOk && ['error', 'cancelled', 'failed'].includes(status);
+    return ['queued', 'running'].includes(status);
   });
   if (!active.length) return session;
   // Prefer an already-tracked job if still active.

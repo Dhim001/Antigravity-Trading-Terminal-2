@@ -85,10 +85,60 @@ def test_snapshot_prunes_old_versions(tmp_path):
         }
         (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
         (root / "model.joblib").write_bytes(b"x")
-        snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST", max_kept=2)
+        snapshot_current_version(
+            str(root), strategy="ML_SIGNAL_BOOST", max_kept=2, replace_current=False,
+        )
 
     versions = list_model_versions(str(root))
     assert len(versions) <= 2
+
+
+def test_retrain_replaces_current_version_in_place(tmp_path):
+    """Trigger retrain must update the same history row, not append a duplicate."""
+    root = tmp_path / "BTCUSDT"
+    root.mkdir()
+    meta1 = {
+        "trained_at": "2026-08-08T14:50:34Z",
+        "model_type": "ml_signal_boost",
+        "sample_count": 2050,
+    }
+    (root / "metadata.json").write_text(json.dumps(meta1), encoding="utf-8")
+    (root / "model.joblib").write_bytes(b"v1")
+    e1 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    assert e1 is not None
+    vid = e1["version_id"]
+
+    # User rename / Keep must survive retrain.
+    from app.services.bots.ml_model_artifacts import update_model_version_meta
+
+    with patch(
+        "app.services.bots.ml_model_artifacts.model_root_for",
+        return_value=str(root),
+    ):
+        update_model_version_meta(
+            "ML_SIGNAL_BOOST", "BTCUSDT", vid,
+            display_name="Modelbase_00", protected=True,
+        )
+
+    meta2 = {
+        "trained_at": "2026-08-08T15:40:53Z",
+        "model_type": "ml_signal_boost",
+        "sample_count": 24950,
+    }
+    (root / "metadata.json").write_text(json.dumps(meta2), encoding="utf-8")
+    (root / "model.joblib").write_bytes(b"v2-retrained")
+    e2 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    assert e2 is not None
+    assert e2["version_id"] == vid
+    assert e2["sample_count"] == 24950
+    assert e2.get("display_name") == "Modelbase_00"
+    assert e2.get("protected") is True
+
+    versions = list_model_versions(str(root))
+    assert len(versions) == 1
+    assert versions[0]["version_id"] == vid
+    assert versions[0]["is_current"] is True
+    assert (root / "versions" / vid / "model.joblib").read_bytes() == b"v2-retrained"
 
 
 def test_activate_model_version_promotes_snapshot(tmp_path):
@@ -98,14 +148,18 @@ def test_activate_model_version_promotes_snapshot(tmp_path):
     meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v1"}
     (root / "metadata.json").write_text(json.dumps(meta1), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v1")
-    e1 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    e1 = snapshot_current_version(
+        str(root), strategy="ML_SIGNAL_BOOST", replace_current=False,
+    )
     assert e1 is not None
 
     # v2 current
     meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v2"}
     (root / "metadata.json").write_text(json.dumps(meta2), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v2")
-    e2 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    e2 = snapshot_current_version(
+        str(root), strategy="ML_SIGNAL_BOOST", replace_current=False,
+    )
     assert e2 is not None
     assert (root / "model.joblib").read_bytes() == b"model-v2"
 
@@ -132,12 +186,16 @@ def test_delete_model_version_removes_snapshot(tmp_path):
     meta1 = {"trained_at": "2026-07-10T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v1"}
     (root / "metadata.json").write_text(json.dumps(meta1), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v1")
-    e1 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    e1 = snapshot_current_version(
+        str(root), strategy="ML_SIGNAL_BOOST", replace_current=False,
+    )
 
     meta2 = {"trained_at": "2026-07-11T10:00:00Z", "model_type": "ml_signal_boost", "tag": "v2"}
     (root / "metadata.json").write_text(json.dumps(meta2), encoding="utf-8")
     (root / "model.joblib").write_bytes(b"model-v2")
-    e2 = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST")
+    e2 = snapshot_current_version(
+        str(root), strategy="ML_SIGNAL_BOOST", replace_current=False,
+    )
     assert e1 and e2
 
     with patch(
@@ -277,7 +335,9 @@ def test_protected_versions_skip_prune_and_block_delete(tmp_path):
         meta = {"trained_at": f"2026-08-0{i + 1}T10:00:00Z", "model_type": "test"}
         (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
         (root / "model.joblib").write_bytes(b"x")
-        entry = snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST", max_kept=2)
+        entry = snapshot_current_version(
+            str(root), strategy="ML_SIGNAL_BOOST", max_kept=2, replace_current=False,
+        )
         ids.append(entry["version_id"])
 
     # Protect the oldest remaining unprotected by renaming first snapshot we still have
@@ -306,7 +366,9 @@ def test_protected_versions_skip_prune_and_block_delete(tmp_path):
             meta = {"trained_at": f"2026-08-1{i}T10:00:00Z", "model_type": "test"}
             (root / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
             (root / "model.joblib").write_bytes(b"x")
-            snapshot_current_version(str(root), strategy="ML_SIGNAL_BOOST", max_kept=2)
+            snapshot_current_version(
+                str(root), strategy="ML_SIGNAL_BOOST", max_kept=2, replace_current=False,
+            )
 
         versions = list_model_versions(str(root))
         kept = [v for v in versions if v.get("version_id") == keep_id]

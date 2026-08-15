@@ -111,7 +111,7 @@ class TestTradingEnv:
     def test_episode_ends_at_data_boundary(self):
         from app.services.bots.rl_trading_env import TradingEnv, ACTION_HOLD
         candles = self._make_candles(50)
-        env = TradingEnv(candles, feature_lookback=5)
+        env = TradingEnv(candles, feature_lookback=5, config={"env_seed": 0})
         env.reset()
         done = False
         steps = 0
@@ -120,6 +120,34 @@ class TestTradingEnv:
             steps += 1
         assert done
         assert steps > 0
+
+    def test_capped_episode_completes_on_long_history(self):
+        """Apply & Retrain uses ~50k bars; episodes must finish before end-of-data."""
+        from app.services.bots.rl_trading_env import TradingEnv, ACTION_HOLD
+        candles = self._make_candles(5000)
+        env = TradingEnv(
+            candles,
+            feature_lookback=5,
+            config={"max_episode_steps": 128, "env_seed": 7},
+        )
+        env.reset()
+        done = False
+        steps = 0
+        info = {}
+        while not done and steps < 10_000:
+            _, _, done, info = env.step(ACTION_HOLD)
+            steps += 1
+        assert done
+        assert steps <= 128
+        assert info.get("reason") == "episode_horizon"
+        # Second reset should also terminate within the cap (new window).
+        env.reset()
+        done = False
+        steps = 0
+        while not done and steps < 10_000:
+            _, _, done, _ = env.step(ACTION_HOLD)
+            steps += 1
+        assert done and steps <= 128
 
     def test_uptrend_long_positive_return(self):
         from app.services.bots.rl_trading_env import TradingEnv, ACTION_BUY, ACTION_CLOSE
@@ -254,6 +282,87 @@ class TestRlPpoStrategy:
         assert pnl == pytest.approx(0.05, abs=0.001)
         strat._close_shadow_position()
         assert strat._position_side == SIDE_FLAT
+
+    def _feature_bars(self, n=80):
+        bars = []
+        for i in range(n):
+            c = 100.0 + i * 0.05
+            bars.append({
+                "time": 1_700_000_000 + i * 60,
+                "open": c - 0.1,
+                "high": c + 1.0,
+                "low": c - 1.0,
+                "close": c,
+                "volume": 1000.0 + i,
+                "ATR_14": 1.5,
+                "ATR_14_median_20": 1.4,
+                "RSI_14": 50.0,
+                "MACDh_12_26_9": 0.1,
+                "STOCHk_14_3_3": 55.0,
+                "ADX_14": 22.0,
+                "EMA_9": c,
+                "EMA_21": c - 0.3,
+                "BBU_20_2.0": c + 2.0,
+                "BBL_20_2.0": c - 2.0,
+                "BBM_20_2.0": c,
+                "VWAP": c,
+                "SUPERTd_14_3.0": 1.0,
+                "_symbol": "ADAUSDT",
+            })
+        return bars
+
+    def test_precomputed_market_features_match_full_prefix(self):
+        from app.services.bots.ml_feature_engineering import (
+            bar_to_signal_features,
+            signal_features_to_vector,
+        )
+        from app.services.bots.strategies_rl import RlPpoStrategy
+
+        rows = self._feature_bars(80)
+        strat = RlPpoStrategy({"symbol": "ADAUSDT"})
+        strat.prepare_backtest_features(rows, start_i=0, symbol="ADAUSDT")
+        assert strat.has_backtest_feature_matrix
+        idx = 40
+        live = signal_features_to_vector(
+            bar_to_signal_features(rows[idx], lookback_rows=rows[:idx], symbol="ADAUSDT")
+        )
+        bound = strat._market_feature_vector({**rows[idx], "_bar_index": idx, "_backtest": True})
+        assert np.allclose(live.astype(np.float64), bound, atol=1e-4, rtol=1e-4)
+
+    def test_bound_matrix_keeps_warmup_and_splices_position(self, monkeypatch):
+        from app.services.bots.rl_trading_env import ACTION_HOLD, SIDE_LONG
+        from app.services.bots.strategies_rl import RlPpoStrategy
+
+        rows = self._feature_bars(40)
+        strat = RlPpoStrategy({"symbol": "ADAUSDT", "min_confidence": 0.0})
+        strat.prepare_backtest_features(rows, start_i=0, symbol="ADAUSDT")
+        captured = []
+
+        class _Store:
+            def predict_action(self, symbol, obs, **kwargs):
+                captured.append(np.asarray(obs, dtype=np.float64).copy())
+                return ACTION_HOLD, 0.99
+
+            def get_scaler(self, *args, **kwargs):
+                return None
+
+        monkeypatch.setattr(
+            "app.services.bots.strategies_rl.get_ppo_store",
+            lambda: _Store(),
+        )
+        for i, row in enumerate(rows[:19]):
+            out = strat.evaluate({**row, "_bar_index": i, "_backtest": True})
+            assert out["signal"] == "NONE"
+        assert captured == []
+
+        strat._open_shadow_position(SIDE_LONG, rows[19]["close"])
+        strat.evaluate({**rows[19], "_bar_index": 19, "_backtest": True, "_current_side": "BUY"})
+        assert len(captured) == 1
+        obs = captured[0]
+        # Last 3 dims are position: side, pnl, bars_held
+        assert obs[-3] == pytest.approx(float(SIDE_LONG))
+        # Market dims must match the bound matrix row (not depend on position).
+        assert np.allclose(obs[:-3], strat._bt_feat_matrix[19], atol=1e-4)
 
 
 class TestRlRegistration:

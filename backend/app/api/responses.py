@@ -25,6 +25,17 @@ async def send_to(ctx: RequestContext, payload: dict) -> None:
 
 async def broadcast(ctx: RequestContext, payload: dict) -> None:
     await ctx.manager.broadcast(payload)
+    # HTTP uses a collector manager — fan out to the live WS hub so the
+    # Active Bots panel cannot stay on RUNNING after a pause/resume.
+    if ctx.websocket is not None:
+        return
+    live = getattr(ctx.bot_manager, "broadcast_cb", None)
+    if live is None:
+        return
+    live_bound = getattr(ctx.manager, "broadcast", None)
+    if live is live_bound:
+        return
+    await live(payload)
 
 
 async def send_error(ctx: RequestContext, message: str) -> None:

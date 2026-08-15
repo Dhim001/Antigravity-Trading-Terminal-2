@@ -15,6 +15,7 @@ import {
   setMlJobId,
   setMlServerProgress,
   setMlTuneResult,
+  hydrateMlTuneSession,
   STATUS_CACHE_MAX,
   statusCacheKey,
 } from './mlTrainingSession';
@@ -126,6 +127,45 @@ describe('mlTrainingSession', () => {
     expect(getMlTrainingSession().training).toBe(false);
   });
 
+  it('hydrateMlTuneSession binds a completed sweep without bumping jobToken', () => {
+    const before = getMlTrainingSession().jobToken;
+    finishMlJob(before, { error: 'Hyperparam sweep timed out' });
+    hydrateMlTuneSession({
+      symbol: 'AAPL',
+      strategy: 'RL_PPO_AGENT',
+      result: { ok: true, best_score: 0.76, best_hyperparams: { learning_rate: 0.0002 } },
+      lastError: null,
+    });
+    const sess = getMlTrainingSession();
+    expect(sess.jobToken).toBe(before);
+    expect(sess.symbol).toBe('AAPL');
+    expect(sess.strategy).toBe('RL_PPO_AGENT');
+    expect(sess.tuneResult.best_score).toBe(0.76);
+    expect(sess.lastError).toBeNull();
+    expect(sess.tuning).toBe(false);
+    expect(sess.jobId).toBeNull();
+  });
+
+  it('hydrateMlTuneSession does not clobber an in-flight train job', () => {
+    beginMlJob({
+      kind: 'train',
+      strategy: 'LSTM_DIRECTION',
+      symbol: 'ETHUSDT',
+      jobId: 'train-1',
+      jobProgress: { active: true, kind: 'train', label: 'Retraining' },
+    });
+    hydrateMlTuneSession({
+      symbol: 'AAPL',
+      strategy: 'RL_PPO_AGENT',
+      result: { ok: true, best_score: 1 },
+    });
+    const sess = getMlTrainingSession();
+    expect(sess.training).toBe(true);
+    expect(sess.symbol).toBe('ETHUSDT');
+    expect(sess.jobId).toBe('train-1');
+    expect(sess.tuneResult.best_score).toBe(1);
+  });
+
   it('tracks hyperparam sweep as tuning', () => {
     const { jobToken } = beginMlJob({
       kind: 'hyperparam_sweep',
@@ -139,6 +179,47 @@ describe('mlTrainingSession', () => {
     expect(getMlTrainingSession().jobId).toBe('job-tune-1');
     finishMlJob(jobToken, {});
     expect(getMlTrainingSession().tuning).toBe(false);
+  });
+
+  it('does not treat interrupted resumable jobs as busy on bootstrap', async () => {
+    const { resumeActiveMlJobs } = await import('./mlTrainingSession');
+    finishMlJob(getMlTrainingSession().jobToken, {});
+    resumeActiveMlJobs([
+      {
+        job_id: 'zombie-validate',
+        kind: 'validate',
+        strategy: 'ML_SIGNAL_BOOST',
+        symbol: 'BTCUSDT',
+        status: 'error',
+        resumable: true,
+        checkpoint: { version: 1, resume_ok: true, kind: 'walk_forward' },
+        progress: { pct: 5, phase: 'fold 1/4' },
+      },
+    ]);
+    const sess = getMlTrainingSession();
+    expect(sess.validating).toBe(false);
+    expect(sess.training).toBe(false);
+    expect(sess.jobId).toBeNull();
+  });
+
+  it('reattaches only queued/running jobs from session bootstrap', async () => {
+    const { resumeActiveMlJobs } = await import('./mlTrainingSession');
+    finishMlJob(getMlTrainingSession().jobToken, {});
+    resumeActiveMlJobs([
+      {
+        job_id: 'live-validate',
+        kind: 'validate',
+        strategy: 'ML_SIGNAL_BOOST',
+        symbol: 'BTCUSDT',
+        status: 'running',
+        progress: { pct: 20, phase: 'fold 1/4' },
+      },
+    ]);
+    const sess = getMlTrainingSession();
+    expect(sess.validating).toBe(true);
+    expect(sess.symbol).toBe('BTCUSDT');
+    expect(sess.jobId).toBe('live-validate');
+    finishMlJob(sess.jobToken, {});
   });
 
   it('keeps rich sweep fields on serverProgress for remount', () => {

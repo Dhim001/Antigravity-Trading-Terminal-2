@@ -95,6 +95,7 @@ def default_search_space(strategy: str) -> dict[str, Any]:
             "ent_coef": {"type": "float", "low": 0.001, "high": 0.05, "log": True},
             "n_steps": {"type": "categorical", "choices": [512, 1024, 2048, 4096]},
             "hidden_dim": {"type": "categorical", "choices": [64, 128, 256]},
+            "max_episode_steps": {"type": "categorical", "choices": [512, 1024, 2048, 4096]},
             "total_timesteps": {"type": "categorical", "choices": [8192, 16384, 32768, 65536]},
         }
     if s == "VAE_REGIME_DETECTOR":

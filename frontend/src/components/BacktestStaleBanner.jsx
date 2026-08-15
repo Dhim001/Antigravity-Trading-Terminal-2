@@ -36,7 +36,11 @@ export default function BacktestStaleBanner({
 
   const message = reason === 'model'
     ? 'Model changed since last backtest — results may not match the active artifact. Re-run.'
-    : 'Config changed since last backtest — results may not match deploy settings.';
+    : reason === 'symbol'
+      ? 'Symbol changed since last backtest — metrics below are still for the previous ticker. Re-run or switch back.'
+      : reason === 'strategy'
+        ? 'Strategy changed since last backtest — metrics below are still for the previous strategy. Re-run.'
+        : 'Config changed since last backtest — results may not match deploy settings.';
 
   return (
     <Alert variant="default" className={className}>

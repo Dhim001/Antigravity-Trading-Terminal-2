@@ -36,6 +36,7 @@ class RiskSentinel:
         self.drawdown_history: deque[tuple[float, float]] = deque(maxlen=20)
         self.bot_memories: dict[str, WorkingMemory] = {}
         self.agent_event_bus = agent_event_bus
+        self._velocity_strikes = 0
 
     async def evaluate(self, snapshot: Any, oms: Any, bot_manager: Any) -> dict[str, Any]:
         """Evaluate portfolio-level and bot-level risk parameters.
@@ -62,90 +63,103 @@ class RiskSentinel:
             dd_diff = current_dd - prev_dd
             time_diff = now - prev_time
 
-            # Drawdown velocity (drawdown percentage change per check tick or per second)
-            # To handle variable polling intervals, we evaluate the absolute difference
-            # in drawdown pct between consecutive ticks.
+            # Drawdown velocity (drawdown percentage change per check tick).
+            # A single noisy mark-to-market jump must not halt the whole fleet.
+            # Pause only after two consecutive breaches, or one move ≥ 2× limit.
             if time_diff < 300.0 and dd_diff >= RISK_SENTINEL_MAX_VELOCITY:
                 results["velocity_breached"] = True
+                self._velocity_strikes += 1
+                severe = dd_diff >= (RISK_SENTINEL_MAX_VELOCITY * 2.0)
+                confirmed = severe or self._velocity_strikes >= 2
                 reason = (
                     f"Risk Sentinel: Drawdown spiked by {dd_diff:.2f}% (limit {RISK_SENTINEL_MAX_VELOCITY:.1f}%) "
                     f"in a single interval (from {prev_dd:.2f}% to {current_dd:.2f}%)."
                 )
                 logger.warning(reason)
 
-                # Send risk sentinel alert
                 await emit_notification(
                     NotificationEvent(
                         event_type=ntypes.RISK_SENTINEL,
                         title="Drawdown velocity breach",
-                        body=reason,
-                        severity="error",
+                        body=reason if confirmed else reason + " Confirming next interval before fleet pause.",
+                        severity="error" if confirmed else "warning",
                         payload={
                             "current_drawdown": current_dd,
                             "prev_drawdown": prev_dd,
                             "change_pct": dd_diff,
                             "limit_pct": RISK_SENTINEL_MAX_VELOCITY,
+                            "confirmed": confirmed,
+                            "strikes": self._velocity_strikes,
                         },
                     )
                 )
 
-                # Proactively pause active running bots to halt losses
-                paused_count = 0
-                for bot_id, bot in list(bot_manager.active_bots.items()):
-                    if bot.get("status") == "RUNNING":
-                        if bot_id not in self.bot_memories:
-                            self.bot_memories[bot_id] = WorkingMemory()
-                        if self.bot_memories[bot_id].is_cooling_down():
-                            continue
-                        try:
-                            await bot_manager.pause_bot(bot_id)
-                            self.bot_memories[bot_id].set_cooldown(3600.0)
-
-                            obs = Observation("drawdown_velocity", "danger", 0.95, f"Spike of {dd_diff:.2f}%", {"prev_dd": prev_dd, "current_dd": current_dd})
-                            reasoning = AgentReasoning(
-                                observations=[obs],
-                                synthesis="Drawdown velocity spiked rapidly.",
-                                decision="PAUSE",
-                                confidence=0.95,
-                                recommendation_strength="strong"
-                            )
-
-                            await bot_manager.log_bot_event(
-                                bot_id,
-                                "WARN",
-                                f"Auto-paused by Risk Sentinel drawdown velocity spike of {dd_diff:.2f}%.",
-                                meta={"reasoning_chain": reasoning.to_dict()}
-                            )
-                            if self.agent_event_bus:
-                                from app.services.agent.agent_event_bus import AgentEvent
-                                await self.agent_event_bus.publish(
-                                    AgentEvent(
-                                        source_agent="RISK_SENTINEL",
-                                        event_type="BOT_PAUSED",
-                                        payload={"bot_id": bot_id, "reason": "drawdown_velocity_spike"},
-                                        timestamp=time.time(),
-                                        reasoning=reasoning,
-                                    )
-                                )
-                            paused_count += 1
-                        except Exception as exc:
-                            logger.error("Sentinel failed to pause bot %s: %s", bot_id, exc)
-                
-                # Narrate only when at least one bot was actually paused.
-                if paused_count > 0:
-                    asyncio.create_task(
-                        agent_narrate_event(
-                            "RiskSentinel",
-                            {
-                                "action": "paused_all_bots",
-                                "reason": f"Drawdown velocity breached {RISK_SENTINEL_MAX_VELOCITY}% limit.",
-                                "bots_paused": paused_count,
-                                "current_drawdown": current_dd,
-                                "why": "Portfolio drawdown velocity spike triggered auto-pause.",
-                            },
-                        )
+                if not confirmed:
+                    logger.warning(
+                        "Risk Sentinel velocity spike not confirmed (%d/2) — not pausing bots.",
+                        self._velocity_strikes,
                     )
-                    logger.warning("Risk Sentinel paused %d active bot(s) due to velocity spike.", paused_count)
+                else:
+                    self._velocity_strikes = 0
+                    # Proactively pause active running bots to halt losses
+                    paused_count = 0
+                    for bot_id, bot in list(bot_manager.active_bots.items()):
+                        if bot.get("status") == "RUNNING":
+                            if bot_id not in self.bot_memories:
+                                self.bot_memories[bot_id] = WorkingMemory()
+                            if self.bot_memories[bot_id].is_cooling_down():
+                                continue
+                            try:
+                                await bot_manager.pause_bot(bot_id)
+                                self.bot_memories[bot_id].set_cooldown(3600.0)
+
+                                obs = Observation("drawdown_velocity", "danger", 0.95, f"Spike of {dd_diff:.2f}%", {"prev_dd": prev_dd, "current_dd": current_dd})
+                                reasoning = AgentReasoning(
+                                    observations=[obs],
+                                    synthesis="Drawdown velocity spiked rapidly.",
+                                    decision="PAUSE",
+                                    confidence=0.95,
+                                    recommendation_strength="strong"
+                                )
+
+                                await bot_manager.log_bot_event(
+                                    bot_id,
+                                    "WARN",
+                                    f"Auto-paused by Risk Sentinel drawdown velocity spike of {dd_diff:.2f}%.",
+                                    meta={"reasoning_chain": reasoning.to_dict()}
+                                )
+                                if self.agent_event_bus:
+                                    from app.services.agent.agent_event_bus import AgentEvent
+                                    await self.agent_event_bus.publish(
+                                        AgentEvent(
+                                            source_agent="RISK_SENTINEL",
+                                            event_type="BOT_PAUSED",
+                                            payload={"bot_id": bot_id, "reason": "drawdown_velocity_spike"},
+                                            timestamp=time.time(),
+                                            reasoning=reasoning,
+                                        )
+                                    )
+                                paused_count += 1
+                            except Exception as exc:
+                                logger.error("Sentinel failed to pause bot %s: %s", bot_id, exc)
+                
+                    # Narrate only when at least one bot was actually paused.
+                    if paused_count > 0:
+                        asyncio.create_task(
+                            agent_narrate_event(
+                                "RiskSentinel",
+                                {
+                                    "action": "paused_all_bots",
+                                    "reason": f"Drawdown velocity breached {RISK_SENTINEL_MAX_VELOCITY}% limit.",
+                                    "bots_paused": paused_count,
+                                    "current_drawdown": current_dd,
+                                    "why": "Portfolio drawdown velocity spike triggered auto-pause.",
+                                },
+                            )
+                        )
+                        logger.warning("Risk Sentinel paused %d active bot(s) due to velocity spike.", paused_count)
+            elif dd_diff < (RISK_SENTINEL_MAX_VELOCITY * 0.5):
+                self._velocity_strikes = 0
 
         # 2. Consecutive Loss Streak Auto-Pause
         if RISK_SENTINEL_AUTO_PAUSE_ON_STREAK:

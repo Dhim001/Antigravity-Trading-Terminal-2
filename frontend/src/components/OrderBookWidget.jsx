@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AlignLeft } from 'lucide-react';
 import { useOrderBookDepth } from '../hooks/useOrderBookDepth';
+import { useOrderBookInterest } from '../hooks/useOrderBookInterest';
 import { flashClass, useOrderBookFlash } from '../hooks/useOrderBookFlash';
 import { useMassiveHealth } from '../hooks/useMassiveHealth';
 import { useAlpacaHealth } from '../hooks/useAlpacaHealth';
@@ -34,6 +35,7 @@ function DepthRow({ side, price, qty, cumulative, pct, priceDecimals, qtyDecimal
 }
 
 export default function OrderBookWidget() {
+  useOrderBookInterest();
   const activeSymbol = useStore(state => state.activeSymbol);
   const terminalMode = useStore(state => state.terminalMode);
   const massiveHealth = useMassiveHealth();

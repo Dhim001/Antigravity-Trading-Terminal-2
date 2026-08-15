@@ -43,7 +43,8 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         self._cfg = merge_strategy_config("TCN_MULTI_HORIZON", config or {})
         self._lookback = int(self._cfg.get("lookback", 120))
         self._window: deque = deque(maxlen=self._lookback)
-        self._bar_history: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
 
     def _model_timeframe(self) -> str:
         from app.services.bots.ml_model_artifacts import normalize_model_timeframe
@@ -187,7 +188,9 @@ class TcnMultiHorizonStrategy(BaseStrategy):
 
         self._bar_history.clear()
         self._window.clear()
-        for row in rows[-25:]:
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        hist_n = EVAL_HISTORY_LOOKBACK + 1
+        for row in rows[-hist_n:]:
             self._bar_history.append(dict(row))
         for vec in vecs[-lookback:]:
             self._window.append(vec)

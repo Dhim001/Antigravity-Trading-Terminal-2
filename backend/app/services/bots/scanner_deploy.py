@@ -49,15 +49,10 @@ def _account_equity(oms: Any) -> float | None:
             return eq if eq > 0 else None
         except (TypeError, ValueError):
             pass
+    from app.services.account_cash import total_quote_balance
+
     bals = data.get("balances") or {}
-    cash = 0.0
-    for asset in ("USD", "USDT"):
-        row = bals.get(asset)
-        if isinstance(row, dict):
-            try:
-                cash += float(row.get("balance") or 0)
-            except (TypeError, ValueError):
-                pass
+    cash = float(total_quote_balance(bals))
     return cash if cash > 0 else None
 
 

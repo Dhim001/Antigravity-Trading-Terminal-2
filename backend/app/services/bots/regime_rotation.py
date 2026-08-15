@@ -112,7 +112,13 @@ class RegimeRotationAgent:
                 )
 
                 if vae_regime_gate_enabled(cfg) or cfg.get("vae_regime_rotation_hint"):
-                    lookback_rows = [dict(r) for r in df.iloc[-25:-1].to_dict("records")]
+                    from app.services.bots.ml_feature_engineering import (
+                        EVAL_HISTORY_LOOKBACK,
+                    )
+                    hist_n = EVAL_HISTORY_LOOKBACK + 1
+                    lookback_rows = [
+                        dict(r) for r in df.iloc[-hist_n:-1].to_dict("records")
+                    ]
                     row_dict = dict(row)
                     row_dict.setdefault("_symbol", symbol)
                     assessment = assess_vae_regime_for_meta(

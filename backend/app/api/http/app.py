@@ -292,6 +292,14 @@ async def _build_health_body(state: AppState) -> dict:
         body["websocket_clients"] = ws_metrics_snapshot(
             connected=len(state.manager.connected_clients),
         )
+        try:
+            from app.services.bots.strategies import strategy_eval_errors_snapshot
+
+            errs = strategy_eval_errors_snapshot()
+            if errs:
+                body["strategy_eval_errors_total"] = errs
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -347,7 +355,48 @@ async def _build_health_body(state: AppState) -> dict:
     except Exception as exc:
         body["memory_subsystems"] = {"error": str(exc)}
 
+    # Sidecar / heavy-job worker health — surface PID, liveness, and recovery
+    # counters so a dead worker is visible on /health instead of silently
+    # stalling the backtest/optimization queue.
+    try:
+        from app.services.bots.heavy_job_worker import sidecar_health_snapshot
+
+        body["heavy_job_sidecar"] = sidecar_health_snapshot()
+    except Exception:
+        pass
+
     return body
+
+
+_client_errors_total = 0
+
+
+async def client_errors_handler(request: Request) -> JSONResponse:
+    """Frontend error reporting sink — ErrorBoundary posts render crashes here
+    so UI failures are visible server-side (logs/metrics) instead of console-only."""
+    global _client_errors_total
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    _client_errors_total += 1
+    import logging
+
+    logging.getLogger("app.client_errors").error(
+        "client_error name=%s message=%s stack=%s component=%s url=%s",
+        payload.get("name"),
+        payload.get("message"),
+        (payload.get("stack") or "")[:2000],
+        payload.get("component"),
+        payload.get("url"),
+    )
+    try:
+        from app.observability.metrics import inc
+
+        inc("client_errors_total", labels={"component": str(payload.get("component") or "unknown")})
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "received": _client_errors_total})
 
 
 async def health(request: Request) -> JSONResponse:
@@ -2312,6 +2361,8 @@ async def param_importance_handler(request: Request) -> JSONResponse:
 
 
 async def get_bot_calibration_handler(request: Request) -> JSONResponse:
+    import asyncio
+
     bot_id = request.query_params.get("bot_id") or None
     symbol = request.query_params.get("symbol") or None
     try:
@@ -2322,7 +2373,8 @@ async def get_bot_calibration_handler(request: Request) -> JSONResponse:
         limit = int(request.query_params.get("limit", "2000"))
     except (TypeError, ValueError):
         limit = 2000
-    data = get_calibration(
+    data = await asyncio.to_thread(
+        get_calibration,
         bot_id=bot_id,
         symbol=symbol,
         min_samples=max(1, min_samples),
@@ -2332,10 +2384,17 @@ async def get_bot_calibration_handler(request: Request) -> JSONResponse:
 
 
 async def get_filter_rejects_handler(request: Request) -> JSONResponse:
+    import asyncio
+
     bot_id = request.query_params.get("bot_id") or None
     symbol = request.query_params.get("symbol") or None
     strategy = request.query_params.get("strategy") or None
-    data = get_filter_reject_dashboard(bot_id=bot_id, symbol=symbol, strategy=strategy)
+    data = await asyncio.to_thread(
+        get_filter_reject_dashboard,
+        bot_id=bot_id,
+        symbol=symbol,
+        strategy=strategy,
+    )
     return JSONResponse({"ok": True, "filter_rejects": data})
 
 
@@ -2597,11 +2656,17 @@ async def meta_label_status_handler(request: Request) -> JSONResponse:
 
     state: AppState = request.app.state.terminal
     if state.bot_manager:
-        detail = state.bot_manager.get_bot_detail(str(bot_id))
-        bot = _bot_record_from_detail(detail)
-        if bot:
-            from app.services.bots.meta_label_operational import operational_status
-            status["operational"] = operational_status(bot.get("config") or {})
+        try:
+            detail = await asyncio.to_thread(
+                state.bot_manager.get_bot_detail, str(bot_id),
+            )
+            bot = _bot_record_from_detail(detail)
+            if bot:
+                from app.services.bots.meta_label_operational import operational_status
+                status["operational"] = operational_status(bot.get("config") or {})
+        except Exception as exc:
+            # Status payload is still useful without operational stage.
+            status["operational_error"] = str(exc)
 
     return JSONResponse({"ok": True, "meta_label": status})
 
@@ -2693,7 +2758,7 @@ async def meta_label_walk_forward_handler(request: Request) -> JSONResponse:
 
     account_balance = None
     if state.bot_manager:
-        account_balance = state.bot_manager.get_account_balance()
+        account_balance = state.bot_manager.get_account_balance(symbol)
 
     from app.services.bots.meta_label_operational import run_meta_label_walk_forward_sync
 
@@ -3081,7 +3146,29 @@ async def market_footprint_handler(request: Request) -> JSONResponse:
                 {"ok": False, "error": meta["error"], "meta": meta},
                 status_code=500,
             )
-        body: dict = {"ok": True, "footprint": footprint, "meta": meta}
+        if not footprint:
+            state: AppState = request.app.state.terminal
+            feed = getattr(state, "feed", None)
+            candles = feed.get_candles(symbol.upper()) if feed and hasattr(feed, "get_candles") else None
+            if candles:
+                from app.services.archive.query import footprint_cells_from_bars
+
+                extra, extra_meta = footprint_cells_from_bars(
+                    candles, from_ts, to_ts, price_step, time_bucket_ms
+                )
+                if extra:
+                    extra_meta["source"] = "live_bars"
+                    extra_meta["range_note"] = (
+                        "Approximate footprint from live 1m candles (no tick prints yet)."
+                    )
+                    footprint = extra
+                    meta.update(extra_meta)
+        body: dict = {
+            "ok": True,
+            "footprint": footprint,
+            "meta": meta,
+            "archive_ticks_enabled": ARCHIVE_TICKS_ENABLED,
+        }
         if meta.get("range_note"):
             body["message"] = meta["range_note"]
         return JSONResponse(body)
@@ -3185,6 +3272,7 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/health/alpaca", health_alpaca, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
         Route("/api/v1/admin/shutdown", admin_shutdown_handler, methods=["POST"]),
+        Route("/api/v1/client-errors", client_errors_handler, methods=["POST"]),
         Route("/api/v1/session", session_handler, methods=["GET"]),
         Route("/metrics", metrics, methods=["GET"]),
         Route("/api/v1/strategies", list_strategies, methods=["GET"]),

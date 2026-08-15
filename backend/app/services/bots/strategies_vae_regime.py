@@ -203,7 +203,8 @@ class VaeRegimeStrategy(BaseStrategy):
     def __init__(self, config: dict):
         super().__init__(config)
         self._cfg = merge_strategy_config("VAE_REGIME_DETECTOR", config or {})
-        self._bar_history: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         self._anomaly_history: deque = deque(maxlen=20)
 
     def _model_timeframe(self) -> str:

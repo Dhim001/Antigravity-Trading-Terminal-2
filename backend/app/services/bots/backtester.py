@@ -1,3 +1,4 @@
+import logging
 import random
 from collections import Counter
 from datetime import datetime, timezone
@@ -38,6 +39,8 @@ from app.services.bots.backtest_category_metrics import (
     CategoryMetricsCollector,
     load_ml_feature_importance,
 )
+
+logger = logging.getLogger(__name__)
 
 _SIM_MODES = frozenset({"live_aligned", "research", "research_fast"})
 _MIN_QTY = 0.001
@@ -459,6 +462,38 @@ class BacktesterService:
             oldest_key = min(self._candle_cache, key=lambda k: self._candle_cache[k][0])
             self._candle_cache.pop(oldest_key, None)
 
+    @staticmethod
+    def _exit_fill_via_cost_model(
+        cost_model,
+        bar_time,
+        exit_price: float,
+        exit_side: str,
+        qty: float,
+        bar_vol: float,
+        *,
+        entry_time=None,
+    ) -> float:
+        """Exit fill via CostModel without double-charging the same-bar penalty.
+
+        When an SL/TP or signal exit fires in the *same bar* as the entry, the
+        entry already incremented ``_fills_this_bar``; a plain ``reset_bar`` +
+        ``fill_price`` would wrongly apply ``second_fill_penalty_bps`` to the
+        exit leg. Same-bar entry+exit is penalised only once (a genuinely fast
+        round-trip), and a cross-bar exit always resets to a clean counter.
+        """
+        same_bar_as_entry = (
+            entry_time is not None
+            and bar_time is not None
+            and entry_time == bar_time
+        )
+        if not same_bar_as_entry:
+            cost_model.reset_bar(bar_time)
+        return cost_model.fill_price(
+            exit_price, exit_side,
+            order_notional=exit_price * qty,
+            bar_volume_notional=bar_vol * exit_price,
+        )
+
     def clear_candle_cache(self):
         """Clear the candle cache after a sweep completes."""
         self._candle_cache.clear()
@@ -571,6 +606,10 @@ class BacktesterService:
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)
         cost_model = CostModel.from_config(cfg)  # per-backtest copy for thread safety
+        # Mutable cell: tracks the current bar's base volume so the exit path
+        # (_close_position) can apply the same volume-participation cost model
+        # as entries (cost symmetry).
+        _current_bar_volume: dict = {"v": 0.0}
         randomize_sl_tp = bool(cfg.get("randomize_sl_tp", False))
         total_fees = 0.0
         chart_cfg = merge_strategy_config("CHART_AGENT", cfg) if strat_key == "CHART_AGENT" else {}
@@ -864,8 +903,19 @@ class BacktesterService:
             qty = position["qty"]
             entry_fill = float(position.get("entry_fill") or position["entry_price"])
             exit_side = "SELL" if side == "BUY" else "BUY"
-            exit_fill = exit_fill_price(exit_price, exit_side, slippage_bps)
-            exit_fee = trade_fee(exit_fill * qty, fee_bps)
+            # Cost symmetry: route exits through the same CostModel used for
+            # entries so participation/latency/spread apply on both legs and the
+            # fill size is volume-capped identically.
+            if cost_model.volume_participation:
+                bar_vol = float(_current_bar_volume.get("v") or 0.0)
+                exit_fill = self._exit_fill_via_cost_model(
+                    cost_model, bar_time, exit_price, exit_side, qty, bar_vol,
+                    entry_time=position.get("entry_time"),
+                )
+                exit_fee = cost_model.compute_fee(exit_fill * qty)
+            else:
+                exit_fill = exit_fill_price(exit_price, exit_side, slippage_bps)
+                exit_fee = trade_fee(exit_fill * qty, fee_bps)
             if side == "BUY":
                 profit = (exit_fill - entry_fill) * qty - exit_fee - float(position.get("entry_fee") or 0)
             else:
@@ -1307,6 +1357,23 @@ class BacktesterService:
 
                 if progress_cb:
                     progress_emit(0, eval_bars)
+                prepare_fn = getattr(strategy, "prepare_backtest_features", None)
+                if callable(prepare_fn):
+                    try:
+                        prepare_fn(
+                            df,
+                            start_i,
+                            symbol=sym_u,
+                            cancel_cb=cancel_cb,
+                            progress_cb=_precompute_progress if progress_cb else None,
+                        )
+                    except InterruptedError:
+                        raise
+                    except Exception:
+                        logger.warning(
+                            "RL/ML backtest feature precompute failed — per-bar evaluate",
+                            exc_info=True,
+                        )
                 # Prefer DF path (columnar features / fewer dict materializations).
                 precomputed_signals = try_precompute_signals_from_df(
                     strategy,
@@ -1322,10 +1389,15 @@ class BacktesterService:
                 _release_chart_agent_cache()
                 return {"error": "Backtest cancelled", "cancelled": True}
 
-        # research_fast + precomputed signals: columnar OHLC avoids full to_dict()
-        # per bar (major Python overhead on long 1m runs).
+        # Columnar OHLC avoids full to_dict() per bar (major Python overhead on
+        # long 1m runs). Used for research_fast+precomputed signals AND RL when
+        # the market-feature matrix is already bound (evaluate only needs OHLCV).
         _col_fast = None
-        if research_fast and precomputed_signals is not None:
+        _use_slim_rows = (
+            (research_fast and precomputed_signals is not None)
+            or bool(getattr(strategy, "has_backtest_feature_matrix", False))
+        )
+        if _use_slim_rows:
             try:
                 import numpy as _np
 
@@ -1372,12 +1444,15 @@ class BacktesterService:
                 }
             else:
                 row = df.iloc[i].to_dict()
+            row["_bar_index"] = i
+            row["_backtest"] = True
             if sym_u:
                 row["_symbol"] = sym_u
             bar_time = row.get("time")
             bar_low = float(row.get("low") or row.get("close") or 0)
             bar_high = float(row.get("high") or row.get("close") or 0)
             bar_close = float(row.get("close") or 0)
+            _current_bar_volume["v"] = float(row.get("volume") or 0.0)
             _roll_daily(bar_time)
 
             if position:

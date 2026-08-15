@@ -320,11 +320,12 @@ class TestOrtProviders:
 
 class TestFeatureMatrixEvalParity:
     def test_precompute_matrix_matches_evaluate_lookback(self):
-        """Batch path must use 24 prior bars (deque maxlen=25), not 20."""
+        """Batch path must match live evaluate history (HTF + micro windows)."""
         from collections import deque
 
         from app.services.bots.ml_feature_engineering import (
             EVAL_FEATURE_LOOKBACK,
+            EVAL_HISTORY_LOOKBACK,
             bar_to_signal_features,
             precompute_signal_feature_matrix,
             signal_features_to_vector,
@@ -333,7 +334,7 @@ class TestFeatureMatrixEvalParity:
         assert EVAL_FEATURE_LOOKBACK == 24
         rows = [_make_bar(i) for i in range(80)]
         feat_mat = precompute_signal_feature_matrix(rows)
-        hist: deque = deque(maxlen=25)
+        hist: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         for i, row in enumerate(rows):
             hist.append(dict(row))
             if len(hist) < 20:

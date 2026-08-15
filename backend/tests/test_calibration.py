@@ -9,7 +9,10 @@ import unittest
 
 os.environ.setdefault("TERMINAL_MODE", "SIMULATED")
 os.environ["DATABASE_URL"] = ""
-# Never touch profile DBs (trading-massive.db / trading.db) from unit tests.
+# Never touch profile DBs (trading-alpaca.db / trading.db) from unit tests.
+# Clear profile so env.profiles/*.env cannot rewrite SQLITE_DB_PATH onto a live DB
+# when the shell still has TERMINAL_PROFILE from start-desktop.ps1.
+os.environ.pop("TERMINAL_PROFILE", None)
 _TEST_DIR = tempfile.mkdtemp()
 os.environ["SQLITE_DB_PATH"] = os.path.join(_TEST_DIR, "calibration_test.db")
 
@@ -19,12 +22,18 @@ import app.db.connection as db_conn  # noqa: E402
 db_conn.DB_PATH = os.environ["SQLITE_DB_PATH"]
 db_conn.DB_DRIVER = "sqlite"
 db_conn._DATABASE_URL = ""
+db_conn._pool = None  # drop any pool bound before path rebind
 app_config.DB_PATH = db_conn.DB_PATH
+assert "trading-alpaca.db" not in db_conn.DB_PATH.replace("\\", "/").lower()
+assert os.path.basename(db_conn.DB_PATH).lower() not in {
+    "trading-alpaca.db", "trading-ib.db", "trading-massive.db", "trading-sim.db", "trading.db",
+}, db_conn.DB_PATH
 
 from app.database import get_connection, init_db  # noqa: E402
 from app.services.bots.calibration import (  # noqa: E402
     CalibrationStore,
     aggregate_live_filter_rejects,
+    aggregate_live_signal_rejects,
     build_config_patch_from_suggestions,
     check_meta_label_gate,
     compute_calibration_apply_patch,
@@ -32,6 +41,7 @@ from app.services.bots.calibration import (  # noqa: E402
     filter_open_suggestions,
     get_calibration,
     get_calibration_store,
+    get_filter_reject_dashboard,
     pair_closed_trades,
     score_bucket,
     setup_bucket_key,
@@ -244,6 +254,38 @@ class TestCalibrationIntegration(unittest.TestCase):
         live = aggregate_live_filter_rejects(bot_id="bot-cal-1")
         self.assertGreaterEqual(live["total"], 1)
         self.assertGreater(live["by_bucket"].get("trend", 0), 0)
+
+    def test_live_signal_rejects_and_dashboard(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bot_signal_reject_log")
+        for _ in range(3):
+            cursor.execute(
+                """
+                INSERT INTO bot_signal_reject_log
+                    (bot_id, symbol, strategy, signal_kind, reason_bucket,
+                     reason_detail, confidence, bar_time, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "bot-cal-1", "BTCUSDT", "REGIME_STRATEGY_AGENT", "BUY",
+                    "none", "no edge", 0.4, None, "2026-06-01T12:00:00Z",
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        signal = aggregate_live_signal_rejects(bot_id="bot-cal-1", symbol="BTCUSDT")
+        self.assertEqual(signal["total"], 3)
+        self.assertEqual(signal["by_bucket"].get("none"), 3)
+
+        dash = get_filter_reject_dashboard(
+            bot_id="bot-cal-1",
+            symbol="BTCUSDT",
+            strategy="REGIME_STRATEGY_AGENT",
+        )
+        self.assertEqual(dash["signal"]["total"], 3)
+        self.assertGreaterEqual(dash["live"]["total"], 1)
 
 
 class TestMetaLabelGate(unittest.TestCase):

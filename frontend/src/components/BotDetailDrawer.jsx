@@ -37,7 +37,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import StrategyBadge from './StrategyBadge';
 import { getStrategyMeta } from '@/config/strategies';
-import { parseTradeTimestamp, shortBotId } from '@/lib/botAttribution';
+import { parseTradeTimestamp, shortBotId, normalizeBotStatus, botStatusLabel } from '@/lib/botAttribution';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import { openBacktestLabWithRun } from '@/lib/backtestLab';
@@ -403,8 +403,8 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             {bot ? (
               <>
                 <span className="truncate font-bold">{bot.symbol}</span>
-                <Badge variant={bot.status === 'RUNNING' ? 'buy' : 'secondary'} className="shrink-0">
-                  {bot.status}
+                <Badge variant={normalizeBotStatus(bot.status) === 'RUNNING' ? 'buy' : 'outline'} className="shrink-0">
+                  {botStatusLabel(bot.status)}
                 </Badge>
                 <BotRiskHoldBadge hold={riskHold} remainingSec={cooloffRemaining} />
               </>
@@ -485,7 +485,11 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                 ? 'Cooling off'
                 : riskHold?.kind === 'drawdown'
                   ? 'Max drawdown hold'
-                  : 'Loss streak hold'}
+                  : riskHold?.kind === 'pretrade_streak'
+                    ? 'Streak pause'
+                    : riskHold?.kind === 'dd_budget'
+                      ? 'Drawdown budget hold'
+                      : 'Loss streak hold'}
               <BotRiskHoldBadge hold={riskHold} remainingSec={cooloffRemaining} />
             </AlertTitle>
             <AlertDescription>{riskHoldMessage}</AlertDescription>
@@ -765,7 +769,7 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
             )}
 
             <SheetFooter className="bot-detail-drawer__footer">
-              {bot.status === 'RUNNING' && (
+              {normalizeBotStatus(bot.status) === 'RUNNING' && (
                 <>
                   <Button variant="outline" size="sm" onClick={() => onPause(bot.id)}>
                     <Pause data-icon="inline-start" />
@@ -776,13 +780,13 @@ export default function BotDetailDrawer({ open, onOpenChange, onStop, onPause, o
                   </Button>
                 </>
               )}
-              {bot.status === 'PAUSED' && (
-                <Button variant="outline" size="sm" onClick={() => onResume(bot.id)}>
+              {normalizeBotStatus(bot.status) === 'PAUSED' && (
+                <Button variant="default" size="sm" onClick={() => onResume(bot.id)}>
                   <PlayCircle data-icon="inline-start" />
                   Resume
                 </Button>
               )}
-              {bot.status !== 'STOPPED' && (
+              {normalizeBotStatus(bot.status) !== 'STOPPED' && (
                 <Button variant="destructive" size="sm" onClick={() => onStop(bot.id)}>
                   <OctagonX data-icon="inline-start" />
                   Stop

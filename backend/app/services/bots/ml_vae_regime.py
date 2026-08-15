@@ -56,6 +56,10 @@ def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
+def _feature_baseline_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "feature_baseline.json")
+
+
 def _get_torch():
     try:
         import torch
@@ -313,6 +317,16 @@ def train_vae_regime_model(
     scaler = {"mean": feat_mean.tolist(), "std": feat_std.tolist()}
     with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(scaler, fh, indent=2)
+
+    # Persist a real (downsampled) training feature sample for PSI drift
+    # baselines — replaces the synthetic-Gaussian approximation that produced
+    # false drift alarms. Cap rows to keep the artifact small.
+    try:
+        sample = X[:: max(1, len(X) // 500)][:500]
+        with open(_feature_baseline_path(symbol, tf), "w", encoding="utf-8") as fh:
+            json.dump({"features": sample.tolist()}, fh)
+    except Exception:
+        pass
 
     metadata = {
         "symbol": symbol, "timeframe": tf, "model_type": "vae_regime",

@@ -63,10 +63,10 @@ function PortfolioSummaryBar({ compact = false }) {
   const pnlPct = startEquity > 0 ? (dayPnl / startEquity) * 100 : 0;
   const pnlPctStr = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
 
-  // Sparkline from recent sell fills
+  // Sparkline from realized exits (includes BUY-to-cover shorts)
   const sparkData = useMemo(() => {
     const fills = (tradeHistory || [])
-      .filter((t) => t.status === 'FILLED' && t.side === 'SELL' && t.realized_pnl != null)
+      .filter((t) => t.status === 'FILLED' && t.realized_pnl != null)
       .sort((a, b) => a.timestamp - b.timestamp);
     if (fills.length < 2) return null;
     let cum = 0;

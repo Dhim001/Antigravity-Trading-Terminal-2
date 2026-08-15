@@ -126,11 +126,12 @@ export async function fetchFootprint(symbol, from_ts, to_ts, price_step, time_bu
     time_bucket_ms: Math.floor(time_bucket_ms),
   });
   const res = await apiRequest(`/api/v1/market/footprint?${query.toString()}`);
-  if (!res?.ok) return { footprint: [], meta: null };
+  if (!res?.ok) return { footprint: [], meta: null, archiveTicksEnabled: res?.archive_ticks_enabled };
   return {
     footprint: Array.isArray(res.footprint) ? res.footprint : [],
     meta: res.meta || null,
     message: res.message || null,
+    archiveTicksEnabled: res.archive_ticks_enabled,
   };
 }
 
@@ -457,7 +458,7 @@ export async function fetchBotCalibration({ botId, symbol, minSamples = 3, limit
   if (symbol) qs.set('symbol', symbol);
   qs.set('min_samples', String(minSamples));
   qs.set('limit', String(limit));
-  const body = await apiRequest(`/api/v1/bots/calibration?${qs}`);
+  const body = await apiRequest(`/api/v1/bots/calibration?${qs}`, { timeoutMs: 30_000 });
   if (!body?.ok) throw new Error(body?.error || 'Calibration unavailable');
   return body.calibration;
 }
@@ -468,7 +469,7 @@ export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
   if (botId) qs.set('bot_id', botId);
   if (symbol) qs.set('symbol', symbol);
   if (strategy) qs.set('strategy', strategy);
-  const body = await apiRequest(`/api/v1/bots/filter-rejects?${qs}`);
+  const body = await apiRequest(`/api/v1/bots/filter-rejects?${qs}`, { timeoutMs: 30_000 });
   if (!body?.ok) throw new Error(body?.error || 'Filter rejects unavailable');
   return body.filter_rejects;
 }
@@ -590,7 +591,9 @@ export async function fetchStrategySuggestion(botId, {
 
 /** GET /api/v1/bots/{botId}/meta-label/status — GBM model status + dataset stats. */
 export async function fetchMetaLabelStatus(botId) {
-  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/meta-label/status`);
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/meta-label/status`, {
+    timeoutMs: 30_000,
+  });
   if (!body?.ok) throw new Error(body?.error || 'Meta-label status unavailable');
   return body;
 }

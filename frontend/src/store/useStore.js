@@ -336,7 +336,10 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
       if (trade.status === 'FILLED') {
         total_fills++;
-        gross_volume += (trade.trade_value || 0);
+        // Exit notional only — summing every fill double-counts round-trips.
+        if (trade.realized_pnl != null) {
+          gross_volume += (trade.trade_value || 0);
+        }
 
         // Exit fills only: entries never persist realized_pnl; count by pnl so
         // BUY-to-cover exits are included (previous SELL-only check dropped them).
@@ -448,10 +451,19 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setAmbiguousOrders: (orders) => set({ ambiguousOrders: Array.isArray(orders) ? orders : [] }),
 
-  setBots: (bots) => set({
-    activeBots: bots,
-    isBotRunning: Array.isArray(bots) && bots.some((b) => b.status === 'RUNNING'),
-  }),
+  setBots: (bots) => {
+    const list = Array.isArray(bots)
+      ? bots.map((b) => (
+        b && typeof b === 'object'
+          ? { ...b, status: String(b.status || '').trim().toUpperCase() }
+          : b
+      ))
+      : bots;
+    set({
+      activeBots: list,
+      isBotRunning: Array.isArray(list) && list.some((b) => b.status === 'RUNNING'),
+    });
+  },
   setBotStrategy: (strategy) => {
     setLocal('terminal_bot_strategy', strategy);
     set({ botStrategy: strategy });
@@ -569,7 +581,9 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
   },
 
   updateOrderBooks: (orderBookData) => {
-    if (!isOrderBookRetentionEnabled()) return;
+    // ORDERBOOK_UPDATE is already scoped to the client's subscribed symbol.
+    // Dropping it behind the Book/Depth mount refcount discarded the
+    // SUBSCRIBE_SYMBOL snapshot — FlexLayout Book/Depth then stayed empty.
     set((state) => {
     const merged = { ...state.orderBooks, ...orderBookData };
     // Prune to MAX_ORDERBOOK_SYMBOLS — keep active + most recently added

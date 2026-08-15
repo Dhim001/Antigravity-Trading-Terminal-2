@@ -26,7 +26,9 @@ from app.services.bots.ml_feature_engineering import (
     SIGNAL_FEATURE_NAMES,
     SIGNAL_FEATURE_VERSION,
     TRADE_STATE_FEATURE_VERSION,
+    LEGACY_TRADE_STATE_FEATURE_VERSION,
     bar_to_signal_features,
+    is_compatible_feature_schema,
     merge_trade_state_features,
     resolve_feature_names,
     resolve_feature_version,
@@ -173,7 +175,8 @@ def train_ml_signal_model(
     dist = label_distribution(labels)
 
     # Step 2: Extract features for each labelled bar
-    # Match evaluate() deque(maxlen=25) → up to EVAL_FEATURE_LOOKBACK priors.
+    # Micro lookback stays EVAL_FEATURE_LOOKBACK; evaluate keeps a longer history
+    # deque for HTF resampling (see EVAL_HISTORY_LOOKBACK).
     from app.services.bots.ml_feature_engineering import EVAL_FEATURE_LOOKBACK
 
     feature_lookback = EVAL_FEATURE_LOOKBACK
@@ -650,7 +653,7 @@ class MlSignalModelStore:
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
             schema_ver = int(meta.get("feature_schema_version", 0))
-            if schema_ver not in (SIGNAL_FEATURE_VERSION, TRADE_STATE_FEATURE_VERSION):
+            if not is_compatible_feature_schema(schema_ver):
                 logger.warning(
                     "ML signal model schema mismatch for %s (got %s) — retrain required",
                     key,
@@ -709,7 +712,8 @@ class MlSignalBoostStrategy(BaseStrategy):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self._lookback: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._lookback: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         self._cfg = merge_strategy_config("ML_SIGNAL_BOOST", config or {})
 
     def _model_timeframe(self) -> str:
@@ -734,9 +738,16 @@ class MlSignalBoostStrategy(BaseStrategy):
         include_ts = bool(meta.get("ml_include_trade_state"))
         if not include_ts:
             try:
-                include_ts = int(meta.get("feature_schema_version") or 0) >= TRADE_STATE_FEATURE_VERSION
+                schema_ver = int(meta.get("feature_schema_version") or 0)
             except (TypeError, ValueError):
-                include_ts = False
+                schema_ver = 0
+            names = meta.get("feature_names") or []
+            include_ts = schema_ver in (
+                TRADE_STATE_FEATURE_VERSION,
+                LEGACY_TRADE_STATE_FEATURE_VERSION,
+            ) and (
+                not names or "bot_loss_streak" in names
+            )
         if not meta:
             include_ts = bool(self._cfg.get("ml_include_trade_state"))
         return include_ts
@@ -842,6 +853,17 @@ class MlSignalBoostStrategy(BaseStrategy):
         feat_names = meta.get("feature_names") or list(
             resolve_feature_names(include_trade_state=include_ts)
         )
+        # Legacy artifacts without feature_names: never invent the current 65-wide
+        # schema for a v4 model — truncate to the trained width when known.
+        if not meta.get("feature_names"):
+            try:
+                n_in = int(getattr(store._ensure_loaded(
+                    symbol, pinned or None, timeframe=tf,
+                ), "n_features_in_", 0) or 0)
+            except Exception:
+                n_in = 0
+            if n_in > 0 and n_in < len(feat_names):
+                feat_names = list(feat_names)[:n_in]
         base_names = list(SIGNAL_FEATURE_NAMES)
         # Columnar path covers SIGNAL_FEATURE_NAMES; trade-state dims appended after.
         use_matrix = vectorized_features_enabled() and (
@@ -849,7 +871,8 @@ class MlSignalBoostStrategy(BaseStrategy):
             or list(feat_names[: len(base_names)]) == base_names
         )
 
-        lookback: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        lookback: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         if use_matrix:
             mat = precompute_signal_feature_matrix(
                 rows,

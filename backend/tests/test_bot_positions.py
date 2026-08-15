@@ -138,6 +138,40 @@ class BotPositionsTests(unittest.TestCase):
         )
         self.assertEqual(trigger, "SL")
 
+    def test_percent_stop_path_updates_watermarks(self):
+        """Non-chandelier path must still expand hi/lo for MAE/MFE."""
+        trigger, _sl, hi, lo = bot_positions.evaluate_risk_trigger(
+            -1.0,
+            0.19715,
+            0.19650,
+            stop_loss_percent=1.5,
+            take_profit_percent=None,
+            stop_loss_price=None,
+            take_profit_price=None,
+            chandelier_stop_enabled=False,
+            high_watermark=0.19715,
+            low_watermark=0.19715,
+        )
+        self.assertIsNone(trigger)
+        self.assertAlmostEqual(hi, 0.19715)
+        self.assertAlmostEqual(lo, 0.19650)
+
+        trigger, _sl, hi, lo = bot_positions.evaluate_risk_trigger(
+            1.0,
+            100.0,
+            102.0,
+            stop_loss_percent=1.5,
+            take_profit_percent=None,
+            stop_loss_price=None,
+            take_profit_price=None,
+            chandelier_stop_enabled=False,
+            high_watermark=100.0,
+            low_watermark=100.0,
+        )
+        self.assertIsNone(trigger)
+        self.assertAlmostEqual(hi, 102.0)
+        self.assertAlmostEqual(lo, 100.0)
+
 
 class PendingFillReconcileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

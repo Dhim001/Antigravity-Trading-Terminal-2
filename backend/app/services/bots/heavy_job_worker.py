@@ -23,6 +23,32 @@ logger = logging.getLogger(__name__)
 _STOP = False
 _sidecar_proc: subprocess.Popen | None = None
 
+# Health/observability state for /health.
+_last_claim_at: float | None = None
+_recovered_failed_total: int = 0
+
+
+def sidecar_health_snapshot() -> dict[str, Any]:
+    """Sidecar liveness snapshot for /health.
+
+    Reports whether the sidecar subprocess is enabled/alive, its PID, and the
+    last job-claim time so a dead or stalled worker is visible rather than a
+    silently-growing pending queue.
+    """
+    enabled = sidecar_enabled()
+    pid: int | None = None
+    alive = False
+    if _sidecar_proc is not None:
+        alive = _sidecar_proc.poll() is None
+        pid = _sidecar_proc.pid if alive else _sidecar_proc.pid
+    return {
+        "enabled": enabled,
+        "alive": alive,
+        "pid": pid,
+        "last_claim_at": _last_claim_at,
+        "recovered_failed_total": _recovered_failed_total,
+    }
+
 
 def sidecar_enabled() -> bool:
     return os.environ.get("BACKTEST_HEAVY_SIDECAR", "1").strip().lower() in (
@@ -100,7 +126,7 @@ def _build_context():
     manager = ConnectionManager()
 
     class _BotManagerStub:
-        def get_account_balance(self):
+        def get_account_balance(self, symbol=None):
             return 100_000.0
 
         async def create_bot(self, *args, **kwargs):
@@ -199,6 +225,7 @@ async def worker_loop() -> None:
     )
 
     _dead_check_at = 0.0
+    global _last_claim_at, _recovered_failed_total
     while not _STOP:
         try:
             now = time.monotonic()
@@ -206,6 +233,7 @@ async def worker_loop() -> None:
                 _dead_check_at = now
                 dead = await asyncio.to_thread(recover_dead_worker_jobs)
                 if dead:
+                    _recovered_failed_total += dead
                     logger.warning("Sidecar re-queued %s dead-worker job(s)", dead)
             job = await asyncio.to_thread(
                 claim_next_pending_job,
@@ -214,6 +242,7 @@ async def worker_loop() -> None:
             if not job:
                 await asyncio.sleep(2.0)
                 continue
+            _last_claim_at = time.time()
             logger.info(
                 "Sidecar executing job %s (%s)",
                 job["id"],

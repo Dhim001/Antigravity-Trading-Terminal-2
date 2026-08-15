@@ -71,9 +71,12 @@ def list_bot_exposures() -> list[dict]:
 
 
 def build_portfolio_snapshot(oms) -> PortfolioSnapshot:
+    from app.services.account_cash import total_quote_balance
+
     account = oms.get_account_data()
     balances = account.get("balances") or {}
-    cash = float(balances.get("USD", {}).get("balance") or balances.get("USDT", {}).get("balance") or 0)
+    # Dual paper ledger: equity cash = USD + USDT (not USD-first).
+    cash = float(total_quote_balance(balances))
 
     bot_rows = list_bot_exposures()
     oms_positions = account.get("positions") or {}

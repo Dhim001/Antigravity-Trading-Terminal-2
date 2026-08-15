@@ -188,8 +188,9 @@ def estimate_backtest_seconds(
         "1", "true", "yes", "on",
     )
     if strat == "RL_PPO_AGENT":
-        # RL still typically per-bar (no batch path yet).
-        sec = max(sec * 12.0, approx_bars / 20.0)
+        # Market features precomputed once; ONNX + position splice stay per-bar.
+        bps = 80.0 if vec_on else 20.0
+        sec = max(sec * (4.0 if vec_on else 12.0), approx_bars / bps)
     elif any(tok in strat for tok in ("LSTM", "TCN", "TRANSFORMER", "VAE", "GNN")):
         # Keep estimates conservative for tier routing even when vectorized+batch
         # speed up research runs (observed pre-opt ~20 bars/s on 1m deep models).

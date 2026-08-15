@@ -427,12 +427,18 @@ class BotManagerService:
         except Exception:
             logger.debug("pretrade streak AgentEvent publish failed", exc_info=True)
 
-    def get_account_balance(self):
-        balances = self.oms.get_account_data().get("balances", {})
-        usd = balances.get("USD", {}).get("balance")
-        if usd is not None:
-            return usd
-        return balances.get("USDT", {}).get("balance", 0)
+    def get_account_balance(self, symbol: str | None = None):
+        """Return cash for sizing / snapshots.
+
+        With ``symbol``, use that market's quote bucket (USDT crypto / USD equity).
+        Without, sum USD+USDT available — correct for dual-ledger paper accounts.
+        """
+        from app.services.account_cash import cash_for_symbol, total_quote_available
+
+        balances = self.oms.get_account_data().get("balances", {}) or {}
+        if symbol:
+            return float(cash_for_symbol(balances, symbol)[2])
+        return float(total_quote_available(balances))
 
     def _get_bot_position(self, bot_id: str, symbol: str) -> dict:
         return bot_positions.get_bot_position(bot_id, symbol)
@@ -1094,6 +1100,11 @@ class BotManagerService:
                 # opened_at and candle bar_time are both unix seconds; do not mix with ms.
                 signal = None
                 signal_data = {}
+                # Bot liveness: stamp every bar evaluation so a RUNNING bot that
+                # stops evaluating (dead loop / stalled feed) is detectable.
+                bot["last_eval_at"] = time.time()
+                if bar_time is not None:
+                    bot["last_bar_processed"] = bar_time
                 time_stop_bars = int((bot_config or {}).get("time_stop_bars") or 0)
                 if pos_size != 0 and time_stop_bars > 0:
                     from app.services.bots.position_duration import bars_held_since_open
@@ -1631,6 +1642,10 @@ class BotManagerService:
                     # block the same bar; subsequent bars honor the cool-down.
                     pending_cooldown_sec = cool_sec
                     await self._publish_pretrade_streak_event(bot, verdict, streak_action)
+            else:
+                from app.services.bots.pretrade_context import clear_bot_streak_cooldown
+
+                clear_bot_streak_cooldown(bot)
 
             if verdict.get("verdict") == "VETO":
                 signal_ledger.release_signal(signal_id)
@@ -1644,7 +1659,7 @@ class BotManagerService:
             if pending_cooldown_sec > 0:
                 bot["_pretrade_pending_cooldown_sec"] = pending_cooldown_sec
 
-            account_balance = self.get_account_balance()
+            account_balance = self.get_account_balance(bot.get("symbol"))
             risk_amount = account_balance * RISK_PCT
 
             stop_loss_price = signal_data.get("stop_loss_price")
@@ -2577,6 +2592,9 @@ class BotManagerService:
             "win_rate": stats["win_rate"],
             "last_signal_at": bot.get("last_signal_at"),
             "consecutive_losses": streak,
+            # Bot liveness — RUNNING-but-idle detection (dead loop / stalled feed).
+            "last_eval_at": bot.get("last_eval_at"),
+            "last_bar_processed": bot.get("last_bar_processed"),
         }
         hold = get_bot_entry_hold({**bot, "total_pnl": total_pnl})
         if hold:
@@ -2757,6 +2775,7 @@ class BotManagerService:
 
         confirmed = 0
         touched: set[str] = set()
+        stale_skipped = 0
 
         for p in pending:
             order_id = p.get("order_id")
@@ -2768,23 +2787,27 @@ class BotManagerService:
                         match = trade
                         break
 
-            if not match:
-                for trade in history:
-                    tid = str(trade.get("id", ""))
-                    if tid and tid in recorded_order_ids:
-                        continue
-                    if trade.get("symbol") != p["symbol"]:
-                        continue
-                    if trade.get("side") != p["side"]:
-                        continue
-                    tqty = float(trade.get("filled_quantity") or trade.get("quantity") or 0)
-                    pqty = float(p["quantity"])
-                    if pqty <= 0:
-                        continue
-                    if abs(tqty - pqty) / pqty > 0.08:
-                        continue
-                    match = trade
-                    break
+            # Exact match only: a broker order_id is required to attribute a live
+            # fill to a bot. The legacy ±8% symbol/side/qty heuristic matched
+            # another bot's fills to this bot, corrupting streaks + PnL.
+            if not match and not order_id:
+                try:
+                    created_epoch = float(p.get("created_at_epoch") or 0)
+                except (TypeError, ValueError):
+                    created_epoch = 0.0
+                if created_epoch <= 0:
+                    # Legacy rows predate the epoch column — treat as stale.
+                    created_epoch = 0.0
+                age = (time.time() - created_epoch) if created_epoch > 0 else 601.0
+                if age > 600:  # 10 min: fill never confirmed at broker
+                    stale_skipped += 1
+                    bot_analytics.delete_pending_fill(p["id"])
+                    await self.log_bot_event(
+                        p["bot_id"],
+                        "WARN",
+                        "Dropped pending fill without broker order_id after 10 min "
+                        "(heuristic reconcile removed — exact fill matching only).",
+                    )
 
             if not match:
                 continue
@@ -2800,7 +2823,7 @@ class BotManagerService:
                     p["side"], filled_qty, fill_price, float(entry_price)
                 )
 
-            bot_analytics.record_trade(
+            inserted = bot_analytics.record_trade(
                 p["bot_id"],
                 resolved_order_id,
                 p["symbol"],
@@ -2813,6 +2836,14 @@ class BotManagerService:
                 is_exit=is_exit,
                 insight_snapshot=p.get("insight_snapshot"),
             )
+            # Idempotent journal: a duplicate (same order_id / signal_id leg)
+            # means this fill was already applied — skip the position/TCA/
+            # snapshot side effects so we don't double-count the position.
+            bot_analytics.delete_pending_fill(p["id"])
+            if not inserted:
+                if p.get("signal_id"):
+                    signal_ledger.mark_signal_filled(p["signal_id"], order_id=resolved_order_id)
+                continue
             # TCA: live fills are measured at reconciliation, against the
             # arrival benchmark stored on the pending record at submission.
             # Legacy rows without arrival degrade to decision-price reference.
@@ -2842,7 +2873,6 @@ class BotManagerService:
                 end_mark=_tca_end_mark,
             )
             bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price, feed=getattr(self.oms, "feed", None))
-            bot_analytics.delete_pending_fill(p["id"])
             if p.get("signal_id"):
                 signal_ledger.mark_signal_filled(p["signal_id"], order_id=resolved_order_id)
             if resolved_order_id:
@@ -2879,4 +2909,9 @@ class BotManagerService:
             )
             await publish_bots_update(self.broadcast_cb, self.list_bots_public())
 
+        if stale_skipped:
+            logger.warning(
+                "reconcile_pending_fills dropped %s stale order-less pending fill(s)",
+                stale_skipped,
+            )
         return confirmed

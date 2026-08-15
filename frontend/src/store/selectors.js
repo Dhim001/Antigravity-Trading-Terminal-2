@@ -9,9 +9,13 @@ export function selectActiveSymbolTick(state) {
   };
 }
 
+/** Unlocked USD + USDT only — never sum base holdings (BTC qty, etc.). */
+const QUOTE_CASH_ASSETS = new Set(['USD', 'USDT']);
+
 export function selectCashTotal(state) {
   let total = 0;
-  for (const row of Object.values(state.balances || {})) {
+  for (const [asset, row] of Object.entries(state.balances || {})) {
+    if (!QUOTE_CASH_ASSETS.has(asset) || !row) continue;
     total += (row.balance ?? 0) - (row.locked ?? 0);
   }
   return Math.round(total);
@@ -37,7 +41,7 @@ export function selectDayPnlTotal(state) {
 }
 
 export function selectRunningBotCount(state) {
-  return (state.activeBots || []).filter((b) => b.status === 'RUNNING').length;
+  return (state.activeBots || []).filter((b) => String(b.status || '').toUpperCase() === 'RUNNING').length;
 }
 
 export function selectPositionStats(state) {

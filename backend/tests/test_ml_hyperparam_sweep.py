@@ -470,7 +470,10 @@ def test_slim_keys_keep_best_hyperparams_for_apply(tmp_path, monkeypatch):
         "best_score": 0.61,
         "trials_completed": 12,
         "optimization_run_id": "run-abc",
+        "importance_ranking": {"epochs": 0.8},
+        "convergence": [{"trial": i, "score": 0.4 + i * 0.01} for i in range(12)],
         "trial_history": [{"trial": i, "pad": "x" * 200} for i in range(40)],
+        "search_space": {"epochs": {"type": "int"}},
     }
     store.finish_ml_job(jid, "done", result=big)
     raw = store.get_ml_job(jid)["result"]
@@ -479,3 +482,8 @@ def test_slim_keys_keep_best_hyperparams_for_apply(tmp_path, monkeypatch):
     pub = store.public_ml_job(store.get_ml_job(jid))
     assert pub["result"]["best_hyperparams"]["epochs"] == 90
     assert pub["result"]["best_score"] == 0.61
+    assert pub["result"]["ok"] is True
+    assert "trial_history" not in pub["result"]
+    assert "search_space" not in pub["result"]
+    assert pub["result"]["convergence"][0]["trial"] == 0
+    assert pub["result"]["importance_ranking"]["epochs"] == 0.8

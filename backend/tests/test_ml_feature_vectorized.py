@@ -116,6 +116,7 @@ class TestVectorizedFeatureParity:
 
         from app.services.bots.ml_feature_engineering import (
             EVAL_FEATURE_LOOKBACK,
+            EVAL_HISTORY_LOOKBACK,
             bar_to_signal_features,
             compute_signal_feature_matrix_vectorized,
             signal_features_to_vector,
@@ -124,7 +125,9 @@ class TestVectorizedFeatureParity:
         assert EVAL_FEATURE_LOOKBACK == 24
         rows = [_make_bar(i) for i in range(90)]
         feat_mat = compute_signal_feature_matrix_vectorized(rows)
-        hist: deque = deque(maxlen=25)
+        # Live evaluate keeps a long history for HTF; micro features still window
+        # to EVAL_FEATURE_LOOKBACK inside bar_to_signal_features.
+        hist: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
         for i, row in enumerate(rows):
             hist.append(dict(row))
             if len(hist) < 20:

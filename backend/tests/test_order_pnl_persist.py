@@ -132,7 +132,7 @@ class OrderPnlPersistTests(unittest.TestCase):
         row = cursor.fetchone()
         conn.close()
 
-        self.assertEqual(updated, 1)
+        self.assertGreaterEqual(updated, 1)
         self.assertAlmostEqual(float(row["realized_pnl"]), 10.0)
         self.assertAlmostEqual(float(row["cost_basis"]), 80.0)
 

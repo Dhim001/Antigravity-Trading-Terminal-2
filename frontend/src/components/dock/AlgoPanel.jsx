@@ -63,10 +63,10 @@ import { openBacktestLabResults } from '../../lib/backtestLab';
 import { formatLastSignal } from '@/lib/formatTime';
 import { BAR_TIMEFRAMES, deployTimeframeSummary, formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { useEffectiveRiskHold, botRuntimeActivityHint } from '@/lib/botRiskHold';
-import { getBotOwnedPositionView } from '@/lib/botAttribution';
+import { getBotOwnedPositionView, normalizeBotStatus } from '@/lib/botAttribution';
 import { DIRECTION_MODE_OPTIONS, formatDirectionModeLabel } from '@/lib/botConfigDisplay';
 import { isLiveMassiveMode, isPaperExecutionMode, usesNativeHtCharts } from '@/lib/massiveMarket';
-import { backtestFingerprint } from '@/lib/backtestDisplay';
+import { backtestContextMismatch, backtestFingerprint, resolveBacktestResultIdentity } from '@/lib/backtestDisplay';
 import { backtestResultsMatchTarget, buildDeployPayload } from '@/lib/deployGate';
 import { evaluateAndMaybeDeploy } from '@/lib/pipelineAutoGate';
 import {
@@ -185,9 +185,21 @@ export function AlgoTab({ hideToolbar = false }) {
     setBacktestLastError: s.setBacktestLastError,
   })));
   const positions = useStore((state) => state.positions);
+  const balances = useStore((state) => state.balances);
   const agentInsights = useResearchStore((state) => state.agentInsights);
   const tickerPrice = useStore((state) => state.tickerData[state.activeSymbol]?.price);
   const cashTotal = useStore(selectCashTotal);
+  /** Per-symbol quote bucket for risk_base (USDT crypto / USD equity). */
+  const quoteCashForSymbol = useMemo(() => {
+    const preferred = String(activeSymbol || '').includes('USDT') ? 'USDT' : 'USD';
+    const alt = preferred === 'USDT' ? 'USD' : 'USDT';
+    const quote = balances?.[preferred] != null
+      ? preferred
+      : (balances?.[alt] != null ? alt : preferred);
+    const row = balances?.[quote];
+    if (!row) return cashTotal;
+    return Math.round((row.balance ?? 0) - (row.locked ?? 0));
+  }, [activeSymbol, balances, cashTotal]);
 
   const liveBotsBlocked = isLive && !allowLiveBots;
   const paperExecution = isPaperExecutionMode(terminalMode, executionMode);
@@ -195,7 +207,8 @@ export function AlgoTab({ hideToolbar = false }) {
   const nativeHtLive = usesNativeHtCharts(terminalMode);
   const alpacaLive = terminalMode === 'LIVE_ALPACA';
   const safeModeActive = Boolean(safeMode?.active);
-  const runningCount = activeBots.filter(b => b.status === 'RUNNING').length;
+  const runningCount = activeBots.filter((b) => normalizeBotStatus(b.status) === 'RUNNING').length;
+  const pausedCount = activeBots.filter((b) => normalizeBotStatus(b.status) === 'PAUSED').length;
   const mlPipeline = useSyncExternalStore(
     subscribeMlPipeline,
     getMlPipeline,
@@ -340,6 +353,24 @@ export function AlgoTab({ hideToolbar = false }) {
     [backtestLabOpen, backtestResults],
   );
 
+  const backtestIdentity = useMemo(
+    () => resolveBacktestResultIdentity(backtestResults, {
+      symbol: activeSymbol,
+      strategy: botStrategy,
+      timeframe: botTimeframe,
+      days: backtestDays,
+    }),
+    [backtestResults, activeSymbol, botStrategy, botTimeframe, backtestDays],
+  );
+
+  const resultContextMismatch = useMemo(
+    () => backtestContextMismatch(backtestResults, {
+      symbol: activeSymbol,
+      strategy: botStrategy,
+    }),
+    [backtestResults, activeSymbol, botStrategy],
+  );
+
   const setBacktestDays = (days) => {
     const next = coerceBacktestDaysForStrategy(days, { isMl: mlStrategySelected });
     setBacktestDaysLocal(next);
@@ -407,6 +438,9 @@ export function AlgoTab({ hideToolbar = false }) {
     const list = portfolioBacktest && canRunPortfolioBacktest(portfolioSymbols)
       ? portfolioSymbols
       : undefined;
+    const multiAsset = Boolean(list && list.length > 1);
+    // Portfolio spans both ledgers → total quote cash; single symbol → its quote bucket.
+    const riskBase = multiAsset ? cashTotal : quoteCashForSymbol;
     return {
       strategy: botStrategy,
       symbol: activeSymbol,
@@ -415,7 +449,7 @@ export function AlgoTab({ hideToolbar = false }) {
         sim_mode: backtestSimMode,
         live_parity: backtestLiveParity,
         risk_base_mode: backtestRiskBaseMode,
-        ...(cashTotal > 0 ? { risk_base: cashTotal } : {}),
+        ...(riskBase > 0 ? { risk_base: riskBase } : {}),
         ...(selectedBotId ? { backtest_bot_id: selectedBotId } : {}),
         ...(botStrategy === 'CHART_AGENT' && metaLabelWalkForward
           ? { meta_label_walk_forward: true }
@@ -436,7 +470,7 @@ export function AlgoTab({ hideToolbar = false }) {
   }, [
     backtestDays, mlHoldoutDays, botExecutionMode, portfolioBacktest, portfolioSymbols, botStrategy,
     activeSymbol, botConfig, backtestSimMode, backtestLiveParity, backtestRiskBaseMode,
-    cashTotal, selectedBotId, metaLabelWalkForward, botTimeframe, backtestOos, backtestReasoning,
+    cashTotal, quoteCashForSymbol, selectedBotId, metaLabelWalkForward, botTimeframe, backtestOos, backtestReasoning,
   ]);
 
   const handleRetryBacktest = async (request) => {
@@ -863,7 +897,7 @@ export function AlgoTab({ hideToolbar = false }) {
             <div className="algo-tab__toolbar-copy">
               <span className="algo-tab__toolbar-title">Algo Trading</span>
               <span className="algo-tab__toolbar-subtitle num-mono">
-                {runningCount} running · {activeBots.length} bot{activeBots.length === 1 ? '' : 's'} · {activeSymbol}
+                {runningCount} running{pausedCount ? ` · ${pausedCount} paused` : ''} · {activeBots.length} bot{activeBots.length === 1 ? '' : 's'} · {activeSymbol}
               </span>
             </div>
           </div>
@@ -1895,7 +1929,9 @@ export function AlgoTab({ hideToolbar = false }) {
                 </SelectTrigger>
                 <SelectContent position="popper">
                   <SelectItem value="account_snapshot" className="text-xs">
-                    Account snapshot{cashTotal > 0 ? ` ($${cashTotal.toLocaleString()} cash)` : ''}
+                    Account snapshot{quoteCashForSymbol > 0
+                      ? ` ($${quoteCashForSymbol.toLocaleString()} ${String(activeSymbol || '').includes('USDT') ? 'USDT' : 'USD'})`
+                      : ''}
                   </SelectItem>
                   <SelectItem value="simulated_equity" className="text-xs">Simulated equity (compounding)</SelectItem>
                 </SelectContent>
@@ -2004,20 +2040,63 @@ export function AlgoTab({ hideToolbar = false }) {
                 </Button>
               </div>
             ) : backtestResults ? (
-              <BacktestResultsPanel
-                results={backtestResults}
-                backtestDays={backtestDays}
-                backtestTimeframe={botTimeframe}
-                symbol={activeSymbol}
-                strategy={botStrategy}
-                recentRuns={backtestRuns}
-                snapshot={backtestSnapshot}
-                oosPct={backtestOos ? 30 : null}
-                reasoningPending={backtestReasoning && backtestRunning}
-                showReasoningSection={agentLlmAvailable}
-                advisorBotId={selectedBotId}
-                agentLlmAvailable={agentLlmAvailable}
-              />
+              <>
+                {resultContextMismatch && (
+                  <Alert variant="default" className="algo-backtest-stale-banner py-2 mb-2">
+                    <AlertTriangle data-icon="inline-start" className="size-3.5" />
+                    <AlertDescription className="text-xs space-y-2">
+                      <p className="m-0">
+                        Mini results below are for{' '}
+                        <strong className="num-mono">{resultContextMismatch.identity.symbol}</strong>
+                        {resultContextMismatch.identity.strategy
+                          ? <> · {resultContextMismatch.identity.strategy}</>
+                          : null}
+                        {' '}— not the current selection{' '}
+                        <strong className="num-mono">{activeSymbol}</strong>
+                        {botStrategy ? <> · {botStrategy}</> : null}.
+                        Parameters and metrics were not re-run for the new ticker.
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {resultContextMismatch.identity.symbol && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            className="h-6"
+                            onClick={() => setActiveSymbol(resultContextMismatch.identity.symbol)}
+                          >
+                            Switch to {resultContextMismatch.identity.symbol}
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          className="h-6"
+                          onClick={handleRunBacktest}
+                          disabled={backtestRunning}
+                        >
+                          Backtest {activeSymbol}
+                        </Button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <BacktestResultsPanel
+                  results={backtestResults}
+                  backtestDays={backtestIdentity.days ?? backtestDays}
+                  backtestTimeframe={backtestIdentity.timeframe || botTimeframe}
+                  symbol={backtestIdentity.symbol || activeSymbol}
+                  strategy={backtestIdentity.strategy || botStrategy}
+                  recentRuns={backtestRuns}
+                  snapshot={backtestSnapshot}
+                  oosPct={backtestOos ? 30 : null}
+                  reasoningPending={backtestReasoning && backtestRunning}
+                  showReasoningSection={agentLlmAvailable}
+                  advisorBotId={selectedBotId}
+                  agentLlmAvailable={agentLlmAvailable}
+                />
+              </>
             ) : null}
           </div>
         </div>
@@ -2183,7 +2262,10 @@ export function AlgoTab({ hideToolbar = false }) {
             <div className="algo-tab__panel-title">
               <Cpu size={13} className={runningCount > 0 ? 'text-trading-up' : 'text-muted-foreground'} aria-hidden />
               Active Bots
-              <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount}</Badge>
+              <Badge variant={runningCount > 0 ? 'buy' : 'secondary'}>{runningCount} running</Badge>
+              {pausedCount > 0 && (
+                <Badge variant="outline">{pausedCount} paused</Badge>
+              )}
               {safeModeActive && (
                 <Badge variant="destructive" className="text-[10px] font-bold tracking-wide">
                   SAFE MODE
@@ -2193,7 +2275,9 @@ export function AlgoTab({ hideToolbar = false }) {
             <span className="algo-tab__panel-subtitle">
               {safeModeActive
                 ? 'Evaluation blocked until safe mode is cleared'
-                : 'Pause · resume · stop · details'}
+                : pausedCount > 0 && runningCount === 0
+                  ? 'Paused — not evaluating. Resume to continue.'
+                  : 'Pause · resume · stop · details'}
             </span>
           </div>
           <div className="algo-tab__panel-actions">

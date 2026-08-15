@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { openNewsHub } from '../lib/intelligenceEvents';
 import { cn } from '@/lib/utils';
 import ChartSymbolSwitcher from './chart/ChartSymbolSwitcher';
+import { normalizeBotStatus } from '@/lib/botAttribution';
 
 export default function ChartContextStrip() {
   const activeSymbol = useStore((s) => s.activeSymbol);
@@ -20,7 +21,7 @@ export default function ChartContextStrip() {
   const chartTf = chartLayout?.timeframe || '1m';
 
   const insight = selectAgentInsight(agentInsights, activeSymbol, chartTf);
-  const runningBot = activeBots.find((b) => b.status === 'RUNNING' && b.symbol === activeSymbol);
+  const runningBot = activeBots.find((b) => normalizeBotStatus(b.status) === 'RUNNING' && b.symbol === activeSymbol);
 
   const activeIndicators = Object.entries(chartLayout?.activeIndicators || {})
     .filter(([, on]) => on)

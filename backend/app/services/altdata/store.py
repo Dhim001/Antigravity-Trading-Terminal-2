@@ -406,15 +406,28 @@ def get_sentiment_events(
     *,
     lookback_hours: float = 24.0,
     limit: int = 50,
+    epoch: float | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch sentiment events for ``symbol``.
+
+    When ``epoch`` is set, only events with ``updated_at`` / ``published_at``
+    at or before that time and within ``lookback_hours`` are returned (no look-ahead).
+    """
     sym = str(symbol or "").upper()
     if not sym:
         return []
-    cutoff = time.time() - max(3600.0, float(lookback_hours) * 3600.0)
+    as_of_epoch = float(epoch) if epoch is not None else None
+    as_of = as_of_epoch if as_of_epoch is not None else time.time()
+    lookback_sec = max(3600.0, float(lookback_hours) * 3600.0)
+    cutoff = as_of - lookback_sec
     rows: list[dict[str, Any]] = []
     with db_session(commit=False) as conn:
         cursor = conn.cursor()
         try:
+            # Live path (no epoch): keep historical updated_at window semantics.
+            # As-of / training path: over-fetch then filter on published_at in
+            # Python (column is TEXT ISO; cannot compare to epoch in SQL).
+            fetch_limit = limit if as_of_epoch is None else max(limit * 4, 200)
             cursor.execute(
                 """
                 SELECT id, symbol, source, score, mention_count, headline, published_at, updated_at
@@ -423,13 +436,13 @@ def get_sentiment_events(
                 ORDER BY published_at DESC, updated_at DESC
                 LIMIT ?
                 """,
-                (sym, cutoff, limit),
+                (sym, cutoff, fetch_limit),
             )
             for row in cursor.fetchall():
                 if isinstance(row, dict):
-                    rows.append(dict(row))
+                    item = dict(row)
                 else:
-                    rows.append({
+                    item = {
                         "id": row[0],
                         "symbol": row[1],
                         "source": row[2],
@@ -438,7 +451,19 @@ def get_sentiment_events(
                         "headline": row[5],
                         "published_at": row[6],
                         "updated_at": row[7],
-                    })
+                    }
+                if as_of_epoch is not None:
+                    event_epoch = _parse_timestamp_to_epoch(item.get("published_at"))
+                    if event_epoch is None:
+                        try:
+                            event_epoch = float(item.get("updated_at"))
+                        except (TypeError, ValueError):
+                            continue
+                    if event_epoch < cutoff or event_epoch > as_of_epoch:
+                        continue
+                rows.append(item)
+                if len(rows) >= limit:
+                    break
         except Exception:
             pass
     return rows
@@ -448,9 +473,12 @@ def get_aggregate_sentiment(
     symbol: str,
     *,
     lookback_hours: float = 24.0,
+    epoch: float | None = None,
 ) -> dict[str, Any]:
     """Weighted mean sentiment and mention stats for a symbol."""
-    events = get_sentiment_events(symbol, lookback_hours=lookback_hours, limit=100)
+    events = get_sentiment_events(
+        symbol, lookback_hours=lookback_hours, limit=100, epoch=epoch,
+    )
     if not events:
         return {
             "symbol": str(symbol or "").upper(),
@@ -482,6 +510,68 @@ def get_aggregate_sentiment(
         "sources": sorted(sources),
         "sample_headlines": headlines,
     }
+
+
+def get_sentiment_summary(
+    symbol: str,
+    *,
+    epoch: float | None = None,
+    lookback_hours: float = 24.0,
+) -> dict[str, Any]:
+    """Time-aligned sentiment summary for ML features (neutral zeros when empty)."""
+    return get_aggregate_sentiment(
+        symbol, lookback_hours=lookback_hours, epoch=epoch,
+    )
+
+
+def hours_to_next_macro_event(epoch: float, *, lookahead_hours: float = 72.0) -> float | None:
+    """Hours until the next high-impact macro event after ``epoch``, or None."""
+    try:
+        as_of = float(epoch)
+    except (TypeError, ValueError):
+        return None
+    horizon = as_of + max(3600.0, float(lookahead_hours) * 3600.0)
+    best: float | None = None
+    with db_session(commit=False) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT scheduled_at, impact, title
+                FROM economic_events
+                WHERE event_type = 'macro_release'
+                ORDER BY scheduled_at ASC
+                LIMIT 200
+                """
+            )
+            raw = cursor.fetchall()
+        except Exception:
+            return None
+    for row in raw:
+        if isinstance(row, dict):
+            scheduled = row.get("scheduled_at")
+            impact = row.get("impact")
+            title = row.get("title")
+        else:
+            scheduled, impact, title = row[0], row[1], row[2]
+        event_epoch = _parse_timestamp_to_epoch(scheduled)
+        if event_epoch is None or event_epoch < as_of or event_epoch > horizon:
+            continue
+        impact_l = str(impact or "").lower()
+        title_l = str(title or "").lower()
+        high = (
+            impact_l in ("3", "high", "h")
+            or "fomc" in title_l
+            or "cpi" in title_l
+            or "nfp" in title_l
+            or "nonfarm" in title_l
+        )
+        if not high:
+            continue
+        hours = (event_epoch - as_of) / 3600.0
+        if best is None or hours < best:
+            best = hours
+    return best
 
 
 def insert_crypto_derivatives_snapshot(row: dict[str, Any]) -> None:

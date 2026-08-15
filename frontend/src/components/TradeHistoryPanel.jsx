@@ -183,9 +183,51 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     URL.revokeObjectURL(url);
   };
 
-  const stats = tradeStats;
-  const filteredPnl = filtered.filter(t => t.realized_pnl != null).reduce((s, t) => s + t.realized_pnl, 0);
-  const filteredVol = filtered.reduce((s, t) => s + (t.trade_value || 0), 0);
+  const filteredExits = filtered.filter((t) => t.realized_pnl != null);
+  const filteredPnl = filteredExits.reduce((s, t) => s + t.realized_pnl, 0);
+  const filteredVol = filteredExits.reduce((s, t) => s + (t.trade_value || 0), 0);
+
+  const displayStats = useMemo(() => {
+    const pnls = filteredExits.map((t) => t.realized_pnl);
+    const exits = pnls.length;
+    if (exits === 0) {
+      return {
+        total_pnl: 0,
+        wins: 0,
+        losses: 0,
+        win_rate: 0,
+        profit_factor: null,
+        best_trade: 0,
+        worst_trade: 0,
+        avg_win: 0,
+        avg_loss: 0,
+        total_exits: 0,
+        total_fills: filtered.length,
+        gross_volume: filteredVol,
+      };
+    }
+    const wins = pnls.filter((p) => p > 0);
+    const losses = pnls.filter((p) => p < 0);
+    const totalWin = wins.reduce((s, p) => s + p, 0);
+    const totalLoss = losses.reduce((s, p) => s + p, 0);
+    const profitFactor = Math.abs(totalLoss) > 0
+      ? totalWin / Math.abs(totalLoss)
+      : (totalWin > 0 ? 99.9 : 0);
+    return {
+      total_pnl: filteredPnl,
+      wins: wins.length,
+      losses: losses.length,
+      win_rate: (wins.length / exits) * 100,
+      profit_factor: profitFactor,
+      best_trade: Math.max(...pnls),
+      worst_trade: Math.min(...pnls),
+      avg_win: wins.length ? totalWin / wins.length : 0,
+      avg_loss: losses.length ? totalLoss / losses.length : 0,
+      total_exits: exits,
+      total_fills: filtered.length,
+      gross_volume: filteredVol,
+    };
+  }, [filtered, filteredExits, filteredPnl, filteredVol]);
 
   const activeFilterCount = [
     dateRange !== 'All',
@@ -241,49 +283,49 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
         </WidgetToolbar>
       )}
 
-      {stats && (
+      {displayStats && (
         <div className="history-stats-row">
           <StatCard
             label="Realized P&L"
-            icon={stats.total_pnl >= 0 ? TrendingUp : TrendingDown}
-            value={`${stats.total_pnl >= 0 ? '+' : ''}$${fmt(stats.total_pnl)}`}
-            tone={stats.total_pnl > 0 ? 'up' : stats.total_pnl < 0 ? 'down' : 'neutral'}
-            sub={`${stats.wins}W / ${stats.losses}L`}
+            icon={displayStats.total_pnl >= 0 ? TrendingUp : TrendingDown}
+            value={`${displayStats.total_pnl >= 0 ? '+' : ''}$${fmt(displayStats.total_pnl)}`}
+            tone={displayStats.total_pnl > 0 ? 'up' : displayStats.total_pnl < 0 ? 'down' : 'neutral'}
+            sub={`${displayStats.wins}W / ${displayStats.losses}L`}
           />
           <StatCard
             label="Win Rate"
             icon={Target}
-            value={`${fmt(stats.win_rate, 1)}%`}
-            tone={stats.win_rate >= 50 ? 'up' : stats.win_rate < 40 ? 'down' : 'neutral'}
-            sub={`${stats.total_exits} closed`}
+            value={`${fmt(displayStats.win_rate, 1)}%`}
+            tone={displayStats.win_rate >= 50 ? 'up' : displayStats.win_rate < 40 ? 'down' : 'neutral'}
+            sub={`${displayStats.total_exits} closed`}
           />
           <StatCard
             label="Profit Factor"
             icon={BarChart2}
-            value={stats.profit_factor != null ? fmt(stats.profit_factor) : '—'}
-            tone={stats.profit_factor > 1.5 ? 'up' : stats.profit_factor < 1 ? 'down' : 'neutral'}
+            value={displayStats.profit_factor != null ? fmt(displayStats.profit_factor) : '—'}
+            tone={displayStats.profit_factor > 1.5 ? 'up' : displayStats.profit_factor < 1 ? 'down' : 'neutral'}
             sub="Win÷Loss PnL"
           />
           <StatCard
             label="Best Trade"
             icon={Award}
-            value={`+$${fmt(stats.best_trade)}`}
+            value={`+$${fmt(displayStats.best_trade)}`}
             tone="up"
-            sub={`Avg win: +$${fmt(stats.avg_win)}`}
+            sub={`Avg win: +$${fmt(displayStats.avg_win)}`}
           />
           <StatCard
             label="Worst Trade"
             icon={TrendingDown}
-            value={`-$${fmt(Math.abs(stats.worst_trade))}`}
+            value={`-$${fmt(Math.abs(displayStats.worst_trade))}`}
             tone="down"
-            sub={`Avg loss: -$${fmt(Math.abs(stats.avg_loss))}`}
+            sub={`Avg loss: -$${fmt(Math.abs(displayStats.avg_loss))}`}
           />
           <StatCard
             label="Total Fills"
             icon={Activity}
-            value={stats.total_fills}
+            value={displayStats.total_fills}
             tone="accent"
-            sub={`Vol: $${fmt(stats.gross_volume)}`}
+            sub={`Vol: $${fmt(displayStats.gross_volume)}`}
           />
         </div>
       )}

@@ -118,3 +118,18 @@ describe('safeMode store sync (H1)', () => {
     expect(s.systemStats.runtime.safe_mode.active).toBe(false);
   });
 });
+
+describe('updateOrderBooks', () => {
+  it('retains L2 snapshots even when no Book/Depth consumer is mounted', async () => {
+    const { resetOrderBookInterestForTests, isOrderBookRetentionEnabled } = await import(
+      '../services/orderBookInterest'
+    );
+    resetOrderBookInterestForTests();
+    expect(isOrderBookRetentionEnabled()).toBe(false);
+    useStore.setState({ orderBooks: {}, activeSymbol: 'BTCUSDT' });
+    useStore.getState().updateOrderBooks({
+      BTCUSDT: { bids: [[100, 1]], asks: [[101, 1]] },
+    });
+    expect(useStore.getState().orderBooks.BTCUSDT.bids[0][0]).toBe(100);
+  });
+});

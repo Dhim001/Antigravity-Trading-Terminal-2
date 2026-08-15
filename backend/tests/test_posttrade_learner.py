@@ -80,6 +80,43 @@ class ClassifyOutcomeTests(unittest.TestCase):
         )
         self.assertEqual(cls, "clean_win")
 
+    def test_win_without_excursion_marks_is_not_clean(self):
+        cls, reason = classify_outcome(
+            pnl=5.0,
+            mae_pct=0.0,
+            mfe_pct=0.0,
+            trigger_type="SIGNAL",
+            insight={},
+        )
+        self.assertEqual(cls, "win")
+        self.assertIn("incomplete", reason.get("note", "").lower())
+
+    def test_loss_without_excursion_marks(self):
+        cls, _ = classify_outcome(
+            pnl=-5.0,
+            mae_pct=0.0,
+            mfe_pct=0.0,
+            trigger_type="SIGNAL",
+            insight={},
+        )
+        self.assertEqual(cls, "loss")
+
+    def test_short_cover_loss_is_loss(self):
+        """ADA short: entry 0.19715 / exit cover 0.197537 → loss, not a win."""
+        from app.services.bots.posttrade_learner import pnl_from_exit
+
+        pnl = pnl_from_exit("BUY", 15205.27, 0.197537, 0.19715)
+        self.assertLess(pnl, 0)
+        cls, _ = classify_outcome(
+            pnl=pnl,
+            mae_pct=0.1963,
+            mfe_pct=0.0,
+            trigger_type="SIGNAL",
+            insight={},
+        )
+        self.assertIn(cls, ("loss", "clean_loss"))
+        self.assertNotIn("win", cls)
+
 
 class BuildPatchTests(unittest.TestCase):
     def test_stop_too_tight_widens_stop(self):
@@ -171,7 +208,26 @@ class LearnFromClosedTradeTests(unittest.IsolatedAsyncioTestCase):
             reason={"note": "Solid winner"},
         )
         self.assertIn("NVDA", text)
+        self.assertIn("WIN", text)
         self.assertIn("clean_win", text)
+
+    def test_lesson_contradiction_rejects_win_wording_on_loss(self):
+        from app.services.bots.posttrade_learner import _lesson_contradicts_outcome
+
+        self.assertTrue(
+            _lesson_contradicts_outcome(
+                "A clean win with excellent timing.",
+                "clean_loss",
+                -5.0,
+            )
+        )
+        self.assertFalse(
+            _lesson_contradicts_outcome(
+                "ADAUSDT LOSS (PnL -5.88). Clean loss with low MAE.",
+                "loss",
+                -5.88,
+            )
+        )
 
 
 if __name__ == "__main__":

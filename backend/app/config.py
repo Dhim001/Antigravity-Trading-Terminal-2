@@ -8,7 +8,7 @@ _REPO_ROOT = os.path.dirname(BASE_DIR)
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 
-def _load_env_file(path: str) -> None:
+def _load_env_file(path: str, *, override: bool = False) -> None:
     """Load KEY=VALUE pairs into os.environ (manual dotenv; no external deps)."""
     if not path or not os.path.exists(path):
         return
@@ -17,14 +17,43 @@ def _load_env_file(path: str) -> None:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+                key, val = key.strip(), val.strip()
+                if override or key not in os.environ:
+                    os.environ[key] = val
 
 
-# Base secrets/overrides, then optional dual-instance profile (profile wins on conflict).
-_load_env_file(os.path.join(_REPO_ROOT, ".env"))
+def _load_profile_env(path: str, *, protect_keys: frozenset[str]) -> None:
+    """Load profile env on top of ``.env``, but never clobber process-env pins.
+
+    Priority (highest → lowest): process env before config import → profile → ``.env``.
+    This prevents ``TERMINAL_PROFILE=alpaca`` from rewriting a pytest-pinned
+    ``SQLITE_DB_PATH`` back onto the live ``trading-alpaca.db``.
+    """
+    if not path or not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                key, val = key.strip(), val.strip()
+                if key in protect_keys:
+                    continue
+                os.environ[key] = val
+
+
+# Snapshot process env *before* file loads so launchers/tests can pin DB paths.
+_PROCESS_ENV_KEYS = frozenset(os.environ.keys())
+
+# Base secrets/overrides, then optional dual-instance profile (profile beats .env;
+# process env pins beat both).
+_load_env_file(os.path.join(_REPO_ROOT, ".env"), override=False)
 _terminal_profile = os.environ.get("TERMINAL_PROFILE", "").strip().lower()
 if _terminal_profile:
-    _load_env_file(os.path.join(_REPO_ROOT, "env.profiles", f"{_terminal_profile}.env"))
+    _load_profile_env(
+        os.path.join(_REPO_ROOT, "env.profiles", f"{_terminal_profile}.env"),
+        protect_keys=_PROCESS_ENV_KEYS,
+    )
 
 _sqlite_db = os.environ.get("SQLITE_DB_PATH", "").strip()
 DB_PATH = (
@@ -282,12 +311,22 @@ REGIME_ROTATION_ENABLED = os.environ.get("REGIME_ROTATION_ENABLED", "true").lowe
 REGIME_ROTATION_INTERVAL_SEC = float(os.environ.get("REGIME_ROTATION_INTERVAL_SEC", "300"))
 REGIME_ROTATION_FLATTEN_ON_ROTATE = os.environ.get("REGIME_ROTATION_FLATTEN_ON_ROTATE", "true").lower() in ("1", "true", "yes")
 
-# Alpha Decay Monitor Agent (automatically detect decaying strategy edge)
-ALPHA_DECAY_ENABLED = os.environ.get("ALPHA_DECAY_ENABLED", "true").lower() in ("1", "true", "yes")
+# Alpha Decay Monitor Agent — off for live deploy until the monitor is trustworthy.
+# (It was pausing correct bots on short-window / inflated backtest Sharpe.)
+ALPHA_DECAY_ENABLED = os.environ.get("ALPHA_DECAY_ENABLED", "false").lower() in ("1", "true", "yes")
 ALPHA_DECAY_INTERVAL_SEC = float(os.environ.get("ALPHA_DECAY_INTERVAL_SEC", "3600"))
 ALPHA_DECAY_MIN_TRADES = int(os.environ.get("ALPHA_DECAY_MIN_TRADES", "10"))
+# Auto-pause only on absolute live-edge collapse (not relative-to-backtest).
 ALPHA_DECAY_AUTO_PAUSE = os.environ.get("ALPHA_DECAY_AUTO_PAUSE", "true").lower() in ("1", "true", "yes")
 ALPHA_DECAY_AUTO_RETRAIN = os.environ.get("ALPHA_DECAY_AUTO_RETRAIN", "true").lower() in ("1", "true", "yes")
+# Live Sharpe is not a trustworthy pause input below this calendar span.
+ALPHA_DECAY_MIN_SHARPE_DAYS = int(os.environ.get("ALPHA_DECAY_MIN_SHARPE_DAYS", "21"))
+# Absolute collapse must have at least this many closed exits.
+ALPHA_DECAY_PAUSE_MIN_TRADES = int(os.environ.get("ALPHA_DECAY_PAUSE_MIN_TRADES", "30"))
+# Backtest used as a live bar must have this many trades and live-aligned parity.
+ALPHA_DECAY_MIN_BT_TRADES = int(os.environ.get("ALPHA_DECAY_MIN_BT_TRADES", "30"))
+# IS/short-window Sharpe above this is not a live expectation (warn/ignore, never a bar).
+ALPHA_DECAY_MAX_TRUSTED_SHARPE = float(os.environ.get("ALPHA_DECAY_MAX_TRUSTED_SHARPE", "2.5"))
 
 # Pre-Trade Intelligence Agent (last-mile entry checklist)
 PRETRADE_INTEL_ENABLED = os.environ.get("PRETRADE_INTEL_ENABLED", "true").lower() in ("1", "true", "yes")

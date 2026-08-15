@@ -11,6 +11,7 @@ from app.services.paper_ledger import (
     apply_fill_balances,
     classify_buy,
     classify_sell,
+    reconcile_base_inventories,
     short_margin_required,
 )
 from app.services.order_bracket import (
@@ -29,7 +30,10 @@ class SimulatedOMSService(BaseOMSService):
     def __init__(self, feed):
         self.feed = feed
         self._trade_history_cache: list | None = None
-        self._pnl_backfill_done = False
+        # Bump when FIFO backfill semantics change so a running process re-runs
+        # once (e.g. bot_trades overlay + no read-path recompute).
+        self._pnl_backfill_version = 0
+        self._PNL_BACKFILL_TARGET = 3
 
     def invalidate_trade_history_cache(self) -> None:
         self._trade_history_cache = None
@@ -37,10 +41,22 @@ class SimulatedOMSService(BaseOMSService):
     async def initialize(self) -> None:
         pass
 
+    def _reconcile_base_inventories(self, cursor) -> list[str]:
+        meta = getattr(self.feed, "_symbols", None) or {}
+        return reconcile_base_inventories(cursor, meta)
+
     def get_account_data(self) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
-        
+
+        # Self-heal orphan base inventory (balance without a closable long).
+        try:
+            if self._reconcile_base_inventories(cursor):
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            logger.exception("Failed to reconcile paper base inventories")
+
         cursor.execute("SELECT asset, balance, locked FROM accounts")
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
         
@@ -106,12 +122,12 @@ class SimulatedOMSService(BaseOMSService):
         conn = get_connection()
         cursor = conn.cursor()
 
-        if not self._pnl_backfill_done:
+        if self._pnl_backfill_version < self._PNL_BACKFILL_TARGET:
             try:
                 updated = backfill_missing_order_pnl(cursor)
                 if updated:
                     conn.commit()
-                self._pnl_backfill_done = True
+                self._pnl_backfill_version = self._PNL_BACKFILL_TARGET
             except Exception:
                 conn.rollback()
 
@@ -121,7 +137,7 @@ class SimulatedOMSService(BaseOMSService):
                    realized_pnl, cost_basis
             FROM orders
             WHERE status = 'FILLED'
-            ORDER BY timestamp ASC, id ASC
+            ORDER BY timestamp ASC, rowid ASC
         """)
         all_orders = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -146,6 +162,12 @@ class SimulatedOMSService(BaseOMSService):
     def get_balances(self) -> Dict[str, dict]:
         conn = get_connection()
         cursor = conn.cursor()
+        try:
+            if self._reconcile_base_inventories(cursor):
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            logger.exception("Failed to reconcile paper base inventories")
         cursor.execute("SELECT asset, balance, locked FROM accounts")
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
         conn.close()
@@ -629,8 +651,8 @@ class SimulatedOMSService(BaseOMSService):
             if tp_price is None and take_profit_percent is not None:
                 tp_price = price * (1 + take_profit_percent / 100) if new_size > 0 else price * (1 - take_profit_percent / 100)
 
-            high_wm = price if new_size > 0 else None
-            low_wm = price if new_size < 0 else None
+            high_wm = price
+            low_wm = price
 
             cursor.execute("""
                 INSERT INTO positions (
@@ -686,19 +708,20 @@ class SimulatedOMSService(BaseOMSService):
                     sl_price = new_avg * (1 - sl_pct / 100) if new_size > 0 else new_avg * (1 + sl_pct / 100)
                 if tp_price is None and tp_pct is not None:
                     tp_price = new_avg * (1 + tp_pct / 100) if new_size > 0 else new_avg * (1 - tp_pct / 100)
-                # Preserve existing watermark when adding to same-direction position;
-                # only initialise for new positions or direction flips.
+                # Preserve/expand excursion marks for both sides of the book.
                 existing_high = pos_row["high_watermark"]
                 existing_low = pos_row["low_watermark"]
-                if new_size > 0:
-                    high_wm = max(existing_high or new_avg, new_avg) if current_size > 0 else new_avg
-                    low_wm = None
-                elif new_size < 0:
+                if abs(new_size) < 1e-12:
                     high_wm = None
-                    low_wm = min(existing_low or new_avg, new_avg) if current_size < 0 else new_avg
+                    low_wm = None
                 else:
-                    high_wm = None
-                    low_wm = None
+                    flipped = (current_size > 0 and new_size < 0) or (current_size < 0 and new_size > 0)
+                    if flipped or abs(current_size) < 1e-12:
+                        high_wm = new_avg
+                        low_wm = new_avg
+                    else:
+                        high_wm = max(float(existing_high), float(new_avg)) if existing_high is not None else float(new_avg)
+                        low_wm = min(float(existing_low), float(new_avg)) if existing_low is not None else float(new_avg)
 
                 # Partial close / reverse leaves stale OCO qty or wrong exit side.
                 reduced = abs(new_size) < abs(current_size) - 1e-12
@@ -731,7 +754,19 @@ class SimulatedOMSService(BaseOMSService):
             ))
 
         if order_id:
-            record_order_fifo_pnl(cursor, order_id, symbol, side, price, quantity)
+            record_order_fifo_pnl(
+                cursor,
+                order_id,
+                symbol,
+                side,
+                price,
+                quantity,
+                position_size=position_size,
+                position_avg=position_avg,
+            )
+
+        # Keep accounts[base] aligned with long position size after every fill.
+        self._reconcile_base_inventories(cursor)
 
         if bot_id:
             risk = None

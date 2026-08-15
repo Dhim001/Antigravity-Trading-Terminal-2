@@ -1,3 +1,6 @@
+import logging
+import threading
+
 from app.services.bots.indicators import (
     adx_col,
     atr_col,
@@ -11,6 +14,43 @@ from app.services.bots.indicators import (
     supertrend_dir_col,
     supertrend_val_col,
 )
+
+logger = logging.getLogger(__name__)
+
+# strategy_eval_errors_total: count of strategy evaluate() crashes. A strategy
+# that throws every bar is indistinguishable from "no signal" without this —
+# the counter + log make silent ops failures visible.
+_eval_errors: dict[str, int] = {}
+_eval_errors_lock = threading.Lock()
+# Last-log timestamps per strategy — the counter always increments but the
+# exception log is rate-limited so a per-bar crash loop cannot flood the log.
+_eval_last_log: dict[str, float] = {}
+_EVAL_LOG_MIN_INTERVAL_SEC = 60.0
+
+
+def strategy_eval_errors_snapshot() -> dict[str, int]:
+    with _eval_errors_lock:
+        return dict(_eval_errors)
+
+
+def _record_eval_error(strategy: str, exc: Exception) -> None:
+    import time as _time
+
+    now = _time.monotonic()
+    with _eval_errors_lock:
+        _eval_errors[strategy] = _eval_errors.get(strategy, 0) + 1
+        count = _eval_errors[strategy]
+        last = _eval_last_log.get(strategy, 0.0)
+        if now - last >= _EVAL_LOG_MIN_INTERVAL_SEC:
+            _eval_last_log[strategy] = now
+            should_log = True
+        else:
+            should_log = False
+    if should_log:
+        logger.exception(
+            "strategy_eval_errors_total strategy=%s count=%s error=%s",
+            strategy, count, exc,
+        )
 
 
 class BaseStrategy:
@@ -57,8 +97,8 @@ class MacdRsiStrategy(BaseStrategy):
 
             if macd_hist < 0 and macd_hist_prev >= 0 and rsi > 50:
                 return {"signal": "SELL", "stop_loss_distance": 1.5 * atr}
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_eval_error("MACD_RSI", exc)
         return {"signal": "NONE"}
 
 
@@ -102,8 +142,8 @@ class BrsScalpingStrategy(BaseStrategy):
                     "stop_loss_distance": 1.5 * atr,
                     "take_profit_price": bbm,
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_eval_error("BRS_SCALPING", exc)
         return {"signal": "NONE"}
 
 
@@ -139,8 +179,8 @@ class SupertrendAdxStrategy(BaseStrategy):
 
             if st_dir == -1 and st_dir_prev == 1 and adx > threshold:
                 return {"signal": "SELL", "stop_loss_price": st_val}
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_eval_error("SUPERTREND_ADX", exc)
         return {"signal": "NONE"}
 
 
@@ -172,8 +212,8 @@ class VwapPullbackStrategy(BaseStrategy):
                 if use_rsi and rsi_f < float(cfg.get("rsi_oversold_gate", 40)):
                     return {"signal": "NONE"}
                 return {"signal": "SELL", "stop_loss_distance": 1.5 * atr}
-        except Exception:
-            pass
+        except Exception as exc:
+            _record_eval_error("VWAP_PULLBACK", exc)
         return {"signal": "NONE"}
 
 

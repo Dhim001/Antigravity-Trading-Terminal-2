@@ -41,6 +41,8 @@ def _feed_with_symbol(symbol: str = "BTCUSDT", price: float = 100.0) -> AlpacaFe
     feed._crypto_last_trade_event_ts = {}
     feed._sealed_bar_ts = {}
     feed._status = {"crypto": {}, "equity": {}, "options": {}}
+    feed._queue_market_broadcast = MagicMock()
+    feed.order_books = {}
     return feed
 
 
@@ -216,6 +218,92 @@ class AlpacaCandleFormationTests(unittest.TestCase):
         feed._symbols["AAPL"] = {"price": 180.5, "decimals": 2, "asset_class": "equity"}
         feed._apply_correction("AAPL", {"t": "not-a-timestamp", "p": 200.0, "s": 10})
         self.assertEqual(feed.candles["AAPL"][-1]["close"], 180.5)
+
+    def test_crypto_trade_spike_ignored_when_book_near_ref(self) -> None:
+        feed = _feed_with_symbol("BTCUSDT", 65000.0)
+        feed._symbols["BTCUSDT"]["bid"] = 64990.0
+        feed._symbols["BTCUSDT"]["ask"] = 65010.0
+        before = dict(feed.candles["BTCUSDT"][-1])
+        feed._apply_trade("BTCUSDT", 62767.0, 1.0)
+        self.assertEqual(feed.candles["BTCUSDT"][-1], before)
+        self.assertEqual(feed._symbols["BTCUSDT"]["price"], 65000.0)
+
+    def test_crypto_trade_accepted_when_book_confirms_move(self) -> None:
+        feed = _feed_with_symbol("BTCUSDT", 65000.0)
+        # Book already repriced with the dump → treat as real move.
+        feed._symbols["BTCUSDT"]["bid"] = 62000.0
+        feed._symbols["BTCUSDT"]["ask"] = 62100.0
+        feed._apply_trade("BTCUSDT", 62050.0, 0.5)
+        bar = feed.candles["BTCUSDT"][-1]
+        self.assertEqual(bar["close"], 62050.0)
+        self.assertEqual(bar["low"], 62050.0)
+        self.assertAlmostEqual(bar["volume"], 0.5)
+
+    def test_crypto_official_bar_spike_ignored(self) -> None:
+        feed = _feed_with_symbol("BTCUSDT", 65175.0)
+        feed._symbols["BTCUSDT"]["bid"] = 65170.0
+        feed._symbols["BTCUSDT"]["ask"] = 65180.0
+        now = int(time.time() // 60) * 60
+        prev = now - 60
+        feed.candles["BTCUSDT"] = [
+            {"time": prev, "open": 65170.0, "high": 65180.0, "low": 65160.0, "close": 65175.0, "volume": 0.1},
+        ]
+        ts = datetime.fromtimestamp(now, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        feed._apply_bar(
+            "BTCUSDT",
+            {
+                "o": 62839.41509161913,
+                "h": 62911.00305813065,
+                "l": 62767.82712510761,
+                "c": 62767.82712510761,
+                "v": 702.95,
+                "t": ts,
+            },
+        )
+        self.assertEqual(len(feed.candles["BTCUSDT"]), 1)
+        self.assertEqual(feed.candles["BTCUSDT"][-1]["close"], 65175.0)
+
+    def test_crypto_seed_filter_drops_isolated_spike(self) -> None:
+        feed = _feed_with_symbol("BTCUSDT", 65000.0)
+        bars = [
+            {"time": 1, "open": 65000.0, "high": 65010.0, "low": 64990.0, "close": 65005.0, "volume": 1},
+            {"time": 2, "open": 62800.0, "high": 62900.0, "low": 62700.0, "close": 62750.0, "volume": 700},
+            {"time": 3, "open": 65000.0, "high": 65020.0, "low": 64980.0, "close": 65010.0, "volume": 1},
+        ]
+        out = feed._filter_crypto_seed_bars("BTCUSDT", bars)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["close"], 65005.0)
+        self.assertEqual(out[1]["close"], 65010.0)
+
+    def test_equity_bars_not_spike_filtered(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        feed._symbols["AAPL"] = {"price": 180.0, "decimals": 2, "asset_class": "equity"}
+        now = int(time.time() // 60) * 60
+        ts = datetime.fromtimestamp(now, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        # A 5% equity bar is unusual but must not be crypto-filtered.
+        feed._apply_bar(
+            "AAPL",
+            {"o": 180.0, "h": 190.0, "l": 179.0, "c": 189.0, "v": 1000, "t": ts},
+        )
+        self.assertEqual(feed.candles["AAPL"][-1]["close"], 189.0)
+
+    def test_synthetic_book_uses_live_bid_ask_as_bbo(self) -> None:
+        feed = _feed_with_symbol("BTCUSDT", 100000.0)
+        feed._symbols["BTCUSDT"]["bid"] = 99990.0
+        feed._symbols["BTCUSDT"]["ask"] = 100010.0
+        book = feed._generate_synthetic_book("BTCUSDT", 100000.0)
+        self.assertAlmostEqual(book["bids"][0][0], 99990.0)
+        self.assertAlmostEqual(book["asks"][0][0], 100010.0)
+        self.assertEqual(len(book["bids"]), 10)
+        self.assertEqual(len(book["asks"]), 10)
+
+    def test_apply_trade_refreshes_order_book(self) -> None:
+        feed = _feed_with_symbol("AAPL", 180.0)
+        feed._symbols["AAPL"]["asset_class"] = "equity"
+        feed._apply_trade("AAPL", 181.0, 1.0, bid=180.95, ask=181.05)
+        book = feed.order_books["AAPL"]
+        self.assertAlmostEqual(book["bids"][0][0], 180.95)
+        self.assertAlmostEqual(book["asks"][0][0], 181.05)
 
 
 if __name__ == "__main__":

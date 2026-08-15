@@ -47,6 +47,10 @@ SIDE_SHORT = -1
 _TRADE_COST = 0.001        # penalty per trade to discourage overtrading
 _HOLDING_COST = 0.00005    # small per-step cost for holding a position
 _MAX_HOLDING_BARS = 100    # normalize bars_since_entry
+# Default episode cap — without this, one "episode" walks the entire candle
+# history (50k+ bars on Apply & Retrain), so Optuna budgets (8k–65k steps)
+# finish at ep=0 with best_mean_return=-inf.
+_DEFAULT_MAX_EPISODE_STEPS = 2048
 
 
 def _safe_float(val, default=0.0):
@@ -112,6 +116,17 @@ class TradingEnv:
         self.n_candles = len(candles)
         self._symbol = str(self.config.get("symbol") or "").strip() or None
         self._progress_path = progress_path
+        try:
+            cfg_ep = int(self.config.get("max_episode_steps") or 0)
+        except (TypeError, ValueError):
+            cfg_ep = 0
+        self._max_episode_steps = (
+            cfg_ep if cfg_ep > 0 else _DEFAULT_MAX_EPISODE_STEPS
+        )
+        # Deterministic starts for tiny series / tests; random windows for long history.
+        seed = self.config.get("env_seed")
+        self._rng = np.random.default_rng(None if seed is None else int(seed))
+        self._episode_end_idx = self.n_candles - 1
 
         # Pre-extract all feature vectors for speed
         self._feature_vectors: list[np.ndarray] = []
@@ -190,13 +205,29 @@ class TradingEnv:
         """Apply a frozen train-time feature scaler (WF OOS must not refit)."""
         mean = np.asarray(feat_mean, dtype=np.float64).reshape(-1)
         std = np.asarray(feat_std, dtype=np.float64).reshape(-1)
-        if mean.shape[0] != N_FEATURES or std.shape[0] != N_FEATURES:
+        if mean.size == 0 or std.size != mean.size:
             return
+        # Align feature matrix to scaler width (legacy 41-dim models).
+        # Env may still hold a Python list of per-bar vectors at this point.
+        if self._feature_vectors is not None and len(self._feature_vectors) > 0:
+            from app.services.bots.ml_feature_engineering import align_features_to_scaler_dim
+
+            mat = np.asarray(self._feature_vectors, dtype=np.float64)
+            if mat.ndim == 1:
+                mat = mat.reshape(1, -1)
+            if mat.shape[1] != mean.size:
+                mat = align_features_to_scaler_dim(
+                    mat, int(mean.size), log_label="RL env scaler",
+                )
+            self._feature_vectors = mat
         self._feat_mean = mean
         self._feat_std = np.where(std < 1e-8, 1.0, std)
 
     @property
     def obs_dim(self) -> int:
+        # Reflect aligned scaler width so legacy 41-dim models stay consistent.
+        if self._feat_mean is not None:
+            return int(self._feat_mean.shape[0]) + N_POSITION_FEATURES
         return OBS_DIM
 
     @property
@@ -204,7 +235,28 @@ class TradingEnv:
         return N_ACTIONS
 
     def reset(self) -> np.ndarray:
-        """Reset the environment to the start. Returns initial observation."""
+        """Reset the environment to a (possibly random) episode window.
+
+        On long histories, episodes are capped to ``max_episode_steps`` and
+        start at a random eligible index so Apply & Retrain (50k bars) can
+        complete many episodes within a normal ``total_timesteps`` budget.
+        """
+        warmup = max(0, int(self.feature_lookback))
+        usable = max(0, self.n_candles - warmup - 2)
+        ep_len = max(8, int(self._max_episode_steps))
+        if usable <= ep_len:
+            self._start_idx = warmup
+            self._episode_end_idx = max(warmup + 1, self.n_candles - 1)
+        else:
+            # Inclusive start; exclusive end index for the last step check.
+            max_start = self.n_candles - 2 - ep_len
+            max_start = max(warmup, max_start)
+            self._start_idx = int(self._rng.integers(warmup, max_start + 1))
+            self._episode_end_idx = min(
+                self.n_candles - 1,
+                self._start_idx + ep_len,
+            )
+
         self._step_idx = self._start_idx
         self._position_side = SIDE_FLAT
         self._entry_price = 0.0
@@ -301,13 +353,17 @@ class TradingEnv:
 
         # ── Advance step ──────────────────────────────────────────────
         self._step_idx += 1
-        if self._step_idx >= self.n_candles - 1:
-            # Force close at end of episode
+        if self._step_idx >= self._episode_end_idx or self._step_idx >= self.n_candles - 1:
+            # Force close at end of episode window / data
             if self._position_side != SIDE_FLAT:
                 final_close = self._closes[min(self._step_idx, self.n_candles - 1)]
                 reward += self._close_position(final_close)
             self._done = True
-            info["reason"] = "end_of_data"
+            info["reason"] = (
+                "end_of_data"
+                if self._step_idx >= self.n_candles - 1
+                else "episode_horizon"
+            )
 
         info["equity"] = self._equity
         info["position_side"] = self._position_side

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatMlJobBudgetLabel,
   isTransientMlPollError,
+  mlHyperparamSweepPollDeadlineMs,
   mlJobPollDeadlineMs,
   mlJobPollIntervalMs,
   mlJobTimeoutMs,
@@ -64,5 +65,11 @@ describe('mlJobTimeouts', () => {
     expect(isMlClientTimeoutError(new Error('Request timed out after 30000ms: /x'))).toBe(true);
     expect(isMlClientTimeoutError('fold failed')).toBe(false);
     expect(mlJobTimeoutMs('ML_SIGNAL_BOOST', 'validate')).toBe(ML_VALIDATE_TIMEOUT_MS.default);
+  });
+
+  it('gives Auto-Tune 15 min past the Optuna budget so in-flight trials can finish', () => {
+    expect(mlHyperparamSweepPollDeadlineMs(600)).toBe(600_000 + ML_JOB_POLL_BUFFER_MS);
+    expect(mlHyperparamSweepPollDeadlineMs(60)).toBe(120_000 + ML_JOB_POLL_BUFFER_MS);
+    expect(mlHyperparamSweepPollDeadlineMs(0)).toBe(600_000 + ML_JOB_POLL_BUFFER_MS);
   });
 });

@@ -248,9 +248,13 @@ def _evaluate_oos_rl_env(
 
     feat_mean = (scaler or {}).get("feat_mean")
     feat_std = (scaler or {}).get("feat_std")
+    # OOS must walk the full fold once (not a random capped train window).
+    oos_cfg = dict(config or {})
+    oos_cfg["max_episode_steps"] = max(len(test_candles), 8)
+    oos_cfg["env_seed"] = int(oos_cfg.get("env_seed") or 0)
     env = TradingEnv(
         test_candles,
-        config=config,
+        config=oos_cfg,
         feat_mean=feat_mean,
         feat_std=feat_std,
     )

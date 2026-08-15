@@ -12,19 +12,24 @@ from app.config import (
     ALPHA_DECAY_AUTO_PAUSE,
     ALPHA_DECAY_AUTO_RETRAIN,
     ALPHA_DECAY_ENABLED,
+    ALPHA_DECAY_MAX_TRUSTED_SHARPE,
+    ALPHA_DECAY_MIN_BT_TRADES,
+    ALPHA_DECAY_MIN_SHARPE_DAYS,
     ALPHA_DECAY_MIN_TRADES,
+    ALPHA_DECAY_PAUSE_MIN_TRADES,
 )
 from app.database import get_connection
 from app.services.bots.candle_source import get_bot_candles
 from app.services.bots.indicators import adx_col
 from app.services.bots.meta_label_model import get_meta_label_store, train_meta_label_model
 from app.services.bots.backtest_store import list_backtest_runs
-from app.services.bots.optimization_store import list_optimization_runs
 from app.services.notifications import types as ntypes
 from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
 
 logger = logging.getLogger(__name__)
+
+LIVE_EDGE_COLLAPSE_PREFIX = "Live Edge Collapse:"
 
 
 def get_strategy_category(strategy: str) -> str:
@@ -38,54 +43,205 @@ def get_strategy_category(strategy: str) -> str:
     return "trend"
 
 
+def _as_dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _run_sim_mode(run: dict) -> str:
+    results = _as_dict(run.get("results"))
+    meta = _as_dict(results.get("meta"))
+    cfg = _as_dict(run.get("config"))
+    meta_cfg = _as_dict(meta.get("config"))
+    return str(
+        results.get("sim_mode")
+        or meta.get("sim_mode")
+        or cfg.get("sim_mode")
+        or meta_cfg.get("sim_mode")
+        or ""
+    ).lower()
+
+
+def _run_live_parity(run: dict) -> bool | None:
+    results = _as_dict(run.get("results"))
+    meta = _as_dict(results.get("meta"))
+    cfg = _as_dict(run.get("config"))
+    meta_cfg = _as_dict(meta.get("config"))
+    for src in (results, meta, cfg, meta_cfg):
+        if "live_parity" in src and src.get("live_parity") is not None:
+            return bool(src.get("live_parity"))
+    mode = _run_sim_mode(run)
+    if mode == "live_aligned":
+        return True
+    if mode in ("research", "research_fast"):
+        return False
+    return None
+
+
+def is_trustworthy_expectation_run(run: dict | None) -> bool:
+    """True when a stored backtest is allowed to set a live performance bar.
+
+    Research / research_fast and non-parity runs are optimistic and must not
+    pause a live bot. In-sample optimization winners are never used.
+    """
+    if not isinstance(run, dict):
+        return False
+    if _run_sim_mode(run) in ("research", "research_fast"):
+        return False
+    parity = _run_live_parity(run)
+    if parity is False:
+        return False
+    return True
+
+
+def _normalize_win_rate(win_rate: Any) -> float | None:
+    if win_rate is None:
+        return None
+    try:
+        value = float(win_rate)
+    except (TypeError, ValueError):
+        return None
+    if value <= 1.0:
+        value *= 100.0
+    if value < 0 or value > 100:
+        return None
+    return value
+
+
+def _trusted_sharpe(sharpe: Any) -> float | None:
+    if sharpe is None:
+        return None
+    try:
+        value = float(sharpe)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    if value > ALPHA_DECAY_MAX_TRUSTED_SHARPE:
+        return None
+    return value
+
+
+def _trade_count(*candidates: Any) -> int:
+    for raw in candidates:
+        try:
+            n = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0
+
+
+def _metrics_from_summary(summary: dict, extra_trades: Any = None) -> tuple[float | None, float | None, int]:
+    wr = _normalize_win_rate(summary.get("win_rate"))
+    sh = _trusted_sharpe(summary.get("sharpe_ratio"))
+    trades = _trade_count(summary.get("total_trades"), extra_trades)
+    return wr, sh, trades
+
+
+def extract_expectation_metrics(run: dict) -> tuple[float | None, float | None]:
+    """Win-rate % and Sharpe from a run, preferring holdout / WF OOS over IS."""
+    results = _as_dict(run.get("results"))
+    holdout = results.get("final_holdout") or _as_dict(results.get("walk_forward")).get("final_holdout")
+    if isinstance(holdout, dict) and not holdout.get("skipped") and not holdout.get("error"):
+        ho_sum = _as_dict(holdout.get("summary")) or holdout
+        wr, sh, trades = _metrics_from_summary(ho_sum, holdout.get("trade_count"))
+        if trades >= ALPHA_DECAY_MIN_BT_TRADES and (wr is not None or sh is not None):
+            return wr, sh
+
+    wf = _as_dict(results.get("walk_forward"))
+    oos = _as_dict(wf.get("out_of_sample")) or _as_dict(wf.get("aggregate"))
+    if oos:
+        wr, sh, trades = _metrics_from_summary(
+            _as_dict(oos.get("summary")) or oos,
+            oos.get("trade_count") or oos.get("oos_trades"),
+        )
+        if trades >= ALPHA_DECAY_MIN_BT_TRADES and (wr is not None or sh is not None):
+            return wr, sh
+
+    if not is_trustworthy_expectation_run(run):
+        return None, None
+    summary = _as_dict(run.get("summary")) or _as_dict(results.get("summary"))
+    wr, sh, trades = _metrics_from_summary(summary, results.get("trade_count"))
+    if trades < ALPHA_DECAY_MIN_BT_TRADES:
+        return None, None
+    return wr, sh
+
+
 def get_backtest_expectations(symbol: str, strategy: str) -> tuple[float | None, float | None]:
-    """Retrieve win rate and Sharpe ratio expectations from recent backtest or optimization runs."""
+    """Live bar from the newest *trustworthy* backtest for symbol+strategy.
+
+    Untrusted sources (research_fast, non-parity, tiny samples, fantasy Sharpe,
+    in-sample optimization) return (None, None) so the monitor does not invent
+    a 55% / 1.5 Sharpe default and pause a correct live bot against it.
+    """
     try:
         runs = list_backtest_runs(symbol=symbol, limit=20)
         for r in runs:
-            if r.get("strategy") == strategy and r.get("summary"):
-                summary = r["summary"]
-                win_rate = summary.get("win_rate")
-                sharpe = summary.get("sharpe_ratio")
-                if win_rate is not None or sharpe is not None:
-                    return win_rate, sharpe
+            if r.get("strategy") != strategy:
+                continue
+            wr, sh = extract_expectation_metrics(r)
+            if wr is not None or sh is not None:
+                return wr, sh
     except Exception:
-        pass
-
-    try:
-        opt_runs = list_optimization_runs(symbol=symbol, limit=20)
-        for r in opt_runs:
-            if r.get("strategy") == strategy and r.get("best_config"):
-                results = r.get("results") or []
-                for res in results:
-                    summary = res.get("summary") or res
-                    win_rate = summary.get("win_rate")
-                    sharpe = summary.get("sharpe_ratio")
-                    if win_rate is not None or sharpe is not None:
-                        return win_rate, sharpe
-    except Exception:
-        pass
-
+        logger.debug("backtest expectation lookup failed for %s/%s", symbol, strategy, exc_info=True)
     return None, None
 
 
+def _span_days(timestamps: list[str]) -> float:
+    if len(timestamps) < 2:
+        return 0.0
+    try:
+        newest = datetime.fromisoformat(str(timestamps[0]).replace("Z", "+00:00"))
+        oldest = datetime.fromisoformat(str(timestamps[-1]).replace("Z", "+00:00"))
+        return abs((newest - oldest).total_seconds()) / 86400.0
+    except Exception:
+        return 0.0
+
+
 def _compute_live_sharpe(returns: list[float], timestamps: list[str]) -> float | None:
+    """Annualized trade-PnL Sharpe, or None when the window is too short to trust.
+
+    Short live books (days, not weeks) annualize noise into extreme Sharpes
+    (e.g. -3 from a handful of small losers) and must not trip a pause.
+    """
     if len(returns) < 3:
+        return None
+    days = _span_days(timestamps)
+    if days < float(ALPHA_DECAY_MIN_SHARPE_DAYS):
         return None
     mean_r = sum(returns) / len(returns)
     variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
     std_r = variance ** 0.5
     if std_r < 1e-12:
         return None
-    try:
-        t0_dt = datetime.fromisoformat(timestamps[-1].replace("Z", "+00:00"))
-        t1_dt = datetime.fromisoformat(timestamps[0].replace("Z", "+00:00"))
-        duration_years = (t1_dt - t0_dt).total_seconds() / (365.25 * 86400)
-    except Exception:
-        duration_years = 0.0
-    if duration_years > 0:
-        return round((mean_r / std_r) * (len(returns) / duration_years) ** 0.5, 2)
-    return round((mean_r / std_r) * (len(returns) ** 0.5), 2)
+    duration_years = days / 365.25
+    return round((mean_r / std_r) * (len(returns) / duration_years) ** 0.5, 2)
+
+
+def live_edge_collapse_reason(
+    pnls: list[float],
+    timestamps: list[str],
+    live_sharpe: float | None,
+) -> str | None:
+    """Absolute live failure with enough sample — the only alpha-decay pause."""
+    if len(pnls) < ALPHA_DECAY_PAUSE_MIN_TRADES:
+        return None
+    if _span_days(timestamps) < float(ALPHA_DECAY_MIN_SHARPE_DAYS):
+        return None
+    net = sum(pnls)
+    if net >= 0:
+        return None
+    if live_sharpe is None or live_sharpe >= 0:
+        return None
+    return (
+        f"{LIVE_EDGE_COLLAPSE_PREFIX} {len(pnls)} exits net ${net:.2f} with "
+        f"Sharpe {live_sharpe:.2f} over {_span_days(timestamps):.0f}d"
+    )
+
+
+def decay_reasons_warrant_pause(reasons: list[str]) -> bool:
+    return any(str(r).startswith(LIVE_EDGE_COLLAPSE_PREFIX) for r in reasons)
 
 
 class AlphaDecayMonitor:
@@ -120,13 +276,10 @@ class AlphaDecayMonitor:
             # ML model-age block was skipped (ImportError / non-ML decay only).
             model_tf = timeframe or (cfg.get("timeframe") if isinstance(cfg, dict) else None) or "1m"
 
-            # 1. Fetch backtest expectations
+            # 1. Fetch backtest expectations (trustworthy live-aligned only).
             bt_win_rate, bt_sharpe = get_backtest_expectations(symbol, strategy)
-            expected_win_rate = float(bt_win_rate if bt_win_rate is not None else 55.0)
-            if expected_win_rate <= 1.0:
-                expected_win_rate *= 100.0  # normalize decimal to percentage
-
-            expected_sharpe = float(bt_sharpe if bt_sharpe is not None else 1.5)
+            expected_win_rate = _normalize_win_rate(bt_win_rate)
+            expected_sharpe = _trusted_sharpe(bt_sharpe)
 
             # Retrieve exits from database
             conn = get_connection()
@@ -135,34 +288,43 @@ class AlphaDecayMonitor:
                 """
                 SELECT pnl, timestamp FROM bot_trades 
                 WHERE bot_id = ? AND is_exit = 1 AND pnl IS NOT NULL 
-                ORDER BY timestamp DESC LIMIT 30
+                ORDER BY timestamp DESC LIMIT ?
                 """,
-                (bot_id,),
+                (bot_id, max(30, ALPHA_DECAY_PAUSE_MIN_TRADES)),
             )
             rows = cursor.fetchall()
             conn.close()
+
+            live_sharpe = None
+            pnls: list[float] = []
+            timestamps: list[str] = []
 
             # Ensure we have enough statistical samples
             if len(rows) >= ALPHA_DECAY_MIN_TRADES:
                 pnls = [float(r[0]) for r in rows]
                 timestamps = [str(r[1]) for r in rows]
 
-                # --- Metric 1: Rolling Win Rate Divergence ---
-                rolling_win_rate = (sum(1 for p in pnls[:20] if p > 0) / len(pnls[:20])) * 100
-                if rolling_win_rate < expected_win_rate - 15.0:
-                    decay_reasons.append(
-                        f"Win Rate Decay: Live rolling win rate {rolling_win_rate:.1f}% "
-                        f"is >15% below expected {expected_win_rate:.1f}%"
-                    )
+                # --- Metric 1: Rolling Win Rate Divergence (observe only) ---
+                if expected_win_rate is not None:
+                    rolling_win_rate = (sum(1 for p in pnls[:20] if p > 0) / len(pnls[:20])) * 100
+                    if rolling_win_rate < expected_win_rate - 15.0:
+                        decay_reasons.append(
+                            f"Win Rate Decay: Live rolling win rate {rolling_win_rate:.1f}% "
+                            f"is >15% below expected {expected_win_rate:.1f}%"
+                        )
 
-                # --- Metric 2: Sharpe Decay ---
-                if expected_sharpe > 0.0:
-                    live_sharpe = _compute_live_sharpe(pnls, timestamps)
-                    if live_sharpe is not None and live_sharpe < expected_sharpe * 0.5:
+                # --- Metric 2: Sharpe Decay vs a trusted live-aligned bar ---
+                live_sharpe = _compute_live_sharpe(pnls, timestamps)
+                if expected_sharpe is not None and live_sharpe is not None:
+                    if live_sharpe < expected_sharpe * 0.5 and live_sharpe < 0.5:
                         decay_reasons.append(
                             f"Sharpe Decay: Live Sharpe ratio {live_sharpe:.2f} "
                             f"is <50% of expected {expected_sharpe:.2f}"
                         )
+
+                collapse = live_edge_collapse_reason(pnls, timestamps, live_sharpe)
+                if collapse:
+                    decay_reasons.append(collapse)
 
             # --- Metric 3: Regime Mismatch ---
             category = get_strategy_category(strategy)
@@ -195,6 +357,9 @@ class AlphaDecayMonitor:
 
             # --- Metric 4: Consecutive Filter Rejections ---
             # Skip outside equity RTH — post-close event gates must not look like decay.
+            # Also require ALPHA_DECAY_MIN_TRADES exits: a brand-new ML bot often has
+            # BUY/SELL → gate veto streaks (pretrade/VAE/conformal) before it has a
+            # statistically meaningful trade sample — that is not alpha decay.
             signal_history = bot.get("signal_history")
             run_filter_stale = True
             try:
@@ -205,12 +370,35 @@ class AlphaDecayMonitor:
                 run_filter_stale = open_ok
             except Exception:
                 run_filter_stale = True
-            if run_filter_stale and signal_history and len(signal_history) >= 10:
+            if (
+                run_filter_stale
+                and signal_history
+                and len(signal_history) >= 10
+                and len(rows) >= ALPHA_DECAY_MIN_TRADES
+            ):
                 rejections = sum(1 for x in signal_history if x is False)
                 reject_ratio = rejections / len(signal_history)
                 if reject_ratio >= 0.8:
                     decay_reasons.append(
                         f"Filter Stale: {reject_ratio:.1%} of recent signals blocked by filters"
+                    )
+            elif (
+                run_filter_stale
+                and signal_history
+                and len(signal_history) >= 10
+                and len(rows) < ALPHA_DECAY_MIN_TRADES
+            ):
+                rejections = sum(1 for x in signal_history if x is False)
+                reject_ratio = rejections / len(signal_history)
+                if reject_ratio >= 0.8:
+                    logger.info(
+                        "Filter Stale deferred for bot %s (%s): %.0f%% blocked but only "
+                        "%d exits < min_trades=%d",
+                        bot_id,
+                        symbol,
+                        reject_ratio * 100.0,
+                        len(rows),
+                        ALPHA_DECAY_MIN_TRADES,
                     )
 
             # --- Metric 5: Meta-Label Confidence Drift ---
@@ -408,8 +596,11 @@ class AlphaDecayMonitor:
                     except Exception as exc:
                         logger.error("Failed to retrain meta-label model for bot %s on decay: %s", bot_id, exc)
 
-                # Auto-pause bot if configured
-                if ALPHA_DECAY_AUTO_PAUSE:
+                # Auto-pause only on absolute live-edge collapse with a trustworthy
+                # sample. Relative-to-backtest, regime, filter, drift, and model-age
+                # reasons observe / retrain — they must not halt a correct live bot.
+                should_pause = ALPHA_DECAY_AUTO_PAUSE and decay_reasons_warrant_pause(decay_reasons)
+                if should_pause:
                     try:
                         await self.bot_manager.pause_bot(bot_id)
                         results["paused_bots"].append(bot_id)
@@ -421,6 +612,13 @@ class AlphaDecayMonitor:
                         await self.bot_manager.log_bot_event(bot_id, "WARN", decay_report)
                     except Exception as exc:
                         logger.error("Failed to auto-pause decaying bot %s: %s", bot_id, exc)
+                else:
+                    await self.bot_manager.log_bot_event(
+                        bot_id,
+                        "WARN",
+                        "Alpha Decay (observe only, not pausing): "
+                        + "; ".join(decay_reasons),
+                    )
 
                 # Dispatch Alert Notification
                 try:
@@ -434,7 +632,7 @@ class AlphaDecayMonitor:
                                 "bot_id": bot_id,
                                 "symbol": symbol,
                                 "reasons": decay_reasons,
-                                "auto_paused": ALPHA_DECAY_AUTO_PAUSE,
+                                "auto_paused": should_pause,
                                 "auto_retrained": ALPHA_DECAY_AUTO_RETRAIN,
                                 "suggestion": (
                                     "Consider running a hyperparameter sweep before retrain — "
@@ -468,7 +666,7 @@ class AlphaDecayMonitor:
                                 "bot_id": bot_id,
                                 "symbol": symbol,
                                 "reasons": decay_reasons,
-                                "auto_paused": ALPHA_DECAY_AUTO_PAUSE,
+                                "auto_paused": should_pause,
                                 "auto_retrained": ALPHA_DECAY_AUTO_RETRAIN,
                                 "why": decay_reasons[0] if decay_reasons else "edge degradation",
                             },

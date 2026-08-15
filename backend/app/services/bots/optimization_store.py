@@ -333,7 +333,7 @@ ML_TRAIN_HYPERPARAM_KEYS = frozenset({
     "max_iter", "val_fraction", "triple_barrier_atr_mult",
     "learning_rate", "hidden_dim", "epochs", "batch_size", "lookback",
     "num_layers", "early_stop_patience", "d_model", "n_heads", "dropout",
-    "clip_epsilon", "ent_coef", "n_steps", "total_timesteps",
+    "clip_epsilon", "ent_coef", "n_steps", "total_timesteps", "max_episode_steps",
     "latent_dim", "anomaly_threshold",
 })
 

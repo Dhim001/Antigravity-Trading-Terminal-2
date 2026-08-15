@@ -255,6 +255,7 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "ppo_epochs": 10,
         "n_steps": 2048,
         "total_timesteps": 200000,
+        "max_episode_steps": 2048,
         "hidden_dim": 256,
         "learning_rate": 0.0003,
         "batch_size": 128,

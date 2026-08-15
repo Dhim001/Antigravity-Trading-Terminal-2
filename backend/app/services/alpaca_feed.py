@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List
@@ -46,6 +48,14 @@ _MAX_CANDLES = 1500
 # Alpaca "latest/trades" can sit on a print for minutes while the book moves.
 # Prefer quote mids once the last trade is older than this.
 _CRYPTO_TRADE_FRESH_SEC = 5.0
+# Drop crypto prints/bars that jump more than this vs the last good close *unless*
+# the bid/ask mid has moved with them (real move). Default 2.5%/min filters the
+# occasional Alpaca bad print (e.g. a lone ~3.7% wick that snaps back next minute)
+# without freezing through a sustained crash where the book also reprices.
+_CRYPTO_SPIKE_MAX_PCT = max(
+    0.005,
+    min(0.20, float(os.environ.get("ALPACA_CRYPTO_SPIKE_PCT", "0.025") or 0.025)),
+)
 
 
 def _alpaca_ts_age_sec(ts_val: Any) -> float | None:
@@ -516,6 +526,135 @@ class AlpacaFeedService(BaseFeedService):
         if counter[0] % every == 0:
             await asyncio.sleep(0)
 
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        info = self._symbols.get(symbol) or {}
+        return info.get("asset_class") == "crypto" or symbol in CRYPTO_SYMBOLS
+
+    def _crypto_ref_price(self, symbol: str) -> float | None:
+        """Last trusted close for spike checks (candle close → mark price)."""
+        buf = self.candles.get(symbol) or []
+        if buf:
+            try:
+                px = float(buf[-1].get("close") or 0)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                pass
+        try:
+            px = float((self._symbols.get(symbol) or {}).get("price") or 0)
+            return px if px > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _crypto_book_mid(self, symbol: str) -> float | None:
+        info = self._symbols.get(symbol) or {}
+        try:
+            bid = float(info["bid"]) if info.get("bid") is not None else None
+            ask = float(info["ask"]) if info.get("ask") is not None else None
+        except (TypeError, ValueError, KeyError):
+            return None
+        if bid is not None and ask is not None and bid > 0 and ask > 0:
+            return (bid + ask) / 2.0
+        if bid is not None and bid > 0:
+            return bid
+        if ask is not None and ask > 0:
+            return ask
+        return None
+
+    def _is_crypto_price_spike(
+        self,
+        symbol: str,
+        price: float,
+        *,
+        ref: float | None = None,
+    ) -> bool:
+        """True when ``price`` is an outlier vs last close and the book disagrees.
+
+        Real 1m crashes reprice the book; lone bad prints / corrupt bars usually
+        leave bid/ask near the prior close. No-book paths still reject large jumps.
+        """
+        if not self._is_crypto_symbol(symbol):
+            return False
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            return True
+        if not (px > 0) or not math.isfinite(px):
+            return True
+        ref_px = float(ref) if ref is not None and ref > 0 else self._crypto_ref_price(symbol)
+        if ref_px is None or ref_px <= 0:
+            return False
+        move = abs(px - ref_px) / ref_px
+        if move <= _CRYPTO_SPIKE_MAX_PCT:
+            return False
+        mid = self._crypto_book_mid(symbol)
+        if mid is not None and mid > 0:
+            # Book already at the new level → accept (sustained move).
+            if abs(px - mid) / mid <= _CRYPTO_SPIKE_MAX_PCT:
+                return False
+            # Book still near the old close → reject rogue print.
+            if abs(mid - ref_px) / ref_px <= _CRYPTO_SPIKE_MAX_PCT:
+                return True
+        return True
+
+    def _round_crypto_bar(self, symbol: str, candle: dict) -> dict:
+        decimals = int((self._symbols.get(symbol) or {}).get("decimals", 2) or 2)
+        out = dict(candle)
+        for key in ("open", "high", "low", "close"):
+            try:
+                out[key] = round(float(out[key]), decimals)
+            except (TypeError, ValueError, KeyError):
+                pass
+        try:
+            out["volume"] = round(float(out.get("volume") or 0), 8)
+        except (TypeError, ValueError):
+            out["volume"] = 0.0
+        return out
+
+    def _filter_crypto_seed_bars(self, symbol: str, bars: list[dict]) -> list[dict]:
+        """Drop isolated spike bars from REST seed history (walk-forward)."""
+        if not bars or not self._is_crypto_symbol(symbol):
+            return bars
+        decimals = int((self._symbols.get(symbol) or {}).get("decimals", 2) or 2)
+        out: list[dict] = []
+        ref: float | None = None
+        dropped = 0
+        for raw in bars:
+            try:
+                close_px = float(raw.get("close") or 0)
+            except (TypeError, ValueError):
+                continue
+            if close_px <= 0:
+                continue
+            bar = {
+                "time": int(raw["time"]),
+                "open": round(float(raw["open"]), decimals),
+                "high": round(float(raw["high"]), decimals),
+                "low": round(float(raw["low"]), decimals),
+                "close": round(close_px, decimals),
+                "volume": round(float(raw.get("volume") or 0), 8),
+            }
+            if ref is not None and ref > 0:
+                move = abs(bar["close"] - ref) / ref
+                if move > _CRYPTO_SPIKE_MAX_PCT:
+                    # Keep only if the bar is internally consistent with a real
+                    # session move (open near prior close). Lone flash prints
+                    # usually open *and* close far from the prior close.
+                    open_move = abs(bar["open"] - ref) / ref
+                    if open_move > _CRYPTO_SPIKE_MAX_PCT:
+                        dropped += 1
+                        continue
+            out.append(bar)
+            ref = bar["close"]
+        if dropped:
+            logger.warning(
+                "Alpaca crypto seed %s: dropped %d spike bar(s) (>%s%% vs prior close)",
+                symbol,
+                dropped,
+                round(_CRYPTO_SPIKE_MAX_PCT * 100, 2),
+            )
+        return out
+
     def _patch_forming_candle(
         self,
         symbol: str,
@@ -623,6 +762,18 @@ class AlpacaFeedService(BaseFeedService):
                 self._symbols[symbol]["ask"] = float(ask)
             except (TypeError, ValueError):
                 pass
+        self._refresh_order_book(symbol)
+        # Spike check after bid/ask update so book-confirmed moves still pass.
+        if self._is_crypto_price_spike(symbol, px):
+            logger.warning(
+                "Alpaca crypto spike ignored %s %s px=%.6f ref=%s mid=%s",
+                "quote" if from_quote else "trade",
+                symbol,
+                px,
+                self._crypto_ref_price(symbol),
+                self._crypto_book_mid(symbol),
+            )
+            return
         if from_quote:
             # Quotes can arrive hundreds/sec; keep forming bar alive without
             # monopolizing the event loop.
@@ -646,13 +797,33 @@ class AlpacaFeedService(BaseFeedService):
                     next_bar = (b1.get("high"), b1.get("low"), b1.get("close"), b1.get("time"))
                 if prev != px or prev_bar != next_bar:
                     self._pending_updates.add(symbol)
+                try:
+                    from app.services.archive.tick_writer import record_tick
+
+                    record_tick(
+                        symbol,
+                        px,
+                        volume=0.0,
+                        bid=self._symbols[symbol].get("bid"),
+                        ask=self._symbols[symbol].get("ask"),
+                        tick_type="quote",
+                    )
+                except Exception:
+                    pass
                 return
             self._last_quote_apply_ts[symbol] = now
         self._symbols[symbol]["price"] = px
         try:
             from app.services.archive.tick_writer import record_tick
 
-            record_tick(symbol, px, volume=float(size or 0))
+            record_tick(
+                symbol,
+                px,
+                volume=float(size or 0),
+                bid=self._symbols[symbol].get("bid"),
+                ask=self._symbols[symbol].get("ask"),
+                tick_type="quote" if from_quote else "trade",
+            )
         except Exception:
             pass
         self._patch_forming_candle(
@@ -686,6 +857,34 @@ class AlpacaFeedService(BaseFeedService):
             close_px = float(msg.get("c"))
         except (TypeError, ValueError):
             return
+        # Crypto outlier guard — reject corrupt official bars that flash away from
+        # the prior close while the book (if any) still sits near the old level.
+        ref_close: float | None = None
+        if self._is_crypto_symbol(symbol) and active_candles:
+            last_t = int(active_candles[-1].get("time") or 0)
+            try:
+                if last_t == t_epoch and len(active_candles) >= 2:
+                    ref_close = float(active_candles[-2].get("close") or 0) or None
+                elif last_t != t_epoch:
+                    ref_close = float(active_candles[-1].get("close") or 0) or None
+            except (TypeError, ValueError):
+                ref_close = None
+            spike = any(
+                self._is_crypto_price_spike(symbol, px, ref=ref_close)
+                for px in (open_px, high_px, low_px, close_px)
+            )
+            if spike:
+                logger.warning(
+                    "Alpaca crypto bar spike ignored %s t=%s o=%.4f h=%.4f l=%.4f c=%.4f ref=%s",
+                    symbol,
+                    t_epoch,
+                    open_px,
+                    high_px,
+                    low_px,
+                    close_px,
+                    ref_close,
+                )
+                return
         new_candle = {
             "time": t_epoch,
             "open": open_px,
@@ -694,6 +893,8 @@ class AlpacaFeedService(BaseFeedService):
             "close": close_px,
             "volume": round(float(msg.get("v", 0) or 0), 8),
         }
+        if self._is_crypto_symbol(symbol):
+            new_candle = self._round_crypto_bar(symbol, new_candle)
         if active_candles and int(active_candles[-1]["time"]) == t_epoch:
             # Replace provisional forming / first emit for this minute.
             active_candles[-1] = new_candle
@@ -771,6 +972,14 @@ class AlpacaFeedService(BaseFeedService):
         try:
             px = float(msg.get("p"))
         except (TypeError, ValueError):
+            return
+        if self._is_crypto_price_spike(symbol, px):
+            logger.warning(
+                "Alpaca crypto correction spike ignored %s px=%.6f ref=%s",
+                symbol,
+                px,
+                self._crypto_ref_price(symbol),
+            )
             return
         self._patch_forming_candle(symbol, px, from_quote=True, volume=0.0)
         self._queue_market_broadcast(symbol)
@@ -1368,6 +1577,7 @@ class AlpacaFeedService(BaseFeedService):
                     return
                 try:
                     bars = await asyncio.to_thread(self._fetch_seed_1m, symbol)
+                    bars = self._filter_crypto_seed_bars(symbol, bars)
                     if not bars or len(bars) < 30:
                         return
                     # Preserve a live forming bar if WS already rolled past REST.
@@ -1567,29 +1777,59 @@ class AlpacaFeedService(BaseFeedService):
             curr += 60
         return candles
 
+    def _refresh_order_book(self, symbol: str) -> None:
+        info = self._symbols.get(symbol)
+        if not info:
+            return
+        if not hasattr(self, "order_books") or self.order_books is None:
+            self.order_books = {}
+        new_book = self._generate_synthetic_book(symbol, info.get("price") or 0)
+        prev = self.order_books.get(symbol)
+        if (
+            prev
+            and prev.get("bids")
+            and prev.get("asks")
+            and new_book.get("bids")
+            and new_book.get("asks")
+            and prev["bids"][0][0] == new_book["bids"][0][0]
+            and prev["asks"][0][0] == new_book["asks"][0][0]
+        ):
+            return
+        self.order_books[symbol] = new_book
+
     def _generate_synthetic_book(self, symbol, price) -> dict:
         import random
 
-        decimals = self._symbols[symbol]["decimals"]
-        spread = round(price * 0.0005, decimals)
-        if spread <= 0:
-            spread = 10 ** (-decimals)
-        best_bid = price - spread / 2
-        best_ask = price + spread / 2
+        info = self._symbols.get(symbol) or {}
+        decimals = int(info.get("decimals") or 2)
+        bid = info.get("bid")
+        ask = info.get("ask")
+        try:
+            bid_f = float(bid) if bid is not None else None
+            ask_f = float(ask) if ask is not None else None
+        except (TypeError, ValueError):
+            bid_f = ask_f = None
+
+        if bid_f and ask_f and ask_f > bid_f > 0:
+            best_bid, best_ask = bid_f, ask_f
+        else:
+            spread = round((price or 0) * 0.0005, decimals)
+            if spread <= 0:
+                spread = 10 ** (-decimals)
+            best_bid = (price or 0) - spread / 2
+            best_ask = (price or 0) + spread / 2
+
         bids = []
         asks = []
         for i in range(10):
-            step = 0.0003 * (i + 1)
-            bids.append(
-                [
-                    round(best_bid * (1 - step), decimals),
-                    round(100 * random.uniform(0.5, 2.0) * (10 - i) / 5, 2),
-                ]
-            )
-            asks.append(
-                [
-                    round(best_ask * (1 + step), decimals),
-                    round(100 * random.uniform(0.5, 2.0) * (10 - i) / 5, 2),
-                ]
-            )
+            # Level 0 is the real (or inferred) BBO; deeper levels fan out.
+            if i == 0:
+                bid_px, ask_px = best_bid, best_ask
+            else:
+                step = 0.0003 * i
+                bid_px = best_bid * (1 - step)
+                ask_px = best_ask * (1 + step)
+            size = round(100 * random.uniform(0.5, 2.0) * (10 - i) / 5, 2)
+            bids.append([round(bid_px, decimals), size])
+            asks.append([round(ask_px, decimals), size])
         return {"bids": bids, "asks": asks}

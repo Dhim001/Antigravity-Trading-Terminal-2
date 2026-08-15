@@ -9,6 +9,11 @@ from app.config import (
     RISK_MAX_LEVERAGE,
     RISK_MAX_MARGIN_UTILIZATION_PCT,
 )
+from app.services.account_cash import (
+    cash_available,
+    resolve_quote_asset,
+    total_quote_available,
+)
 from app.services.bots.portfolio_risk import PortfolioSnapshot
 
 
@@ -23,6 +28,7 @@ class MarginSnapshot:
     utilization_pct: float
     max_leverage: float
     buying_power: float | None = None
+    quote_asset: str | None = None
 
 
 def margin_status() -> dict:
@@ -44,18 +50,27 @@ def _oms_margin_source(oms) -> str:
     return "sim"
 
 
-def _cash_from_balances(balances: dict) -> tuple[float, float]:
-    for asset in ("USD", "USDT"):
-        row = balances.get(asset)
-        if row:
-            return float(row.get("balance") or 0), float(row.get("locked") or 0)
-    return 0.0, 0.0
+def build_margin_snapshot(
+    oms,
+    portfolio: PortfolioSnapshot,
+    *,
+    symbol: str | None = None,
+    quote: str | None = None,
+) -> MarginSnapshot:
+    """Build margin view.
 
-
-def build_margin_snapshot(oms, portfolio: PortfolioSnapshot) -> MarginSnapshot:
+    When ``symbol``/``quote`` is set, ``available_cash`` is that quote bucket
+    (USDT for crypto, USD for equities). Otherwise it is the sum of unlocked
+    USD+USDT — correct for dual-ledger paper accounts.
+    """
     account = oms.get_account_data() if oms is not None else {}
     balances = account.get("balances") or {}
-    cash, locked = _cash_from_balances(balances)
+    quote_asset = None
+    if quote or symbol:
+        quote_asset = resolve_quote_asset(balances, symbol, quote=quote)
+        available_local = cash_available(balances, quote_asset)
+    else:
+        available_local = total_quote_available(balances)
     source = _oms_margin_source(oms)
     equity = max(float(portfolio.account_equity), 1.0)
     max_leverage = 1.0
@@ -65,14 +80,21 @@ def build_margin_snapshot(oms, portfolio: PortfolioSnapshot) -> MarginSnapshot:
     if margin_block:
         source = str(margin_block.get("source") or source)
         equity = max(float(margin_block.get("equity") or equity), 1.0)
-        available = float(margin_block.get("available_cash") or cash)
+        # Broker margin blocks are single-currency (Alpaca USD). Prefer them
+        # when no symbol quote was requested; for crypto quote checks use local
+        # USDT when the dual ledger is present.
+        broker_available = float(margin_block.get("available_cash") or 0)
+        if quote_asset == "USDT" and balances.get("USDT") is not None:
+            available = available_local
+        else:
+            available = broker_available if broker_available > 0 else available_local
         margin_used = float(margin_block.get("margin_used") or portfolio.gross_exposure)
         max_leverage = float(margin_block.get("max_leverage") or 1)
         buying_power = margin_block.get("buying_power")
         if buying_power is not None:
             buying_power = float(buying_power)
     else:
-        available = max(0.0, cash - locked)
+        available = available_local
         margin_used = portfolio.gross_exposure
         max_leverage = 1.0
 
@@ -89,6 +111,7 @@ def build_margin_snapshot(oms, portfolio: PortfolioSnapshot) -> MarginSnapshot:
         utilization_pct=min(utilization, 999.0),
         max_leverage=max(max_leverage, 1.0),
         buying_power=buying_power,
+        quote_asset=quote_asset,
     )
 
 
@@ -159,4 +182,5 @@ def margin_to_dict(margin: MarginSnapshot) -> dict:
         "max_leverage": margin.max_leverage,
         "max_leverage_cap": RISK_MAX_LEVERAGE,
         "buying_power": margin.buying_power,
+        "quote_asset": margin.quote_asset,
     }

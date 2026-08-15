@@ -11,12 +11,17 @@ import {
   setMlServerProgress,
   setMlTuneResult,
 } from '@/lib/mlTrainingSession';
+import {
+  ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  mlHyperparamSweepPollDeadlineMs,
+} from '@/lib/mlJobTimeouts';
 
 let _timer = null;
 let _activeJobId = null;
 let _jobToken = null;
 let _deadlineMs = 0;
 let _claimed = false;
+let _softBudgetWarned = false;
 
 export function stopMlHyperparamSweepPolling() {
   if (_timer) {
@@ -87,30 +92,32 @@ function finalize(job) {
     return;
   }
 
+  const outcome = {
+    ...res,
+    ok: res.ok !== false,
+  };
   setMlServerProgress({
     pct: 100,
     phase: 'done',
-    detail: `best=${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
-    best_score: res.best_score,
-    trial: res.trials_completed,
-    max_trials: res.max_trials,
-    objective_kind: res.objective_kind,
-    fidelity_phase: res.multi_fidelity ? 'full' : 'full',
+    detail: `best=${outcome.best_score ?? '—'} · ${outcome.trials_completed ?? 0} trials`,
+    best_score: outcome.best_score,
+    trial: outcome.trials_completed,
+    max_trials: outcome.max_trials,
     status: 'done',
   });
   appendMlPollLog({
     status: 'done',
     pct: 100,
     phase: 'done',
-    detail: `best=${res.best_score ?? '—'} · trials=${res.trials_completed ?? 0}`,
-    best_score: res.best_score,
-    trial: res.trials_completed,
-    max_trials: res.max_trials,
+    detail: `best=${outcome.best_score ?? '—'} · trials=${outcome.trials_completed ?? 0}`,
+    best_score: outcome.best_score,
+    trial: outcome.trials_completed,
+    max_trials: outcome.max_trials,
     level: 'info',
   });
-  setMlTuneResult(res);
+  setMlTuneResult(outcome);
   toast.success(
-    `Best score ${res.best_score ?? '—'} · ${res.trials_completed ?? 0} trials`,
+    `Best score ${outcome.best_score ?? '—'} · ${outcome.trials_completed ?? 0} trials`,
   );
   finishMlJob(token);
 }
@@ -135,29 +142,17 @@ export function startMlHyperparamSweepPolling(jobId, {
   _activeJobId = id;
   _jobToken = jobToken;
   _claimed = false;
-  _deadlineMs = Date.now() + Math.max(Number(timeBudgetSec) * 1000, 120_000) + 60_000;
+  _softBudgetWarned = false;
+  _deadlineMs = Date.now() + mlHyperparamSweepPollDeadlineMs(timeBudgetSec);
 
   const poll = () => {
     if (_activeJobId !== id) return;
-    if (Date.now() > _deadlineMs) {
-      appendMlPollLog({
-        status: 'error',
-        phase: 'timeout',
-        detail: 'Hyperparam sweep timed out',
-        warning: 'timed out',
-        level: 'warn',
-      });
-      toast.error('Hyperparam sweep timed out');
-      finishMlJob(_jobToken, { error: 'Hyperparam sweep timed out' });
-      stopMlHyperparamSweepPolling();
-      _activeJobId = null;
-      _jobToken = null;
-      return;
-    }
+
+    const overBudget = Date.now() > _deadlineMs;
 
     apiRequest(`/api/v1/ml/hyperparam-sweep/${encodeURIComponent(id)}`, {
       method: 'GET',
-      timeoutMs: 15_000,
+      timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
     })
       .then((body) => {
         if (_activeJobId !== id) return;
@@ -167,11 +162,23 @@ export function startMlHyperparamSweepPolling(jobId, {
           return;
         }
         applyProgress(job);
-        if (['done', 'error', 'cancelled'].includes(String(job.status || '').toLowerCase())) {
+        const status = String(job.status || '').toLowerCase();
+        if (['done', 'error', 'cancelled'].includes(status)) {
           finalize(job);
           return;
         }
-        schedule(poll, 1500);
+        if (overBudget && !_softBudgetWarned) {
+          _softBudgetWarned = true;
+          appendMlPollLog({
+            status: 'running',
+            phase: 'waiting',
+            detail: 'past Optuna time budget — still running on the server',
+            warning: 'over_budget',
+            level: 'warn',
+          });
+          toast.message('Auto-tune is past the time budget — still running on the server');
+        }
+        schedule(poll, overBudget ? 4000 : 1500);
       })
       .catch((err) => {
         if (_activeJobId !== id) return;
@@ -204,4 +211,5 @@ export function __resetMlHyperparamSweepPollingForTests() {
   _jobToken = null;
   _deadlineMs = 0;
   _claimed = false;
+  _softBudgetWarned = false;
 }

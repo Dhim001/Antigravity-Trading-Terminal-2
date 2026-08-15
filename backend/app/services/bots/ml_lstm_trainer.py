@@ -179,7 +179,8 @@ def build_sequences(
     y : np.ndarray of shape (N,) with values in {0, 1, 2}
     """
     n = len(candles)
-    # Match evaluate()/batch: up to 24 priors (deque maxlen=25). Keep sequence
+    # Micro features window to EVAL_FEATURE_LOOKBACK; evaluate keeps a longer
+    # HTF history deque separately. Keep sequence
     # start at lookback+20 so sample counts stay aligned with feature warmup.
     feature_lookback = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20

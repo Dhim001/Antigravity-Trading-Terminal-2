@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -25,14 +27,34 @@ from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
 from app.services.agent.reasoning import AgentReasoning, Observation
 from app.services.agent.agent_event_bus import AgentEvent
-import time
 
 logger = logging.getLogger(__name__)
 
 LESSON_SYSTEM_PROMPT = """You are a quantitative post-trade coach.
 Given a closed trade's MAE/MFE, PnL, regime, and classification, write 2-4 sentences of
 actionable lesson text. Be specific about stops, filters, or regime. No fluff.
-Do not invent numbers not present in the data. Start directly with the lesson."""
+Rules (strict):
+- MAE = Maximum Adverse Excursion (% against the position). MFE = Maximum Favorable Excursion (% with the position). Never redefine these.
+- First sentence MUST state whether the trade was a WIN or LOSS and the PnL sign/magnitude from context.
+- outcome_class is authoritative — never call a loss a win or a win a loss.
+- If suggested_patch is non-empty, recommend ONLY those exact keys/values (do not invent opposite direction changes).
+- If suggested_patch is empty, do not invent config numbers.
+- Do not invent numbers not present in the data. Start directly with the lesson."""
+
+
+def pnl_from_exit(
+    exit_side: str,
+    quantity: float,
+    exit_price: float,
+    entry_price: float,
+) -> float:
+    """Exit-side PnL: SELL closes a long, BUY covers a short."""
+    qty = float(quantity)
+    ex = float(exit_price)
+    en = float(entry_price)
+    if str(exit_side).upper() == "SELL":
+        return (ex - en) * qty
+    return (en - ex) * qty
 
 
 @dataclass
@@ -182,11 +204,18 @@ def classify_outcome(
         reason["note"] = "Trade went favorably then reversed into a loss"
         return "good_entry_bad_exit", reason
 
-    if won and mfe is not None and mae is not None and mfe >= mae:
+    if won and mfe is not None and mae is not None and mfe >= mae and mfe > 0:
         return "clean_win", reason
     if won:
+        # Missing/zero excursion marks → do not over-claim "clean".
+        if mfe is None or mae is None or (mfe <= 0 and mae <= 0):
+            reason["note"] = "Win with incomplete excursion marks"
+            return "win", reason
         return "messy_win", reason
     if lost:
+        if mfe is None or mae is None or (mfe <= 0 and mae <= 0):
+            reason["note"] = "Loss with incomplete excursion marks"
+            return "loss", reason
         return "clean_loss", reason
     return "flat", reason
 
@@ -242,7 +271,7 @@ def build_config_patch(
         conf = float(cfg.get("min_confidence") or _default_min_confidence(strategy))
         raw["min_confidence"] = _bump_min_confidence(strategy, conf)
 
-    elif outcome_class == "clean_loss":
+    elif outcome_class in ("clean_loss", "loss"):
         conf = float(cfg.get("min_confidence") or _default_min_confidence(strategy))
         raw["min_confidence"] = _bump_min_confidence(strategy, conf)
 
@@ -266,15 +295,35 @@ def template_lesson(
     pnl_s = f"{pnl:+.2f}" if pnl is not None else "n/a"
     mae_s = f"{mae_pct:.2f}%" if mae_pct is not None else "n/a"
     mfe_s = f"{mfe_pct:.2f}%" if mfe_pct is not None else "n/a"
+    if pnl is not None and float(pnl) > 0:
+        result = "WIN"
+    elif pnl is not None and float(pnl) < 0:
+        result = "LOSS"
+    else:
+        result = "FLAT"
     note = reason.get("note") or outcome_class.replace("_", " ")
     patch_bit = ""
     if patch:
         bits = ", ".join(f"{k}={v}" for k, v in patch.items())
         patch_bit = f" Suggested adjust: {bits}."
     return (
-        f"{symbol}: {note}. PnL {pnl_s}, MAE {mae_s}, MFE {mfe_s} "
-        f"(class={outcome_class}).{patch_bit}"
+        f"{symbol} {result} (PnL {pnl_s}). {note}. "
+        f"MAE {mae_s}, MFE {mfe_s} (class={outcome_class}).{patch_bit}"
     )
+
+
+def _lesson_contradicts_outcome(lesson_text: str, outcome_class: str, pnl: float | None) -> bool:
+    """Reject LLM copy that flips win/loss relative to the classified outcome."""
+    text = (lesson_text or "").lower()
+    if not text:
+        return True
+    lost = (pnl is not None and float(pnl) < 0) or "loss" in outcome_class
+    won = (pnl is not None and float(pnl) > 0) or "win" in outcome_class
+    if lost and re.search(r"\b(clean\s+)?win\b", text) and not re.search(r"\b(loss|lost|losing)\b", text):
+        return True
+    if won and re.search(r"\b(clean\s+)?loss\b", text) and not re.search(r"\b(win|won|winning|profit)\b", text):
+        return True
+    return False
 
 
 async def _llm_lesson(context: dict[str, Any]) -> str | None:
@@ -356,12 +405,33 @@ async def learn_from_closed_trade(
     if ep is None:
         ep = float(exit_price)
 
-    # Infer long/short from entry side or exit side (exit SELL ⇒ was long).
-    entry_side = str(entry_ctx.get("side") or "").upper()
-    if entry_side in ("BUY", "SELL"):
-        is_long = entry_side == "BUY"
+    # Prefer exit-side geometry over a stale/wrong passed pnl (sign flips).
+    try:
+        recomputed = pnl_from_exit(exit_side, quantity, float(exit_price), ep)
+        if pnl is None:
+            pnl = recomputed
+        elif abs(float(pnl) - recomputed) > max(1e-6, abs(recomputed) * 1e-6 + 1e-4):
+            logger.warning(
+                "posttrade pnl mismatch bot=%s %s passed=%s recomputed=%s — using recomputed",
+                bot_id,
+                symbol,
+                pnl,
+                recomputed,
+            )
+            pnl = recomputed
+    except (TypeError, ValueError):
+        pass
+
+    # Infer long/short from exit side first (authoritative for this close),
+    # then entry fill side as fallback.
+    exit_u = str(exit_side).upper()
+    if exit_u == "SELL":
+        is_long = True
+    elif exit_u == "BUY":
+        is_long = False
     else:
-        is_long = str(exit_side).upper() == "SELL"
+        entry_side = str(entry_ctx.get("side") or "").upper()
+        is_long = entry_side == "BUY" if entry_side in ("BUY", "SELL") else True
 
     mae_pct, mfe_pct = compute_mae_mfe(
         entry_price=ep,
@@ -397,10 +467,15 @@ async def learn_from_closed_trade(
     except Exception:
         sentiment = {}
 
+    result_label = (
+        "WIN" if pnl is not None and float(pnl) > 0
+        else ("LOSS" if pnl is not None and float(pnl) < 0 else "FLAT")
+    )
     context = {
         "symbol": symbol,
         "bot_id": bot_id,
         "outcome_class": outcome_class,
+        "result": result_label,
         "pnl": pnl,
         "mae_pct": mae_pct,
         "mfe_pct": mfe_pct,
@@ -409,6 +484,7 @@ async def learn_from_closed_trade(
         "exit_price": exit_price,
         "quantity": quantity,
         "exit_side": exit_side,
+        "position_side": "LONG" if is_long else "SHORT",
         "regime": reason.get("regime"),
         "confidence": insight.get("confidence"),
         "score": insight.get("score"),
@@ -422,7 +498,13 @@ async def learn_from_closed_trade(
     }
 
     lesson_text = await _llm_lesson(context)
-    if not lesson_text:
+    if (not lesson_text) or _lesson_contradicts_outcome(lesson_text, outcome_class, pnl):
+        if lesson_text:
+            logger.info(
+                "posttrade LLM lesson rejected for %s (%s) — using template",
+                bot_id,
+                outcome_class,
+            )
         lesson_text = template_lesson(
             outcome_class,
             symbol=symbol,

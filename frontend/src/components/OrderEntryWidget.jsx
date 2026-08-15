@@ -125,7 +125,12 @@ export default function OrderEntryWidget() {
 
   const isCrypto = activeSymbol.includes('USDT');
   const base  = isCrypto ? activeSymbol.replace('USDT', '') : activeSymbol;
-  const quote = isCrypto ? 'USDT' : 'USD';
+  // Prefer native quote; fall back when that ledger key is absent (Alpaca USD-only).
+  const preferredQuote = isCrypto ? 'USDT' : 'USD';
+  const altQuote = preferredQuote === 'USDT' ? 'USD' : 'USDT';
+  const quote = balances?.[preferredQuote] != null
+    ? preferredQuote
+    : (balances?.[altQuote] != null ? altQuote : preferredQuote);
 
   const quoteBalance   = balances[quote]?.balance  ?? 0;
   const quoteLocked    = balances[quote]?.locked    ?? 0;

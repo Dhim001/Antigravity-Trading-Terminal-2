@@ -428,13 +428,16 @@ export function evaluateDeployGate({
 
   if (results && config) {
     const simMode = extractBacktestSimMode(results);
-    if (simMode === 'research') {
+    if (simMode === 'research' || simMode === 'research_fast') {
+      const fast = simMode === 'research_fast';
       checks.push(check({
         id: 'research_sim_mode',
         level: 'warn',
         ok: false,
-        message: 'Backtest used research mode',
-        detail: 'Research allows shorts without live risk gates — re-run live-aligned before deploy, or confirm bypass.',
+        message: fast ? 'Backtest used research_fast mode' : 'Backtest used research mode',
+        detail: fast
+          ? 'research_fast skips the live-parity risk gates entirely — results are optimistic. Re-run live-aligned before deploy, or confirm bypass.'
+          : 'Research allows shorts without live risk gates — re-run live-aligned before deploy, or confirm bypass.',
       }));
     }
 

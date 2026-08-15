@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 
 FILTER_REJECT_BUCKETS = ("min_score", "trend", "vol", "htf", "confidence", "calibration", "other")
 
+# Live signal-reject telemetry buckets (bot_signal_reject_log) — shown alongside
+# CHART_AGENT filter skips so REGIME / ML agents have a useful reject panel.
+SIGNAL_REJECT_BUCKETS = (
+    "none",
+    "low_confidence",
+    "htf_gate",
+    "meta_label",
+    "conformal",
+    "regime_gate",
+    "stacking",
+    "llm_firewall",
+    "filter",
+    "duplicate",
+    "pretrade_streak",
+    "other",
+)
+
+# Skip full JSON parse for oversized optimizer payloads (multi-MB trial lists).
+_MAX_OPT_RESULTS_BYTES = 400_000
+
 
 def wilson_lower_bound(wins: int, n: int, z: float = 1.96) -> float:
     """Wilson score interval lower bound (95% default)."""
@@ -481,6 +501,83 @@ def _empty_reject_counts() -> dict[str, int]:
     return {k: 0 for k in FILTER_REJECT_BUCKETS}
 
 
+def _empty_signal_reject_counts() -> dict[str, int]:
+    return {k: 0 for k in SIGNAL_REJECT_BUCKETS}
+
+
+def aggregate_live_signal_rejects(
+    *,
+    bot_id: str | None = None,
+    symbol: str | None = None,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    """Aggregate silent-NONE / gate rejects from bot_signal_reject_log."""
+    limit = max(1, min(int(limit), 20000))
+    conn = get_connection()
+    cursor = conn.cursor()
+    clauses: list[str] = []
+    params: list[Any] = []
+    if bot_id:
+        clauses.append("bot_id = ?")
+        params.append(bot_id)
+    if symbol:
+        clauses.append("UPPER(COALESCE(symbol, '')) = ?")
+        params.append(symbol.upper())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        cursor.execute(
+            f"""
+            SELECT reason_bucket, COUNT(*)
+            FROM bot_signal_reject_log
+            {where}
+            GROUP BY reason_bucket
+            """,
+            params,
+        )
+        by_bucket = _empty_signal_reject_counts()
+        for bucket, count in cursor.fetchall():
+            key = str(bucket or "other").strip().lower()
+            if key not in by_bucket:
+                key = "other"
+            by_bucket[key] = by_bucket.get(key, 0) + int(count or 0)
+
+        cursor.execute(
+            f"""
+            SELECT bot_id, symbol, reason_bucket, reason_detail, created_at
+            FROM bot_signal_reject_log
+            {where}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*params, min(30, limit)),
+        )
+        recent: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            recent.append({
+                "bot_id": item.get("bot_id"),
+                "symbol": str(item.get("symbol") or "").upper(),
+                "timestamp": item.get("created_at"),
+                "bucket": item.get("reason_bucket") or "other",
+                "reason": str(item.get("reason_detail") or item.get("reason_bucket") or "")[:200],
+            })
+    except Exception:
+        logger.debug("aggregate_live_signal_rejects failed", exc_info=True)
+        conn.close()
+        return {
+            "total": 0,
+            "by_bucket": _empty_signal_reject_counts(),
+            "recent": [],
+        }
+    conn.close()
+    total = sum(by_bucket.values())
+    return {
+        "total": total,
+        "by_bucket": by_bucket,
+        "recent": recent,
+    }
+
+
 def aggregate_live_filter_rejects(
     *,
     bot_id: str | None = None,
@@ -550,88 +647,191 @@ def aggregate_live_filter_rejects(
     }
 
 
+def _merge_filter_reject_map(
+    by_bucket: dict[str, int],
+    rejects: Any,
+    *,
+    runs_used_holder: list[int] | None = None,
+) -> None:
+    if not isinstance(rejects, dict) or not rejects:
+        return
+    if runs_used_holder is not None:
+        runs_used_holder[0] += 1
+    for key, count in rejects.items():
+        bucket = key if key in by_bucket else "other"
+        by_bucket[bucket] = by_bucket.get(bucket, 0) + int(count or 0)
+
+
+def _parse_reject_json(raw: Any) -> dict | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def aggregate_backtest_filter_rejects(
     *,
     symbol: str | None = None,
     strategy: str | None = None,
     limit: int = 30,
 ) -> dict[str, Any]:
-    """Sum filter_rejects from recent backtest + optimization runs."""
+    """Sum filter_rejects from recent backtest + optimization runs.
+
+    Uses SQLite ``json_extract`` so we never pull multi-MB trade histories into
+    Python just to read the tiny ``summary.filter_rejects`` map.
+    """
     limit = max(1, min(int(limit), 100))
     conn = get_connection()
     cursor = conn.cursor()
 
     by_bucket = _empty_reject_counts()
-    runs_used = 0
+    runs_used_holder = [0]
+    strategy_u = strategy.upper() if strategy else None
 
-    def _merge_summary(summary: dict | None) -> None:
-        nonlocal runs_used
-        if not summary:
-            return
-        rejects = summary.get("filter_rejects")
-        if not rejects:
-            return
-        runs_used += 1
-        for key, count in rejects.items():
-            bucket = key if key in by_bucket else "other"
-            by_bucket[bucket] = by_bucket.get(bucket, 0) + int(count or 0)
-
-    if symbol:
-        cursor.execute(
-            """
-            SELECT results FROM backtest_runs
-            WHERE UPPER(symbol) = ?
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (symbol.upper(), limit),
-        )
-    else:
-        cursor.execute(
-            "SELECT results FROM backtest_runs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
-    for (raw,) in cursor.fetchall():
-        try:
-            data = json.loads(raw or "{}")
-        except json.JSONDecodeError:
-            continue
-        if strategy and str(data.get("meta", {}).get("strategy", "")).upper() != strategy.upper():
-            continue
-        _merge_summary(data.get("summary"))
-
-    if symbol:
-        cursor.execute(
-            """
-            SELECT results_json FROM optimization_runs
-            WHERE UPPER(symbol) = ?
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (symbol.upper(), limit),
-        )
-    else:
-        cursor.execute(
-            "SELECT results_json FROM optimization_runs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        )
-    for (raw,) in cursor.fetchall():
-        try:
-            rows = json.loads(raw or "[]")
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if strategy and str(row.get("strategy", "")).upper() != strategy.upper():
+    # Lightweight path: extract only the reject map + strategy from huge blobs.
+    try:
+        if symbol:
+            cursor.execute(
+                """
+                SELECT json_extract(results, '$.summary.filter_rejects'),
+                       json_extract(results, '$.meta.strategy')
+                FROM backtest_runs
+                WHERE UPPER(symbol) = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (symbol.upper(), limit),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT json_extract(results, '$.summary.filter_rejects'),
+                       json_extract(results, '$.meta.strategy')
+                FROM backtest_runs
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (limit,),
+            )
+        for raw_rejects, run_strategy in cursor.fetchall():
+            if strategy_u and str(run_strategy or "").upper() != strategy_u:
                 continue
-            summary = row.get("summary") if isinstance(row.get("summary"), dict) else row
-            if isinstance(summary, dict):
-                _merge_summary(summary)
+            rejects = _parse_reject_json(raw_rejects)
+            _merge_filter_reject_map(by_bucket, rejects, runs_used_holder=runs_used_holder)
+    except Exception:
+        # Older SQLite without JSON1 — fall back to full parse (slow but correct).
+        logger.debug("json_extract backtest path failed; falling back", exc_info=True)
+        if symbol:
+            cursor.execute(
+                """
+                SELECT results FROM backtest_runs
+                WHERE UPPER(symbol) = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (symbol.upper(), limit),
+            )
+        else:
+            cursor.execute(
+                "SELECT results FROM backtest_runs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        for (raw,) in cursor.fetchall():
+            try:
+                data = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                continue
+            if strategy_u and str(data.get("meta", {}).get("strategy", "")).upper() != strategy_u:
+                continue
+            summary = data.get("summary") if isinstance(data, dict) else None
+            rejects = summary.get("filter_rejects") if isinstance(summary, dict) else None
+            _merge_filter_reject_map(by_bucket, rejects, runs_used_holder=runs_used_holder)
+
+    # Optimizer payloads can be multi-MB trial lists — filter by run strategy in
+    # SQL, skip oversized rows for full parse, and prefer json_each extraction.
+    try:
+        opt_clauses: list[str] = []
+        opt_params: list[Any] = []
+        if symbol:
+            opt_clauses.append("UPPER(symbol) = ?")
+            opt_params.append(symbol.upper())
+        if strategy_u:
+            opt_clauses.append("UPPER(strategy) = ?")
+            opt_params.append(strategy_u)
+        opt_where = f"WHERE {' AND '.join(opt_clauses)}" if opt_clauses else ""
+        cursor.execute(
+            f"""
+            SELECT id, LENGTH(results_json) AS nbytes
+            FROM optimization_runs
+            {opt_where}
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (*opt_params, limit),
+        )
+        opt_rows = cursor.fetchall()
+        for opt_id, nbytes in opt_rows:
+            size = int(nbytes or 0)
+            if size <= 0:
+                continue
+            if size <= _MAX_OPT_RESULTS_BYTES:
+                cursor.execute(
+                    "SELECT results_json FROM optimization_runs WHERE id = ?",
+                    (opt_id,),
+                )
+                row = cursor.fetchone()
+                raw = row[0] if row else None
+                try:
+                    rows = json.loads(raw or "[]")
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rows, list):
+                    continue
+                for trial in rows:
+                    if not isinstance(trial, dict):
+                        continue
+                    summary = trial.get("summary") if isinstance(trial.get("summary"), dict) else trial
+                    if isinstance(summary, dict):
+                        _merge_filter_reject_map(
+                            by_bucket,
+                            summary.get("filter_rejects"),
+                            runs_used_holder=runs_used_holder,
+                        )
+            else:
+                # Large blob: pull only per-trial filter_rejects via json_each.
+                try:
+                    cursor.execute(
+                        """
+                        SELECT json_extract(value, '$.summary.filter_rejects'),
+                               json_extract(value, '$.filter_rejects')
+                        FROM optimization_runs, json_each(optimization_runs.results_json)
+                        WHERE optimization_runs.id = ?
+                        """,
+                        (opt_id,),
+                    )
+                    for fr_summary, fr_flat in cursor.fetchall():
+                        rejects = _parse_reject_json(fr_summary) or _parse_reject_json(fr_flat)
+                        _merge_filter_reject_map(
+                            by_bucket, rejects, runs_used_holder=runs_used_holder,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Skipping oversized optimization_runs id=%s (%s bytes)",
+                        opt_id,
+                        size,
+                        exc_info=True,
+                    )
+    except Exception:
+        logger.debug("optimization filter-reject aggregation failed", exc_info=True)
 
     conn.close()
     return {
         "total": sum(by_bucket.values()),
         "by_bucket": by_bucket,
-        "runs_aggregated": runs_used,
+        "runs_aggregated": runs_used_holder[0],
     }
 
 
@@ -642,9 +842,11 @@ def get_filter_reject_dashboard(
     strategy: str | None = None,
 ) -> dict[str, Any]:
     live = aggregate_live_filter_rejects(bot_id=bot_id, symbol=symbol)
+    signal = aggregate_live_signal_rejects(bot_id=bot_id, symbol=symbol)
     backtest = aggregate_backtest_filter_rejects(symbol=symbol, strategy=strategy)
     return {
         "live": live,
+        "signal": signal,
         "backtest": backtest,
     }
 

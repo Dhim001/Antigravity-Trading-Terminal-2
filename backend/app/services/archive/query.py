@@ -278,6 +278,74 @@ def _footprint_row(row) -> tuple[int, float, float]:
     return int(row[0]), float(row[1]), float(row[2] or 0)
 
 
+def _as_ms(ts: int) -> int:
+    ts = int(ts)
+    return ts if ts > 10_000_000_000 else ts * 1000
+
+
+def _as_sec(ts: int) -> int:
+    ts = int(ts)
+    return ts // 1000 if ts > 10_000_000_000 else ts
+
+
+def footprint_cells_from_bars(
+    bars: list[dict[str, Any]],
+    from_ts: int,
+    to_ts: int,
+    price_step: float,
+    time_bucket_ms: int,
+    *,
+    cell_cap: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Coarse volume heatmap from OHLCV bars when ``market_ticks`` is empty."""
+    cap = int(cell_cap if cell_cap is not None else FOOTPRINT_MAX_CELLS)
+    from_ms = _as_ms(from_ts)
+    to_ms = _as_ms(to_ts)
+    step = float(price_step)
+    bucket = int(time_bucket_ms)
+    accum: dict[tuple[int, float], float] = {}
+    truncated = False
+    if step <= 0 or bucket <= 0:
+        return [], {"source": "bars_1m", "cell_count": 0, "truncated": False}
+
+    for bar in bars or []:
+        try:
+            vol = float(bar.get("volume") or 0)
+            if vol <= 0:
+                continue
+            t_ms = _as_ms(int(bar["time"]))
+            if t_ms < from_ms or t_ms > to_ms:
+                continue
+            typical = (
+                float(bar["high"]) + float(bar["low"]) + float(bar["close"])
+            ) / 3.0
+            key = ((t_ms // bucket) * bucket, int(typical / step) * step)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if key in accum:
+            accum[key] += vol
+        elif len(accum) < cap:
+            accum[key] = vol
+        else:
+            truncated = True
+            break
+
+    cells = [
+        {"time": t, "price": p, "volume": v}
+        for (t, p), v in sorted(accum.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+    ]
+    meta = {
+        "source": "bars_1m",
+        "cell_count": len(cells),
+        "truncated": truncated,
+    }
+    if cells:
+        meta["range_note"] = (
+            "Approximate footprint from 1m bar volume (no tick prints in range)."
+        )
+    return cells, meta
+
+
 def query_footprint_detailed(
     symbol: str,
     from_ts: int,
@@ -347,6 +415,7 @@ def query_footprint_detailed(
                 FROM market_ticks
                 WHERE symbol = ? AND time_ms >= ? AND time_ms <= ?
                 GROUP BY bucket_time, bucket_price
+                HAVING SUM(volume) > 0
                 ORDER BY bucket_time, bucket_price
                 """,
                 (
@@ -386,14 +455,28 @@ def query_footprint_detailed(
     cells = [
         {"time": t, "price": p, "volume": v}
         for (t, p), v in sorted(accum.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        if v > 0
     ]
-    meta["cell_count"] = len(cells)
-    if meta["truncated"]:
-        meta["range_note"] = (
-            (meta.get("range_note") + " · " if meta.get("range_note") else "")
-            + f"Cell cap reached ({cell_cap}); later buckets omitted"
-        )
-    return cells, meta
+    if cells:
+        meta["source"] = "ticks"
+        meta["cell_count"] = len(cells)
+        if meta["truncated"]:
+            meta["range_note"] = (
+                (meta.get("range_note") + " · " if meta.get("range_note") else "")
+                + f"Cell cap reached ({cell_cap}); later buckets omitted"
+            )
+        return cells, meta
+
+    clamp_note = meta.get("range_note")
+    bars = query_1m(symbol, _as_sec(from_ts), _as_sec(to_ts), purpose="ui")
+    bar_cells, bar_meta = footprint_cells_from_bars(
+        bars, from_ts, to_ts, price_step, time_bucket_ms, cell_cap=cell_cap
+    )
+    meta.update(bar_meta)
+    notes = [n for n in (clamp_note, bar_meta.get("range_note")) if n]
+    if notes:
+        meta["range_note"] = " · ".join(notes)
+    return bar_cells, meta
 
 
 def query_footprint(

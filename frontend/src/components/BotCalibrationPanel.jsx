@@ -128,32 +128,50 @@ export default function BotCalibrationPanel({
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setMetaLabelError(null);
     try {
-      const [cal, fr, ml] = await Promise.all([
+      // Settle independently — a slow/failed meta-label or filter call must not
+      // blank the whole calibration panel (common under SQLite load).
+      const [calRes, frRes, mlRes] = await Promise.allSettled([
         fetchBotCalibration({ botId, symbol, minSamples: 3 }),
         fetchFilterRejects({ botId, symbol, strategy }),
         fetchMetaLabelStatus(botId),
       ]);
-      const storeCfg = useStore.getState().botDetail?.bot?.id === botId
-        ? useStore.getState().botDetail?.bot?.config
-        : null;
-      const mergedSnap = {
-        ...(cal?.config_snapshot || {}),
-        ...(storeCfg && typeof storeCfg === 'object' ? storeCfg : {}),
-      };
-      setCalibration({
-        ...cal,
-        config_snapshot: mergedSnap,
-        suggestions: filterOpenSuggestions(cal?.suggestions ?? [], mergedSnap),
-      });
-      setFilterData(fr);
-      setMetaLabel(ml?.meta_label ?? null);
-      setMetaLabelError(null);
-    } catch (e) {
-      const msg = e?.message || 'Failed to load calibration';
-      setError(msg);
-      if (/meta-label/i.test(msg)) {
-        setMetaLabelError(msg);
+
+      if (calRes.status === 'fulfilled') {
+        const cal = calRes.value;
+        const storeCfg = useStore.getState().botDetail?.bot?.id === botId
+          ? useStore.getState().botDetail?.bot?.config
+          : null;
+        const mergedSnap = {
+          ...(cal?.config_snapshot || {}),
+          ...(storeCfg && typeof storeCfg === 'object' ? storeCfg : {}),
+        };
+        setCalibration({
+          ...cal,
+          config_snapshot: mergedSnap,
+          suggestions: filterOpenSuggestions(cal?.suggestions ?? [], mergedSnap),
+        });
+      } else {
+        setCalibration(null);
+        setError(calRes.reason?.message || 'Failed to load calibration');
+      }
+
+      if (frRes.status === 'fulfilled') {
+        setFilterData(frRes.value);
+      } else {
+        setFilterData(null);
+        if (calRes.status === 'fulfilled') {
+          setError((prev) => prev || frRes.reason?.message || 'Filter rejects unavailable');
+        }
+      }
+
+      if (mlRes.status === 'fulfilled') {
+        setMetaLabel(mlRes.value?.meta_label ?? null);
+        setMetaLabelError(null);
+      } else {
+        setMetaLabel(null);
+        setMetaLabelError(mlRes.reason?.message || 'Meta-label status unavailable');
       }
     } finally {
       setLoading(false);
@@ -325,7 +343,7 @@ export default function BotCalibrationPanel({
     );
   }
 
-  if (error) {
+  if (error && !calibration) {
     return (
       <Alert variant="destructive" className={className}>
         <AlertDescription className="text-xs">{error}</AlertDescription>
@@ -341,6 +359,7 @@ export default function BotCalibrationPanel({
   const suggestions = filterOpenSuggestions(calibration?.suggestions ?? [], effectiveConfig);
   const symbolThresholds = calibration?.symbol_thresholds ?? {};
   const liveRejects = filterData?.live;
+  const signalRejects = filterData?.signal;
   const backtestRejects = filterData?.backtest;
   const operational = metaLabel?.operational;
   const opStage = operational?.stage ?? 'off';
@@ -354,6 +373,11 @@ export default function BotCalibrationPanel({
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
+      {error && calibration && (
+        <Alert className="border-border/60 bg-muted/20 py-2">
+          <AlertDescription className="text-xs m-0 text-muted-foreground">{error}</AlertDescription>
+        </Alert>
+      )}
       {overall && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <div className="rounded-md border border-border/50 px-2 py-1.5">
@@ -377,7 +401,7 @@ export default function BotCalibrationPanel({
         </div>
       )}
 
-      {metaLabel && strategy === 'CHART_AGENT' && (
+      {metaLabel && (strategy === 'CHART_AGENT' || strategy === 'REGIME_STRATEGY_AGENT') && (
         <section className="rounded-md border border-primary/20 bg-primary/5 p-2.5 space-y-2">
           {metaLabel.load_error && (
             <p className="text-[0.65rem] text-amber-600 dark:text-amber-400 m-0">{metaLabel.load_error}</p>
@@ -577,9 +601,22 @@ export default function BotCalibrationPanel({
         <header className="mb-1.5 text-xs font-medium">Setup buckets</header>
         <CalibrationTable
           buckets={calibration?.buckets}
-          emptyLabel="Not enough closed trades with insight context yet."
+          emptyLabel={
+            overall?.closed_trades > 0 && !overall?.with_insight_context
+              ? 'Closed trades exist, but none stored chart/regime insight context for setup buckets yet.'
+              : 'Not enough closed trades with insight context yet.'
+          }
         />
       </section>
+
+      {signalRejects?.total > 0 && (
+        <FilterRejectsDashboard
+          rejects={signalRejects.by_bucket}
+          total={signalRejects.total}
+          title="Live signal rejects"
+          hint="Silent NONE / gate blocks from bot_signal_reject_log (regime, confidence, meta-label, etc.)."
+        />
+      )}
 
       {liveRejects?.total > 0 && (
         <FilterRejectsDashboard

@@ -177,6 +177,22 @@ class TestChunkedArchiveQuery(unittest.TestCase):
         self.assertTrue(meta["truncated"])
         self.assertLessEqual(len(cells), 10)
         self.assertEqual(meta["cell_count"], len(cells))
+        self.assertEqual(meta.get("source"), "ticks")
+
+    def test_footprint_falls_back_to_1m_bars_when_ticks_empty(self):
+        start_sec = 1_700_000_000
+        _seed_1m("ETHUSDT", start_sec, 12)
+        cells, meta = query_footprint_detailed(
+            "ETHUSDT",
+            start_sec * 1000,
+            (start_sec + 12 * 60) * 1000,
+            price_step=1.0,
+            time_bucket_ms=60_000,
+        )
+        self.assertGreater(len(cells), 0)
+        self.assertEqual(meta.get("source"), "bars_1m")
+        self.assertIn("Approximate", meta.get("range_note") or "")
+        self.assertTrue(all(c["volume"] > 0 for c in cells))
 
     def test_ui_purpose_uses_lower_limit(self):
         from app.services.archive.query import archive_query_limit, query_1m

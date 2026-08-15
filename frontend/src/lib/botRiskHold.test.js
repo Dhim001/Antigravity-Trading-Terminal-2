@@ -149,4 +149,10 @@ describe('botRiskHold', () => {
       { safeModeActive: true },
     )?.label).not.toBe('Safe mode');
   });
+
+  it('botRuntimeActivityHint marks paused bots as not evaluating', () => {
+    const hint = botRuntimeActivityHint({ status: 'PAUSED', last_signal_at: '2026-08-12T07:05:01Z' });
+    expect(hint?.kind).toBe('held');
+    expect(hint?.label).toBe('Not evaluating');
+  });
 });

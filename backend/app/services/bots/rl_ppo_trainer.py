@@ -254,6 +254,21 @@ def train_ppo_agent(
     elif wf_mode and not wf_parity:
         total_timesteps = 2048
 
+    # Episode horizon: without a cap, one episode walks the full candle series
+    # (Apply & Retrain ≈ 50k bars) and Optuna budgets (8k–65k) finish at ep=0.
+    try:
+        max_ep = int(cfg.get("max_episode_steps") or 0)
+    except (TypeError, ValueError):
+        max_ep = 0
+    if max_ep <= 0:
+        max_ep = 2048
+    cfg["max_episode_steps"] = max_ep
+    # Guarantee the step budget can finish several full episodes.
+    min_eps = 20 if cfg.get("champion_train") else 5
+    min_steps = max_ep * min_eps
+    if total_timesteps < min_steps:
+        total_timesteps = min_steps
+
     gamma = float(cfg.get("gamma", 0.99))
     gae_lambda = float(cfg.get("gae_lambda", 0.95))
     clip_epsilon = float(cfg.get("clip_epsilon", 0.2))
@@ -720,7 +735,8 @@ class PpoModelStore:
         try:
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
-            if int(meta.get("feature_schema_version", 0)) != SIGNAL_FEATURE_VERSION:
+            from app.services.bots.ml_feature_engineering import is_compatible_feature_schema
+            if not is_compatible_feature_schema(int(meta.get("feature_schema_version", 0))):
                 logger.warning("PPO model schema mismatch for %s", key)
                 return None
 

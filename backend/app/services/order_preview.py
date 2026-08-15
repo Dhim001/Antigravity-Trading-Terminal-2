@@ -109,11 +109,13 @@ def preview_order(oms, order_req: dict) -> dict:
     base_position = None
 
     if hasattr(oms, "get_account_data"):
+        from app.services.account_cash import cash_for_symbol, resolve_quote_asset
+
         account = oms.get_account_data() or {}
         balances = account.get("balances") or {}
         positions = account.get("positions") or {}
-        quote_row = balances.get(quote) or {}
-        quote_available = float(quote_row.get("balance") or 0) - float(quote_row.get("locked") or 0)
+        quote = resolve_quote_asset(balances, symbol, quote=quote)
+        _bal, _locked, quote_available = cash_for_symbol(balances, symbol, quote=quote)
         pos = positions.get(symbol) or {}
         base_position = float(pos.get("size") or 0)
 
@@ -135,7 +137,9 @@ def preview_order(oms, order_req: dict) -> dict:
     if sl_price is None and tp_price is None and side == "BUY":
         warnings.append("No stop-loss or take-profit set")
 
-    margin_impact = _preview_margin_impact(oms, side, est_fill, quantity, block_reason)
+    margin_impact = _preview_margin_impact(
+        oms, side, est_fill, quantity, block_reason, symbol=symbol,
+    )
     if margin_impact and not margin_impact.get("allowed", True) and block_reason is None:
         block_reason = margin_impact.get("message") or "Margin utilization limit reached"
 
@@ -179,12 +183,20 @@ def preview_order(oms, order_req: dict) -> dict:
     }
 
 
-def _preview_margin_impact(oms, side: str, fill_price: float, quantity: float, block_reason: str | None) -> dict | None:
+def _preview_margin_impact(
+    oms,
+    side: str,
+    fill_price: float,
+    quantity: float,
+    block_reason: str | None,
+    *,
+    symbol: str | None = None,
+) -> dict | None:
     if side != "BUY" or not RISK_MARGIN_ENABLED or not hasattr(oms, "get_account_data"):
         return None
     try:
         portfolio = build_portfolio_snapshot(oms)
-        margin = build_margin_snapshot(oms, portfolio)
+        margin = build_margin_snapshot(oms, portfolio, symbol=symbol)
         if not margin.enabled:
             return {"enabled": False}
 

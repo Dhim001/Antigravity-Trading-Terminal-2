@@ -70,22 +70,33 @@ async def session_handler(request: Request) -> JSONResponse:
             pass
 
     active_ml_jobs = []
+    resumable_ml_jobs = []
     ml_queue = {"active": 0, "queued": 0}
     try:
         from app.services.bots.ml_job_store import list_ml_jobs, ml_job_counts, public_ml_job
 
         ml_queue = ml_job_counts()
-        # Include resumable interrupted jobs so FE can reattach Auto-Tune / validate.
+        # Only live queued/running jobs reattach the Lab busy banner / poller.
+        # Interrupted error+resumable rows are listed separately — advertising
+        # them as active_ml_jobs made every app restart show
+        # "Job running for ML_SIGNAL_BOOST / BTCUSDT (validate)" with nothing running.
         recent_ml = list_ml_jobs(limit=20, active_only=False)
         active_ml_jobs = [
             public_ml_job(j, include_result=False)
             for j in recent_ml
             if j.get("status") in ("queued", "running")
-            or j.get("resumable")
-            or (
-                isinstance(j.get("checkpoint"), dict)
-                and j["checkpoint"].get("resume_ok")
-                and j.get("status") in ("error", "cancelled")
+        ][:10]
+        resumable_ml_jobs = [
+            public_ml_job(j, include_result=False)
+            for j in recent_ml
+            if j.get("status") not in ("queued", "running")
+            and (
+                j.get("resumable")
+                or (
+                    isinstance(j.get("checkpoint"), dict)
+                    and j["checkpoint"].get("resume_ok")
+                    and j.get("status") in ("error", "cancelled")
+                )
             )
         ][:10]
     except Exception:
@@ -120,6 +131,7 @@ async def session_handler(request: Request) -> JSONResponse:
             "active_backtest_job": active_job,
             "resumable_backtest_jobs": resumable_backtest_jobs,
             "active_ml_jobs": active_ml_jobs,
+            "resumable_ml_jobs": resumable_ml_jobs,
             "ml_queue": ml_queue,
             "metrics": {
                 "open_positions": stats.get("positions_count", 0),

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import time
 import unittest
+from unittest import mock
 
 from app.services.bots.pretrade_context import (
     apply_failures_streak,
     apply_reduce_size_multiplier,
+    clear_bot_streak_cooldown,
     filter_exit_pnls_by_lookback,
+    get_bot_streak_cooldown_hold,
     prefer_hold_on_streak,
     set_bot_streak_cooldown,
     suggest_streak_thresholds_from_backtest,
@@ -203,6 +207,44 @@ class TestApplyFailuresStreak(unittest.TestCase):
         until = set_bot_streak_cooldown(bot, 60, now=1_000.0)
         self.assertEqual(until, 1_060.0)
         self.assertEqual(bot["_pretrade_streak_cool_until"], 1_060.0)
+
+    def test_clear_cooldown(self):
+        bot = {"_pretrade_streak_cool_until": 9_999.0, "_pretrade_streak_count": 5}
+        clear_bot_streak_cooldown(bot)
+        self.assertNotIn("_pretrade_streak_cool_until", bot)
+        self.assertEqual(bot["_pretrade_streak_count"], 0)
+
+    @mock.patch(
+        "app.services.bots.analytics.get_recent_consecutive_losses",
+        return_value=1,
+    )
+    def test_hold_clears_when_bot_streak_below_limit(self, _mock_losses):
+        """One-exit bot must not keep a cool-down armed from a false 5-loss streak."""
+        bot = {
+            "id": "bot-ada-rl",
+            "config": {"pretrade_setup_fail_limit": 3},
+            "_pretrade_streak_cool_until": time.time() + 500,
+            "_pretrade_streak_count": 5,
+        }
+        self.assertIsNone(get_bot_streak_cooldown_hold(bot))
+        self.assertNotIn("_pretrade_streak_cool_until", bot)
+
+    @mock.patch(
+        "app.services.bots.analytics.get_recent_consecutive_losses",
+        return_value=4,
+    )
+    def test_hold_keeps_when_bot_streak_still_hot(self, _mock_losses):
+        until = time.time() + 500
+        bot = {
+            "id": "bot-hot",
+            "config": {"pretrade_setup_fail_limit": 3},
+            "_pretrade_streak_cool_until": until,
+            "_pretrade_streak_count": 3,
+        }
+        hold = get_bot_streak_cooldown_hold(bot)
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold["kind"], "pretrade_streak")
+        self.assertEqual(hold["consecutive_losses"], 4)
 
     def test_reduce_size_dedupes_regime_halve(self):
         qty, note = apply_reduce_size_multiplier(

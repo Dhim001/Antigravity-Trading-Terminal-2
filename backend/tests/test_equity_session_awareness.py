@@ -80,7 +80,7 @@ def test_bar_to_signal_features_includes_session_keys():
         {"close": 100, "open": 99, "high": 101, "low": 98, "volume": 1000, "time": ts},
         symbol="AAPL",
     )
-    assert SIGNAL_FEATURE_VERSION == 4
+    assert SIGNAL_FEATURE_VERSION == 7
     for key in ("is_rth", "minutes_from_open_norm", "et_hour_sin", "et_hour_cos"):
         assert key in feats
         assert key in SIGNAL_FEATURE_NAMES

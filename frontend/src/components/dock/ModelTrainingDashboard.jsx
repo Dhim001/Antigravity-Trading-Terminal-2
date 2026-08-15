@@ -1165,26 +1165,30 @@ export default function ModelTrainingDashboard({
           strategy={strategy}
         />
 
-        <JobProgressBar
-          job={jobProgress}
-          serverProgress={serverProgress}
-          jobId={activeJobId}
-          onCancel={activeJobId ? handleCancelJob : undefined}
-          cancelling={cancellingJob}
-        />
-        <JobPollLog
-          entries={pollLog}
-          enabled={showPollLog}
-          onEnabledChange={(on) => {
-            setShowPollLog(on);
-            try {
-              window.localStorage.setItem(POLL_LOG_PREF_KEY, on ? '1' : '0');
-            } catch {
-              /* ignore */
-            }
-          }}
-          onClear={() => clearMlPollLog()}
-        />
+        {!sessionTuningHint && (
+          <JobProgressBar
+            job={jobProgress}
+            serverProgress={serverProgress}
+            jobId={activeJobId}
+            onCancel={activeJobId ? handleCancelJob : undefined}
+            cancelling={cancellingJob}
+          />
+        )}
+        {!sessionTuningHint && (jobProgress?.active || pollLog.length > 0) && (
+          <JobPollLog
+            entries={pollLog}
+            enabled={showPollLog}
+            onEnabledChange={(on) => {
+              setShowPollLog(on);
+              try {
+                window.localStorage.setItem(POLL_LOG_PREF_KEY, on ? '1' : '0');
+              } catch {
+                /* ignore */
+              }
+            }}
+            onClear={() => clearMlPollLog()}
+          />
+        )}
 
         {busyElsewhere && (
           <p className="text-xs text-amber-400/90">

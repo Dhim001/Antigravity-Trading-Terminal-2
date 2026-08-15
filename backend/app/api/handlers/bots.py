@@ -408,14 +408,12 @@ async def _execute_backtest(
 
         account_balance = None
         if getattr(ctx, "bot_manager", None):
-            account_balance = ctx.bot_manager.get_account_balance()
+            account_balance = ctx.bot_manager.get_account_balance(symbol)
         elif hasattr(ctx.oms, "get_account_data"):
-            balances = ctx.oms.get_account_data().get("balances", {})
-            usd = balances.get("USD", {}).get("balance")
-            if usd is not None:
-                account_balance = float(usd)
-            else:
-                account_balance = float(balances.get("USDT", {}).get("balance") or 0)
+            from app.services.account_cash import cash_for_symbol
+
+            balances = ctx.oms.get_account_data().get("balances", {}) or {}
+            account_balance = float(cash_for_symbol(balances, symbol)[2])
         config = enrich_backtest_risk_config(config, account_balance)
 
         # Candles are resolved at request ``timeframe``; ML/LSTM/ONNX stores key
@@ -1939,7 +1937,8 @@ async def bot_update_config(ctx: RequestContext) -> None:
 
 @route(Action.BOT_GET_ALL, tags=["bots"])
 async def bot_get_all(ctx: RequestContext) -> None:
-    ctx.bot_manager.load_bots_from_db()
+    # Read-only snapshot. Reloading from DB here wiped in-memory last_eval_at
+    # and could desync the UI when HTTP GET mutated runtime without a WS push.
     await send_bots_update(ctx)
 
 

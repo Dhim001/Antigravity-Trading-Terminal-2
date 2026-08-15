@@ -13,7 +13,6 @@ from app.config import (
     PRETRADE_SENTIMENT_MIN_MENTIONS,
     PRETRADE_SENTIMENT_THRESHOLD,
     PRETRADE_SETUP_FAIL_LIMIT,
-    PRETRADE_SETUP_LOOKBACK_HOURS,
 )
 from app.database import get_connection
 from app.services.agent.anomaly_detector import detect_bar_anomaly
@@ -28,6 +27,7 @@ from app.services.bots.pretrade_context import (
     apply_failures_streak,
     build_trade_state_snapshot,
     consecutive_loss_count,
+    resolve_lookback_hours,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,8 @@ class PreTradeIntel:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            one_day_ago = time.time() - (PRETRADE_SETUP_LOOKBACK_HOURS * 3600.0)
+            lookback_h = resolve_lookback_hours(bot_config)
+            one_day_ago = time.time() - (lookback_h * 3600.0)
             # Fetch enough exits for severe-streak stepping (not just fail_limit).
             fetch_n = max(PRETRADE_SETUP_FAIL_LIMIT, 10)
             try:
@@ -145,59 +146,59 @@ class PreTradeIntel:
                 )
             except (TypeError, ValueError):
                 pass
-            try:
-                cursor.execute(
-                    """
-                    SELECT t.pnl FROM bot_trades t
-                    JOIN bots b ON t.bot_id = b.id
-                    WHERE t.symbol = ? AND b.strategy = ? AND t.timestamp >= datetime(?, 'unixepoch') AND t.is_exit = 1
-                    ORDER BY t.timestamp DESC LIMIT ?
-                    """,
-                    (symbol, strategy, one_day_ago, fetch_n),
-                )
-                rows = cursor.fetchall()
-            except Exception:
+            bot_id = bot.get("id")
+            rows = []
+            if bot_id:
+                # Per-bot only — never aggregate by symbol/strategy across the fleet
+                # (that falsely trips "5 consecutive losses" on a bot with one exit).
                 try:
                     cursor.execute(
                         """
-                        SELECT pnl FROM bot_trades 
-                        WHERE bot_id = ? AND timestamp >= datetime(?, 'unixepoch') AND is_exit = 1
-                        ORDER BY timestamp DESC LIMIT ?
+                        SELECT pnl FROM bot_trades
+                        WHERE bot_id = ?
+                          AND is_exit = 1
+                          AND pnl IS NOT NULL
+                          AND timestamp >= datetime(?, 'unixepoch')
+                        ORDER BY timestamp DESC
+                        LIMIT ?
                         """,
-                        (bot["id"], one_day_ago, fetch_n),
+                        (bot_id, one_day_ago, fetch_n),
                     )
-                    rows = cursor.fetchall()
-                except Exception as fallback_exc:
-                    logger.error("PreTradeIntel fallback query failed: %s", fallback_exc)
-                    uncertainty_sources.append(f"trade_history_query_failed: {str(fallback_exc)}")
+                    rows = cursor.fetchall() or []
+                except Exception as streak_exc:
+                    logger.error("PreTradeIntel streak query failed: %s", streak_exc)
+                    uncertainty_sources.append(f"trade_history_query_failed: {str(streak_exc)}")
                     rows = []
-            # Win-rate in lookback (for ML / agent awareness).
+            # Win-rate in lookback (same bot scope as streak).
             wins = 0
             losses = 0
-            try:
-                cursor.execute(
-                    """
-                    SELECT t.pnl FROM bot_trades t
-                    JOIN bots b ON t.bot_id = b.id
-                    WHERE t.symbol = ? AND b.strategy = ? AND t.timestamp >= datetime(?, 'unixepoch') AND t.is_exit = 1
-                    """,
-                    (symbol, strategy, one_day_ago),
-                )
-                for r in cursor.fetchall() or []:
-                    p = float(r[0] or 0.0)
-                    if p > 0:
-                        wins += 1
-                    elif p < 0:
-                        losses += 1
-            except Exception:
-                pass
+            if bot_id:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT pnl FROM bot_trades
+                        WHERE bot_id = ?
+                          AND is_exit = 1
+                          AND pnl IS NOT NULL
+                          AND timestamp >= datetime(?, 'unixepoch')
+                        """,
+                        (bot_id, one_day_ago),
+                    )
+                    for r in cursor.fetchall() or []:
+                        p = float(r[0] or 0.0)
+                        if p > 0:
+                            wins += 1
+                        elif p < 0:
+                            losses += 1
+                except Exception:
+                    pass
             conn.close()
 
             pnls = [float(r[0] or 0.0) for r in rows]
             streak = consecutive_loss_count(pnls, newest_first=True)
             total_closed = wins + losses
             win_rate = (wins / total_closed) if total_closed > 0 else 0.5
-            hours_since_loss = PRETRADE_SETUP_LOOKBACK_HOURS
+            hours_since_loss = lookback_h
             if pnls and pnls[0] < 0:
                 hours_since_loss = 0.0
 
@@ -210,6 +211,14 @@ class PreTradeIntel:
                 setup_fail_limit=fail_limit,
                 newest_first=True,
             )
+            # Drop stale cool-downs armed from a prior false / expired streak.
+            if streak_action is None:
+                from app.services.bots.pretrade_context import clear_bot_streak_cooldown
+
+                clear_bot_streak_cooldown(bot)
+            else:
+                bot["_pretrade_streak_count"] = int(streak_action.get("streak") or streak)
+
             if streak_action:
                 if streak_action["verdict"] == "VETO":
                     verdict = "VETO"
@@ -339,7 +348,14 @@ class PreTradeIntel:
                         symbol, ohlcv, bot_config, "VAE_REGIME_DETECTOR"
                     )
                     if df is not None and not getattr(df, "empty", True):
-                        lookback_rows = [dict(r) for r in df.iloc[-25:-1].to_dict("records")]
+                        from app.services.bots.ml_feature_engineering import (
+                            EVAL_HISTORY_LOOKBACK,
+                        )
+                        hist_n = EVAL_HISTORY_LOOKBACK + 1
+                        lookback_rows = [
+                            dict(r)
+                            for r in df.iloc[-hist_n:-1].to_dict("records")
+                        ]
                         row_for_vae = dict(df.iloc[-1])
                         row_for_vae.setdefault("_symbol", symbol)
                 if row_for_vae is None and isinstance(signal_data, dict):

@@ -35,51 +35,48 @@ export const QUOTE_ASSETS = new Set(['USD', 'USDT']);
 export const assetFromSymbol = (sym) =>
   sym.includes('USDT') && sym !== 'USDT' ? sym.replace('USDT', '') : sym;
 
-/** Binance maps USD → USDT; skip duplicate row/total when values match. */
-export const isQuoteAlias = (usd, usdt) =>
-  Boolean(usd && usdt && usd.balance === usdt.balance && usd.locked === usdt.locked);
-
 /**
  * Build a presentable balance view from raw OMS balance map.
+ *
+ * Dual paper ledger: USD (equities) and USDT (crypto) are independent —
+ * both rows are shown and cash available is their unlocked sum. Do **not**
+ * treat equal balances as a Binance alias (seeded dual ledgers often match).
+ *
  * @param {Record<string, {balance: number, locked: number}>} balances
  * @param {Record<string, number>} assetMark — current mark prices keyed by base asset
  */
 export function buildBalanceView(balances, assetMark) {
-  const usd = balances.USD;
-  const usdt = balances.USDT;
-  const alias = isQuoteAlias(usd, usdt);
-
+  const map = balances || {};
   let cashAvailable = 0;
   let cashLocked = 0;
-  if (usdt) {
-    cashAvailable += usdt.balance - usdt.locked;
-    cashLocked += usdt.locked;
-  } else if (usd) {
-    cashAvailable += usd.balance - usd.locked;
-    cashLocked += usd.locked;
-  }
-  if (usd && !alias && usdt) {
-    cashAvailable += usd.balance - usd.locked;
-    cashLocked += usd.locked;
+  for (const asset of QUOTE_ASSETS) {
+    const row = map[asset];
+    if (!row) continue;
+    const bal = Number(row.balance) || 0;
+    const locked = Number(row.locked) || 0;
+    cashAvailable += bal - locked;
+    cashLocked += locked;
   }
 
   let holdingsUsd = 0;
   let totalEquity = 0;
   const rows = [];
 
-  for (const [asset, bal] of Object.entries(balances)) {
-    if (asset === 'USD' && alias) continue;
-    if (Math.abs(bal.balance) < 1e-8 && bal.locked === 0) continue;
+  for (const [asset, bal] of Object.entries(map)) {
+    if (!bal) continue;
+    const balance = Number(bal.balance) || 0;
+    const locked = Number(bal.locked) || 0;
+    if (Math.abs(balance) < 1e-8 && locked === 0) continue;
 
-    const avail = bal.balance - bal.locked;
+    const avail = balance - locked;
     const isQuote = QUOTE_ASSETS.has(asset);
-    const mark = isQuote ? 1 : assetMark[asset];
-    const usdValue = mark != null ? bal.balance * mark : null;
+    const mark = isQuote ? 1 : assetMark?.[asset];
+    const usdValue = mark != null ? balance * mark : null;
 
     if (usdValue != null) totalEquity += usdValue;
     if (!isQuote && usdValue != null) holdingsUsd += usdValue;
 
-    rows.push({ asset, bal, avail, usdValue, isQuote });
+    rows.push({ asset, bal: { balance, locked }, avail, usdValue, isQuote });
   }
 
   rows.sort((a, b) => {

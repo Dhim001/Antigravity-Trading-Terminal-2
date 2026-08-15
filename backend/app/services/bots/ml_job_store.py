@@ -32,6 +32,7 @@ _SLIM_RESULT_KEYS = (
     "n_folds", "pbo", "version_id", "trained_at",
     "best_hyperparams", "best_score", "trials_completed", "max_trials",
     "optimization_run_id", "importance_ranking", "objective_kind",
+    "convergence",
     "multi_fidelity", "training_window", "timeframe", "symbol", "strategy",
     "early_stopped", "epochs_trained", "epochs_budget",
 )
@@ -713,6 +714,16 @@ def public_ml_job(job: dict[str, Any] | None, *, include_result: bool = True) ->
                 out["result"] = _json_safe_ml_value(safe)
         else:
             out["result"] = result
+        # Sweep trial_history / search_space can be huge and 500 the poll —
+        # Auto-Tune UI only needs best_*, convergence, and importance.
+        if (
+            str(out.get("kind") or "").lower() == "hyperparam_sweep"
+            and isinstance(out.get("result"), dict)
+        ):
+            trimmed = dict(out["result"])
+            trimmed.pop("trial_history", None)
+            trimmed.pop("search_space", None)
+            out["result"] = trimmed
     return out
 
 

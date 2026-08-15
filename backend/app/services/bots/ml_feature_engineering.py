@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 # ── Feature schema ────────────────────────────────────────────────────────
 
-SIGNAL_FEATURE_VERSION = 4
+# Always-on schema: Phase 1→2→3 landed as v7 (~65 dims). Older models load via
+# ``align_features_to_scaler_dim`` (leading columns) until retrain.
+SIGNAL_FEATURE_VERSION = 7
 
-# Opt-in trade-state features (schema v5). Existing models keep v4 dims.
-# Enable with config ``ml_include_trade_state`` and retrain — do not mix dims.
-TRADE_STATE_FEATURE_VERSION = 5
+# Trade-state is opt-in and must not collide with signal schema versions.
+# Legacy trade-state models used schema version 5 (when signal was v4).
+LEGACY_TRADE_STATE_FEATURE_VERSION = 5
+TRADE_STATE_FEATURE_VERSION = 1007
+LEGACY_SIGNAL_FEATURE_VERSIONS = frozenset({4, 5, 6})
 TRADE_STATE_FEATURE_NAMES: tuple[str, ...] = (
     "bot_loss_streak",
     "bot_win_rate_24h",
@@ -90,7 +94,67 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     "cvd_z",
     "cvd_slope",
     "vpin",
+    # Phase 1: Multi-timeframe confluence (4)
+    "htf_trend_1h",
+    "htf_rsi_1h",
+    "htf_atr_ratio_4h",
+    "htf_regime_daily",
+    # Phase 1: Realized volatility (4)
+    "rv_parkinson_20",
+    "rv_garman_klass_20",
+    "vol_regime_ratio",
+    "vol_of_vol",
+    # Phase 2: Sentiment (3) — zeros when history missing
+    "sentiment_score_24h",
+    "sentiment_momentum",
+    "macro_event_proximity",
+    # Phase 2: Fractional differentiation (2)
+    "frac_diff_close",
+    "frac_diff_volume",
+    # Phase 2: Information theory (3)
+    "hurst_exponent_50",
+    "sample_entropy_20",
+    "information_ratio_20",
+    # Phase 3: Cross-asset (3)
+    "peer_returns_avg",
+    "peer_divergence",
+    "correlation_rolling_20",
+    # Phase 3: Market structure (3)
+    "dist_to_support_norm",
+    "dist_to_resistance_norm",
+    "range_position",
+    # Phase 3: Crypto derivatives (2) — zeros for non-crypto
+    "funding_rate_norm",
+    "oi_change_24h_norm",
 )
+
+
+def is_compatible_feature_schema(schema_ver: int) -> bool:
+    """True if a saved model schema can be loaded (possibly via dim align)."""
+    try:
+        ver = int(schema_ver)
+    except (TypeError, ValueError):
+        return False
+    if ver in (SIGNAL_FEATURE_VERSION, TRADE_STATE_FEATURE_VERSION):
+        return True
+    if ver in LEGACY_SIGNAL_FEATURE_VERSIONS:
+        return True
+    if ver == LEGACY_TRADE_STATE_FEATURE_VERSION:
+        return True
+    return False
+
+
+# Strategy evaluate() keeps a long history deque for HTF resampling accuracy,
+# but microstructure / streak features still window to EVAL_FEATURE_LOOKBACK so
+# they stay aligned with the historical micro lookback contract.
+EVAL_FEATURE_LOOKBACK = 24
+try:
+    from app.services.bots.ml_feature_htf import HTF_HISTORY_LOOKBACK as _HTF_LB
+    HTF_HISTORY_LOOKBACK = int(_HTF_LB)
+except Exception:  # pragma: no cover
+    HTF_HISTORY_LOOKBACK = 1500
+# Live evaluate deque size (priors + current).
+EVAL_HISTORY_LOOKBACK = HTF_HISTORY_LOOKBACK
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -131,6 +195,8 @@ def bar_to_signal_features(
     *,
     lookback_rows: list | None = None,
     symbol: str | None = None,
+    timeframe: str | None = None,
+    peer_candles: dict[str, list] | None = None,
 ) -> dict[str, float]:
     """Extract ML features from a single indicator-enriched bar row.
 
@@ -140,10 +206,15 @@ def bar_to_signal_features(
         The current bar row with indicators attached (same as BaseStrategy.evaluate receives).
     lookback_rows : list, optional
         Previous bar rows for computing rolling features.  If None, rolling/lag
-        features default to 0.
+        features default to 0. Full history is used for HTF / advanced features;
+        microstructure / streak features still window to :data:`EVAL_FEATURE_LOOKBACK`.
     symbol : str, optional
         Instrument for equity session features. Falls back to ``_symbol`` / ``symbol``
         on the row. Crypto → always-open session defaults.
+    timeframe : str, optional
+        Source bar timeframe for HTF resampling (inferred when omitted).
+    peer_candles : dict, optional
+        Optional ``{peer_symbol: [bars]}`` for cross-asset features.
 
     Returns
     -------
@@ -156,8 +227,9 @@ def bar_to_signal_features(
     low = _safe_float(df_row.get("low"))
     volume = _safe_float(df_row.get("volume"))
 
-    # Lookback closes/volumes for lag features
-    lb = lookback_rows or []
+    # Full history for HTF / advanced; capped window for micro / streaks parity.
+    lb_full = list(lookback_rows or [])
+    lb = lb_full[-EVAL_FEATURE_LOOKBACK:] if len(lb_full) > EVAL_FEATURE_LOOKBACK else lb_full
     prev_closes = [_safe_float(r.get("close")) for r in lb]
     prev_volumes = [_safe_float(r.get("volume")) for r in lb]
 
@@ -358,7 +430,7 @@ def bar_to_signal_features(
         except Exception:
             pass
 
-    return {
+    feats = {
         "returns_1": returns_1,
         "returns_5": returns_5,
         "returns_15": returns_15,
@@ -402,11 +474,30 @@ def bar_to_signal_features(
         "vpin": vpin,
     }
 
+    # Phase 1–3 extensions (HTF resample + advanced). Use full history for HTF.
+    sym = symbol or str(df_row.get("_symbol") or df_row.get("symbol") or "")
+    try:
+        from app.services.bots.ml_feature_htf import compute_htf_features_for_bar
+        from app.services.bots.ml_feature_advanced import advanced_features_for_bar
 
-# Strategy evaluate() keeps ``deque(maxlen=25)`` and passes ``list(hist)[:-1]``
-# (up to 24 prior bars). Batch/train feature matrices must use the same window
-# or ``consecutive_up`` / CVD features diverge from per-bar evaluate.
-EVAL_FEATURE_LOOKBACK = 24
+        feats.update(
+            compute_htf_features_for_bar(
+                df_row, lb_full, timeframe=timeframe,
+            )
+        )
+        feats.update(
+            advanced_features_for_bar(
+                df_row,
+                lb_full,
+                symbol=sym or None,
+                peer_candles=peer_candles,
+            )
+        )
+    except Exception:
+        logger.debug("advanced/HTF feature extract failed", exc_info=True)
+        for name in SIGNAL_FEATURE_NAMES:
+            feats.setdefault(name, 0.0)
+    return feats
 
 
 def vectorized_features_enabled() -> bool:
@@ -867,6 +958,38 @@ def compute_signal_feature_matrix_vectorized(
         progress_total=n,
     )
 
+    # Phase 1–3 columnar extensions (same order as SIGNAL_FEATURE_NAMES).
+    from app.services.bots.ml_feature_htf import HTF_FEATURE_NAMES, compute_htf_feature_matrix
+    from app.services.bots.ml_feature_advanced import (
+        crypto_deriv_feature_matrix,
+        cross_asset_feature_matrix,
+        fracdiff_feature_matrix,
+        info_theory_feature_matrix,
+        realized_vol_feature_matrix,
+        sentiment_feature_matrix,
+        structure_feature_matrix,
+        CROSS_ASSET_FEATURE_NAMES,
+        CRYPTO_DERIV_FEATURE_NAMES,
+        FRACDIFF_FEATURE_NAMES,
+        INFO_THEORY_FEATURE_NAMES,
+        REALIZED_VOL_FEATURE_NAMES,
+        SENTIMENT_FEATURE_NAMES,
+        STRUCTURE_FEATURE_NAMES,
+    )
+
+    if hasattr(candles, "to_dict"):
+        rows_for_htf = candles.to_dict("records")
+    else:
+        rows_for_htf = candles
+    htf = compute_htf_feature_matrix(rows_for_htf)
+    rv = realized_vol_feature_matrix(open_, high, low, close)
+    sent = sentiment_feature_matrix(rows_for_htf, symbol or None)
+    frac = fracdiff_feature_matrix(close, volume)
+    info = info_theory_feature_matrix(close)
+    xa = cross_asset_feature_matrix(rows_for_htf, symbol or None)
+    struct = structure_feature_matrix(high, low, close)
+    deriv = crypto_deriv_feature_matrix(rows_for_htf, symbol or None)
+
     cols = [
         returns_1, returns_5, returns_15, log_return,
         atr_ratio, bb_width, rolling_vol_20,
@@ -880,6 +1003,14 @@ def compute_signal_feature_matrix_vectorized(
         close_z_20, volume_z_20,
         consecutive_up, consecutive_down,
         cvd_z, cvd_slope, vpin,
+        *[htf[name] for name in HTF_FEATURE_NAMES],
+        *[rv[name] for name in REALIZED_VOL_FEATURE_NAMES],
+        *[sent[name] for name in SENTIMENT_FEATURE_NAMES],
+        *[frac[name] for name in FRACDIFF_FEATURE_NAMES],
+        *[info[name] for name in INFO_THEORY_FEATURE_NAMES],
+        *[xa[name] for name in CROSS_ASSET_FEATURE_NAMES],
+        *[struct[name] for name in STRUCTURE_FEATURE_NAMES],
+        *[deriv[name] for name in CRYPTO_DERIV_FEATURE_NAMES],
     ]
     assert len(cols) == n_feat, f"feature col count {len(cols)} != {n_feat}"
     stacked = np.column_stack(cols).astype(np.float32, copy=False)
@@ -902,18 +1033,18 @@ def precompute_signal_feature_matrix_loop(
     out = np.zeros((n, n_feat), dtype=np.float32)
     if n == 0:
         return out
-    flb = max(1, int(feature_lookback))
     report_every = max(2_000, n // 20)
     for j in range(n):
         if cancel_cb is not None and j % 512 == 0 and cancel_cb():
             raise InterruptedError("ml_cancel_requested")
-        lb_start = max(0, j - flb)
+        # Full prefix for HTF/advanced accuracy; bar_to_signal_features windows
+        # microstructure/streaks to EVAL_FEATURE_LOOKBACK internally.
         row = candles[j]
         if hasattr(candles, "iloc"):
             row = candles.iloc[j].to_dict()
-            lb = [candles.iloc[k].to_dict() for k in range(lb_start, j)]
+            lb = [candles.iloc[k].to_dict() for k in range(0, j)]
         else:
-            lb = candles[lb_start:j]
+            lb = candles[0:j]
         features = bar_to_signal_features(row, lookback_rows=lb)
         out[j] = signal_features_to_vector(features)
         if progress_cb is not None and (j + 1) % report_every == 0:
@@ -996,7 +1127,7 @@ def merge_trade_state_features(
 
     Historical train without live trade history should pass ``trade_state=None``
     (zeros) so the schema is stable; live inference fills from Pre-Trade context.
-    Retrain is required after enabling — feature dim changes to schema v5.
+    Retrain is required after enabling — feature dim changes to trade-state schema.
     """
     out = dict(features or {})
     if not enabled:

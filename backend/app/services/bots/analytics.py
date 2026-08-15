@@ -1,6 +1,7 @@
 """Persistent bot trade history, snapshots, and aggregated stats."""
 
 import json
+import time
 import uuid
 
 from app.config import BOT_SNAPSHOT_RETENTION
@@ -74,23 +75,45 @@ def record_trade(
     signal_bar_time: int | None = None,
     is_exit: bool = False,
     insight_snapshot: dict | None = None,
-):
+) -> bool:
+    """Journal a bot trade row idempotently.
+
+    Returns True when the row was inserted, False when a duplicate
+    (same order_id / signal_id) was ignored — reconcile + live paths both
+    call this and must not double-record.
+    """
     snapshot_json = json.dumps(insight_snapshot) if insight_snapshot else None
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO bot_trades
+    sql = """
+        INSERT {ignore} INTO bot_trades
         (bot_id, order_id, symbol, side, quantity, price, pnl, signal_id, signal_bar_time, is_exit, insight_snapshot)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+        {conflict}
+    """
+    from app.db.connection import is_postgres
+    if is_postgres():
+        sql = sql.format(ignore="", conflict="ON CONFLICT DO NOTHING")
+    else:
+        sql = sql.format(ignore="OR IGNORE", conflict="")
+    cursor.execute(
+        sql,
         (
             bot_id, order_id, symbol, side, quantity, price, pnl, signal_id,
             signal_bar_time, 1 if is_exit else 0, snapshot_json,
         ),
     )
+    inserted = (cursor.rowcount or 0) > 0
     conn.commit()
     conn.close()
+    if not inserted:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "bot_trades duplicate ignored bot=%s order=%s signal=%s exit=%s",
+            bot_id, order_id, signal_id, is_exit,
+        )
+    return inserted
 
 
 def get_trades(bot_id: str, limit: int = 50) -> list:
@@ -208,9 +231,9 @@ def get_all_bot_stats(bot_ids: list[str]) -> dict[str, dict]:
             COUNT(*) AS trade_count,
             SUM(CASE WHEN is_exit = 1 THEN 1 ELSE 0 END) AS exit_count,
             SUM(CASE WHEN is_exit = 1 AND pnl > 0 THEN 1 ELSE 0 END) AS win_count,
-            COALESCE(SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END), 0) AS total_pnl,
+            COALESCE(SUM(CASE WHEN is_exit = 1 AND pnl IS NOT NULL THEN pnl ELSE 0 END), 0) AS total_pnl,
             COALESCE(SUM(
-                CASE WHEN pnl IS NOT NULL AND timestamp >= ? AND timestamp < ?
+                CASE WHEN is_exit = 1 AND pnl IS NOT NULL AND timestamp >= ? AND timestamp < ?
                 THEN pnl ELSE 0 END
             ), 0) AS daily_pnl
         FROM bot_trades
@@ -350,8 +373,8 @@ def record_pending_fill(
         """
         INSERT INTO bot_pending_fills
         (id, bot_id, order_id, symbol, side, quantity, signal_price, signal_id, is_exit, entry_price, insight_snapshot,
-         arrival_price, arrival_bid, arrival_ask, exec_algo)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         arrival_price, arrival_bid, arrival_ask, exec_algo, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             pending_id,
@@ -369,6 +392,7 @@ def record_pending_fill(
             arrival_bid,
             arrival_ask,
             exec_algo,
+            time.time(),
         ),
     )
     conn.commit()
@@ -384,7 +408,7 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
                    signal_id, is_exit, entry_price, created_at, insight_snapshot,
-                   arrival_price, arrival_bid, arrival_ask, exec_algo
+                   arrival_price, arrival_bid, arrival_ask, exec_algo, created_at_epoch
             FROM bot_pending_fills WHERE bot_id = ?
             ORDER BY created_at ASC
             """,
@@ -395,7 +419,7 @@ def list_pending_fills(*, bot_id: str | None = None) -> list[dict]:
             """
             SELECT id, bot_id, order_id, symbol, side, quantity, signal_price,
                    signal_id, is_exit, entry_price, created_at, insight_snapshot,
-                   arrival_price, arrival_bid, arrival_ask, exec_algo
+                   arrival_price, arrival_bid, arrival_ask, exec_algo, created_at_epoch
             FROM bot_pending_fills
             ORDER BY created_at ASC
             """

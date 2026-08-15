@@ -84,6 +84,33 @@ class PreTradeIntelTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("app.services.bots.pretrade_intel.get_connection")
     @patch("app.services.bots.pretrade_intel.check_entry_gates")
+    async def test_streak_query_uses_bot_id_not_strategy(self, mock_gates, mock_db):
+        """Loss streak must be scoped to this bot — not all bots with same strategy."""
+        mock_gates.return_value = (True, None, None)
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        # Only one loss for this bot — must NOT REDUCE/VETO (fail_limit default 3).
+        mock_cursor.fetchall.side_effect = [
+            [(-5.0,)],
+            [(-5.0,)],
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+        mock_db.return_value = mock_conn
+
+        verdict = await self.intel.evaluate(self.bot, "BUY", 100.0, {}, 1783836763)
+
+        self.assertNotEqual(verdict["verdict"], "VETO")
+        self.assertFalse(any("failures_streak" in v for v in verdict["vetoes"]))
+        # SQL should bind this bot's id, not symbol+strategy fleet aggregate.
+        streak_sql = mock_cursor.execute.call_args_list[0][0][0]
+        streak_params = mock_cursor.execute.call_args_list[0][0][1]
+        self.assertIn("bot_id = ?", streak_sql)
+        self.assertEqual(streak_params[0], "bot-1")
+        self.assertNotIn("b.strategy", streak_sql)
+
+    @patch("app.services.bots.pretrade_intel.get_connection")
+    @patch("app.services.bots.pretrade_intel.check_entry_gates")
     async def test_recent_failures_veto_mode(self, mock_gates, mock_db):
         """Explicit pretrade_streak_mode=veto keeps hard block."""
         mock_gates.return_value = (True, None, None)
@@ -103,6 +130,7 @@ class PreTradeIntelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verdict["verdict"], "VETO")
         self.assertTrue(any("failures_streak" in v for v in verdict["vetoes"]))
         self.assertEqual(verdict["size_multiplier"], 0.0)
+
     @patch("app.services.bots.pretrade_intel.get_aggregate_sentiment")
     @patch("app.services.bots.pretrade_intel.check_entry_gates")
     async def test_sentiment_divergence_reduction(self, mock_gates, mock_sentiment):

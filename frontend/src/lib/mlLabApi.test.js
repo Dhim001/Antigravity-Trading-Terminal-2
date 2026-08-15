@@ -24,6 +24,7 @@ import {
   fetchMlRetrainQueue,
   pollMlJob,
   cancelMlJob,
+  fetchLatestMlHyperparamSweep,
 } from './mlLabApi';
 
 describe('mlLabApi', () => {
@@ -103,5 +104,59 @@ describe('mlLabApi', () => {
       '/api/v1/ml/jobs/abc/cancel',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('fetchLatestMlHyperparamSweep returns null without symbol/strategy', async () => {
+    expect(await fetchLatestMlHyperparamSweep('', 'RL_PPO_AGENT')).toBeNull();
+    expect(await fetchLatestMlHyperparamSweep('AAPL', '')).toBeNull();
+    expect(apiRequest).not.toHaveBeenCalled();
+  });
+
+  it('fetchLatestMlHyperparamSweep picks newest matching sweep then loads result', async () => {
+    apiRequest
+      .mockResolvedValueOnce({
+        jobs: [
+          { job_id: 'train-1', kind: 'train', symbol: 'AAPL', strategy: 'RL_PPO_AGENT' },
+          {
+            job_id: 'sweep-new',
+            kind: 'hyperparam_sweep',
+            symbol: 'aapl',
+            strategy: 'rl_ppo_agent',
+            status: 'done',
+          },
+          {
+            job_id: 'sweep-old',
+            kind: 'hyperparam_sweep',
+            symbol: 'AAPL',
+            strategy: 'RL_PPO_AGENT',
+            status: 'done',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        job: {
+          job_id: 'sweep-new',
+          status: 'done',
+          result: { ok: true, best_score: 0.76, best_hyperparams: { learning_rate: 0.0002 } },
+        },
+      });
+
+    const job = await fetchLatestMlHyperparamSweep('AAPL', 'RL_PPO_AGENT');
+    expect(apiRequest).toHaveBeenNthCalledWith(1, '/api/v1/ml/jobs?limit=50', expect.any(Object));
+    expect(apiRequest).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/ml/hyperparam-sweep/sweep-new',
+      expect.any(Object),
+    );
+    expect(job.result.best_score).toBe(0.76);
+  });
+
+  it('fetchLatestMlHyperparamSweep returns null when no matching sweep', async () => {
+    apiRequest.mockResolvedValueOnce({
+      jobs: [{ job_id: 'x', kind: 'train', symbol: 'AAPL', strategy: 'RL_PPO_AGENT' }],
+    });
+    expect(await fetchLatestMlHyperparamSweep('AAPL', 'RL_PPO_AGENT')).toBeNull();
+    expect(apiRequest).toHaveBeenCalledTimes(1);
   });
 });

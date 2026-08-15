@@ -52,6 +52,9 @@ def _ensure_performance_indexes(cursor) -> None:
         "CREATE INDEX IF NOT EXISTS idx_bot_trades_bot_time ON bot_trades (bot_id, timestamp)",
         "CREATE INDEX IF NOT EXISTS idx_bot_trades_bot_exit ON bot_trades (bot_id, is_exit)",
         "CREATE INDEX IF NOT EXISTS idx_bot_trades_order_id ON bot_trades (order_id)",
+        # Idempotency guards: one journal row per broker fill / per signal leg.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_trades_order_id_uq ON bot_trades (order_id) WHERE order_id IS NOT NULL AND TRIM(order_id) != ''",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_trades_signal_exit_uq ON bot_trades (signal_id, is_exit) WHERE signal_id IS NOT NULL AND TRIM(signal_id) != ''",
         "CREATE INDEX IF NOT EXISTS idx_bot_snapshots_bot_time ON bot_snapshots (bot_id, timestamp DESC)",
         "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status)",
         "CREATE INDEX IF NOT EXISTS idx_orders_symbol_status ON orders (symbol, status)",
@@ -180,6 +183,26 @@ def init_db():
     """)
     _safe_alter(cursor, "ALTER TABLE bot_trades ADD COLUMN signal_bar_time INTEGER DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_trades ADD COLUMN insight_snapshot TEXT DEFAULT NULL")
+    # Pre-unique-index dedup: keep the oldest row per order_id / signal_id leg so
+    # reconcile + live re-records collapse without violating the unique index.
+    _safe_alter(cursor, """
+        DELETE FROM bot_trades
+        WHERE order_id IS NOT NULL AND TRIM(order_id) != ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM bot_trades
+            WHERE order_id IS NOT NULL AND TRIM(order_id) != ''
+            GROUP BY order_id
+          )
+    """)
+    _safe_alter(cursor, """
+        DELETE FROM bot_trades
+        WHERE signal_id IS NOT NULL AND TRIM(signal_id) != ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM bot_trades
+            WHERE signal_id IS NOT NULL AND TRIM(signal_id) != ''
+            GROUP BY signal_id, is_exit
+          )
+    """)
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS bot_snapshots (
             id {serial},
@@ -245,6 +268,7 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN arrival_bid REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN arrival_ask REAL DEFAULT NULL")
     _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN exec_algo TEXT DEFAULT NULL")
+    _safe_alter(cursor, "ALTER TABLE bot_pending_fills ADD COLUMN created_at_epoch REAL DEFAULT NULL")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_signal_ledger (

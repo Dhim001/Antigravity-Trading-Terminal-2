@@ -28,6 +28,15 @@ export function autoAggStep(midPrice, priceDecimals = 2) {
   return 10 ** -priceDecimals;
 }
 
+/**
+ * Footprint heatmap step. A 0.5 default explodes cell count on BTC (~$100k)
+ * and collapses cheap alts into a single row.
+ */
+export function footprintPriceStep(midPrice, symbol = '', ticker = null) {
+  if (!Number.isFinite(midPrice) || midPrice <= 0) return 10;
+  return autoAggStep(midPrice, priceDecimalsFor(symbol, ticker || { price: midPrice }));
+}
+
 /** Merge adjacent price levels into buckets (same step for bids/asks). */
 export function aggregateLevels(levels, step) {
   if (!levels?.length || !step || step <= 0) return levels || [];

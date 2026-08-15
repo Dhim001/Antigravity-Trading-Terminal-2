@@ -8,6 +8,7 @@ import { ModelHealthBadge } from '../ml-lab/ModelHealthBadge';
 import { formatBarTimeframeLabel } from '@/lib/barTimeframes';
 import { useEffectiveRiskHold, botRuntimeActivityHint } from '@/lib/botRiskHold';
 import { formatLastSignal } from '@/lib/formatTime';
+import { botStatusLabel, normalizeBotStatus } from '@/lib/botAttribution';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import {
   getCachedModelStatus,
@@ -21,7 +22,7 @@ import { Pause, PlayCircle, RefreshCw } from 'lucide-react';
 
 function statusBadgeVariant(status) {
   if (status === 'RUNNING') return 'buy';
-  if (status === 'PAUSED') return 'secondary';
+  if (status === 'PAUSED') return 'outline';
   if (status === 'ERROR') return 'destructive';
   return 'sell';
 }
@@ -46,8 +47,9 @@ export default function ActiveBotRow({
   onSetTakeProfit,
 }) {
   const inPosition = ownedPos && Math.abs(ownedPos.size) > 0;
+  const status = normalizeBotStatus(bot.status);
   const { hold: riskHold, remaining } = useEffectiveRiskHold(bot.risk_hold);
-  const activity = botRuntimeActivityHint(bot, {
+  const activity = botRuntimeActivityHint({ ...bot, status }, {
     hold: riskHold,
     remainingSec: remaining,
     safeModeActive,
@@ -161,7 +163,7 @@ export default function ActiveBotRow({
       </DataTableCell>
       <DataTableCell align="center">
         <div className="algo-bot-status-cell">
-          <Badge variant={statusBadgeVariant(bot.status)}>{bot.status}</Badge>
+          <Badge variant={statusBadgeVariant(status)}>{botStatusLabel(status)}</Badge>
           {activity && (
             <Badge
               variant={activityHintVariant(activity.kind)}
@@ -190,17 +192,19 @@ export default function ActiveBotRow({
               <RefreshCw />
             </Button>
           )}
-          {bot.status === 'RUNNING' && (
-            <Button variant="outline" size="xs" onClick={() => onPause(bot.id)} title="Pause bot">
+          {status === 'RUNNING' && (
+            <Button variant="outline" size="xs" onClick={() => onPause(bot.id)} title="Pause — stop evaluating new bars">
               <Pause />
+              Pause
             </Button>
           )}
-          {bot.status === 'PAUSED' && (
-            <Button variant="outline" size="xs" onClick={() => onResume(bot.id)} title="Resume bot">
+          {status === 'PAUSED' && (
+            <Button variant="default" size="xs" onClick={() => onResume(bot.id)} title="Resume — start evaluating new bars">
               <PlayCircle />
+              Resume
             </Button>
           )}
-          {bot.status !== 'STOPPED' && (
+          {status !== 'STOPPED' && (
             <Button
               variant="outline"
               size="xs"
@@ -210,7 +214,7 @@ export default function ActiveBotRow({
               SL
             </Button>
           )}
-          {bot.status !== 'STOPPED' && (
+          {status !== 'STOPPED' && (
             <Button
               variant="outline"
               size="xs"
@@ -220,7 +224,7 @@ export default function ActiveBotRow({
               TP
             </Button>
           )}
-          {bot.status !== 'STOPPED' && (
+          {status !== 'STOPPED' && (
             <Button variant="destructive" size="xs" onClick={() => onStop(bot.id)} title="Stop bot">
               STOP
             </Button>

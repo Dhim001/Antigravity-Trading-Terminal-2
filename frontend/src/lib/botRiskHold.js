@@ -179,8 +179,16 @@ export function riskHoldDetailMessage(hold, remainingSec = null) {
  * @returns {{ kind: 'cooling_off'|'held'|'no_signal', label: string, title?: string } | null}
  */
 export function botRuntimeActivityHint(bot, opts = {}) {
-  const status = String(bot?.status || '').toUpperCase();
+  const status = String(bot?.status || '').trim().toUpperCase();
   if (status !== 'RUNNING' && status !== 'PAUSED') return null;
+
+  if (status === 'PAUSED') {
+    return {
+      kind: 'held',
+      label: 'Not evaluating',
+      title: 'Bot is paused — it is not evaluating new bars or placing trades. Click Resume to continue.',
+    };
+  }
 
   if (opts.safeModeActive && status === 'RUNNING') {
     return {

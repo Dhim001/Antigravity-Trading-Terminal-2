@@ -35,6 +35,7 @@ describe('mlHyperparamSweepPolling', () => {
 
   afterEach(() => {
     __resetMlHyperparamSweepPollingForTests();
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -98,6 +99,58 @@ describe('mlHyperparamSweepPolling', () => {
     });
 
     expect(getMlTrainingSession().tuneResult?.best_score).toBe(0.71);
+    expect(getMlTrainingSession().tuneResult?.ok).toBe(true);
+    expect(getMlTrainingSession().tuneResult?.best_hyperparams).toEqual({ learning_rate: 0.001 });
     expect(isMlHyperparamSweepPolling()).toBe(false);
+    finishMlJob(jobToken);
+  });
+
+  it('keeps polling past the Optuna budget instead of marking a running sweep failed', async () => {
+    vi.useFakeTimers();
+    const { apiRequest } = await import('@/api/client');
+    const { toast } = await import('sonner');
+    apiRequest.mockResolvedValue({
+      job: {
+        status: 'running',
+        progress: { pct: 90, phase: 'hyperparam_promote', trial: 8, max_trials: 12 },
+      },
+    });
+
+    const { jobToken } = beginMlJob({
+      kind: 'hyperparam_sweep',
+      strategy: 'RL_PPO_AGENT',
+      symbol: 'AAPL',
+      jobId: 'sweep-overrun',
+      jobProgress: { active: true, kind: 'hyperparam_sweep', label: 'Auto-tune', startedAt: Date.now() },
+    });
+
+    startMlHyperparamSweepPolling('sweep-overrun', { jobToken, timeBudgetSec: 1 });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(apiRequest).toHaveBeenCalled();
+    expect(getMlTrainingSession().tuning).toBe(true);
+
+    // min budget is 120s + 15 min buffer — still running must not toast.error/timeout.
+    await vi.advanceTimersByTimeAsync(120_000 + 15 * 60_000 + 5_000);
+    expect(getMlTrainingSession().tuning).toBe(true);
+    expect(getMlTrainingSession().lastError).toBeFalsy();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.message).toHaveBeenCalled();
+
+    apiRequest.mockResolvedValue({
+      job: {
+        status: 'done',
+        result: { ok: true, best_score: 0.76, trials_completed: 8, max_trials: 12 },
+        progress: { pct: 100, phase: 'done' },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(getMlTrainingSession().tuning).toBe(false);
+    expect(getMlTrainingSession().tuneResult?.ok).toBe(true);
+    expect(getMlTrainingSession().tuneResult?.best_score).toBe(0.76);
+    expect(toast.success).toHaveBeenCalled();
+
+    stopMlHyperparamSweepPolling();
+    vi.useRealTimers();
+    finishMlJob(jobToken);
   });
 });

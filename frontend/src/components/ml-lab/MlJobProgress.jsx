@@ -110,8 +110,6 @@ export function JobProgressBar({
       || phase?.label
     : phase?.label;
   const jobShort = jobId ? String(jobId).slice(0, 8) : null;
-  const isTune = String(job.kind || '').toLowerCase().includes('hyperparam')
-    || /auto-tune/i.test(String(job.label || ''));
 
   return (
     <div className="ml-training__progress" role="status" aria-live="polite">
@@ -154,16 +152,9 @@ export function JobProgressBar({
           </Button>
         )}
       </div>
-      {(jobShort || isTune) && (
+      {jobShort && (
         <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
-          {jobShort ? `job ${jobShort}` : 'ML job'}
-          {' · background (safe to switch tabs)'}
-          {serverProgress?.trial != null && serverProgress?.max_trials != null
-            ? ` · trial ${serverProgress.trial}/${serverProgress.max_trials}`
-            : ''}
-          {serverProgress?.best_score != null
-            ? ` · best ${serverProgress.best_score}`
-            : ''}
+          job {jobShort} · background (safe to switch tabs)
         </p>
       )}
     </div>

@@ -5,6 +5,8 @@ import {
   tradeSourceDetail,
   getBotOwnedSize,
   getBotOwnedPositionView,
+  normalizeBotStatus,
+  botStatusLabel,
 } from './botAttribution';
 
 const lookup = buildBotLookup(
@@ -115,5 +117,14 @@ describe('getBotOwnedSize / getBotOwnedPositionView', () => {
       label: 'SHORT',
     });
     expect(getBotOwnedSize('other', 'ETHUSDT', positions)).toBe(0);
+  });
+});
+
+describe('normalizeBotStatus', () => {
+  it('canonicalizes mixed-case status for the Active Bots panel', () => {
+    expect(normalizeBotStatus('paused')).toBe('PAUSED');
+    expect(normalizeBotStatus('RUNNING')).toBe('RUNNING');
+    expect(botStatusLabel('PAUSED')).toBe('Paused');
+    expect(botStatusLabel('running')).toBe('Running');
   });
 });

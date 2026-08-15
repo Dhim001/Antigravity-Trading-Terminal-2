@@ -20,7 +20,6 @@ import numpy as np
 
 from app.services.bots.indicators import merge_strategy_config
 from app.services.bots.ml_feature_engineering import (
-    SIGNAL_FEATURE_NAMES,
     bar_to_signal_features,
     signal_features_to_vector,
 )
@@ -31,8 +30,6 @@ from app.services.bots.rl_trading_env import (
     ACTION_CLOSE,
     ACTION_HOLD,
     ACTION_SELL,
-    N_FEATURES,
-    OBS_DIM,
     SIDE_FLAT,
     SIDE_LONG,
     SIDE_SHORT,
@@ -57,7 +54,8 @@ class RlPpoStrategy(BaseStrategy):
     def __init__(self, config: dict):
         super().__init__(config)
         self._cfg = merge_strategy_config("RL_PPO_AGENT", config or {})
-        self._bar_history: deque = deque(maxlen=25)
+        from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
+        self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
 
         # Shadow position state (tracked locally; synced from live `_current_side`)
         self._position_side = SIDE_FLAT
@@ -70,6 +68,11 @@ class RlPpoStrategy(BaseStrategy):
         self._feat_std: np.ndarray | None = None
         self._scaler_loaded = False
 
+        # Backtest-only: market feature matrix aligned to the candle DataFrame.
+        # Position features still splice per bar (policy is sequential).
+        self._bt_feat_matrix: np.ndarray | None = None
+        self._bt_feat_len = 0
+
     def _model_timeframe(self) -> str:
         from app.services.bots.ml_model_artifacts import normalize_model_timeframe
 
@@ -77,12 +80,68 @@ class RlPpoStrategy(BaseStrategy):
             self._cfg.get("timeframe") or self.config.get("timeframe")
         )
 
+    @property
+    def has_backtest_feature_matrix(self) -> bool:
+        return self._bt_feat_matrix is not None and self._bt_feat_len > 0
+
+    def prepare_backtest_features(
+        self,
+        candles,
+        start_i: int = 0,
+        *,
+        symbol: str = "",
+        cancel_cb: Any | None = None,
+        progress_cb: Any | None = None,
+    ) -> None:
+        """Precompute market features once (same matrix as other ML backtests).
+
+        ONNX stays per-bar because the observation includes position state.
+        ``start_i`` is accepted for call-site symmetry; the matrix is aligned
+        to the full candle index so ``_bar_index`` lookups match ``df.iloc[i]``.
+        """
+        del start_i  # matrix is full-length; evaluate uses _bar_index
+        from app.services.bots.ml_feature_engineering import precompute_signal_feature_matrix
+
+        if symbol:
+            self._cfg["model_symbol"] = str(symbol).upper()
+            self._cfg.setdefault("symbol", str(symbol).upper())
+        mat = precompute_signal_feature_matrix(
+            candles,
+            cancel_cb=cancel_cb,
+            progress_cb=progress_cb,
+        )
+        if mat is None or getattr(mat, "shape", (0,))[0] == 0:
+            self._bt_feat_matrix = None
+            self._bt_feat_len = 0
+            return
+        self._bt_feat_matrix = np.asarray(mat, dtype=np.float64)
+        self._bt_feat_len = int(self._bt_feat_matrix.shape[0])
+
+    def _market_feature_vector(self, df_row) -> np.ndarray:
+        """Market features only (no position). Matrix path matches vectorized train/BT."""
+        bar_index = df_row.get("_bar_index")
+        if (
+            self.has_backtest_feature_matrix
+            and bar_index is not None
+        ):
+            idx = int(bar_index)
+            if 0 <= idx < self._bt_feat_len:
+                return np.asarray(self._bt_feat_matrix[idx], dtype=np.float64)
+        lookback_rows = list(self._bar_history)[:-1]
+        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
+        return signal_features_to_vector(features)
+
     def evaluate(self, df_row) -> dict:
-        self._bar_history.append(dict(df_row))
+        use_matrix = self.has_backtest_feature_matrix
+        if not use_matrix:
+            self._bar_history.append(dict(df_row))
         self._bar_count += 1
 
-        # Need enough history for feature computation
-        if len(self._bar_history) < 20:
+        # Need enough history for feature computation (live deque or eval count)
+        if use_matrix:
+            if self._bar_count < 20:
+                return {"signal": "NONE"}
+        elif len(self._bar_history) < 20:
             return {"signal": "NONE"}
 
         # Resolve symbol
@@ -102,18 +161,24 @@ class RlPpoStrategy(BaseStrategy):
         if not self._scaler_loaded:
             self._load_scaler(symbol, timeframe=tf)
 
-        lookback_rows = list(self._bar_history)[:-1]
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
-        feat_vec = signal_features_to_vector(features)
+        feat_vec = self._market_feature_vector(df_row)
 
         from app.services.bots.ml_feature_drift import record_ml_inference_features
+        from app.services.bots.ml_feature_engineering import apply_feature_scaler
 
         # Record raw (pre-norm) signal features so PSI matches scaler baselines.
-        record_ml_inference_features(symbol, "RL_PPO_AGENT", feat_vec)
+        # Skip during backtest — 1m replays would overwrite the live PSI window.
+        if not df_row.get("_backtest"):
+            record_ml_inference_features(symbol, "RL_PPO_AGENT", feat_vec)
 
-        # Normalize features
+        # Normalize + align to trained scaler width (legacy v4 models stay usable).
         if self._feat_mean is not None and self._feat_std is not None:
-            feat_vec = (feat_vec - self._feat_mean) / self._feat_std
+            feat_vec = apply_feature_scaler(
+                feat_vec,
+                self._feat_mean,
+                self._feat_std,
+                log_label=f"RL_PPO[{symbol}]",
+            )
 
         # Position state features
         pos_pnl = self._compute_unrealized_pnl(close)
@@ -232,7 +297,8 @@ class RlPpoStrategy(BaseStrategy):
         if scaler:
             mean = scaler.get("feat_mean")
             std = scaler.get("feat_std")
-            if mean and std and len(mean) == N_FEATURES and len(std) == N_FEATURES:
+            if mean and std and len(mean) == len(std) and len(mean) > 0:
+                # Accept legacy widths; apply_feature_scaler aligns live dims.
                 self._feat_mean = np.array(mean, dtype=np.float64)
                 self._feat_std = np.array(std, dtype=np.float64)
                 self._feat_std = np.where(self._feat_std < 1e-8, 1.0, self._feat_std)

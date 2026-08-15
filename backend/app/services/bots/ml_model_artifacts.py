@@ -8,6 +8,7 @@ Layout (per strategy subdir + symbol[, timeframe])::
       *.onnx | model.joblib | scaler.json …
       versions/
         index.json                          # [{version_id, trained_at, …}]
+        .current                            # active version_id (retrain replaces this)
         {version_id}/
           metadata.json
           …artifacts…
@@ -20,8 +21,11 @@ Identity contract
   ``find_version_entry`` (matches either id or ISO).
 
 Training still writes to the current root first, then ``snapshot_current_version``
-copies artifacts into ``versions/<id>/``. Inference loaders can resolve a pinned
-``model_version`` (ISO ``trained_at`` or ``version_id``) via ``resolve_model_dir``.
+copies artifacts into ``versions/<id>/``. By default a retrain **replaces** the
+active version in place (same ``version_id`` / Keep / rename) instead of
+appending a new history row — set ``replace_current=False`` to append.
+Inference loaders can resolve a pinned ``model_version`` (ISO ``trained_at`` or
+``version_id``) via ``resolve_model_dir``.
 
 Strategy → subdir / artifact maps live in ``ml_registry`` (re-exported here).
 """
@@ -42,6 +46,7 @@ from app.services.bots.ml_registry import MODEL_SUBDIRS, STRATEGY_ARTIFACTS
 logger = logging.getLogger(__name__)
 
 MAX_KEPT_VERSIONS = 10
+_CURRENT_POINTER_NAME = ".current"
 
 # Re-export for back-compat (prefer importing from ml_registry)
 __all__ = [
@@ -138,6 +143,43 @@ def version_index_path(model_root: str) -> str:
     return os.path.join(versions_dir(model_root), "index.json")
 
 
+def _current_pointer_path(model_root: str) -> str:
+    return os.path.join(versions_dir(model_root), _CURRENT_POINTER_NAME)
+
+
+def read_current_version_pointer(model_root: str | None) -> str | None:
+    """Return the active version_id tracked for in-place retrain replace."""
+    if not model_root:
+        return None
+    path = _current_pointer_path(model_root)
+    if not os.path.isfile(path):
+        return None
+    try:
+        raw = open(path, encoding="utf-8").read().strip()
+        if not raw:
+            return None
+        if raw.startswith("{"):
+            data = json.loads(raw)
+            vid = str((data or {}).get("version_id") or "").strip()
+            return vid or None
+        return raw
+    except Exception:
+        return None
+
+
+def write_current_version_pointer(model_root: str | None, version_id: str | None) -> None:
+    """Persist which version_id Retrain should replace (also set on Activate)."""
+    if not model_root or not version_id:
+        return
+    vroot = versions_dir(model_root)
+    try:
+        os.makedirs(vroot, exist_ok=True)
+        with open(_current_pointer_path(model_root), "w", encoding="utf-8") as fh:
+            json.dump({"version_id": str(version_id)}, fh)
+    except OSError as exc:
+        logger.debug("Failed to write current version pointer: %s", exc)
+
+
 def json_safe_value(value: Any) -> Any:
     """Recursively replace non-finite floats so JSON dumps / Starlette never 500.
 
@@ -215,18 +257,30 @@ def list_model_versions(model_root: str | None) -> list[dict[str, Any]]:
 
     current_meta = os.path.join(model_root, "metadata.json")
     current_at = None
+    current_vid = None
     if os.path.isfile(current_meta):
         try:
             with open(current_meta, encoding="utf-8") as f:
-                current_at = json.load(f).get("trained_at")
+                live = json.load(f)
+            if isinstance(live, dict):
+                current_at = live.get("trained_at")
+                current_vid = str(live.get("version_id") or "").strip() or None
         except Exception:
             pass
+    if not current_vid:
+        current_vid = read_current_version_pointer(model_root)
 
     out = []
     for e in entries:
         row = dict(e)
+        eid = str(row.get("version_id") or "")
         row["is_current"] = bool(
-            current_at and row.get("trained_at") and str(row["trained_at"]) == str(current_at)
+            (current_vid and eid == current_vid)
+            or (
+                current_at
+                and row.get("trained_at")
+                and str(row["trained_at"]) == str(current_at)
+            )
         )
         out.append(row)
     out.sort(key=lambda r: str(r.get("trained_at") or r.get("version_id") or ""), reverse=True)
@@ -304,6 +358,9 @@ def find_version_entry(model_root: str, model_version: str | None) -> dict[str, 
     for entry in list_model_versions(model_root):
         eid = str(entry.get("version_id") or "")
         if str(entry.get("trained_at") or "") == needle or eid in (needle, vid):
+            return entry
+        # Pins taken before an in-place retrain still resolve via first_trained_at.
+        if str(entry.get("first_trained_at") or "") == needle:
             return entry
         # Legacy: index still has mangled id, pin uses clean id — only if unique
         if stem and len(stem) >= 15 and eid.startswith(stem):
@@ -540,6 +597,8 @@ def activate_model_version(
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
+    write_current_version_pointer(root, entry.get("version_id"))
+
     # Invalidate root validation.json — it may stamp a previous champion.
     # Embedded WF/PBO on the activated snapshot (if any) can be re-materialized
     # by ensure_validation_sidecar on the next status read.
@@ -693,11 +752,19 @@ def snapshot_current_version(
     strategy: str | None = None,
     artifact_names: list[str] | None = None,
     max_kept: int = MAX_KEPT_VERSIONS,
+    replace_current: bool = True,
+    replace_version_id: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Copy current-root artifacts into versions/<id>/ and update index.json.
 
     Call after training has written metadata.json (+ model files) to model_root.
+
+    By default (``replace_current=True``) a retrain overwrites the active
+    version folder / index row in place — same ``version_id``, Keep star, and
+    display name — instead of appending a duplicate history entry. Pass
+    ``replace_current=False`` to append a new timestamped checkpoint (tests /
+    explicit history capture).
     """
     if not model_root or not os.path.isdir(model_root):
         return None
@@ -711,7 +778,28 @@ def snapshot_current_version(
         return None
 
     trained_at = meta.get("trained_at") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    vid = version_id_from_iso(trained_at)
+    prev_index = _read_index(model_root)
+
+    reuse_vid: str | None = None
+    if replace_version_id:
+        reuse_vid = str(replace_version_id).strip() or None
+    elif replace_current:
+        reuse_vid = str(meta.get("version_id") or "").strip() or None
+        if not reuse_vid:
+            reuse_vid = read_current_version_pointer(model_root)
+        if not reuse_vid and prev_index:
+            # Newest-first index — first row is the previous champion snapshot.
+            # (Activate updates the .current pointer so Activate→Retrain hits
+            # the promoted row, not merely the newest timestamp.)
+            reuse_vid = str(prev_index[0].get("version_id") or "").strip() or None
+        # Only reuse if that folder (or index row) actually exists.
+        if reuse_vid:
+            known = {str(e.get("version_id") or "") for e in prev_index}
+            vdir_exists = os.path.isdir(os.path.join(versions_dir(model_root), reuse_vid))
+            if reuse_vid not in known and not vdir_exists:
+                reuse_vid = None
+
+    vid = reuse_vid or version_id_from_iso(trained_at)
     vdir = os.path.join(versions_dir(model_root), vid)
     os.makedirs(vdir, exist_ok=True)
 
@@ -760,14 +848,19 @@ def snapshot_current_version(
         "model_type": meta.get("model_type"),
     }
 
-    prev_index = _read_index(model_root)
     prev_same = next((e for e in prev_index if e.get("version_id") == vid), None)
     if isinstance(prev_same, dict):
-        # Preserve user labels / favorites across re-snapshots of the same id.
+        # Preserve user labels / favorites across in-place retrains.
         if prev_same.get("display_name"):
             entry["display_name"] = str(prev_same["display_name"])[:80]
         if prev_same.get("protected"):
             entry["protected"] = True
+        # Keep the original train time for pin resilience; surface latest as trained_at.
+        first_at = prev_same.get("first_trained_at") or prev_same.get("trained_at")
+        if first_at:
+            entry["first_trained_at"] = first_at
+        if reuse_vid and str(prev_same.get("trained_at") or "") != str(trained_at):
+            entry["retrained_at"] = trained_at
 
     index = [e for e in prev_index if e.get("version_id") != vid]
     index.insert(0, json_safe_value(entry))
@@ -790,13 +883,20 @@ def snapshot_current_version(
                 logger.warning("Failed to prune model version %s: %s", old_dir, exc)
 
     _write_index(model_root, index)
+    write_current_version_pointer(model_root, vid)
 
     # Stamp current metadata with version_id
     meta["version_id"] = vid
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    logger.info("Snapshotted model version %s under %s (%d files)", vid, model_root, len(copied))
+    logger.info(
+        "Snapshotted model version %s under %s (%d files%s)",
+        vid,
+        model_root,
+        len(copied),
+        ", replaced in place" if reuse_vid else "",
+    )
     return entry
 
 
