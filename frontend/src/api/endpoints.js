@@ -474,6 +474,43 @@ export async function fetchFilterRejects({ botId, symbol, strategy } = {}) {
   return body.filter_rejects;
 }
 
+/** GET /api/v1/bots/{botId}/reasoning — persisted agent decision chains (newest first). */
+export async function fetchBotReasoning(botId, { limit = 20 } = {}) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  const body = await apiRequest(`/api/v1/bots/${encodeURIComponent(botId)}/reasoning?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Reasoning unavailable');
+  return body.reasoning ?? [];
+}
+
+/** GET /api/v1/agent/actions?status=pending — HITL desk action queue. */
+export async function fetchAgentActions({ status = 'pending', limit = 50 } = {}) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (status) qs.set('status', status);
+  const body = await apiRequest(`/api/v1/agent/actions?${qs}`);
+  if (!body?.ok) throw new Error(body?.error || 'Agent actions unavailable');
+  return body.actions ?? [];
+}
+
+/** POST /api/v1/agent/actions/{id}/approve — execute a parked agent action. */
+export async function approveAgentAction(actionId) {
+  const body = await apiRequest(
+    `/api/v1/agent/actions/${encodeURIComponent(actionId)}/approve`,
+    { method: 'POST', timeoutMs: 60000, body: {} },
+  );
+  if (!body?.ok) throw new Error(body?.error || 'Approve failed');
+  return body;
+}
+
+/** POST /api/v1/agent/actions/{id}/reject — dismiss a parked agent action. */
+export async function rejectAgentAction(actionId) {
+  const body = await apiRequest(
+    `/api/v1/agent/actions/${encodeURIComponent(actionId)}/reject`,
+    { method: 'POST', timeoutMs: 30000, body: {} },
+  );
+  if (!body?.ok) throw new Error(body?.error || 'Reject failed');
+  return body;
+}
+
 /** GET /api/v1/execution/quality — TCA aggregates (IS trend, algo table, worst fills). */
 export async function fetchExecutionQuality({ botId, symbol, strategy, hours } = {}) {
   const qs = new URLSearchParams();

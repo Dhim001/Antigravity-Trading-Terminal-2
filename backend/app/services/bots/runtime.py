@@ -326,6 +326,40 @@ async def alpha_decay_loop(bot_manager: BotManagerService):
         await asyncio.sleep(ALPHA_DECAY_INTERVAL_SEC)
 
 
+async def decision_eval_loop():
+    """Periodically grade past agent decisions (veto/rotation/patch/pause)."""
+    from app.config import AGENT_EVAL_ENABLED, AGENT_EVAL_INTERVAL_SEC
+    from app.services.agent.decision_eval import run_decision_eval
+
+    if not AGENT_EVAL_ENABLED:
+        logger.info("Decision eval loop disabled (AGENT_EVAL_ENABLED=false) — loop idle.")
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    interval = float(AGENT_EVAL_INTERVAL_SEC)
+    if interval <= 0:
+        logger.info("Decision eval loop disabled (AGENT_EVAL_INTERVAL_SEC=%s)", interval)
+        while True:
+            await asyncio.sleep(3600)
+        return
+
+    logger.info("Starting agent decision eval loop (interval=%.0fs)...", interval)
+    while True:
+        try:
+            stats = await asyncio.to_thread(run_decision_eval)
+            if stats.get("graded"):
+                logger.info(
+                    "Decision eval graded %d decision(s) (registered=%d expired=%d).",
+                    stats.get("graded", 0),
+                    stats.get("registered", 0),
+                    stats.get("expired", 0),
+                )
+        except Exception as exc:
+            logger.error("Error in decision eval loop: %s", exc)
+        await asyncio.sleep(interval)
+
+
 async def scanner_deploy_loop(
     bot_manager: BotManagerService,
     *,

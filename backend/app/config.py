@@ -354,6 +354,21 @@ POSTTRADE_LEARNER_RETRAIN_EVERY_N = int(os.environ.get("POSTTRADE_LEARNER_RETRAI
 POSTTRADE_LEARNER_STOP_WIDEN_PCT = float(os.environ.get("POSTTRADE_LEARNER_STOP_WIDEN_PCT", "0.25"))
 POSTTRADE_LEARNER_CONFIDENCE_BUMP = float(os.environ.get("POSTTRADE_LEARNER_CONFIDENCE_BUMP", "0.03"))
 
+# Agent Decision Eval (Sprint 4) — closed-loop scoring of vetoes/rotations/patches/pauses
+AGENT_EVAL_ENABLED = os.environ.get("AGENT_EVAL_ENABLED", "true").lower() in ("1", "true", "yes")
+AGENT_EVAL_INTERVAL_SEC = float(os.environ.get("AGENT_EVAL_INTERVAL_SEC", "3600"))
+# Decisions are graded once they are at least this old (price path has formed)…
+AGENT_EVAL_MIN_AGE_SEC = float(os.environ.get("AGENT_EVAL_MIN_AGE_SEC", "3600"))
+# …and expire ungraded (outcome=insufficient_data) once older than this.
+AGENT_EVAL_MAX_AGE_SEC = float(os.environ.get("AGENT_EVAL_MAX_AGE_SEC", "86400"))
+# Veto counterfactual: 1m bars after the blocked entry used for the move check.
+AGENT_EVAL_VETO_BARS = int(os.environ.get("AGENT_EVAL_VETO_BARS", "60"))
+# Pause counterfactual: hours after the pause used for the price comparison.
+AGENT_EVAL_PAUSE_HOURS = float(os.environ.get("AGENT_EVAL_PAUSE_HOURS", "4"))
+# Patch/rotation scoring: closed exits compared before vs after the decision.
+AGENT_EVAL_TRADE_WINDOW = int(os.environ.get("AGENT_EVAL_TRADE_WINDOW", "10"))
+AGENT_EVAL_RETENTION_DAYS = int(os.environ.get("AGENT_EVAL_RETENTION_DAYS", "30"))
+
 # Scanner Auto-Deploy Agent (continuous scan → gate → create bots)
 SCANNER_DEPLOY_ENABLED = os.environ.get("SCANNER_DEPLOY_ENABLED", "false").lower() in ("1", "true", "yes")
 SCANNER_DEPLOY_INTERVAL_SEC = float(os.environ.get("SCANNER_DEPLOY_INTERVAL_SEC", "300"))
@@ -376,6 +391,13 @@ SCANNER_DEPLOY_AUTO_STOP_ON_DD = os.environ.get("SCANNER_DEPLOY_AUTO_STOP_ON_DD"
 # Raw env (slash or USDT); normalized to *USDT after CRYPTO_SYMBOLS is defined.
 _SCANNER_DEPLOY_WATCHLIST_RAW = os.environ.get("SCANNER_DEPLOY_WATCHLIST")
 SCANNER_DEPLOY_WATCHLIST: list[str] = []
+
+# Autonomous agent actions (Sprint 3) — when false, silent actors (RiskSentinel
+# single-bot pause, RegimeRotation, AlphaDecay, ScannerDeploy, PostTrade auto-patch)
+# PROPOSE into the HITL action queue instead of mutating directly. Emergencies
+# (kill switch, max-drawdown halt, daily-loss halt) always execute immediately.
+AUTO_AGENT_ACTIONS = os.environ.get("AUTO_AGENT_ACTIONS", "false").lower() in ("1", "true", "yes")
+AGENT_HITL_TTL_SEC = float(os.environ.get("AGENT_HITL_TTL_SEC", "900"))
 
 # Trading Chatbot / Copilot
 TRADE_COPILOT_ENABLED = os.environ.get("TRADE_COPILOT_ENABLED", "true").lower() in ("1", "true", "yes")

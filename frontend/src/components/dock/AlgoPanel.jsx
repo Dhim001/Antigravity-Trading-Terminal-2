@@ -82,6 +82,8 @@ import { postMlLabRequest } from '@/lib/mlLabRequests';
 import { ALGO_OPEN_DEPLOY_EVENT } from '@/lib/pipelineNav';
 import DeployGatePanel from '../DeployGatePanel';
 import ActiveBotRow from './ActiveBotRow';
+import AgentActionsPanel from './AgentActionsPanel';
+import BotReasoningPanel from './BotReasoningPanel';
 import { selectAgentInsight } from '@/lib/agentInsights';
 import { isSignalLog, logLineClass } from '@/lib/botLogInsight';
 import { getCachedModelStatus } from '@/lib/mlTrainingSession';
@@ -2385,6 +2387,10 @@ export function AlgoTab({ hideToolbar = false }) {
           </DataTableRoot>
         </ScrollTablePanel>
       </section>
+
+      <AgentActionsPanel />
+
+      <BotReasoningPanel botId={selectedBotId} />
 
       <section className="algo-tab__panel algo-tab__panel--log">
         <header className="algo-tab__panel-header">

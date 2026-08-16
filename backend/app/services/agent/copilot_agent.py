@@ -13,7 +13,9 @@ from typing import Any
 
 from app.services.agent.llm.base import parse_json_object
 from app.services.agent.llm.router import _chat
-from app.services.market.timeframes import TIMEFRAME_SECS, normalize_timeframe
+from app.services.agent.tools.catalog import get_registry
+from app.services.agent.tools.registry import ToolContext
+from app.services.market.timeframes import TIMEFRAME_SECS
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +58,6 @@ Tools:
 14. help — args: {}
 15. scan_market — args: limit (int, optional)
 """
-
-
-def _safe_tf(raw: Any, default: str = "1m") -> str:
-    try:
-        return normalize_timeframe(str(raw or default))
-    except ValueError:
-        return default
 
 
 def parse_planner_response(text: str | None) -> dict[str, Any]:
@@ -211,41 +206,49 @@ async def execute_planned_calls(
     message: str,
     active_symbol: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str]:
-    """Run planned tool calls via copilot handlers. Returns (tool_results, pending, intent)."""
+    """Run planned tool calls through the shared tool registry.
+
+    Returns (tool_results, pending, intent). Read tools execute inline;
+    trade/control tools come back as HITL refusals whose ``pending`` payload
+    feeds the existing confirm/cancel flow.
+    """
     from app.services.agent.copilot import (  # local import avoids cycles at module load
         INTENT_ACTION,
         INTENT_ANALYSIS,
         INTENT_EXPLAIN,
         INTENT_HELP,
         INTENT_QUERY,
-        _BOT_ID_RE,
-        _PCT_RE,
         _clarify_text,
-        _help_text,
-        _tool_analyze,
-        _tool_bot_performance,
-        _tool_explain,
-        _tool_list_bots,
-        _tool_meta_insight,
-        _tool_portfolio,
-        _tool_recommend_strategy,
-        _tool_run_backtest,
-        _tool_sentiment,
-        extract_allocation,
-        extract_days,
-        extract_strategy,
         extract_symbol,
         get_last_insight,
         looks_like_explicit_help,
         looks_like_market_question,
         normalize_symbol,
-        remember_insight,
         remember_timeframe,
         get_preferred_timeframe,
     )
 
-    bot_manager = getattr(state, "bot_manager", None)
-    oms = getattr(state, "oms", None)
+    intent_by_tool = {
+        "analyze_symbol": INTENT_ANALYSIS,
+        "meta_insight": INTENT_ANALYSIS,
+        "recommend_strategy": INTENT_ANALYSIS,
+        "scan_market": INTENT_ANALYSIS,
+        "get_sentiment": INTENT_ANALYSIS,
+        "run_backtest": INTENT_ANALYSIS,
+        "get_portfolio_status": INTENT_QUERY,
+        "list_bots": INTENT_QUERY,
+        "get_bot_performance": INTENT_QUERY,
+        "explain_trade": INTENT_EXPLAIN,
+        "explain_bot_events": INTENT_EXPLAIN,
+        "deploy_bot": INTENT_ACTION,
+        "pause_bot": INTENT_ACTION,
+        "stop_bot": INTENT_ACTION,
+        "pause_all_bots": INTENT_ACTION,
+        "stop_all_bots": INTENT_ACTION,
+        "update_bot_config": INTENT_ACTION,
+        "help": INTENT_HELP,
+    }
+
     tool_results: list[dict[str, Any]] = []
     pending: dict[str, Any] | None = None
     intent = INTENT_ANALYSIS
@@ -265,6 +268,23 @@ async def execute_planned_calls(
         })
         return tool_results, None, INTENT_HELP
 
+    registry = get_registry()
+    ctx = ToolContext(
+        state=state,
+        session_id=session_id,
+        message=message,
+        active_symbol=active_symbol,
+    )
+
+    def _append_result(tool_name: str, outcome: dict[str, Any]) -> None:
+        if outcome.get("ok"):
+            tool_results.append({"tool": tool_name, "result": outcome.get("result")})
+        else:
+            tool_results.append({
+                "tool": tool_name or "unknown",
+                "result": {"error": outcome.get("error") or "Tool failed"},
+            })
+
     for call in calls:
         name = str(call.get("name") or "").strip()
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
@@ -274,208 +294,17 @@ async def execute_planned_calls(
             name = "analyze_symbol"
             args = dict(args or {})
 
-        if name == "analyze_symbol":
-            intent = INTENT_ANALYSIS
-            sym = normalize_symbol(
-                args.get("symbol") or extract_symbol(message, active_symbol)
-            )
-            tf = _safe_tf(args.get("timeframe") or preferred, preferred)
-            remember_timeframe(session_id, tf)
-            if not sym:
-                # Reuse last insight symbol on TF-only follow-ups
-                last = get_last_insight(session_id)
-                sym = normalize_symbol((last or {}).get("symbol")) if last else None
-            if not sym:
-                tool_results.append({"tool": "analyze_symbol", "result": {"error": "Specify a symbol"}})
-            else:
-                analysis = await _tool_analyze(state, sym, timeframe=tf)
-                remember_insight(session_id, analysis)
-                tool_results.append({"tool": "analyze_symbol", "result": analysis})
+        intent = intent_by_tool.get(name, intent)
 
-        elif name == "meta_insight":
-            intent = INTENT_ANALYSIS
-            # Inject field into a synthetic message if LLM provided it
-            field = args.get("field")
-            meta_msg = message
-            if field and field not in message.lower():
-                meta_msg = f"{field}: {message}"
-            tool_results.append({
-                "tool": "meta_insight",
-                "result": _tool_meta_insight(session_id, meta_msg, active_symbol=active_symbol),
-            })
-
-        elif name == "recommend_strategy":
-            intent = INTENT_ANALYSIS
-            rec = await _tool_recommend_strategy(state, message, active_symbol=active_symbol)
-            if isinstance(rec.get("_insight"), dict):
-                remember_insight(session_id, rec.pop("_insight"))
-            else:
-                rec.pop("_insight", None)
-            tool_results.append({"tool": "recommend_strategy", "result": rec})
-
-        elif name == "scan_market":
-            intent = INTENT_ANALYSIS
-            from app.services.agent.copilot import _tool_scan_market
-            limit = int(args.get("limit") or 5)
-            tool_results.append({
-                "tool": "scan_market",
-                "result": await _tool_scan_market(bot_manager, limit=limit),
-            })
-
-        elif name == "get_portfolio_status":
-            intent = INTENT_QUERY
-            tool_results.append({"tool": "get_portfolio_status", "result": _tool_portfolio(oms)})
-
-        elif name == "list_bots":
-            intent = INTENT_QUERY
-            tool_results.append({"tool": "list_bots", "result": _tool_list_bots(bot_manager)})
-
-        elif name == "get_bot_performance":
-            intent = INTENT_QUERY
-            bid = args.get("bot_id")
-            if not bid:
-                m = _BOT_ID_RE.search(message)
-                bid = m.group(1) if m else None
-            tool_results.append({
-                "tool": "get_bot_performance",
-                "result": _tool_bot_performance(bot_manager, bid),
-            })
-
-        elif name == "get_sentiment":
-            intent = INTENT_ANALYSIS
-            sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol)) or "AAPL"
-            tool_results.append({"tool": "get_sentiment", "result": _tool_sentiment(sym)})
-
-        elif name == "run_backtest":
-            intent = INTENT_ANALYSIS
-            sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-            if not sym:
-                tool_results.append({"tool": "run_backtest", "result": {"error": "Specify a symbol"}})
-            else:
-                strategy = args.get("strategy") or extract_strategy(message)
-                days = int(args.get("days") or extract_days(message, default=30))
-                tf = _safe_tf(args.get("timeframe") or preferred, preferred)
-                alloc = float(args.get("allocation") or extract_allocation(message))
-                tool_results.append({
-                    "tool": "run_backtest",
-                    "result": await _tool_run_backtest(
-                        state, sym, strategy, days, timeframe=tf, allocation=alloc
-                    ),
-                })
-
-        elif name == "explain_trade":
-            intent = INTENT_EXPLAIN
-            bid = args.get("bot_id")
-            if not bid and bot_manager and bot_manager.active_bots:
-                sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-                for b in bot_manager.active_bots.values():
-                    if sym and str(b.get("symbol") or "").upper() == sym:
-                        bid = b.get("id")
-                        break
-                if not bid:
-                    bid = next(iter(bot_manager.active_bots))
-            tool_results.append({
-                "tool": "explain_trade",
-                "result": await _tool_explain(state, bid or ""),
-            })
-
-        elif name == "explain_bot_events":
-            intent = INTENT_EXPLAIN
-            bid = args.get("bot_id")
-            if not bid and bot_manager and bot_manager.active_bots:
-                sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-                for b in bot_manager.active_bots.values():
-                    if sym and str(b.get("symbol") or "").upper() == sym:
-                        bid = b.get("id")
-                        break
-                if not bid:
-                    bid = next(iter(bot_manager.active_bots))
-            from app.services.agent.copilot import _tool_explain_bot_events
-            tool_results.append({
-                "tool": "explain_bot_events",
-                "result": await _tool_explain_bot_events(bid or "", limit=args.get("limit") or 5),
-            })
-
-        elif name == "deploy_bot":
-            intent = INTENT_ACTION
-            sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-            if not sym:
-                tool_results.append({"tool": "deploy_bot", "result": {"error": "Specify a symbol to deploy"}})
-            else:
-                tf = _safe_tf(args.get("timeframe") or preferred, preferred)
-                pending = {
-                    "type": "deploy_bot",
-                    "params": {
-                        "strategy": args.get("strategy") or extract_strategy(message) or "CHART_AGENT",
-                        "symbol": sym,
-                        "timeframe": tf,
-                        "allocation": float(args.get("allocation") or extract_allocation(message)),
-                        "config": {"pipeline_source": "copilot"},
-                    },
-                }
-
-        elif name in ("pause_all_bots", "stop_all_bots"):
-            intent = INTENT_ACTION
-            pending = {"type": name, "params": {}}
-
-        elif name in ("pause_bot", "stop_bot"):
-            intent = INTENT_ACTION
-            bid = args.get("bot_id")
-            if not bid:
-                m = _BOT_ID_RE.search(message)
-                bid = m.group(1) if m else None
-            if not bid and bot_manager:
-                sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-                for b in bot_manager.active_bots.values():
-                    if sym and str(b.get("symbol") or "").upper() == sym:
-                        bid = b.get("id")
-                        break
-            if not bid:
-                tool_results.append({"tool": name, "result": {"error": "Specify a bot id or symbol"}})
-            else:
-                pending = {"type": name, "params": {"bot_id": bid}}
-
-        elif name == "update_bot_config":
-            intent = INTENT_ACTION
-            bid = args.get("bot_id")
-            patch = args.get("config_patch") if isinstance(args.get("config_patch"), dict) else {}
-            if not bid:
-                m = _BOT_ID_RE.search(message)
-                bid = m.group(1) if m else None
-            if not patch:
-                pct_m = _PCT_RE.search(message)
-                if pct_m and ("stop" in message.lower() or "sl" in message.lower()):
-                    patch["stop_loss_percent"] = float(pct_m.group(1))
-                if "confidence" in message.lower() and pct_m:
-                    val = float(pct_m.group(1))
-                    patch["min_confidence"] = val / 100.0 if val > 1 else val
-            if not bid and bot_manager:
-                sym = normalize_symbol(args.get("symbol") or extract_symbol(message, active_symbol))
-                for b in bot_manager.active_bots.values():
-                    if sym and str(b.get("symbol") or "").upper() == sym:
-                        bid = b.get("id")
-                        break
-            if not bid or not patch:
-                tool_results.append({
-                    "tool": "update_bot_config",
-                    "result": {"error": "Need bot id/symbol and a config change"},
-                })
-            else:
-                pending = {"type": "update_bot_config", "params": {"bot_id": bid, "config_patch": patch}}
-
-        elif name == "help":
-            intent = INTENT_HELP
-            tool_results.append({"tool": "help", "result": _help_text()})
-
+        outcome = await registry.execute(name, args, confirmed=False, context=ctx)
+        if outcome.get("requires_confirmation") and isinstance(outcome.get("pending"), dict):
+            pending = outcome["pending"]
         else:
-            tool_results.append({
-                "tool": name or "unknown",
-                "result": {"error": f"Unknown tool: {name}"},
-            })
+            _append_result(name, outcome)
 
     if not tool_results and not pending:
         if looks_like_explicit_help(message):
-            tool_results.append({"tool": "help", "result": _help_text()})
+            _append_result("help", await registry.execute("help", {}, context=ctx))
             intent = INTENT_HELP
         elif looks_like_market_question(message) or extract_symbol(message, active_symbol):
             intent = INTENT_ANALYSIS
@@ -484,9 +313,14 @@ async def execute_planned_calls(
                 last = get_last_insight(session_id)
                 sym = normalize_symbol((last or {}).get("symbol")) if last else None
             if sym:
-                analysis = await _tool_analyze(state, sym, timeframe=preferred)
-                remember_insight(session_id, analysis)
-                tool_results.append({"tool": "analyze_symbol", "result": analysis})
+                _append_result(
+                    "analyze_symbol",
+                    await registry.execute(
+                        "analyze_symbol",
+                        {"symbol": sym, "timeframe": preferred},
+                        context=ctx,
+                    ),
+                )
             else:
                 tool_results.append({
                     "tool": "clarify",

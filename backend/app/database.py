@@ -110,6 +110,138 @@ def ensure_ml_batch_tables(cursor=None) -> None:
             conn.close()
 
 
+def ensure_agent_event_tables(cursor=None) -> None:
+    """Create the durable agent event log (idempotent).
+
+    Accepts an existing cursor from ``init_db`` or opens its own connection so
+    the AgentEventBus can lazily guarantee the schema on first publish.
+    """
+    own = cursor is None
+    conn = get_connection() if own else None
+    cur = conn.cursor() if own else cursor
+    try:
+        serial = _serial_type()
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id {serial},
+                event_type TEXT NOT NULL,
+                source TEXT,
+                bot_id TEXT,
+                payload TEXT,
+                reasoning TEXT,
+                ts REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_events_type_ts "
+            "ON agent_events (event_type, ts)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_events_bot_ts "
+            "ON agent_events (bot_id, ts)"
+        )
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def ensure_agent_action_tables(cursor=None) -> None:
+    """Create the HITL desk action queue table (idempotent).
+
+    Same lazy-guarantee pattern as ``ensure_agent_event_tables`` — callable with
+    an existing cursor from ``init_db`` or standalone from the action queue.
+    """
+    own = cursor is None
+    conn = get_connection() if own else None
+    cur = conn.cursor() if own else cursor
+    try:
+        serial = _serial_type()
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS agent_pending_actions (
+                id {serial},
+                actor TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                params_json TEXT,
+                reason TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at REAL NOT NULL,
+                resolved_at REAL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_pending_actions_status "
+            "ON agent_pending_actions (status, created_at)"
+        )
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def ensure_agent_decision_eval_tables(cursor=None) -> None:
+    """Create Sprint-4 decision-eval tables (idempotent).
+
+    ``agent_decision_outcomes`` holds one row per discovered agent decision
+    (veto / rotation / patch / pause); ``decision_key`` is the idempotency
+    guard so a decision is graded at most once. ``agent_eval_summary`` is the
+    rolling per-agent accuracy rollup read by the Strategy Advisor / Copilot.
+    """
+    own = cursor is None
+    conn = get_connection() if own else None
+    cur = conn.cursor() if own else cursor
+    try:
+        serial = _serial_type()
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS agent_decision_outcomes (
+                id {serial},
+                decision_key TEXT NOT NULL,
+                decision_type TEXT NOT NULL,
+                agent TEXT,
+                bot_id TEXT,
+                symbol TEXT,
+                decided_at REAL NOT NULL,
+                evaluated_at REAL,
+                score REAL,
+                outcome TEXT,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_decision_outcomes_key "
+            "ON agent_decision_outcomes (decision_key)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_decision_outcomes_pending "
+            "ON agent_decision_outcomes (evaluated_at, decided_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_decision_outcomes_bot "
+            "ON agent_decision_outcomes (bot_id, decided_at)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS agent_eval_summary (
+                agent TEXT NOT NULL,
+                decision_type TEXT NOT NULL,
+                graded INTEGER NOT NULL DEFAULT 0,
+                avg_score REAL,
+                accuracy REAL,
+                last_score REAL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (agent, decision_type)
+            )
+        """)
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
 def _ensure_performance_indexes(cursor) -> None:
     """Idempotent indexes for hot read/write paths (safe on existing DBs)."""
     indexes = [
@@ -540,6 +672,9 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE ml_jobs ADD COLUMN checkpoint_json TEXT")
 
     ensure_ml_batch_tables(cursor)
+    ensure_agent_event_tables(cursor)
+    ensure_agent_decision_eval_tables(cursor)
+    ensure_agent_action_tables(cursor)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ml_train_runs (
@@ -613,6 +748,27 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_insights_symbol_time "
         "ON agent_insights (symbol, bar_time DESC)"
+    )
+
+    # Durable agent decision chains (AgentReasoning) — one row per persisted
+    # agent verdict (PreTradeIntel / RiskSentinel / RegimeRotation / PostTrade).
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS agent_reasoning (
+            id {serial},
+            bot_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            verdict TEXT,
+            notes TEXT,
+            observations TEXT,
+            vetoes TEXT,
+            size_multiplier REAL,
+            ts REAL,
+            created_at TEXT
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_reasoning_bot_ts "
+        "ON agent_reasoning (bot_id, ts DESC)"
     )
 
     cursor.execute("""

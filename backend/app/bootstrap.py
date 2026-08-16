@@ -22,6 +22,17 @@ def create_app_state() -> AppState:
     manager = ConnectionManager()
     event_bus = create_event_bus(REDIS_URL) if REDIS_URL and TERMINAL_ROLE == "server" else None
     agent_event_bus = AgentEventBus()
+    from app.services.bots.agent_event_subscribers import register_agent_event_subscribers
+
+    register_agent_event_subscribers(agent_event_bus)
+
+    # HITL action queue: share the durable agent event bus for proposals/resolutions.
+    try:
+        from app.services.agent import action_queue
+
+        action_queue.set_event_bus(agent_event_bus)
+    except Exception as exc:
+        logger.debug("action_queue wiring skipped: %s", exc)
 
     logger.info(
         "Initializing feed & OMS (mode=%s, role=%s, db=%s)...",

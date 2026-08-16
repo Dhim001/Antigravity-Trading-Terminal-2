@@ -26,6 +26,7 @@ from app.services.notifications import types as ntypes
 from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
 from app.services.agent.reasoning import AgentReasoning, Observation
+from app.services.agent.reasoning_store import save_agent_reasoning
 from app.services.agent.agent_event_bus import AgentEvent
 
 logger = logging.getLogger(__name__)
@@ -530,16 +531,38 @@ async def learn_from_closed_trade(
 
     applied = False
     if patch and POSTTRADE_LEARNER_AUTO_APPLY and bot_manager is not None:
-        try:
+        async def _apply_posttrade_patch():
             await bot_manager.update_bot_config(bot_id, patch)
-            applied = True
             await bot_manager.log_bot_event(
                 bot_id,
                 "INFO",
                 f"Post-trade learner applied config: {patch}",
             )
-        except Exception as exc:
-            logger.warning("posttrade auto-apply failed for %s: %s", bot_id, exc)
+
+        try:
+            from app.services.agent import desk_supervisor
+
+            apply_out = await desk_supervisor.propose_or_execute(
+                "PostTradeLearner",
+                "update_bot_config",
+                {"bot_id": bot_id, "config_patch": dict(patch)},
+                f"Post-trade lesson ({outcome_class}): apply config patch {patch}",
+                _apply_posttrade_patch,
+            )
+        except Exception as sup_exc:
+            logger.warning(
+                "PostTradeLearner supervisor path failed (%s) — applying directly", sup_exc
+            )
+            apply_out = {"executed": True, "ok": True}
+            try:
+                await _apply_posttrade_patch()
+            except Exception as exc:
+                logger.warning("posttrade auto-apply failed for %s: %s", bot_id, exc)
+                apply_out = {"executed": True, "ok": False}
+
+        applied = bool(apply_out.get("executed") and apply_out.get("ok"))
+        if apply_out.get("pending"):
+            applied = False
 
     journal_id = None
     try:
@@ -658,6 +681,8 @@ async def learn_from_closed_trade(
         journal_id=journal_id,
         reasoning=reasoning_obj,
     )
+
+    save_agent_reasoning(bot_id, "POSTTRADE_LEARNER", reasoning_obj)
 
     # Publish to Agent Event Bus
     agent_event_bus = getattr(bot_manager, "agent_event_bus", None)

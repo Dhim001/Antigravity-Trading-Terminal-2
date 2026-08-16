@@ -209,6 +209,26 @@ def validate_suggested_params(
     return clean, warnings
 
 
+def _eval_weighted_confidence(confidence: float) -> dict[str, Any]:
+    """Weight suggestion confidence by the scorer's rolling patch accuracy.
+
+    Returns the (possibly reweighted) confidence plus the weight used. When
+    the decision evaluator has too few graded patches, the weight is None and
+    the confidence passes through unchanged.
+    """
+    try:
+        from app.services.agent.decision_eval import advisor_confidence_weight
+
+        weight = advisor_confidence_weight("POSTTRADE_LEARNER", decision_type="patch")
+    except Exception:
+        weight = None
+    out: dict[str, Any] = {"confidence": confidence, "agent_eval_weight": weight}
+    if weight is not None:
+        # Accuracy 0.5 is neutral; better-than-chance lifts, worse dampens.
+        out["confidence"] = round(max(0.0, min(1.0, confidence * (0.5 + weight))), 4)
+    return out
+
+
 def _heuristic_suggestion(context: dict[str, Any]) -> dict[str, Any]:
     summary = context.get("active_backtest_summary") or {}
     if not summary and context.get("recent_backtests"):
@@ -255,10 +275,12 @@ def _heuristic_suggestion(context: dict[str, Any]) -> dict[str, Any]:
         patch,
         base_config=cfg,
     )
+    weighted = _eval_weighted_confidence(0.45 if clean else 0.2)
     return {
         "rationale": " ".join(rationale_parts),
         "suggested_params": clean,
-        "confidence": 0.45 if clean else 0.2,
+        "confidence": weighted["confidence"],
+        "agent_eval_weight": weighted["agent_eval_weight"],
         "source": "heuristic",
         "validation_warnings": warnings,
     }
@@ -313,6 +335,7 @@ async def suggest_strategy_params(
         raw_patch,
         base_config=context.get("current_config") or {},
     )
+    weighted = _eval_weighted_confidence(float(parsed.get("confidence") or 0.5))
     return {
         "available": True,
         "llm_used": True,
@@ -320,7 +343,8 @@ async def suggest_strategy_params(
         "llm_model": result.model,
         "rationale": str(parsed.get("rationale") or "").strip() or _heuristic_suggestion(context)["rationale"],
         "suggested_params": clean,
-        "confidence": float(parsed.get("confidence") or 0.5),
+        "confidence": weighted["confidence"],
+        "agent_eval_weight": weighted["agent_eval_weight"],
         "validation_warnings": warnings,
         "source": "llm",
     }

@@ -92,6 +92,35 @@ class MarginRiskTests(unittest.TestCase):
         self.assertEqual(capped, 50.0)
         self.assertIn("margin", reason.lower())
 
+    @mock.patch("app.services.bots.correlation.RISK_DYNAMIC_CORRELATION_ENABLED", False)
+    def test_portfolio_entry_caps_short_to_available_cash(self):
+        """SELL entries must not skip the cash/margin gate (paper shorts lock 100% notional)."""
+        snap = PortfolioSnapshot(
+            account_equity=100_000,
+            gross_exposure=0,
+            group_exposure={},
+            symbol_exposure={},
+        )
+        margin = MarginSnapshot(
+            enabled=True,
+            source="sim",
+            account_equity=100_000,
+            available_cash=921.37,
+            margin_used=0,
+            margin_capacity=100_000,
+            utilization_pct=0.0,
+            max_leverage=1.0,
+        )
+        ok, reason, capped = validate_portfolio_entry(
+            snap, "ADAUSDT", "SELL", 16939.58, 0.1771,
+            margin=margin,
+            entry_leverage=1,
+        )
+        self.assertTrue(ok)
+        self.assertIsNotNone(capped)
+        self.assertLess(capped * 0.1771, 921.37 + 1e-6)
+        self.assertIn("margin", reason.lower())
+
     def test_build_margin_snapshot_from_account_margin_block(self):
         oms = _FakeOms({
             "balances": {"USD": {"balance": 25_000, "locked": 0}},

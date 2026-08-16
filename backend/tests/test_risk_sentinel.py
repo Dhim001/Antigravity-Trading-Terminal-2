@@ -77,8 +77,9 @@ class RiskSentinelTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("app.services.bots.risk_sentinel.list_bot_exposures")
     @patch("app.services.bots.risk_sentinel.bot_analytics.get_recent_consecutive_losses")
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.risk_sentinel.emit_notification", new_callable=AsyncMock)
-    async def test_loss_streak_auto_pause(self, mock_emit, mock_get_losses, mock_exposures):
+    async def test_loss_streak_auto_pause(self, mock_emit, mock_auto, mock_get_losses, mock_exposures):
         """Active bots that reach their maximum loss streak should be auto-paused."""
         mock_get_losses.return_value = 5
         mock_exposures.return_value = []

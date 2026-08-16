@@ -51,10 +51,11 @@ class TestScannerDeployAgent(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MAX_PORTFOLIO_ALLOCATION", 10000.0)
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_CONFIDENCE", 0.65)
     @patch("app.services.bots.scanner_deploy.SCANNER_DEPLOY_MIN_SCORE", 3)
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.scanner_deploy.summarize_basket_correlation")
     @patch("app.services.archive.resolve.resolve_backtest_candles")
     @patch("app.services.scanner.market_scanner.MarketScannerService.scan")
-    async def test_scanner_deploy_success(self, mock_scan, mock_resolve, mock_corr):
+    async def test_scanner_deploy_success(self, mock_scan, mock_resolve, mock_corr, mock_auto):
         # Mock summarize_basket_correlation to return safe values
         mock_corr.return_value = {"high_pairs": []}
         mock_resolve.return_value = (

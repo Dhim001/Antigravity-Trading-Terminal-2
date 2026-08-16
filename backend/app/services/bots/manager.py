@@ -361,6 +361,7 @@ class BotManagerService:
         message: str,
         *,
         level: str = "WARN",
+        meta: dict | None = None,
     ) -> None:
         """Emit identical Pre-Trade messages at most once per debounce window."""
         from app.config import PRETRADE_WARN_DEBOUNCE_SEC
@@ -377,7 +378,7 @@ class BotManagerService:
         if last_key == key and debounce > 0 and (now - last_ts) < debounce:
             return
         bot["_pretrade_warn_log"] = {"key": key, "ts": now}
-        await self.log_bot_event(bot_id, level, message)
+        await self.log_bot_event(bot_id, level, message, meta=meta)
 
     async def _publish_pretrade_streak_event(
         self,
@@ -1412,6 +1413,14 @@ class BotManagerService:
                                 bot_id,
                                 "WARN",
                                 f"LLM debate blocked {signal}: {debate_out.block.reason}",
+                                meta={
+                                    "event_type": "debate_veto",
+                                    "symbol": symbol,
+                                    "side": signal,
+                                    "price": eval_price,
+                                    "bar_time": bar_time,
+                                    "reason": debate_out.block.reason,
+                                },
                             )
                             continue
                         signal = debate_out.signal
@@ -1661,8 +1670,29 @@ class BotManagerService:
             if verdict.get("verdict") == "VETO":
                 signal_ledger.release_signal(signal_id)
                 reason = f"Pre-Trade Intel VETO: {verdict.get('reasoning')}"
-                await self._log_pretrade_debounced(bot_id, bot, reason, level="WARN")
+                await self._log_pretrade_debounced(
+                    bot_id,
+                    bot,
+                    reason,
+                    level="WARN",
+                    meta={
+                        "event_type": "pretrade_veto",
+                        "symbol": symbol,
+                        "side": side,
+                        "price": current_price,
+                        "bar_time": bar_time,
+                        "vetoes": verdict.get("vetoes") or [],
+                    },
+                )
                 _record_order_blocked(bot, reason)
+                from app.services.agent.reasoning_store import save_agent_reasoning
+                save_agent_reasoning(
+                    bot_id,
+                    "PRETRADE_INTEL",
+                    verdict.get("reasoning_chain"),
+                    vetoes=verdict.get("vetoes") or [],
+                    size_multiplier=verdict.get("size_multiplier"),
+                )
                 bot.setdefault("signal_history", deque(maxlen=20)).append(False)
                 return
 
@@ -1671,7 +1701,20 @@ class BotManagerService:
                 bot["_pretrade_pending_cooldown_sec"] = pending_cooldown_sec
 
             account_balance = self.get_account_balance(bot.get("symbol"))
+            from app.services.account_cash import quote_asset_for_symbol
             from app.services.bots.rl_risk import is_rl_strategy, resolve_rl_risk_usd
+
+            if account_balance <= 0:
+                quote = quote_asset_for_symbol(symbol)
+                reason = (
+                    f"Cannot size {symbol}: {quote} available is "
+                    f"${account_balance:,.2f}."
+                )
+                signal_ledger.release_signal(signal_id)
+                await self._log_pretrade_debounced(bot_id, bot, reason, level="WARN")
+                _record_order_blocked(bot, reason)
+                bot.setdefault("signal_history", deque(maxlen=20)).append(False)
+                return
 
             if is_rl_strategy(bot.get("strategy")):
                 risk_amount = resolve_rl_risk_usd(bot.get("config") or {})
@@ -1731,6 +1774,14 @@ class BotManagerService:
                         f"Pre-trade reduce {size_note}: {reasoning}",
                         meta={"reasoning_chain": verdict.get("reasoning_chain")},
                     )
+                from app.services.agent.reasoning_store import save_agent_reasoning
+                save_agent_reasoning(
+                    bot_id,
+                    "PRETRADE_INTEL",
+                    verdict.get("reasoning_chain"),
+                    vetoes=verdict.get("vetoes") or [],
+                    size_multiplier=verdict.get("size_multiplier"),
+                )
             if (
                 bot_cfg.get("use_regime_sizing", True)
                 and len(recent_pnls) >= 3
@@ -1804,7 +1855,19 @@ class BotManagerService:
             if not is_exit:
                 bot.setdefault("signal_history", deque(maxlen=20)).append(False)
             signal_ledger.release_signal(signal_id)
-            await self.log_bot_event(bot_id, "WARN", f"Risk blocked: {decision.reason}")
+            if "Quantity must be greater than 0" in decision.reason and not is_exit:
+                from app.services.account_cash import quote_asset_for_symbol
+
+                cash = self.get_account_balance(symbol)
+                quote = quote_asset_for_symbol(symbol)
+                decision_reason = (
+                    f"Cannot size {symbol}: {quote} available is ${cash:,.2f}."
+                    if cash <= 0
+                    else f"Risk blocked: {decision.reason}"
+                )
+            else:
+                decision_reason = f"Risk blocked: {decision.reason}"
+            await self.log_bot_event(bot_id, "WARN", decision_reason)
             _record_order_blocked(bot, decision.reason)
             if "Daily loss limit" in decision.reason:
                 await self._halt_bot(bot_id, decision.reason)

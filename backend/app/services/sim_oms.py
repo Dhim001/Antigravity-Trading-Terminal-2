@@ -11,7 +11,10 @@ from app.services.paper_ledger import (
     apply_fill_balances,
     classify_buy,
     classify_sell,
+    clip_qty_to_spendable,
+    quote_cash_covers,
     reconcile_base_inventories,
+    repair_empty_quote_cash,
     short_margin_required,
 )
 from app.services.order_bracket import (
@@ -41,21 +44,26 @@ class SimulatedOMSService(BaseOMSService):
     async def initialize(self) -> None:
         pass
 
-    def _reconcile_base_inventories(self, cursor) -> list[str]:
+    def _reconcile_paper_ledger(self, cursor) -> list[str]:
         meta = getattr(self.feed, "_symbols", None) or {}
-        return reconcile_base_inventories(cursor, meta)
+        changed = reconcile_base_inventories(cursor, meta)
+        changed.extend(repair_empty_quote_cash(cursor, meta))
+        return changed
 
     def get_account_data(self) -> dict:
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Self-heal orphan base inventory (balance without a closable long).
+        # Self-heal orphan base inventory and drained quote cash (short-cover leak).
         try:
-            if self._reconcile_base_inventories(cursor):
+            repaired = self._reconcile_paper_ledger(cursor)
+            if repaired:
                 conn.commit()
+                if any(a in ("USD", "USDT") for a in repaired):
+                    logger.warning("Repaired paper ledger: %s", repaired)
         except Exception:
             conn.rollback()
-            logger.exception("Failed to reconcile paper base inventories")
+            logger.exception("Failed to reconcile paper ledger")
 
         cursor.execute("SELECT asset, balance, locked FROM accounts")
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
@@ -163,11 +171,14 @@ class SimulatedOMSService(BaseOMSService):
         conn = get_connection()
         cursor = conn.cursor()
         try:
-            if self._reconcile_base_inventories(cursor):
+            repaired = self._reconcile_paper_ledger(cursor)
+            if repaired:
                 conn.commit()
+                if any(a in ("USD", "USDT") for a in repaired):
+                    logger.warning("Repaired paper ledger: %s", repaired)
         except Exception:
             conn.rollback()
-            logger.exception("Failed to reconcile paper base inventories")
+            logger.exception("Failed to reconcile paper ledger")
         cursor.execute("SELECT asset, balance, locked FROM accounts")
         balances = {row["asset"]: {"balance": row["balance"], "locked": row["locked"]} for row in cursor.fetchall()}
         conn.close()
@@ -241,15 +252,21 @@ class SimulatedOMSService(BaseOMSService):
                 short_cover, _ = classify_buy(position_size, quantity)
                 margin_releasable = position_avg * short_cover if short_cover > 0 else 0.0
                 available = (row["balance"] - row["locked"]) if row else 0.0
-                if available + margin_releasable < order_value:
+                spendable = available + margin_releasable
+                if not quote_cash_covers(spendable, order_value):
                     conn.close()
                     return {
                         "status": "error",
                         "message": (
                             f"Insufficient {quote} balance. Needed: {order_value:.2f}, "
-                            f"available: {available + margin_releasable:.2f}"
+                            f"available: {spendable:.2f}"
                         ),
                     }
+                quantity = clip_qty_to_spendable(quantity, order_price, spendable)
+                order_value = order_price * quantity
+                if quantity <= 0:
+                    conn.close()
+                    return {"status": "error", "message": "Quantity must be greater than 0"}
 
                 if order_type == "LIMIT":
                     cursor.execute("UPDATE accounts SET locked = locked + ? WHERE asset = ?", (order_value, quote))
@@ -278,7 +295,7 @@ class SimulatedOMSService(BaseOMSService):
                     cursor.execute("SELECT balance, locked FROM accounts WHERE asset = ?", (quote,))
                     bal_row = cursor.fetchone()
                     available = (bal_row["balance"] - bal_row["locked"]) if bal_row else 0.0
-                    if available < margin_needed:
+                    if not quote_cash_covers(available, margin_needed):
                         conn.close()
                         return {
                             "status": "error",
@@ -766,7 +783,7 @@ class SimulatedOMSService(BaseOMSService):
             )
 
         # Keep accounts[base] aligned with long position size after every fill.
-        self._reconcile_base_inventories(cursor)
+        self._reconcile_paper_ledger(cursor)
 
         if bot_id:
             risk = None

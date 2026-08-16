@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import (
-    RISK_MAX_DRAWDOWN_PCT,
     TRADE_COPILOT_ENABLED,
     TRADE_COPILOT_HISTORY_LIMIT,
     TRADE_COPILOT_PENDING_TTL_SEC,
@@ -20,10 +19,22 @@ from app.config import (
 )
 from app.services.agent import copilot_store
 from app.services.agent.llm.router import _chat
-from app.services.altdata.store import get_aggregate_sentiment
-from app.services.bots import analytics as bot_analytics
-from app.services.bots.portfolio_risk import build_portfolio_snapshot
-from app.services.analytics.portfolio import get_bot_rankings, get_risk_utilization
+from app.services.agent.tools.handlers import (
+    _ADX_TREND_THRESHOLD,
+    _DEFAULT_ANALYZE_TF,
+    extract_regime_fields as _extract_regime_fields,
+    tool_analyze as _tool_analyze,
+    tool_bot_performance as _tool_bot_performance,
+    tool_explain as _tool_explain,
+    tool_explain_bot_events as _tool_explain_bot_events,
+    tool_list_bots as _tool_list_bots,
+    tool_meta_insight as _tool_meta_insight,
+    tool_portfolio as _tool_portfolio,
+    tool_recommend_strategy as _tool_recommend_strategy,
+    tool_run_backtest as _tool_run_backtest,
+    tool_scan_market as _tool_scan_market,
+    tool_sentiment as _tool_sentiment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +94,6 @@ _TEMPLATE_ONLY_TOOLS = frozenset({
     "help",
     "clarify",
 })
-
-_DEFAULT_ANALYZE_TF = "1m"
-_ADX_TREND_THRESHOLD = 25
 
 _MARKET_QUESTION_HINTS = (
     "doing", "happening", "price", "how is", "how's", "what is", "what's",
@@ -210,6 +218,11 @@ def _store_pending(action: dict[str, Any]) -> str:
     pid = str(uuid.uuid4())
     _PENDING[pid] = {"created_at": time.time(), "action": action}
     return pid
+
+
+def store_pending(action: dict[str, Any]) -> str:
+    """Public wrapper around the pending-action store (HITL confirm flow)."""
+    return _store_pending(action)
 
 
 def get_pending(pending_id: str) -> dict[str, Any] | None:
@@ -599,41 +612,6 @@ def _provenance_line(data: dict[str, Any] | None = None) -> str:
     )
 
 
-def _tool_meta_insight(
-    session_id: str,
-    message: str,
-    *,
-    active_symbol: str | None = None,
-) -> dict[str, Any]:
-    field = detect_meta_field(message) or "timeframe"
-    sym = normalize_symbol(extract_symbol(message, active_symbol))
-    insight = get_last_insight(session_id, sym)
-    if insight is None and sym is None:
-        insight = get_last_insight(session_id, None)
-    if insight and not sym:
-        sym = normalize_symbol(str(insight.get("symbol") or "")) or None
-    prov = _provenance_bits(insight)
-    out: dict[str, Any] = {
-        "field": field,
-        "symbol": sym,
-        "found_prior": bool(insight),
-        **prov,
-    }
-    if insight:
-        out["market_regime"] = insight.get("market_regime") or insight.get("trend_regime")
-        out["signal"] = insight.get("signal")
-        out["score"] = insight.get("score")
-        out["confidence"] = insight.get("confidence")
-    elif sym:
-        out["note"] = (
-            f"No prior analysis for {sym} in this session — defaults below apply. "
-            f"Ask *what market is {sym} in?* to refresh."
-        )
-    else:
-        out["note"] = "No prior analysis in this session — showing Copilot defaults."
-    return out
-
-
 def extract_days(text: str, default: int = 30) -> int:
     """Parse '90-day', '90 days', '90d' → clamped 1..365."""
     m = _DAYS_RE.search(text or "")
@@ -823,131 +801,6 @@ def classify_intent(message: str) -> tuple[str, str]:
         return INTENT_ANALYSIS, "analyze_symbol"
 
     return INTENT_HELP, "clarify"
-def _snapshot_dict(oms: Any) -> dict[str, Any]:
-    snap = build_portfolio_snapshot(oms)
-    return {
-        "account_equity": snap.account_equity,
-        "gross_exposure": snap.gross_exposure,
-        "group_exposure": snap.group_exposure,
-        "symbol_exposure": snap.symbol_exposure,
-    }
-
-
-def _tool_list_bots(bot_manager: Any) -> dict[str, Any]:
-    bots = []
-    for bot in (bot_manager.list_bots_public() if hasattr(bot_manager, "list_bots_public") else []):
-        bots.append({
-            "id": bot.get("id"),
-            "symbol": bot.get("symbol"),
-            "strategy": bot.get("strategy"),
-            "status": bot.get("status"),
-            "allocation": bot.get("allocation"),
-            "timeframe": bot.get("timeframe"),
-            "total_pnl": bot.get("total_pnl"),
-        })
-    return {"bots": bots, "count": len(bots)}
-
-
-def _tool_bot_performance(bot_manager: Any, bot_id: str | None = None) -> dict[str, Any]:
-    if bot_id:
-        stats = bot_analytics.get_bot_stats(bot_id)
-        return {"bot_id": bot_id, "stats": stats}
-    rankings = get_bot_rankings(limit=10)
-    active = _tool_list_bots(bot_manager)
-    return {"rankings": rankings, "active_bots": active}
-
-
-async def _tool_scan_market(bot_manager: Any, limit: int = 5) -> dict[str, Any]:
-    if not bot_manager:
-        return {"error": "Bot manager unavailable."}
-    from app.config import SCANNER_DEPLOY_WATCHLIST
-    from app.services.scanner.market_scanner import MarketScannerService
-    scanner = MarketScannerService(bot_manager.oms.feed if hasattr(bot_manager, "oms") else None)
-    scan_res = await scanner.scan(SCANNER_DEPLOY_WATCHLIST, signal_filter="any")
-    
-    rows = scan_res.get("rows", [])
-    # Sort by confidence then score
-    sorted_assets = sorted(
-        rows,
-        key=lambda x: (x.get("confidence", 0.0), abs(x.get("score", 0))),
-        reverse=True
-    )
-    
-    top_assets = []
-    for asset in sorted_assets[:limit]:
-        top_assets.append({
-            "symbol": asset.get("symbol"),
-            "signal": asset.get("signal"),
-            "score": asset.get("score"),
-            "confidence": asset.get("confidence"),
-            "regime": asset.get("atr_regime") or "unknown",
-            "close": None, # Price isn't in rows, but keeping structure
-        })
-    
-    return {
-        "scanned_count": len(rows),
-        "watchlist_size": len(SCANNER_DEPLOY_WATCHLIST),
-        "top_movers": top_assets,
-    }
-
-
-def _tool_portfolio(oms: Any) -> dict[str, Any]:
-    body = _snapshot_dict(oms)
-    try:
-        body["risk_utilization"] = get_risk_utilization(oms)
-    except Exception as exc:
-        body["risk_utilization_error"] = str(exc)
-    body["risk_max_drawdown_pct_limit"] = RISK_MAX_DRAWDOWN_PCT
-    return body
-
-
-def _tool_sentiment(symbol: str) -> dict[str, Any]:
-    return get_aggregate_sentiment(symbol, lookback_hours=24.0)
-
-
-def _extract_regime_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Pull ADX trend regime + scoring/vol context from chart insight payloads.
-
-    ChartAgentInsight stores regime under sub_reports (not top-level):
-    - trend.trend_regime → 'trending' | 'ranging' | 'unknown' (ADX > 25)
-    - regime_weights.regime → scoring bucket (may be elevated_vol / compressed)
-    - risk.atr_regime → volatility bucket
-    """
-    sub = data.get("sub_reports") if isinstance(data.get("sub_reports"), dict) else {}
-    trend = sub.get("trend") if isinstance(sub.get("trend"), dict) else {}
-    weights = sub.get("regime_weights") if isinstance(sub.get("regime_weights"), dict) else {}
-    risk = sub.get("risk") if isinstance(sub.get("risk"), dict) else {}
-
-    def _norm(val: Any) -> str | None:
-        if val is None:
-            return None
-        s = str(val).strip().lower()
-        return s or None
-
-    trend_regime = _norm(
-        data.get("trend_regime") or trend.get("trend_regime")
-    )
-    scoring = _norm(
-        data.get("regime")
-        or weights.get("regime")
-        or sub.get("regime")
-        or trend_regime
-    )
-    atr_regime = _norm(risk.get("atr_regime") or data.get("atr_regime"))
-
-    # Prefer ADX trend label for "trending vs ranging" answers.
-    market = trend_regime
-    if market in (None, "unknown") and scoring in ("trending", "ranging"):
-        market = scoring
-
-    return {
-        "regime": scoring,
-        "trend_regime": trend_regime,
-        "market_regime": market,
-        "atr_regime": atr_regime,
-    }
-
-
 def _asks_regime_question(text: str) -> bool:
     t = (text or "").lower()
     return any(
@@ -1074,380 +927,6 @@ def _analyze_snapshot_lines(sym: str, data: dict[str, Any], fields: dict[str, An
     ]
     details = "_Details: " + " · ".join(b for b in detail_bits if b) + "_"
     return [lead, "", sig, "", details]
-
-
-async def _tool_analyze(
-    state: Any,
-    symbol: str,
-    timeframe: str = _DEFAULT_ANALYZE_TF,
-) -> dict[str, Any]:
-    analyst = getattr(state, "chart_analyst", None)
-    if analyst is None or not hasattr(analyst, "analyze"):
-        return {"error": "Chart analyst unavailable", "symbol": symbol}
-    tf = timeframe or _DEFAULT_ANALYZE_TF
-    insight = await analyst.analyze(symbol, timeframe=tf, broadcast=False, force_llm=False)
-    if insight is None:
-        return {"error": "No insight produced (need more bars or agent disabled)", "symbol": symbol}
-    if hasattr(insight, "to_dict"):
-        data = insight.to_dict()
-    elif isinstance(insight, dict):
-        data = insight
-    else:
-        data = {"raw": str(insight)}
-    regime = _extract_regime_fields(data if isinstance(data, dict) else {})
-    thr = _ADX_TREND_THRESHOLD
-    out: dict[str, Any] = {
-        "symbol": symbol,
-        "signal": data.get("signal"),
-        "score": data.get("score"),
-        "confidence": data.get("confidence"),
-        "regime": regime.get("regime"),
-        "trend_regime": regime.get("trend_regime"),
-        "market_regime": regime.get("market_regime"),
-        "atr_regime": regime.get("atr_regime"),
-        "reasons": (data.get("reasons") or [])[:5],
-        "timeframe": tf,
-        "adx_threshold": thr,
-        "bar": "closed",
-        "method": f"ADX > {thr} → trending, else ranging",
-    }
-    return out
-
-
-async def _tool_recommend_strategy(
-    state: Any,
-    message: str,
-    *,
-    active_symbol: str | None = None,
-) -> dict[str, Any]:
-    """Pick a strategy from stated/live regime — do not invent a deploy confirm."""
-    sym = normalize_symbol(extract_symbol(message, active_symbol))
-    text_regime = extract_regime_from_text(message)
-    live_regime = None
-    analysis: dict[str, Any] | None = None
-    if sym:
-        from app.services.agent.copilot_agent import extract_timeframe_hint
-
-        tf = extract_timeframe_hint(message) or _DEFAULT_ANALYZE_TF
-        analysis = await _tool_analyze(state, sym, timeframe=tf)
-        if not analysis.get("error"):
-            live_regime = (
-                analysis.get("market_regime")
-                or analysis.get("trend_regime")
-                or analysis.get("regime")
-            )
-            atr = analysis.get("atr_regime")
-            if atr == "elevated":
-                live_regime = "elevated_vol"
-            elif atr == "compressed" and live_regime != "trending":
-                live_regime = "compressed"
-
-    # Prefer explicit user wording ("still ranging") over a conflicting live read.
-    regime = text_regime or live_regime or "ranging"
-    rec = recommend_strategy_for_regime(regime)
-    alloc = extract_allocation(message)
-    primary = rec["primary"]
-    out: dict[str, Any] = {
-        "symbol": sym,
-        "regime": regime,
-        "regime_source": "user_text" if text_regime else ("live_analysis" if live_regime else "default"),
-        "primary": primary,
-        "alternatives": rec["alternatives"],
-        "avoid": rec["avoid"],
-        "allocation": alloc,
-        "deploy_example": (
-            f"Deploy {primary} on {sym} with ${alloc:.0f}"
-            if sym
-            else f"Deploy {primary} on <SYMBOL> with ${alloc:.0f}"
-        ),
-    }
-    if analysis and not analysis.get("error"):
-        out["live_signal"] = analysis.get("signal")
-        out["live_market_regime"] = analysis.get("market_regime")
-        # Stash for meta follow-ups ("what timeframe…") even when path was recommend.
-        out["_insight"] = analysis
-    elif analysis and analysis.get("error"):
-        out["analysis_note"] = analysis.get("error")
-    return out
-
-
-async def _tool_run_backtest(
-    state: Any,
-    symbol: str,
-    strategy: str,
-    days: int,
-    *,
-    timeframe: str = "1m",
-    allocation: float = 1000.0,
-) -> dict[str, Any]:
-    """Run a backtest for chat.
-
-    Short horizons run inline. Longer / heavy runs are queued on the existing
-    backtest job worker so the Copilot HTTP request does not time out.
-    """
-    import asyncio
-
-    from app.services.bots.backtest_perf import backtest_tier_meta
-
-    days = max(1, min(365, int(days)))
-    config = {
-        "allocation": float(allocation),
-        "pipeline_source": "copilot",
-    }
-    req = {
-        "symbol": symbol,
-        "strategy": strategy,
-        "config": config,
-        "days": days,
-        "timeframe": timeframe,
-        "allocation": float(allocation),
-    }
-    tier_meta = backtest_tier_meta(req)
-    # Chat sync budget is tighter than the Algo panel — queue anything likely >~2 min.
-    queue_async = tier_meta.get("tier") == "deferred" or days > 10
-
-    if queue_async:
-        from app.api.context import RequestContext
-        from app.api.handlers.bots import _execute_backtest
-        from app.services.bots.backtest_job_store import (
-            create_backtest_job,
-            set_job_status,
-            update_job_progress,
-        )
-        from app.services.bots.backtest_jobs import start_job
-
-        job_req = {
-            **req,
-            "tier": "deferred",
-            "estimated_sec": tier_meta.get("estimated_sec"),
-            "source": "copilot",
-        }
-        job_id = create_backtest_job(job_req, status="pending", client_key="copilot")
-        start_job(None, job_id)
-        update_job_progress(job_id, {
-            "pct": 0,
-            "phase": "queued",
-            "message": (
-                f"Queued {days}d {strategy} backtest on {symbol} "
-                f"(~{tier_meta.get('estimated_sec')}s est.)…"
-            ),
-            "job_id": job_id,
-            "tier": "deferred",
-            "estimated_sec": tier_meta.get("estimated_sec"),
-        })
-
-        ctx = RequestContext(
-            websocket=None,
-            manager=getattr(state, "manager", None),
-            oms=getattr(state, "oms", None),
-            bot_manager=getattr(state, "bot_manager", None),
-            backtester=getattr(state, "backtester", None),
-            chart_analyst=getattr(state, "chart_analyst", None),
-            message=job_req,
-            action="run_backtest",
-        )
-
-        async def _run_queued() -> None:
-            try:
-                await _execute_backtest(
-                    ctx,
-                    job_id=job_id,
-                    symbol=symbol,
-                    strategy=strategy,
-                    config=config,
-                    days=days,
-                    interval=None,
-                    timeframe=timeframe,
-                )
-            except Exception as exc:
-                logger.exception("Copilot queued backtest %s failed", job_id)
-                set_job_status(job_id, "failed", error=str(exc) or "Backtest failed")
-
-        asyncio.create_task(_run_queued())
-        return {
-            "queued": True,
-            "job_id": job_id,
-            "symbol": symbol,
-            "strategy": strategy,
-            "days": days,
-            "timeframe": timeframe,
-            "estimated_sec": tier_meta.get("estimated_sec"),
-            "message": (
-                f"Queued {days}d backtest — track job `{job_id}` in the Algo / Backtest panel."
-            ),
-        }
-
-    from app.services.archive.resolve import resolve_backtest_candles
-
-    feed = getattr(getattr(state, "oms", None), "feed", None) or getattr(state, "feed", None)
-    bt = getattr(state, "backtester", None)
-
-    try:
-        candles, meta = await asyncio.to_thread(
-            resolve_backtest_candles,
-            symbol,
-            feed,
-            days=days,
-            timeframe=timeframe,
-        )
-    except Exception as exc:
-        return {
-            "error": f"Failed to resolve history: {exc}",
-            "symbol": symbol,
-            "strategy": strategy,
-            "days": days,
-        }
-
-    bar_count = len(candles or [])
-    replayed = float((meta or {}).get("replayed_days") or 0.0)
-    if not candles or bar_count < 50:
-        note = (meta or {}).get("range_note") or (meta or {}).get("resolution_note") or ""
-        return {
-            "error": (
-                f"Not enough history for {days}d {timeframe} backtest "
-                f"(got {bar_count} bars ≈{replayed:.1f}d). {note}"
-            ).strip(),
-            "symbol": symbol,
-            "strategy": strategy,
-            "days": days,
-            "bar_count": bar_count,
-            "meta": meta,
-        }
-
-    if bt is None or not hasattr(bt, "run_backtest"):
-        from app.services.bots.backtester import BacktesterService
-
-        bt = BacktesterService()
-
-    try:
-        result = await asyncio.to_thread(
-            bt.run_backtest,
-            symbol,
-            strategy,
-            config,
-            candles,
-        )
-    except Exception as exc:
-        return {
-            "error": f"Backtest failed: {exc}",
-            "symbol": symbol,
-            "strategy": strategy,
-            "days": days,
-        }
-
-    if not isinstance(result, dict):
-        return {"error": "Invalid backtest result", "symbol": symbol, "strategy": strategy, "days": days}
-    if result.get("error"):
-        return {
-            "error": result["error"],
-            "symbol": symbol,
-            "strategy": strategy,
-            "days": days,
-            "bar_count": bar_count,
-        }
-
-    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
-    return {
-        "symbol": symbol,
-        "strategy": strategy,
-        "days": days,
-        "timeframe": timeframe,
-        "bar_count": bar_count,
-        "replayed_days": replayed or (meta or {}).get("replayed_days"),
-        "win_rate": result.get("win_rate") if result.get("win_rate") is not None else summary.get("win_rate"),
-        "total_pnl": result.get("total_pnl") if result.get("total_pnl") is not None else summary.get("total_pnl"),
-        "max_drawdown": result.get("max_drawdown") if result.get("max_drawdown") is not None else summary.get("max_drawdown"),
-        "trade_count": result.get("trade_count") if result.get("trade_count") is not None else summary.get("total_trades"),
-        "return_pct": summary.get("return_pct"),
-        "sharpe_ratio": summary.get("sharpe_ratio"),
-        "starting_equity": result.get("starting_equity") or summary.get("starting_equity"),
-        "range_note": (meta or {}).get("range_note") or (meta or {}).get("resolution_note"),
-    }
-
-
-async def _tool_explain(state: Any, bot_id: str, trade_id: str | None = None) -> dict[str, Any]:
-    from app.services.agent.trade_explain import explain_trade
-    from app.database import get_connection
-
-    if not bot_id:
-        return {"error": "bot_id required"}
-    tid = trade_id
-    if not tid:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id FROM bot_trades
-                WHERE bot_id = ? AND is_exit = 1
-                ORDER BY timestamp DESC LIMIT 1
-                """,
-                (bot_id,),
-            )
-            row = cur.fetchone()
-            if row:
-                tid = str(row["id"] if isinstance(row, dict) else row[0])
-        finally:
-            conn.close()
-    if not tid:
-        return {"error": "No exit trades found for this bot"}
-    try:
-        result = await explain_trade(
-            bot_id,
-            str(tid),
-            chart_analyst=getattr(state, "chart_analyst", None),
-            use_llm=TRADE_COPILOT_USE_LLM,
-        )
-        return {
-            "bot_id": bot_id,
-            "trade_id": tid,
-            "narrative": result.get("narrative") or result.get("summary"),
-            "insight": result.get("insight"),
-            "trade": {
-                k: result.get("trade", {}).get(k)
-                for k in ("symbol", "side", "price", "pnl", "is_exit")
-                if isinstance(result.get("trade"), dict)
-            },
-        }
-    except Exception as exc:
-        return {"error": str(exc)}
-async def _tool_explain_bot_events(bot_id: str, limit: int = 5) -> dict[str, Any]:
-    from app.database import get_connection
-    import json
-    
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        if bot_id:
-            cur.execute(
-                "SELECT level, message, meta, timestamp FROM bot_logs WHERE bot_id = ? AND level IN ('WARN', 'ERROR', 'INFO') ORDER BY timestamp DESC LIMIT ?",
-                (bot_id, limit)
-            )
-        else:
-            cur.execute(
-                "SELECT bot_id, level, message, meta, timestamp FROM bot_logs WHERE level IN ('WARN', 'ERROR') ORDER BY timestamp DESC LIMIT ?",
-                (limit,)
-            )
-        rows = cur.fetchall()
-        events = []
-        for r in rows:
-            event = dict(r)
-            meta_json = event.get("meta")
-            if meta_json:
-                try:
-                    event["meta"] = json.loads(meta_json)
-                except Exception:
-                    event["meta"] = None
-            events.append(event)
-        
-        return {
-            "bot_id": bot_id,
-            "events": events
-        }
-    except Exception as exc:
-        return {"error": str(exc)}
-    finally:
-        conn.close()
 
 
 def _money(v: Any) -> str:
@@ -1890,6 +1369,7 @@ def _agent_event_fingerprint(event_type: str, payload: dict[str, Any]) -> str:
     parts = [
         str(event_type or "").strip().lower(),
         str(p.get("action") or "").strip().lower(),
+        str(p.get("action_id") or "").strip(),
         str(p.get("bot_id") or "").strip(),
         str(p.get("symbol") or "").strip().upper(),
         str(p.get("from_strategy") or p.get("old_strategy") or "").strip().upper(),
@@ -1930,6 +1410,22 @@ def _template_agent_narration(event_type: str, payload: dict[str, Any]) -> str |
             f"from `{frm}` to `{to}`."
         )
 
+    if action in ("hitl_proposal", "action_proposed"):
+        actor = str(p.get("actor") or "An agent").strip()
+        atype = str(p.get("action_type") or "action").strip()
+        action_id = p.get("action_id")
+        reason_txt = str(p.get("reason") or "").strip()
+        label = symbol or bot_id or ""
+        what = f"`{atype}`" + (f" on **{label}**" if label else "")
+        lines = [f"**{actor}** wants to run {what} — approve? (action #{action_id})"]
+        if reason_txt:
+            lines.append(f"_{reason_txt}_")
+        lines.append(
+            f"Approve: `POST /api/v1/agent/actions/{action_id}/approve` · "
+            f"Reject: `POST /api/v1/agent/actions/{action_id}/reject`"
+        )
+        return "\n".join(lines)
+
     if action in ("paused_all_bots", "paused_portfolio"):
         n = p.get("bots_paused")
         reason = p.get("reason") or "risk threshold breached"
@@ -1952,6 +1448,21 @@ def _template_agent_narration(event_type: str, payload: dict[str, Any]) -> str |
     if action in ("bot_deployed", "deployed"):
         label = symbol or bot_id or "a symbol"
         return f"Scanner deployed a bot on **{label}**."
+
+    if action in ("streak_escalate", "streak_escalated"):
+        label = symbol or bot_id or "a bot"
+        streak = p.get("streak")
+        verdict = p.get("verdict") or "REDUCE_SIZE"
+        count = f"**{streak}** consecutive losses" if streak else "a loss streak"
+        return f"Pre-Trade Intel escalated {count} on **{label}** — action `{verdict}`."
+
+    if action in ("posttrade_lesson", "lesson_recorded"):
+        label = symbol or bot_id or "a bot"
+        lesson = str(p.get("lesson") or "").strip()
+        short = (lesson[:140] + "…") if len(lesson) > 140 else lesson
+        if short:
+            return f"Post-trade lesson for **{label}**: {short}"
+        return f"Post-trade lesson recorded for **{label}**."
 
     # Unknown / empty actions must not invent "I'm online" chatter.
     logger.debug("Skipping agent narrate for %s action=%s (no template)", agent, action or "(none)")
@@ -2553,48 +2064,23 @@ async def confirm_action(state: Any, pending_id: str) -> dict[str, Any]:
     atype = action.get("type")
     params = action.get("params") or {}
 
-    try:
-        if atype == "deploy_bot":
-            bot_id = await bot_manager.create_bot(
-                params.get("strategy") or "CHART_AGENT",
-                params["symbol"],
-                params.get("timeframe") or "1m",
-                float(params.get("allocation") or 1000),
-                params.get("config") or {"pipeline_source": "copilot"},
-            )
-            return {"ok": True, "result": {"bot_id": bot_id, "action": atype}}
+    from app.services.agent.tools.catalog import get_registry
+    from app.services.agent.tools.registry import ToolContext
 
-        if atype == "pause_bot":
-            await bot_manager.pause_bot(params["bot_id"])
-            return {"ok": True, "result": {"bot_id": params["bot_id"], "action": atype}}
-
-        if atype == "stop_bot":
-            await bot_manager.stop_bot(params["bot_id"])
-            return {"ok": True, "result": {"bot_id": params["bot_id"], "action": atype}}
-
-        if atype == "pause_all_bots":
-            paused = 0
-            for bot_id, bot in list(bot_manager.active_bots.items()):
-                if bot.get("status") == "RUNNING":
-                    await bot_manager.pause_bot(bot_id)
-                    paused += 1
-            return {"ok": True, "result": {"paused": paused, "action": atype}}
-
-        if atype == "stop_all_bots":
-            await bot_manager.stop_all_bots()
-            return {"ok": True, "result": {"action": atype}}
-
-        if atype == "update_bot_config":
-            detail = await bot_manager.update_bot_config(
-                params["bot_id"],
-                params.get("config_patch") or {},
-            )
-            return {"ok": True, "result": {"action": atype, "detail": bool(detail)}}
-
+    registry = get_registry()
+    if registry.get(atype) is None:
         return {"ok": False, "error": f"Unknown action type: {atype}"}
-    except Exception as exc:
-        logger.exception("copilot confirm failed")
-        return {"ok": False, "error": str(exc)}
+
+    outcome = await registry.execute(
+        atype,
+        params,
+        confirmed=True,
+        context=ToolContext(state=state),
+    )
+    if outcome.get("ok"):
+        return {"ok": True, "result": outcome.get("result")}
+    logger.error("copilot confirm failed: %s", outcome.get("error"))
+    return {"ok": False, "error": outcome.get("error") or "Action failed"}
 
 
 def cancel_action(pending_id: str) -> dict[str, Any]:

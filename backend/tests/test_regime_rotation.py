@@ -36,9 +36,10 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.regime_rotation.get_bot_candles")
     @patch("app.services.bots.regime_rotation.get_connection")
     @patch("app.services.bots.regime_rotation.list_optimization_runs", return_value=[])
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.regime_rotation.emit_notification", new_callable=AsyncMock)
     async def test_regime_classification_trending(
-        self, mock_emit, mock_opt_runs, mock_db, mock_candles
+        self, mock_emit, mock_auto, mock_opt_runs, mock_db, mock_candles
     ):
         """High ADX should classify as trending and rotate to SUPERTREND_ADX."""
         mock_candles.return_value = [{"time": i * 60, "close": 150.0} for i in range(100)]
@@ -72,9 +73,10 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.regime_rotation.get_bot_candles")
     @patch("app.services.bots.regime_rotation.get_connection")
     @patch("app.services.bots.regime_rotation.list_optimization_runs", return_value=[])
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.regime_rotation.emit_notification", new_callable=AsyncMock)
     async def test_regime_classification_ranging(
-        self, mock_emit, mock_opt_runs, mock_db, mock_candles
+        self, mock_emit, mock_auto, mock_opt_runs, mock_db, mock_candles
     ):
         """Low ADX should classify as ranging and rotate to BRS_SCALPING."""
         # Bot currently running SUPERTREND_ADX
@@ -109,9 +111,10 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.regime_rotation.get_bot_candles")
     @patch("app.services.bots.regime_rotation.get_connection")
     @patch("app.services.bots.regime_rotation.list_optimization_runs", return_value=[])
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.regime_rotation.emit_notification", new_callable=AsyncMock)
     async def test_regime_classification_elevated_vol(
-        self, mock_emit, mock_opt_runs, mock_db, mock_candles
+        self, mock_emit, mock_auto, mock_opt_runs, mock_db, mock_candles
     ):
         """High ATR ratio should classify as elevated_vol and rotate to VWAP_PULLBACK."""
         mock_candles.return_value = [{"time": i * 60, "close": 150.0} for i in range(100)]
@@ -139,9 +142,10 @@ class RegimeRotationTests(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.bots.regime_rotation.get_bot_candles")
     @patch("app.services.bots.regime_rotation.get_connection")
     @patch("app.services.bots.regime_rotation.list_optimization_runs")
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.regime_rotation.emit_notification", new_callable=AsyncMock)
     async def test_bot_strategy_rotation_flatten(
-        self, mock_emit, mock_opt_runs, mock_db, mock_candles
+        self, mock_emit, mock_auto, mock_opt_runs, mock_db, mock_candles
     ):
         """If flatten is enabled and the bot holds a position, it should close it first."""
         mock_candles.return_value = [{"time": i * 60, "close": 150.0} for i in range(100)]

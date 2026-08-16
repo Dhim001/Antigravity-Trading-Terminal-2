@@ -15,6 +15,7 @@ from app.database import get_connection
 from app.services.agent.bar_time import coerce_bar_time
 from app.services.agent.working_memory import WorkingMemory
 from app.services.agent.reasoning import AgentReasoning, Observation
+from app.services.agent.reasoning_store import save_agent_reasoning
 from app.services.bots.candle_source import get_bot_candles
 from app.services.bots.indicators import adx_col, atr_col, merge_strategy_config
 from app.services.bots.optimization_store import list_optimization_runs
@@ -47,6 +48,15 @@ class RegimeRotationAgent:
             for event in recent_pauses:
                 if "bot_id" in event.payload:
                     recently_paused_bot_ids.add(event.payload["bot_id"])
+        try:
+            # Real-time cache fed by the BOT_PAUSED subscriber (poll above is fallback).
+            from app.services.bots.agent_event_subscribers import (
+                recently_paused_bot_ids as subscriber_paused_bot_ids,
+            )
+
+            recently_paused_bot_ids |= subscriber_paused_bot_ids(3600)
+        except Exception as exc:
+            logger.debug("Paused-bot subscriber cache unavailable: %s", exc)
 
         # Copy keys to safely modify bot registry if needed
         for bot_id, bot in list(self.bot_manager.active_bots.items()):
@@ -195,16 +205,27 @@ class RegimeRotationAgent:
             # Apply a cooldown of 15 minutes (900 seconds) after deciding to rotate
             memory.set_cooldown(900.0)
 
-            # 4. Flatten active position before rotation if enabled
-            pos_size = self.bot_manager._get_bot_position_size(bot_id, symbol)
-            if abs(pos_size) > 1e-8:
-                if REGIME_ROTATION_FLATTEN_ON_ROTATE:
-                    try:
+            async def _apply_rotation(
+                bot_id=bot_id,
+                bot=bot,
+                symbol=symbol,
+                current_strategy=current_strategy,
+                target_strategy=target_strategy,
+                regime=regime,
+                streak=streak,
+                ohlcv=ohlcv,
+                reasoning=reasoning,
+            ):
+                # 4. Flatten active position before rotation if enabled
+                flattened = 0
+                pos_size = self.bot_manager._get_bot_position_size(bot_id, symbol)
+                if abs(pos_size) > 1e-8:
+                    if REGIME_ROTATION_FLATTEN_ON_ROTATE:
                         pos = self.bot_manager._get_bot_position(bot_id, symbol)
                         avg = float(pos.get("avg_price") or 0.0)
                         price = self.bot_manager._mark_price(symbol, avg or 1.0)
                         side = "SELL" if pos_size > 0 else "BUY"
-                        
+
                         await self.bot_manager._execute_order(
                             bot,
                             side,
@@ -221,41 +242,32 @@ class RegimeRotationAgent:
                             bar_time=coerce_bar_time(ohlcv[-1]["time"]),
                             entry_price=avg or price,
                         )
-                        results["flattened_count"] += 1
+                        flattened += 1
                         logger.info("Successfully flattened position on %s for bot %s prior to rotation.", symbol, bot_id)
-                    except Exception as exc:
-                        logger.error(
-                            "Failed to flatten position on %s before rotating strategy for bot %s: %s",
-                            symbol,
-                            bot_id,
-                            exc,
-                        )
-                        continue  # Skip rotation to avoid unmatched open positions
 
-            # 5. Lookup optimal config from past sweep runs or fallback to defaults
-            best_config = None
-            try:
-                runs = list_optimization_runs(symbol=symbol, limit=20)
-                for run in runs:
-                    if run.get("strategy") == target_strategy and run.get("best_config"):
-                        best_config = run.get("best_config")
-                        break
-            except Exception as exc:
-                logger.warning(
-                    "Failed to query optimization runs for %s %s: %s",
-                    symbol,
-                    target_strategy,
-                    exc,
-                )
+                # 5. Lookup optimal config from past sweep runs or fallback to defaults
+                best_config = None
+                try:
+                    runs = list_optimization_runs(symbol=symbol, limit=20)
+                    for run in runs:
+                        if run.get("strategy") == target_strategy and run.get("best_config"):
+                            best_config = run.get("best_config")
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to query optimization runs for %s %s: %s",
+                        symbol,
+                        target_strategy,
+                        exc,
+                    )
 
-            if not best_config:
-                best_config = merge_strategy_config(target_strategy, {})
+                if not best_config:
+                    best_config = merge_strategy_config(target_strategy, {})
 
-            # Carry over the opt-in flag to the new strategy configuration
-            best_config["regime_rotation_enabled"] = True
+                # Carry over the opt-in flag to the new strategy configuration
+                best_config["regime_rotation_enabled"] = True
 
-            # 6. Apply rotation in DB and memory
-            try:
+                # 6. Apply rotation in DB and memory
                 conn = get_connection()
                 cursor = conn.cursor()
                 cursor.execute(
@@ -268,13 +280,14 @@ class RegimeRotationAgent:
                 # Apply changes to local in-memory dict
                 bot["strategy"] = target_strategy
                 bot["config"] = best_config
-                
+
                 # Refresh strategy runtime instance in-place
                 self.bot_manager._refresh_strategy_instance(bot_id)
 
                 rotate_msg = f"Regime Rotation: Bot rotated successfully from {current_strategy} to {target_strategy} due to {regime} market condition."
                 await self.bot_manager.log_bot_event(bot_id, "INFO", rotate_msg, meta={"reasoning_chain": reasoning.to_dict()})
-                
+                save_agent_reasoning(bot_id, "REGIME_ROTATION", reasoning)
+
                 await emit_notification(
                     NotificationEvent(
                         event_type=ntypes.BOT_STATUS,
@@ -314,13 +327,6 @@ class RegimeRotationAgent:
                     )
 
                 self.bot_manager.active_bots[bot_id]["strategy"] = target_strategy
-                results["rotations"].append({
-                    "bot_id": bot_id,
-                    "symbol": symbol,
-                    "from_strategy": current_strategy,
-                    "to_strategy": target_strategy,
-                    "regime": regime,
-                })
 
                 # Narrate to copilot
                 try:
@@ -344,7 +350,48 @@ class RegimeRotationAgent:
                 except Exception as exc:
                     logger.error("Failed to narrate regime rotation event: %s", exc)
 
-            except Exception as exc:
-                logger.exception("Failed to apply in-place strategy rotation for bot %s: %s", bot_id, exc)
+                return {"flattened": flattened}
+
+            try:
+                from app.services.agent import desk_supervisor
+
+                rot_out = await desk_supervisor.propose_or_execute(
+                    "RegimeRotation",
+                    "rotate_strategy",
+                    {
+                        "bot_id": bot_id,
+                        "symbol": symbol,
+                        "from_strategy": current_strategy,
+                        "to_strategy": target_strategy,
+                        "regime": regime,
+                        "streak": streak,
+                    },
+                    f"Regime Rotation: rotate {symbol} bot from {current_strategy} to {target_strategy} ({regime} market, streak {streak}).",
+                    _apply_rotation,
+                )
+            except Exception as sup_exc:
+                logger.warning(
+                    "RegimeRotation supervisor path failed (%s) — rotating directly", sup_exc
+                )
+                try:
+                    rot_out = {"executed": True, "ok": True, "result": await _apply_rotation()}
+                except Exception:
+                    logger.exception("Failed to apply in-place strategy rotation for bot %s", bot_id)
+                    continue
+
+            if rot_out.get("executed") and rot_out.get("ok"):
+                flattened_n = int((rot_out.get("result") or {}).get("flattened") or 0)
+                results["flattened_count"] += flattened_n
+                results["rotations"].append({
+                    "bot_id": bot_id,
+                    "symbol": symbol,
+                    "from_strategy": current_strategy,
+                    "to_strategy": target_strategy,
+                    "regime": regime,
+                })
+            elif rot_out.get("pending"):
+                results.setdefault("proposed_actions", []).append(
+                    {"bot_id": bot_id, "action_id": rot_out.get("action_id")}
+                )
 
         return results

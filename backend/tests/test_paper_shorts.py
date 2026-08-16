@@ -137,6 +137,37 @@ class PaperShortsTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["cost_basis"]), 100.0)
         self.assertAlmostEqual(float(row["realized_pnl"]), 10.0)
 
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, locked FROM accounts WHERE asset = 'USDT'")
+        cash = cursor.fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(cash["balance"]), 100010.0)
+        self.assertAlmostEqual(float(cash["locked"]), 0.0)
+
+    def test_cover_short_loss_only_debits_pnl(self):
+        self._place("BTCUSDT", "SELL", 1.0, price=100.0)
+        self._place("BTCUSDT", "BUY", 1.0, price=110.0)
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, locked FROM accounts WHERE asset = 'USDT'")
+        cash = cursor.fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(cash["balance"]), 99990.0)
+        self.assertAlmostEqual(float(cash["locked"]), 0.0)
+
+    def test_short_round_trip_does_not_drain_quote_cash(self):
+        for _ in range(5):
+            self._place("BTCUSDT", "SELL", 1.0, price=100.0)
+            self._place("BTCUSDT", "BUY", 1.0, price=100.0)
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, locked FROM accounts WHERE asset = 'USDT'")
+        cash = cursor.fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(cash["balance"]), 100000.0)
+        self.assertAlmostEqual(float(cash["locked"]), 0.0)
+
     def test_short_entry_applies_bot_slice(self):
         import asyncio
 

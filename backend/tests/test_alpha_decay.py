@@ -204,8 +204,9 @@ class AlphaDecayTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("app.services.bots.alpha_decay.get_connection")
     @patch("app.services.bots.alpha_decay.get_backtest_expectations")
+    @patch("app.services.agent.desk_supervisor.auto_actions_enabled", return_value=True)
     @patch("app.services.bots.alpha_decay.emit_notification", new_callable=AsyncMock)
-    async def test_live_edge_collapse_pauses(self, mock_emit, mock_expectations, mock_db):
+    async def test_live_edge_collapse_pauses(self, mock_emit, mock_auto, mock_expectations, mock_db):
         """Absolute live failure with 21d+ sample still pauses."""
         mock_expectations.return_value = (None, None)
         trades = _day_exits(35, -2.0)

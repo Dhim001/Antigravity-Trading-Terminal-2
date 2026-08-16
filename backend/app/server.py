@@ -62,6 +62,7 @@ from app.services.bots.runtime import (
     regime_rotation_loop,
     alpha_decay_loop,
     scanner_deploy_loop,
+    decision_eval_loop,
     runs_bar_publisher,
     runs_bot_engine_inline,
 )
@@ -689,6 +690,7 @@ async def main():
                 tasks.append(asyncio.create_task(calibration_refresh_loop()))
                 tasks.append(asyncio.create_task(regime_rotation_loop(state.bot_manager)))
                 tasks.append(asyncio.create_task(alpha_decay_loop(state.bot_manager)))
+                tasks.append(asyncio.create_task(decision_eval_loop()))
                 from app.services.bots.ml_retrain_scheduler import ml_retrain_drain_loop
 
                 tasks.append(

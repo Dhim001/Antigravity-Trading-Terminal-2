@@ -264,37 +264,76 @@ class ScannerDeployAgent:
                 bot_cfg["auto_stop_loss_pct"] = SCANNER_DEPLOY_MAX_DRAWDOWN_PCT
 
             try:
-                bot_id = await self.bot_manager.create_bot(
-                    SCANNER_DEPLOY_STRATEGY,
-                    symbol,
-                    SCANNER_DEPLOY_TIMEFRAME,
-                    allocation,
-                    bot_cfg,
-                )
-                
-                obs1 = Observation("screener_signal", "positive", conf, f"Score: {row.get('score')} Conf: {conf:.2f}")
-                obs2 = Observation("correlation_check", "positive", 0.9, f"Max correlation to active basket: {max_corr:.2f}")
-                obs3 = Observation("backtest_validation", "positive", 0.85, f"7d PnL: {pnl:.2f}, WinRate: {win_rate:.1f}%")
-                
-                reasoning = AgentReasoning(
-                    observations=[obs1, obs2, obs3],
-                    synthesis=f"High confidence setup on {symbol}. Backtest validated positive edge. Dynamically allocated ${allocation:.2f}.",
-                    decision="DEPLOY",
-                    confidence=conf,
-                    recommendation_strength="strong",
-                )
-
-                if self.agent_event_bus:
-                    from app.services.agent.agent_event_bus import AgentEvent
-                    await self.agent_event_bus.publish(
-                        AgentEvent(
-                            source_agent="SCANNER_DEPLOY",
-                            event_type="BOT_DEPLOYED",
-                            payload={"bot_id": bot_id, "symbol": symbol, "allocation": allocation},
-                            timestamp=time.time(),
-                            reasoning=reasoning,
-                        )
+                async def _deploy_scanned_bot():
+                    bot_id = await self.bot_manager.create_bot(
+                        SCANNER_DEPLOY_STRATEGY,
+                        symbol,
+                        SCANNER_DEPLOY_TIMEFRAME,
+                        allocation,
+                        bot_cfg,
                     )
+
+                    obs1 = Observation("screener_signal", "positive", conf, f"Score: {row.get('score')} Conf: {conf:.2f}")
+                    obs2 = Observation("correlation_check", "positive", 0.9, f"Max correlation to active basket: {max_corr:.2f}")
+                    obs3 = Observation("backtest_validation", "positive", 0.85, f"7d PnL: {pnl:.2f}, WinRate: {win_rate:.1f}%")
+
+                    reasoning = AgentReasoning(
+                        observations=[obs1, obs2, obs3],
+                        synthesis=f"High confidence setup on {symbol}. Backtest validated positive edge. Dynamically allocated ${allocation:.2f}.",
+                        decision="DEPLOY",
+                        confidence=conf,
+                        recommendation_strength="strong",
+                    )
+
+                    if self.agent_event_bus:
+                        from app.services.agent.agent_event_bus import AgentEvent
+                        await self.agent_event_bus.publish(
+                            AgentEvent(
+                                source_agent="SCANNER_DEPLOY",
+                                event_type="BOT_DEPLOYED",
+                                payload={"bot_id": bot_id, "symbol": symbol, "allocation": allocation},
+                                timestamp=time.time(),
+                                reasoning=reasoning,
+                            )
+                        )
+                    return bot_id
+
+                try:
+                    from app.services.agent import desk_supervisor
+
+                    deploy_out = await desk_supervisor.propose_or_execute(
+                        "ScannerDeploy",
+                        "deploy_bot",
+                        {
+                            "symbol": symbol,
+                            "strategy": SCANNER_DEPLOY_STRATEGY,
+                            "timeframe": SCANNER_DEPLOY_TIMEFRAME,
+                            "allocation": allocation,
+                            "config": dict(bot_cfg),
+                        },
+                        (
+                            f"Scanner deploy: {SCANNER_DEPLOY_STRATEGY} on {symbol} "
+                            f"(${allocation:.2f}, conf {conf:.2f}, 7d PnL {pnl:.2f}, WR {win_rate:.1f}%)"
+                        ),
+                        _deploy_scanned_bot,
+                    )
+                except Exception as sup_exc:
+                    logger.warning(
+                        "ScannerDeploy supervisor path failed (%s) — deploying directly", sup_exc
+                    )
+                    deploy_out = {"executed": True, "ok": True, "result": await _deploy_scanned_bot()}
+
+                if deploy_out.get("pending"):
+                    results.setdefault("proposed", []).append(
+                        {"symbol": symbol, "action_id": deploy_out.get("action_id")}
+                    )
+                    continue
+                if not (deploy_out.get("executed") and deploy_out.get("ok")):
+                    results["skipped"].append(
+                        {"symbol": symbol, "reason": f"Deploy error: {deploy_out.get('error')}"}
+                    )
+                    continue
+                bot_id = deploy_out.get("result")
 
                 results["deployed"].append({"bot_id": bot_id, "symbol": symbol, "allocation": allocation})
                 total_allocated += allocation

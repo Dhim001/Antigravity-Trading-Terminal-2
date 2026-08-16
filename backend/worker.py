@@ -19,6 +19,7 @@ from app.services.bots.runtime import (
     regime_rotation_loop,
     calibration_refresh_loop,
     scanner_deploy_loop,
+    decision_eval_loop,
 )
 from app.services.bots.execution_mode import uses_paper_oms
 from app.services.candle_feed_stub import CandleFeedStub
@@ -75,8 +76,10 @@ async def main():
 
     event_bus = create_event_bus(REDIS_URL)
     from app.services.agent.agent_event_bus import AgentEventBus
+    from app.services.bots.agent_event_subscribers import register_agent_event_subscribers
 
     agent_event_bus = AgentEventBus()
+    register_agent_event_subscribers(agent_event_bus)
 
     async def broadcast_cb(payload: dict):
         await event_bus.publish(channels.WS_BROADCAST, payload)
@@ -109,6 +112,7 @@ async def main():
         asyncio.create_task(calibration_refresh_loop()),
         asyncio.create_task(alpha_decay_loop(bot_manager)),
         asyncio.create_task(regime_rotation_loop(bot_manager)),
+        asyncio.create_task(decision_eval_loop()),
         asyncio.create_task(
             scanner_deploy_loop(
                 bot_manager,

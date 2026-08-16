@@ -263,6 +263,21 @@ class AlphaDecayMonitor:
             if bot.get("status") != "RUNNING":
                 continue
 
+            try:
+                # A live loss streak is being handled by Pre-Trade Intel; judging
+                # alpha decay on the same bars would double-count the signal.
+                from app.services.bots.agent_event_subscribers import (
+                    is_streak_escalation_ignored,
+                )
+
+                if is_streak_escalation_ignored(bot_id):
+                    logger.debug(
+                        "Alpha Decay skipping bot %s (streak escalation cool-down)", bot_id
+                    )
+                    continue
+            except Exception:
+                pass
+
             cfg = bot.get("config") or {}
             # Allow opt-out per bot via config override
             if cfg.get("alpha_decay_monitor_disabled"):
@@ -519,50 +534,69 @@ class AlphaDecayMonitor:
                 # ML-specific retrain: queue via scheduler (drain loop / Run now trains).
                 ml_retrained = False
                 if ALPHA_DECAY_AUTO_RETRAIN:
-                    try:
-                        from app.services.bots.ml_walk_forward_validator import (
-                            is_ensemble_strategy as _is_ens,
-                            is_ml_strategy as _is_ml,
-                        )
-                        from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
-
-                        retrain_id = strategy
-                        if _is_ens(strategy):
-                            retrain_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
-                        if _is_ml(strategy) or _is_ens(strategy):
-                            scheduler = get_retrain_scheduler()
-                            should, reason = scheduler.should_retrain(
-                                retrain_id,
-                                symbol,
-                                alpha_score=0.8,
-                                timeframe=model_tf,
+                    async def _queue_ml_retrain():
+                        nonlocal ml_retrained
+                        try:
+                            from app.services.bots.ml_walk_forward_validator import (
+                                is_ensemble_strategy as _is_ens,
+                                is_ml_strategy as _is_ml,
                             )
-                            if should:
-                                req = scheduler.request_retrain(
-                                    strategy=retrain_id,
-                                    symbol=symbol,
-                                    reason=f"alpha decay ({reason}): {'; '.join(decay_reasons[:2])}",
-                                    source="alpha_decay",
-                                    timeframe=bot.get("timeframe") or cfg.get("timeframe"),
+                            from app.services.bots.ml_retrain_scheduler import get_retrain_scheduler
+
+                            retrain_id = strategy
+                            if _is_ens(strategy):
+                                retrain_id = str(cfg.get("ml_strategy") or "ML_SIGNAL_BOOST").upper()
+                            if _is_ml(strategy) or _is_ens(strategy):
+                                scheduler = get_retrain_scheduler()
+                                should, reason = scheduler.should_retrain(
+                                    retrain_id,
+                                    symbol,
+                                    alpha_score=0.8,
+                                    timeframe=model_tf,
                                 )
-                                if req.get("queued"):
-                                    results["retrained_models"].append(bot_id)
-                                    ml_retrained = True
-                                    await self.bot_manager.log_bot_event(
-                                        bot_id,
-                                        "INFO",
-                                        f"Alpha Decay: ML retrain queued ({reason}). "
-                                        f"Auto-drain or Model Training → Run now will train "
-                                        f"{retrain_id}/{symbol}.",
+                                if should:
+                                    req = scheduler.request_retrain(
+                                        strategy=retrain_id,
+                                        symbol=symbol,
+                                        reason=f"alpha decay ({reason}): {'; '.join(decay_reasons[:2])}",
+                                        source="alpha_decay",
+                                        timeframe=bot.get("timeframe") or cfg.get("timeframe"),
                                     )
-                                else:
-                                    await self.bot_manager.log_bot_event(
-                                        bot_id,
-                                        "INFO",
-                                        f"Alpha Decay: ML retrain not queued ({req.get('reason')}).",
-                                    )
-                    except ImportError:
-                        pass
+                                    if req.get("queued"):
+                                        results["retrained_models"].append(bot_id)
+                                        ml_retrained = True
+                                        await self.bot_manager.log_bot_event(
+                                            bot_id,
+                                            "INFO",
+                                            f"Alpha Decay: ML retrain queued ({reason}). "
+                                            f"Auto-drain or Model Training → Run now will train "
+                                            f"{retrain_id}/{symbol}.",
+                                        )
+                                    else:
+                                        await self.bot_manager.log_bot_event(
+                                            bot_id,
+                                            "INFO",
+                                            f"Alpha Decay: ML retrain not queued ({req.get('reason')}).",
+                                        )
+                        except ImportError:
+                            pass
+
+                    try:
+                        from app.services.agent import desk_supervisor
+
+                        await desk_supervisor.propose_or_execute(
+                            "AlphaDecay",
+                            "queue_retrain",
+                            {"bot_id": bot_id, "symbol": symbol, "strategy": strategy},
+                            f"Alpha Decay: queue ML retrain for {symbol} ({decay_reasons[0]})",
+                            _queue_ml_retrain,
+                        )
+                    except Exception as sup_exc:
+                        logger.warning(
+                            "AlphaDecay supervisor path failed (%s) — queueing retrain directly",
+                            sup_exc,
+                        )
+                        await _queue_ml_retrain()
 
                 # Retrain meta-label model (technical / agent bots — not Lab train).
                 if ALPHA_DECAY_AUTO_RETRAIN and not ml_retrained:
@@ -601,17 +635,40 @@ class AlphaDecayMonitor:
                 # reasons observe / retrain — they must not halt a correct live bot.
                 should_pause = ALPHA_DECAY_AUTO_PAUSE and decay_reasons_warrant_pause(decay_reasons)
                 if should_pause:
-                    try:
+                    async def _pause_for_decay():
                         await self.bot_manager.pause_bot(bot_id)
-                        results["paused_bots"].append(bot_id)
-                        
                         decay_report = (
                             f"Alpha Decay Circuit Breaker: Automatically paused bot due to performance degradation. "
                             f"Decay report: {'; '.join(decay_reasons)}"
                         )
                         await self.bot_manager.log_bot_event(bot_id, "WARN", decay_report)
-                    except Exception as exc:
-                        logger.error("Failed to auto-pause decaying bot %s: %s", bot_id, exc)
+
+                    try:
+                        from app.services.agent import desk_supervisor
+
+                        pause_out = await desk_supervisor.propose_or_execute(
+                            "AlphaDecay",
+                            "pause_bot",
+                            {"bot_id": bot_id, "symbol": symbol},
+                            f"Alpha Decay circuit breaker: {decay_reasons[0]}",
+                            _pause_for_decay,
+                        )
+                    except Exception as sup_exc:
+                        logger.warning(
+                            "AlphaDecay supervisor path failed (%s) — pausing directly", sup_exc
+                        )
+                        pause_out = {"executed": True, "ok": True}
+                        try:
+                            await _pause_for_decay()
+                        except Exception as exc:
+                            logger.error("Failed to auto-pause decaying bot %s: %s", bot_id, exc)
+
+                    if pause_out.get("executed") and pause_out.get("ok"):
+                        results["paused_bots"].append(bot_id)
+                    elif pause_out.get("pending"):
+                        results.setdefault("proposed_actions", []).append(
+                            {"bot_id": bot_id, "action_id": pause_out.get("action_id")}
+                        )
                 else:
                     await self.bot_manager.log_bot_event(
                         bot_id,

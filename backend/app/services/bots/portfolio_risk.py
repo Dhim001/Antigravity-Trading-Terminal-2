@@ -146,9 +146,14 @@ def validate_portfolio_entry(
     margin=None,
     entry_leverage: float = 1.0,
 ) -> tuple[bool, str, float | None]:
-    """Return (allowed, reason, capped_quantity). Exits are always allowed."""
-    if side != "BUY":
-        return True, "OK", quantity
+    """Return (allowed, reason, capped_quantity).
+
+    Applies to long *and* short entries. Callers must skip this for exits
+    (``is_exit=True``) — a SELL that opens a short still needs cash/margin.
+    """
+    side_u = str(side or "").upper()
+    if side_u not in ("BUY", "SELL"):
+        return False, f"Unsupported side {side!r}.", None
 
     notional = quantity * price
     if notional <= 0:

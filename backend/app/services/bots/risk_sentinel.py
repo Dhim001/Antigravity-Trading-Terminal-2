@@ -25,6 +25,7 @@ from app.services.notifications.dispatcher import emit_notification
 from app.services.notifications.events import NotificationEvent
 from app.services.agent.working_memory import WorkingMemory
 from app.services.agent.reasoning import AgentReasoning, Observation
+from app.services.agent.reasoning_store import save_agent_reasoning
 from app.services.agent.copilot import agent_narrate_event
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ class RiskSentinel:
                                     f"Auto-paused by Risk Sentinel drawdown velocity spike of {dd_diff:.2f}%.",
                                     meta={"reasoning_chain": reasoning.to_dict()}
                                 )
+                                save_agent_reasoning(bot_id, "RISK_SENTINEL", reasoning)
                                 if self.agent_event_bus:
                                     from app.services.agent.agent_event_bus import AgentEvent
                                     await self.agent_event_bus.publish(
@@ -180,10 +182,6 @@ class RiskSentinel:
                 streak = bot_analytics.get_recent_consecutive_losses(bot_id)
                 if streak >= max_streak:
                     try:
-                        await bot_manager.pause_bot(bot_id)
-                        cooldown = 3600.0
-                        self.bot_memories[bot_id].set_cooldown(cooldown)
-                        results["streak_paused_count"] += 1
                         reason = (
                             f"Bot {bot.get('symbol')} reached consecutive loss limit ({streak}/{max_streak}). "
                             f"Auto-paused by Risk Sentinel."
@@ -197,51 +195,80 @@ class RiskSentinel:
                             recommendation_strength="strong"
                         )
 
-                        await bot_manager.log_bot_event(bot_id, "WARN", reason, meta={"reasoning_chain": reasoning.to_dict()})
-                        
-                        if self.agent_event_bus:
-                            from app.services.agent.agent_event_bus import AgentEvent
-                            await self.agent_event_bus.publish(
-                                AgentEvent(
-                                    source_agent="RISK_SENTINEL",
-                                    event_type="BOT_PAUSED",
-                                    payload={"bot_id": bot_id, "reason": "loss_streak"},
-                                    timestamp=time.time(),
-                                    reasoning=reasoning,
+                        async def _pause_for_streak(bot_id=bot_id, bot=bot, reason=reason, reasoning=reasoning, streak=streak, max_streak=max_streak):
+                            await bot_manager.pause_bot(bot_id)
+                            cooldown = 3600.0
+                            self.bot_memories[bot_id].set_cooldown(cooldown)
+                            await bot_manager.log_bot_event(bot_id, "WARN", reason, meta={"reasoning_chain": reasoning.to_dict()})
+                            save_agent_reasoning(bot_id, "RISK_SENTINEL", reasoning)
+
+                            if self.agent_event_bus:
+                                from app.services.agent.agent_event_bus import AgentEvent
+                                await self.agent_event_bus.publish(
+                                    AgentEvent(
+                                        source_agent="RISK_SENTINEL",
+                                        event_type="BOT_PAUSED",
+                                        payload={"bot_id": bot_id, "reason": "loss_streak"},
+                                        timestamp=time.time(),
+                                        reasoning=reasoning,
+                                    )
+                                )
+
+                            await emit_notification(
+                                NotificationEvent(
+                                    event_type=ntypes.RISK_SENTINEL,
+                                    title="Bot auto-paused by Risk Sentinel",
+                                    body=reason,
+                                    severity="warning",
+                                    payload={
+                                        "bot_id": bot_id,
+                                        "symbol": bot.get("symbol"),
+                                        "streak": streak,
+                                        "max_streak": max_streak,
+                                    },
                                 )
                             )
-                        
-                        await emit_notification(
-                            NotificationEvent(
-                                event_type=ntypes.RISK_SENTINEL,
-                                title="Bot auto-paused by Risk Sentinel",
-                                body=reason,
-                                severity="warning",
-                                payload={
-                                    "bot_id": bot_id,
-                                    "symbol": bot.get("symbol"),
-                                    "streak": streak,
-                                    "max_streak": max_streak,
-                                },
-                            )
-                        )
 
-                        # Narrate to copilot (per bot; deduped in agent_narrate_event)
-                        asyncio.create_task(
-                            agent_narrate_event(
-                                "RiskSentinel",
-                                {
-                                    "action": "paused_single_bot",
-                                    "reason": f"Hit max consecutive losses ({streak}).",
-                                    "bot_id": bot_id,
-                                    "symbol": bot.get("symbol"),
-                                    "streak": streak,
-                                    "max_streak": max_streak,
-                                    "why": getattr(reasoning, "synthesis", None),
-                                    "confidence": getattr(reasoning, "confidence", None),
-                                },
+                            # Narrate to copilot (per bot; deduped in agent_narrate_event)
+                            asyncio.create_task(
+                                agent_narrate_event(
+                                    "RiskSentinel",
+                                    {
+                                        "action": "paused_single_bot",
+                                        "reason": f"Hit max consecutive losses ({streak}).",
+                                        "bot_id": bot_id,
+                                        "symbol": bot.get("symbol"),
+                                        "streak": streak,
+                                        "max_streak": max_streak,
+                                        "why": getattr(reasoning, "synthesis", None),
+                                        "confidence": getattr(reasoning, "confidence", None),
+                                    },
+                                )
                             )
-                        )
+
+                        try:
+                            from app.services.agent import desk_supervisor
+
+                            sup_out = await desk_supervisor.propose_or_execute(
+                                "RiskSentinel",
+                                "pause_bot",
+                                {"bot_id": bot_id, "symbol": bot.get("symbol")},
+                                reason,
+                                _pause_for_streak,
+                            )
+                        except Exception as sup_exc:
+                            logger.warning(
+                                "RiskSentinel supervisor path failed (%s) — pausing directly", sup_exc
+                            )
+                            sup_out = {"executed": True, "ok": True}
+                            await _pause_for_streak()
+
+                        if sup_out.get("executed") and sup_out.get("ok"):
+                            results["streak_paused_count"] += 1
+                        elif sup_out.get("pending"):
+                            results.setdefault("proposed_actions", []).append(
+                                {"bot_id": bot_id, "action_id": sup_out.get("action_id")}
+                            )
                     except Exception as exc:
                         logger.error("Sentinel failed to auto-pause bot %s on loss streak: %s", bot_id, exc)
 

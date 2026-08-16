@@ -2551,6 +2551,22 @@ async def get_filter_rejects_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "filter_rejects": data})
 
 
+async def bot_reasoning_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/bots/{bot_id}/reasoning?limit=20 — persisted agent decision chains."""
+    import asyncio
+    from app.services.agent.reasoning_store import list_agent_reasoning
+
+    bot_id = request.path_params.get("bot_id")
+    if not bot_id:
+        return JSONResponse({"ok": False, "error": "bot_id is required"}, status_code=400)
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    chains = await asyncio.to_thread(list_agent_reasoning, str(bot_id), limit=limit)
+    return JSONResponse({"ok": True, "reasoning": chains})
+
+
 async def get_execution_quality_handler(request: Request) -> JSONResponse:
     """GET /api/v1/execution/quality — TCA aggregates (EXECUTION_RISK Phase 2)."""
     from app.services.bots.execution_tca import execution_quality_dashboard
@@ -3389,9 +3405,105 @@ async def copilot_confirm_handler(request: Request) -> JSONResponse:
         
     return JSONResponse(res)
 
+async def agent_tools_list_handler(request: Request) -> JSONResponse:
+    from app.services.agent.tools.catalog import get_registry
+
+    registry = get_registry()
+    return JSONResponse({"ok": True, "tools": [t.to_dict() for t in registry.list()]})
+
+
+async def agent_eval_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/agent/eval — per-agent decision scores + recent graded outcomes."""
+    import asyncio
+    from app.services.agent.decision_eval import get_decision_scores
+
+    agent = request.query_params.get("agent") or None
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    data = await asyncio.to_thread(get_decision_scores, agent, limit=limit)
+    return JSONResponse({"ok": True, "eval": data})
+
+
+async def agent_tools_call_handler(request: Request) -> JSONResponse:
+    from app.services.agent.copilot import store_pending
+    from app.services.agent.tools.catalog import get_registry
+    from app.services.agent.tools.registry import ToolContext
+
+    state: AppState = request.app.state.terminal
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    name = str(body.get("name") or "").strip()
+    args = body.get("args") if isinstance(body.get("args"), dict) else {}
+    confirmed = bool(body.get("confirmed"))
+    ctx = ToolContext(
+        state=state,
+        session_id=body.get("session_id"),
+        message=str(body.get("message") or ""),
+        active_symbol=body.get("active_symbol"),
+    )
+
+    outcome = await get_registry().execute(name, args, confirmed=confirmed, context=ctx)
+
+    # HITL refusal → park it in the Copilot pending store so the UI can run it
+    # through the existing /api/v1/copilot/confirm endpoint.
+    if outcome.get("requires_confirmation") and isinstance(outcome.get("pending"), dict):
+        pending = outcome["pending"]
+        return JSONResponse({
+            "ok": True,
+            "requires_confirmation": True,
+            "pending_id": store_pending(pending),
+            "pending_action": pending,
+        })
+    return JSONResponse(outcome)
+
+
+async def agent_actions_list_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/agent/actions?status=pending — HITL desk action queue."""
+    from app.services.agent import action_queue
+
+    status = request.query_params.get("status") or None
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    actions = await asyncio.to_thread(action_queue.list_actions, status, limit=limit)
+    return JSONResponse({"ok": True, "actions": actions})
+
+
+async def agent_action_approve_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/agent/actions/{action_id}/approve — execute a parked action."""
+    from app.services.agent import action_queue
+
+    state: AppState = request.app.state.terminal
+    action_queue.set_state_provider(lambda: state)
+    try:
+        action_id = int(request.path_params.get("action_id") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Invalid action id"}, status_code=400)
+    res = await action_queue.approve_action(action_id)
+    return JSONResponse(res)
+
+
+async def agent_action_reject_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/agent/actions/{action_id}/reject — dismiss a parked action."""
+    from app.services.agent import action_queue
+
+    try:
+        action_id = int(request.path_params.get("action_id") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Invalid action id"}, status_code=400)
+    res = await asyncio.to_thread(action_queue.reject_action, action_id)
+    return JSONResponse(res)
+
+
 async def copilot_history_handler(request: Request) -> JSONResponse:
     from app.services.agent.copilot_store import list_messages
-    
+
     session_id = request.query_params.get("session_id")
     limit = request.query_params.get("limit", "40")
     if not session_id:
@@ -3472,6 +3584,7 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/bots/{bot_id}/meta-label/status", meta_label_status_handler, methods=["GET"]),
         Route("/api/v1/bots/{bot_id}/meta-label/retrain", meta_label_retrain_handler, methods=["POST"]),
         Route("/api/v1/bots/{bot_id}/meta-label/operational", meta_label_operational_handler, methods=["POST"]),
+        Route("/api/v1/bots/{bot_id}/reasoning", bot_reasoning_handler, methods=["GET"]),
         Route("/api/v1/bots/filter-rejects", get_filter_rejects_handler, methods=["GET"]),
         Route("/api/v1/execution/quality", get_execution_quality_handler, methods=["GET"]),
         Route("/api/v1/execution/cost-suggestions", get_execution_cost_suggestions_handler, methods=["GET"]),
@@ -3485,6 +3598,12 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/workspaces/{workspace_id}", delete_workspace_handler, methods=["DELETE"]),
         Route("/api/v1/market/footprint", market_footprint_handler, methods=["GET"]),
         Route("/api/v1/journal/briefing/generate", generate_daily_briefing_handler, methods=["POST"]),
+        Route("/api/v1/agent/tools", agent_tools_list_handler, methods=["GET"]),
+        Route("/api/v1/agent/tools/call", agent_tools_call_handler, methods=["POST"]),
+        Route("/api/v1/agent/eval", agent_eval_handler, methods=["GET"]),
+        Route("/api/v1/agent/actions", agent_actions_list_handler, methods=["GET"]),
+        Route("/api/v1/agent/actions/{action_id}/approve", agent_action_approve_handler, methods=["POST"]),
+        Route("/api/v1/agent/actions/{action_id}/reject", agent_action_reject_handler, methods=["POST"]),
         Route("/api/v1/copilot/chat", copilot_chat_handler, methods=["POST"]),
         Route("/api/v1/copilot/confirm", copilot_confirm_handler, methods=["POST"]),
         Route("/api/v1/copilot/history", copilot_history_handler, methods=["GET"]),

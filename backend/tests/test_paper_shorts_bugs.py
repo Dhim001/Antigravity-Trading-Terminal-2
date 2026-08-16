@@ -74,6 +74,14 @@ class PaperShortsBugTests(unittest.TestCase):
         )
         self.assertEqual(cover["status"], "success", cover.get("message"))
 
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, locked FROM accounts WHERE asset = 'USDT'")
+        after = cursor.fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(after["balance"]), 1000.0)
+        self.assertAlmostEqual(float(after["locked"]), 850.0)
+
     def test_flip_long_to_short_fifo_pnl_only_on_closed_long(self):
         queues: dict = {}
         apply_fill_to_queues(queues, "BTCUSDT", "BUY", 100.0, 1.0)
