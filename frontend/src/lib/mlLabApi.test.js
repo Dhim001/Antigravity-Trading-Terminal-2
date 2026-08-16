@@ -22,9 +22,14 @@ import {
   submitMlTrainJob,
   submitMlValidateJob,
   fetchMlRetrainQueue,
+  fetchMlTrainRuns,
   pollMlJob,
   cancelMlJob,
   fetchLatestMlHyperparamSweep,
+  submitMlBatchTrain,
+  fetchMlBatch,
+  cancelMlBatch,
+  retryMlBatch,
 } from './mlLabApi';
 
 describe('mlLabApi', () => {
@@ -158,5 +163,99 @@ describe('mlLabApi', () => {
     });
     expect(await fetchLatestMlHyperparamSweep('AAPL', 'RL_PPO_AGENT')).toBeNull();
     expect(apiRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('submitMlBatchTrain posts items to /api/v1/ml/batch-train', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, batch_id: 'b-1', status: 'queued' });
+    const items = [
+      { strategy: 'ML_SIGNAL_BOOST', config: { timeframe: '5m', training_window_months: 6 }, validate_after: true },
+      { strategy: 'LSTM_DIRECTION', config: { timeframe: '5m', training_window_months: 6, epochs: 40 }, validate_after: true },
+    ];
+    const out = await submitMlBatchTrain({
+      symbol: 'ETHUSDT',
+      items,
+      concurrency: 1,
+      fail_fast: false,
+      idempotency_key: 'idem-1',
+    });
+    expect(out).toMatchObject({ ok: true, batch_id: 'b-1' });
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/batch-train', {
+      method: 'POST',
+      body: {
+        symbol: 'ETHUSDT',
+        items,
+        concurrency: 1,
+        fail_fast: false,
+        idempotency_key: 'idem-1',
+      },
+      timeoutMs: 10000,
+    });
+  });
+
+  it('submitMlBatchTrain defaults concurrency/fail_fast and omits a missing idempotency key', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, batch_id: 'b-2', status: 'queued' });
+    await submitMlBatchTrain({ symbol: 'ETHUSDT', items: [{ strategy: 'A' }] });
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/batch-train', {
+      method: 'POST',
+      body: { symbol: 'ETHUSDT', items: [{ strategy: 'A' }], concurrency: 1, fail_fast: false },
+      timeoutMs: 10000,
+    });
+  });
+
+  it('fetchMlBatch gets the batch status path', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, batch_id: 'b-1', status: 'running' });
+    await fetchMlBatch('b-1');
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/batch-train/b-1', {
+      timeoutMs: 5000,
+    });
+  });
+
+  it('cancelMlBatch and retryMlBatch post to the batch action paths', async () => {
+    apiRequest.mockResolvedValue({ ok: true });
+    await cancelMlBatch('b-1');
+    expect(apiRequest).toHaveBeenCalledWith(
+      '/api/v1/ml/batch-train/b-1/cancel',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    await retryMlBatch('b-1');
+    expect(apiRequest).toHaveBeenCalledWith(
+      '/api/v1/ml/batch-train/b-1/retry',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('url-encodes batch ids', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true });
+    await fetchMlBatch('a/b c');
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/batch-train/a%2Fb%20c', expect.any(Object));
+  });
+
+  it('fetchMlTrainRuns builds the legacy strategy/timeframe query', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, runs: [{ id: 'r1' }] });
+    const runs = await fetchMlTrainRuns('ETHUSDT', 'ML_SIGNAL_BOOST', '5m');
+    expect(runs).toEqual([{ id: 'r1' }]);
+    const url = apiRequest.mock.calls[0][0];
+    expect(url).toContain('/api/v1/ml/runs?');
+    expect(url).toContain('symbol=ETHUSDT');
+    expect(url).toContain('strategy=ML_SIGNAL_BOOST');
+    expect(url).toContain('timeframe=5m');
+    expect(url).toContain('limit=15');
+    expect(url).not.toContain('batch_id');
+  });
+
+  it('fetchMlTrainRuns adds batch_id and raises the cap when a batch filter is set', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, runs: [] });
+    const runs = await fetchMlTrainRuns('ETHUSDT', null, null, { batchId: 'batch-9' });
+    expect(runs).toEqual([]);
+    const url = apiRequest.mock.calls[0][0];
+    expect(url).toContain('batch_id=batch-9');
+    expect(url).toContain('limit=100');
+    expect(url).not.toContain('strategy=');
+    expect(url).not.toContain('timeframe=');
+  });
+
+  it('fetchMlTrainRuns returns empty without a symbol', async () => {
+    expect(await fetchMlTrainRuns('', 'A', '1m', { batchId: 'b' })).toEqual([]);
+    expect(apiRequest).not.toHaveBeenCalled();
   });
 });

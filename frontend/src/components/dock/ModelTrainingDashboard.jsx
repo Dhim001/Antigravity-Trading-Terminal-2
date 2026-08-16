@@ -2,7 +2,7 @@
  * Model Training Dashboard — layout orchestrator for ML Lab.
  * State/fetchers live in useMlLabState; UI pieces in components/ml-lab/*.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   BrainCircuit,
   CheckCircle2,
@@ -29,6 +29,7 @@ import MlAutoTunePanel from '@/components/MlAutoTunePanel';
 import PipelineStatusBar from '@/components/PipelineStatusBar';
 import PipelineAutoDeploySettings from '@/components/PipelineAutoDeploySettings';
 import BatchTrainDialog from '@/components/ml-lab/BatchTrainDialog';
+import { MlJobCancelledError } from '@/components/ml-lab/batchTrainRunner';
 import { MetricChips } from '@/components/ml-lab/MlMetricChips';
 import { LossHistoryChart } from '@/components/ml-lab/MlLossChart';
 import { DeployReadinessStrip, DataCalendarStrip } from '@/components/ml-lab/MlDeployReadiness';
@@ -107,8 +108,13 @@ export default function ModelTrainingDashboard({
   useSyncExternalStore(subscribeMlPipeline, getMlPipeline, getMlPipeline);
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchScope, setBatchScope] = useState('untrained');
+  // Scroll target for the batch drawer "View runs" action.
+  const runsSectionRef = useRef(null);
   const [autoAdvanceOn, setAutoAdvanceOn] = useState(() => getAutoAdvance());
   const pipelineValidateRef = useRef(null);
+  // Whether the last train job ended via user cancel — the batch dialog turns
+  // that into MlJobCancelledError so cancelled items are not counted as failed.
+  const lastTrainOutcomeRef = useRef(null);
   const {
 
     activeSymbol,
@@ -132,6 +138,8 @@ export default function ModelTrainingDashboard({
     setRetrainPending,
     retrainHistory,
     trainRuns,
+    runsBatchFilter,
+    setRunsBatchFilter,
     queueTelemetry,
     loading,
     refreshing,
@@ -309,16 +317,21 @@ export default function ModelTrainingDashboard({
     }
   };
 
-  const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null, championTrain = false } = {}) => {
+  const runTrainJob = async (strat, symbol, { fromQueue = false, hyperparams = null, championTrain = false, configOverride = null } = {}) => {
     if (training || validating || busyElsewhere || !symbol || !strat) return false;
     // Must match backend pending key SYMBOL:STRATEGY:TF (not SYMBOL:STRATEGY).
     const queueKey = retrainQueueKey(symbol, strat, trainingTimeframe);
     if (fromQueue) setRunNowKey(queueKey);
     setMlValidation(null);
     if (strat !== strategy) setStrategy(strat);
+    lastTrainOutcomeRef.current = null;
     const trainTimeoutMs = mlJobTimeoutMs(strat, 'train', { months: trainingWindow });
     const token = startJobProgress('train', strat, symbol, trainingWindow);
-    const knobs = strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train');
+    // Batch train passes a per-strategy knob snapshot frozen at queue start so
+    // mid-batch strategy switches cannot leak the previously selected knobs.
+    const knobs = (configOverride && typeof configOverride === 'object')
+      ? configOverride
+      : (strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train'));
     const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
     // Queue / decay retrain only: champion write + live-model HP reuse (no Lab knob overlay).
@@ -425,6 +438,7 @@ export default function ModelTrainingDashboard({
       trainUiCompleted = true;
       const result = (job.result && typeof job.result === 'object') ? job.result : {};
       if (job.status === 'cancelled' || result.cancelled) {
+        lastTrainOutcomeRef.current = { strat, cancelled: true };
         toast.message('Training cancelled');
       } else if (job.status === 'done' && result.ok !== false) {
         trainOk = true;
@@ -493,6 +507,7 @@ export default function ModelTrainingDashboard({
           pipelineValidateRef.current = true;
         }
       } else {
+        lastTrainOutcomeRef.current = { strat, cancelled: false };
         toast.error(job.error || result.error || 'Training failed');
         const pipe = getMlPipeline();
         if (pipe.pipelineId && pipe.stage === 'TRAINING') {
@@ -586,7 +601,12 @@ export default function ModelTrainingDashboard({
     const isRl = strat === 'RL_PPO_AGENT';
     const isDeep = DEEP_ML_STRATEGIES.has(strat);
     const defaults = defaultAdvancedKnobs(strat, 'train');
-    const knobs = strat === strategy ? advanced : defaults;
+    // Batch train passes the same frozen knob snapshot used for Train so
+    // auto-validate runs at the intended per-strategy capacity.
+    const overrideKnobs = (opts.configOverride && typeof opts.configOverride === 'object')
+      ? opts.configOverride
+      : null;
+    const knobs = overrideKnobs || (strat === strategy ? advanced : defaults);
     const nFolds = parsePositiveInt(knobs.nFolds, defaults.nFolds, { min: 2, max: 8 });
     const validateMaxBars = parsePositiveInt(
       knobs.validateMaxBars,
@@ -991,6 +1011,26 @@ export default function ModelTrainingDashboard({
     setChallengerDismissed(true);
     championOosRef.current = null;
   };
+
+  // Batch drawer → runs table: filter Recent runs to one batch and scroll there.
+  const handleViewBatchRuns = (batchId) => {
+    if (!batchId) return;
+    setRunsBatchFilter({ batchId });
+    requestAnimationFrame(() => {
+      runsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  // Batch train source map: current Lab Advanced knobs for the selected
+  // strategy, defaults for the rest. The dialog freezes this at batch start
+  // and passes one entry per train/validate call.
+  const batchConfigOverrides = useMemo(() => {
+    const map = {};
+    for (const id of ML_STRATEGIES) {
+      map[id] = id === strategy ? { ...advanced } : defaultAdvancedKnobs(id, 'train');
+    }
+    return map;
+  }, [strategy, advanced]);
 
   return (
     <div
@@ -1528,11 +1568,15 @@ export default function ModelTrainingDashboard({
         </ul>
       </section>
 
-      <MlTrainRunsTable
-        trainRuns={trainRuns}
-        activeSymbol={activeSymbol}
-        versions={status?.versions}
-      />
+      <div ref={runsSectionRef}>
+        <MlTrainRunsTable
+          trainRuns={trainRuns}
+          activeSymbol={activeSymbol}
+          versions={status?.versions}
+          batchFilter={runsBatchFilter}
+          onClearBatchFilter={() => setRunsBatchFilter(null)}
+        />
+      </div>
 
       <MlRetrainQueue
         retrainActions={retrainActions}
@@ -1554,12 +1598,20 @@ export default function ModelTrainingDashboard({
         inventory={inventory}
         busy={training || validating || busyElsewhere}
         initialScope={batchScope}
-        onTrainStrategy={async (stratId) => {
-          const ok = await runTrainJob(stratId, activeSymbol);
-          if (!ok) throw new Error(`Training failed for ${stratId}`);
+        configOverrides={batchConfigOverrides}
+        onViewRuns={handleViewBatchRuns}
+        onTrainStrategy={async (stratId, configOverride) => {
+          const ok = await runTrainJob(stratId, activeSymbol, { configOverride });
+          if (!ok) {
+            const outcome = lastTrainOutcomeRef.current;
+            if (outcome?.cancelled && outcome.strat === stratId) {
+              throw new MlJobCancelledError(stratId);
+            }
+            throw new Error(`Training failed for ${stratId}`);
+          }
         }}
-        onValidateStrategy={async (stratId) => {
-          const ok = await handleValidate({ strategy: stratId });
+        onValidateStrategy={async (stratId, configOverride) => {
+          const ok = await handleValidate({ strategy: stratId, configOverride });
           if (!ok) throw new Error(`Validation failed for ${stratId}`);
         }}
       />

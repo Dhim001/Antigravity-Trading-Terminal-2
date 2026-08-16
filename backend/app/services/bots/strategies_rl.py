@@ -232,6 +232,31 @@ class RlPpoStrategy(BaseStrategy):
         except (TypeError, ValueError):
             atr = 0.0
 
+        from app.services.bots.rl_risk import (
+            resolve_atr_stop_mult,
+            resolve_take_profit_r,
+            stop_take_prices,
+        )
+
+        stop_mult = resolve_atr_stop_mult(self._cfg)
+        tp_r = resolve_take_profit_r(self._cfg)
+
+        def _atr_levels(side: str) -> dict:
+            dist, sl_px, tp_px = stop_take_prices(
+                side, close, atr, stop_mult=stop_mult, take_profit_r=tp_r,
+            )
+            out = {
+                "stop_loss_distance": dist,
+                "atr": atr if atr > 0 else None,
+                "atr_stop_mult": stop_mult,
+                "take_profit_r": tp_r,
+            }
+            if sl_px is not None:
+                out["stop_loss_price"] = sl_px
+            if tp_px is not None:
+                out["take_profit_price"] = tp_px
+            return out
+
         # Map action to signal and update shadow position state
         if action == ACTION_BUY and confidence >= threshold:
             # If short, this closes short first; then opens long
@@ -247,7 +272,7 @@ class RlPpoStrategy(BaseStrategy):
             return apply_ml_meta_label_gate({
                 "signal": signal,
                 "confidence": round(confidence, 4),
-                "stop_loss_distance": atr * 1.5 if atr > 0 else None,
+                **_atr_levels("BUY"),
                 "model_type": "rl_ppo",
                 "rl_step": _step_payload(signal),
             }, df_row, self._cfg)
@@ -265,7 +290,7 @@ class RlPpoStrategy(BaseStrategy):
             return apply_ml_meta_label_gate({
                 "signal": signal,
                 "confidence": round(confidence, 4),
-                "stop_loss_distance": atr * 1.5 if atr > 0 else None,
+                **_atr_levels("SELL"),
                 "model_type": "rl_ppo",
                 "rl_step": _step_payload(signal),
             }, df_row, self._cfg)

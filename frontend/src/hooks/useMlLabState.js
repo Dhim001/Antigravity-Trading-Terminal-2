@@ -29,6 +29,7 @@ import {
   ML_LAB_TF_KEY,
   ML_LAB_WINDOW_KEY,
   ML_STRATEGIES,
+  preferredTrainingTimeframe,
   readStoredTrainingTimeframe,
   readStoredTrainingWindow,
   syncAdvancedForWindow,
@@ -79,16 +80,17 @@ export default function useMlLabState() {
   );
   const [trainingWindow, setTrainingWindow] = useState(readStoredTrainingWindow);
   const [trainingTimeframe, setTrainingTimeframe] = useState(() => {
+    const strat = isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST';
     const tf = String(botTimeframe || '1m').toLowerCase();
     const botTf = tf === 'tick' ? '1m' : (tf || '1m');
-    return readStoredTrainingTimeframe(botTf);
+    return preferredTrainingTimeframe(strat, botTf);
   });
   const [advanced, setAdvanced] = useState(() => {
     const strat = isMlStrategy(botStrategy) ? botStrategy : 'ML_SIGNAL_BOOST';
     const win = readStoredTrainingWindow();
     const tf = String(botTimeframe || '1m').toLowerCase();
     const botTf = tf === 'tick' ? '1m' : (tf || '1m');
-    const timeframe = readStoredTrainingTimeframe(botTf);
+    const timeframe = preferredTrainingTimeframe(strat, botTf);
     return syncAdvancedForWindow(
       defaultAdvancedKnobs(strat, 'train'),
       strat,
@@ -106,6 +108,8 @@ export default function useMlLabState() {
   const [cancellingJob, setCancellingJob] = useState(false);
   const [queueTelemetry, setQueueTelemetry] = useState({ active: 0, queued: 0 });
   const [trainRuns, setTrainRuns] = useState([]);
+  // When set ({ batchId }), Recent runs filters to that batch's job ids.
+  const [runsBatchFilter, setRunsBatchFilter] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const panelScrollRef = useRef(null);
@@ -213,12 +217,22 @@ export default function useMlLabState() {
       return;
     }
     try {
-      const runs = await fetchMlTrainRuns(activeSymbol, strategy, trainingTimeframe);
+      // Batch filter spans strategies — bypass strategy/timeframe narrowing.
+      const runs = runsBatchFilter?.batchId
+        ? await fetchMlTrainRuns(activeSymbol, null, null, { batchId: runsBatchFilter.batchId })
+        : await fetchMlTrainRuns(activeSymbol, strategy, trainingTimeframe);
       setTrainRuns(runs);
     } catch (err) {
       if (!isAbortError(err)) setTrainRuns([]);
     }
-  }, [activeSymbol, strategy, trainingTimeframe]);
+  }, [activeSymbol, strategy, trainingTimeframe, runsBatchFilter]);
+
+  // Batch filters are symbol-scoped — switching symbol would only show an
+  // empty table, so the Lab symbol setter drops the filter alongside.
+  const setLabActiveSymbol = useCallback((sym) => {
+    setRunsBatchFilter(null);
+    setActiveSymbol(sym);
+  }, [setActiveSymbol]);
 
   const fetchStatus = useCallback(async ({ quiet = false } = {}) => {
     if (!activeSymbol || !strategy) return;
@@ -480,7 +494,7 @@ export default function useMlLabState() {
     activeSymbol,
     symbolsList,
     symbolOptions,
-    setActiveSymbol,
+    setActiveSymbol: setLabActiveSymbol,
     botStrategy,
     botTimeframe,
     mlSession,
@@ -501,6 +515,8 @@ export default function useMlLabState() {
     setRetrainPending,
     retrainHistory,
     trainRuns,
+    runsBatchFilter,
+    setRunsBatchFilter,
     queueTelemetry,
     loading,
     refreshing,

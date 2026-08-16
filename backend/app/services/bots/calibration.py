@@ -52,10 +52,12 @@ def wilson_lower_bound(wins: int, n: int, z: float = 1.96) -> float:
 
 
 def score_bucket(score: int | float | None) -> str:
+    if score is None:
+        return "unknown"
     try:
-        val = abs(int(score or 0))
+        val = abs(int(score))
     except (TypeError, ValueError):
-        return "0"
+        return "unknown"
     if val >= 4:
         return "4+"
     if val >= 3:
@@ -66,8 +68,10 @@ def score_bucket(score: int | float | None) -> str:
 
 
 def confidence_bucket(confidence: float | None) -> str:
+    if confidence is None:
+        return "unknown"
     try:
-        c = float(confidence or 0)
+        c = float(confidence)
     except (TypeError, ValueError):
         return "unknown"
     if c >= 0.75:
@@ -77,6 +81,16 @@ def confidence_bucket(confidence: float | None) -> str:
     if c >= 0.55:
         return "0.55-0.65"
     return "<0.55"
+
+
+def _norm_regime(val: Any) -> str:
+    text = str(val or "").strip().lower()
+    return text if text else "unknown"
+
+
+def _norm_selected_strategy(val: Any) -> str:
+    text = str(val or "").strip().upper()
+    return text if text else "unknown"
 
 
 @dataclass
@@ -96,6 +110,8 @@ class ClosedTrade:
     exit_id: int | None = None
     entry_ts: str | None = None
     exit_ts: str | None = None
+    regime: str | None = None
+    selected_strategy: str | None = None
 
     def bucket_key(self) -> tuple:
         return (
@@ -103,6 +119,8 @@ class ClosedTrade:
             self.timeframe,
             self.side,
             self.atr_regime or "unknown",
+            _norm_regime(self.regime),
+            _norm_selected_strategy(self.selected_strategy),
             score_bucket(self.score),
             confidence_bucket(self.confidence),
         )
@@ -136,6 +154,8 @@ def _context_from_entry(entry: dict, timeframe: str) -> dict[str, Any]:
         "atr_regime": risk.get("atr_regime"),
         "trend_score": _sub_score(snap, "trend"),
         "momentum_score": _sub_score(snap, "momentum"),
+        "regime": (snap or {}).get("regime"),
+        "selected_strategy": (snap or {}).get("selected_strategy"),
     }
 
 
@@ -189,6 +209,8 @@ def pair_closed_trades(
                 exit_id=row.get("id"),
                 entry_ts=entry.get("timestamp"),
                 exit_ts=row.get("timestamp"),
+                regime=ctx.get("regime"),
+                selected_strategy=ctx.get("selected_strategy"),
             )
         )
     return closed
@@ -213,12 +235,14 @@ def _bucket_stats(trades: list[ClosedTrade], key_fn) -> list[dict[str, Any]]:
         expectancy = win_rate * avg_win + loss_rate * avg_loss
 
         if isinstance(key, tuple):
-            symbol, timeframe, side, atr_regime, score_b, conf_b = key
+            symbol, timeframe, side, atr_regime, regime, selected_strategy, score_b, conf_b = key
             label = {
                 "symbol": symbol,
                 "timeframe": timeframe,
                 "side": side,
                 "atr_regime": atr_regime,
+                "regime": regime,
+                "selected_strategy": selected_strategy,
                 "score_bucket": score_b,
                 "confidence_bucket": conf_b,
             }
@@ -412,7 +436,9 @@ def get_calibration(
     closed = pair_closed_trades(trades, bot_timeframes=tf_map)
 
     with_context = [t for t in closed if t.score is not None or t.confidence is not None]
-    all_buckets = _bucket_stats(with_context or closed, lambda t: t.bucket_key())
+    # Never fall back to snapshot-less trades — missing score/confidence used
+    # to be coerced to 0 / <0.55 and spawned fake min_score / min_confidence hints.
+    all_buckets = _bucket_stats(with_context, lambda t: t.bucket_key())
     symbol_buckets = _bucket_stats(closed, lambda t: t.symbol)
     filtered = [b for b in all_buckets if b.get("sample_size", 0) >= min_samples]
 
@@ -861,11 +887,15 @@ def setup_bucket_key(
     """Bucket key for a prospective entry (matches ClosedTrade.bucket_key)."""
     sub = insight.get("sub_reports") or {}
     atr_regime = (sub.get("risk") or {}).get("atr_regime") or "unknown"
+    regime = _norm_regime(insight.get("regime") or insight.get("observed_regime"))
+    selected_strategy = _norm_selected_strategy(insight.get("selected_strategy"))
     return (
         str(symbol or "").upper(),
         str(timeframe or "1m"),
         str(side or "BUY").upper(),
         atr_regime,
+        regime,
+        selected_strategy,
         score_bucket(insight.get("score")),
         confidence_bucket(insight.get("confidence")),
     )

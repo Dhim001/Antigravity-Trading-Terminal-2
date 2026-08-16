@@ -680,6 +680,21 @@ def evaluate_deploy_gate(
                         ok=True,
                         message=f"Model artifact pinned: {(run_config or {}).get('model_artifact')}",
                     ))
+                elif str(deploy_strategy).upper() == "RL_PPO_AGENT":
+                    checks.append(_check(
+                        check_id="ml_model_version",
+                        level="block",
+                        ok=False,
+                        message="RL deploy requires a pinned model_version",
+                        detail="Retrain and pin the snapshot version_id before paper deploy.",
+                    ))
+
+            if str(deploy_strategy).upper() == "RL_PPO_AGENT":
+                checks.extend(_rl_payoff_deploy_checks(
+                    scoped if "scoped" in locals() else results,
+                    run_config or {},
+                    metrics,
+                ))
     except ImportError:
         pass  # ML modules not installed
 
@@ -692,6 +707,102 @@ def evaluate_deploy_gate(
         stage = "oos_validated" if stage == "ready" else stage
 
     return _finalize(checks, workflow_stage=stage, metrics=metrics)
+
+
+def _rl_payoff_deploy_checks(
+    scoped: dict | None,
+    run_config: dict,
+    metrics: dict,
+) -> list[dict[str, Any]]:
+    """Costed WF + holdout + avg win ≥ avg loss and PF > 1.3; paper first."""
+    from app.services.bots.rl_risk import (
+        MIN_PROFIT_FACTOR,
+        costs_are_applied,
+        payoff_passes,
+    )
+
+    checks: list[dict[str, Any]] = []
+    scoped = scoped or {}
+    wf = scoped.get("walk_forward") or {}
+    holdout = scoped.get("final_holdout") or wf.get("final_holdout")
+    agg = wf.get("aggregate") if isinstance(wf.get("aggregate"), dict) else {}
+    summary = scoped.get("summary") or {}
+
+    if not wf:
+        checks.append(_check(
+            check_id="rl_walk_forward",
+            level="block",
+            ok=False,
+            message="RL redeploy requires a costed walk-forward",
+            detail="Run Model Training → Validate (WF) on 5m (or repaired 1m).",
+        ))
+    if not holdout or holdout.get("skipped"):
+        checks.append(_check(
+            check_id="rl_holdout",
+            level="block",
+            ok=False,
+            message="RL redeploy requires a reserved holdout",
+            detail="Walk-forward must include a final holdout segment.",
+        ))
+
+    if not costs_are_applied(run_config) and not costs_are_applied(summary):
+        meta_cfg = (scoped.get("meta") or {}).get("config") or {}
+        if not costs_are_applied(meta_cfg):
+            checks.append(_check(
+                check_id="rl_costs",
+                level="block",
+                ok=False,
+                message="RL validation is costless (fee_bps=0, slippage_bps=0)",
+                detail="Retrain / WF with real fees before paper deploy.",
+            ))
+        else:
+            checks.append(_check(
+                check_id="rl_costs",
+                level="pass",
+                ok=True,
+                message="Costed validation (fees/slippage applied)",
+            ))
+    else:
+        checks.append(_check(
+            check_id="rl_costs",
+            level="pass",
+            ok=True,
+            message="Costed validation (fees/slippage applied)",
+        ))
+
+    ho = holdout if isinstance(holdout, dict) else {}
+    avg_win = agg.get("mean_oos_avg_win") or ho.get("avg_win") or summary.get("avg_win")
+    avg_loss = agg.get("mean_oos_avg_loss") or ho.get("avg_loss") or summary.get("avg_loss")
+    pf = (
+        agg.get("mean_oos_profit_factor")
+        or ho.get("profit_factor")
+        or summary.get("profit_factor")
+    )
+    ok, msg = payoff_passes(avg_win=avg_win, avg_loss=avg_loss, profit_factor=pf)
+    metrics["rl_avg_win"] = avg_win
+    metrics["rl_avg_loss"] = avg_loss
+    metrics["rl_profit_factor"] = pf
+    checks.append(_check(
+        check_id="rl_payoff",
+        level="block" if not ok else "pass",
+        ok=ok,
+        message=(
+            f"Costed payoff passed ({msg})"
+            if ok
+            else f"Costed payoff failed — {msg} (need avg win ≥ avg loss and PF > {MIN_PROFIT_FACTOR})"
+        ),
+    ))
+
+    paper_first = run_config.get("paper_first", True)
+    live_ok = bool(run_config.get("live_ok") or run_config.get("allow_live_start"))
+    if paper_first and not live_ok:
+        checks.append(_check(
+            check_id="rl_paper_first",
+            level="pass",
+            ok=True,
+            message="Paper first — do not enable live capital until paper PF holds",
+        ))
+    return checks
 
 
 def _finalize(

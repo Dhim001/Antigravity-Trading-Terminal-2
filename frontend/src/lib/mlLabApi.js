@@ -72,14 +72,17 @@ export async function fetchMlQueueTelemetry() {
   };
 }
 
-export async function fetchMlTrainRuns(symbol, strategy, timeframe) {
+export async function fetchMlTrainRuns(symbol, strategy, timeframe, { batchId } = {}) {
   if (!symbol) return [];
+  // Batches span strategies and can exceed the default page size — when a
+  // batch filter is active, skip strategy/timeframe narrowing and raise the cap.
   const qs = new URLSearchParams({
     symbol,
-    limit: '15',
-    timeframe,
+    limit: batchId ? '100' : '15',
   });
+  if (timeframe) qs.set('timeframe', timeframe);
   if (strategy) qs.set('strategy', strategy);
+  if (batchId) qs.set('batch_id', batchId);
   const body = await apiRequest(`/api/v1/ml/runs?${qs.toString()}`);
   return Array.isArray(body?.runs) ? body.runs : [];
 }
@@ -132,6 +135,53 @@ export async function updateMlVersion(params) {
 
 export async function cancelMlJob(jobId) {
   return apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  });
+}
+
+/**
+ * Submit a durable server-side batch of Lab train jobs (Phase 2 API).
+ * Older backends 404 here — callers fall back to the local queue runner.
+ *
+ * @param {object} params
+ * @param {string} params.symbol
+ * @param {Array<{ strategy: string, config?: object, validate_after?: boolean }>} params.items
+ * @param {number} [params.concurrency]
+ * @param {boolean} [params.fail_fast]
+ * @param {string} [params.idempotency_key]
+ * @param {'fifo'|'cost_asc'|'cost_desc'} [params.schedule] Phase 4 ordering (default cost_asc)
+ */
+export async function submitMlBatchTrain({ symbol, items, concurrency = 1, fail_fast = false, idempotency_key, schedule } = {}) {
+  return apiRequest('/api/v1/ml/batch-train', {
+    method: 'POST',
+    body: {
+      symbol,
+      items,
+      concurrency,
+      fail_fast,
+      ...(idempotency_key ? { idempotency_key } : {}),
+      ...(schedule ? { schedule } : {}),
+    },
+    timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
+  });
+}
+
+export async function fetchMlBatch(batchId) {
+  return apiRequest(`/api/v1/ml/batch-train/${encodeURIComponent(batchId)}`, {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+}
+
+export async function cancelMlBatch(batchId) {
+  return apiRequest(`/api/v1/ml/batch-train/${encodeURIComponent(batchId)}/cancel`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  });
+}
+
+export async function retryMlBatch(batchId) {
+  return apiRequest(`/api/v1/ml/batch-train/${encodeURIComponent(batchId)}/retry`, {
     method: 'POST',
     timeoutMs: 30_000,
   });

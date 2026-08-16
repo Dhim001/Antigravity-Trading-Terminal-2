@@ -774,10 +774,12 @@ class SimulatedOMSService(BaseOMSService):
                 stop_loss_percent is not None
                 or take_profit_percent is not None
                 or take_profit_price is not None
+                or stop_loss_price is not None
             ):
                 risk = {
                     "stop_loss_percent": stop_loss_percent,
                     "take_profit_percent": take_profit_percent,
+                    "stop_loss_price": stop_loss_price,
                     "take_profit_price": take_profit_price,
                 }
             return (bot_id, symbol, side, quantity, price, risk)

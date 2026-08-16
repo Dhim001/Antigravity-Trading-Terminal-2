@@ -122,6 +122,64 @@ describe('backtestResultsMatchTarget', () => {
   });
 });
 
+describe('RL payoff deploy gate', () => {
+  it('blocks inverted expectancy without costs', () => {
+    const gate = evaluateDeployGate({
+      results: {
+        run_id: 'rl-1',
+        meta: { symbol: 'ADAUSDT', strategy: 'RL_PPO_AGENT', config: { fee_bps: 0, slippage_bps: 0 } },
+        summary: { avg_win: 6, avg_loss: -27, profit_factor: 0.11 },
+        walk_forward: {
+          aggregate: {
+            mean_oos_avg_win: 6,
+            mean_oos_avg_loss: -27,
+            mean_oos_profit_factor: 0.11,
+          },
+          final_holdout: { total_pnl: 10, trade_count: 4, passed: true },
+        },
+      },
+      symbol: 'ADAUSDT',
+      strategy: 'RL_PPO_AGENT',
+      config: { direction_mode: 'BOTH', fee_bps: 0, slippage_bps: 0 },
+    });
+    expect(gate.blocking).toBe(true);
+    expect(gate.checks.some((c) => c.id === 'rl_payoff' && !c.ok)).toBe(true);
+    expect(gate.checks.some((c) => c.id === 'rl_costs' && !c.ok)).toBe(true);
+  });
+
+  it('passes costed payoff and stamps paper-first payload', () => {
+    const gate = evaluateDeployGate({
+      results: {
+        run_id: 'rl-2',
+        meta: {
+          symbol: 'ADAUSDT',
+          strategy: 'RL_PPO_AGENT',
+          config: { fee_bps: 10, slippage_bps: 5, model_version: 'v1' },
+        },
+        summary: { avg_win: 12, avg_loss: -8, profit_factor: 1.5, fee_bps: 10 },
+        walk_forward: {
+          aggregate: {
+            mean_oos_avg_win: 12,
+            mean_oos_avg_loss: -8,
+            mean_oos_profit_factor: 1.5,
+          },
+          final_holdout: { total_pnl: 20, trade_count: 5, passed: true, avg_win: 12, avg_loss: -8, profit_factor: 1.5 },
+        },
+      },
+      symbol: 'ADAUSDT',
+      strategy: 'RL_PPO_AGENT',
+      config: {
+        direction_mode: 'BOTH',
+        fee_bps: 10,
+        slippage_bps: 5,
+        model_version: 'v1',
+      },
+    });
+    expect(gate.checks.some((c) => c.id === 'rl_payoff' && c.ok)).toBe(true);
+    expect(gate.checks.some((c) => c.id === 'rl_paper_first')).toBe(true);
+  });
+});
+
 describe('buildDeployPayload', () => {
   it('does not inherit stale config.backtest_run_id', () => {
     const payload = buildDeployPayload({
@@ -149,5 +207,26 @@ describe('buildDeployPayload', () => {
       days: '14',
     });
     expect(payload.config.backtest_run_id).toBe('run-1');
+  });
+
+  it('stamps RL ATR risk instead of 2% trail', () => {
+    const payload = buildDeployPayload({
+      strategy: 'RL_PPO_AGENT',
+      symbol: 'ADAUSDT',
+      timeframe: '5m',
+      allocation: 3000,
+      executionMode: 'BAR_CLOSE',
+      config: { min_confidence: 0.28, model_version: 'v1' },
+      results: {
+        run_id: 'rl-3',
+        meta: { symbol: 'ADAUSDT', strategy: 'RL_PPO_AGENT' },
+      },
+      days: '14',
+    });
+    expect(payload.config.trailing_stop_percent).toBeUndefined();
+    expect(payload.config.risk_per_trade_usd).toBe(20);
+    expect(payload.config.atr_stop_mult).toBe(1.5);
+    expect(payload.config.paper_first).toBe(true);
+    expect(payload.config.tp_mode).toBe('strategy');
   });
 });

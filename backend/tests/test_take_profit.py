@@ -83,6 +83,9 @@ def test_merge_tp_config_ml_and_agent_defaults():
     assert agent["min_confidence"] == 0.6
     mm = merge_tp_config("MARKET_MAKING", {})
     assert mm["tp_mode"] == "none"
+    rl = merge_tp_config("RL_PPO_AGENT", {})
+    assert rl["tp_mode"] == "strategy"
+    assert "take_profit_percent" not in rl
 
 
 def test_backtest_closes_on_take_profit_percent():

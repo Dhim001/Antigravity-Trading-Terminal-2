@@ -92,7 +92,7 @@ def default_search_space(strategy: str) -> dict[str, Any]:
         return {
             "learning_rate": {"type": "float", "low": 1e-4, "high": 1e-3, "log": True},
             "clip_epsilon": {"type": "float", "low": 0.1, "high": 0.3},
-            "ent_coef": {"type": "float", "low": 0.001, "high": 0.05, "log": True},
+            "ent_coef": {"type": "float", "low": 0.01, "high": 0.05, "log": True},
             "n_steps": {"type": "categorical", "choices": [512, 1024, 2048, 4096]},
             "hidden_dim": {"type": "categorical", "choices": [64, 128, 256]},
             "max_episode_steps": {"type": "categorical", "choices": [512, 1024, 2048, 4096]},

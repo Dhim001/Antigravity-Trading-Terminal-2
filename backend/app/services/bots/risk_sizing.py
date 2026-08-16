@@ -13,6 +13,7 @@ def parse_risk_sizing_config(cfg: dict | None) -> dict:
 
     - account_snapshot: fixed risk_base from config (matches live get_account_balance at deploy/run time)
     - simulated_equity: 1% of running backtest equity at each entry
+    - risk_per_trade_usd: optional dollar-risk override (RL clamps to $15–25)
     """
     config = cfg or {}
     mode = str(config.get("risk_base_mode") or "account_snapshot").lower()
@@ -30,7 +31,18 @@ def parse_risk_sizing_config(cfg: dict | None) -> dict:
     else:
         snapshot = _DEFAULT_RISK_BASE
 
-    return {"mode": mode, "snapshot": snapshot}
+    dollar = config.get("risk_per_trade_usd")
+    if dollar is None:
+        dollar = config.get("max_risk_usd")
+    if dollar is not None:
+        try:
+            dollar = float(dollar)
+        except (TypeError, ValueError):
+            dollar = None
+        if dollar is not None and dollar <= 0:
+            dollar = None
+
+    return {"mode": mode, "snapshot": snapshot, "risk_per_trade_usd": dollar}
 
 
 def enrich_backtest_risk_config(config: dict | None, account_balance: float | None) -> dict:
@@ -41,11 +53,21 @@ def enrich_backtest_risk_config(config: dict | None, account_balance: float | No
             cfg["risk_base"] = float(account_balance)
     if not cfg.get("risk_base_mode"):
         cfg["risk_base_mode"] = "account_snapshot"
+    if str(cfg.get("strategy") or "").upper() == "RL_PPO_AGENT" and cfg.get("risk_per_trade_usd") is None:
+        from app.services.bots.rl_risk import resolve_rl_risk_usd
+
+        cfg["risk_per_trade_usd"] = resolve_rl_risk_usd(cfg)
     return cfg
 
 
 def entry_risk_amount(risk_cfg: dict, simulated_equity: float) -> float:
-    """Dollar risk budget for one entry (1% of risk base)."""
+    """Dollar risk budget for one entry (1% of risk base, or explicit USD)."""
+    dollar = risk_cfg.get("risk_per_trade_usd")
+    if dollar is not None:
+        try:
+            return max(0.0, float(dollar))
+        except (TypeError, ValueError):
+            pass
     if risk_cfg.get("mode") == "simulated_equity":
         base = max(float(simulated_equity), 0.0)
     else:

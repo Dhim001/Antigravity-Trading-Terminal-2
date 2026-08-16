@@ -46,6 +46,70 @@ def _ensure_sim_market_state_table(cursor) -> None:
     """)
 
 
+def ensure_ml_batch_tables(cursor=None) -> None:
+    """Create Phase-2 ML batch-training tables (idempotent).
+
+    Accepts an existing cursor from ``init_db`` or opens its own connection so
+    the batch runner can lazily guarantee the schema on first use.
+    """
+    own = cursor is None
+    conn = get_connection() if own else None
+    cur = conn.cursor() if own else cursor
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ml_batches (
+                id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                total INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                cancelled INTEGER NOT NULL DEFAULT 0,
+                fail_fast INTEGER NOT NULL DEFAULT 0,
+                concurrency INTEGER NOT NULL DEFAULT 1,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_batches_status ON ml_batches (status, created_at DESC)"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_batches_idem "
+            "ON ml_batches (idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL AND TRIM(idempotency_key) != ''"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ml_batch_items (
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0,
+                strategy TEXT NOT NULL,
+                config_json TEXT,
+                validate_after INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                job_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_batch_items_batch ON ml_batch_items (batch_id, seq)"
+        )
+        # Phase 4 — intelligent scheduling: cost-ordered create + transient retry.
+        _safe_alter(cur, "ALTER TABLE ml_batches ADD COLUMN schedule TEXT NOT NULL DEFAULT 'cost_asc'")
+        _safe_alter(cur, "ALTER TABLE ml_batch_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+        _safe_alter(cur, "ALTER TABLE ml_batch_items ADD COLUMN last_error TEXT")
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
 def _ensure_performance_indexes(cursor) -> None:
     """Idempotent indexes for hot read/write paths (safe on existing DBs)."""
     indexes = [
@@ -474,6 +538,8 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_ml_jobs_status ON ml_jobs (status, created_at DESC)"
     )
     _safe_alter(cursor, "ALTER TABLE ml_jobs ADD COLUMN checkpoint_json TEXT")
+
+    ensure_ml_batch_tables(cursor)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ml_train_runs (

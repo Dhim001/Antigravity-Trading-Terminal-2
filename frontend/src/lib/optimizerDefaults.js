@@ -21,7 +21,7 @@ export const STRATEGY_SWEEP_DEFAULTS = {
   REGIME_STRATEGY_AGENT: ['trailing_stop_percent', 'take_profit_percent'],
   ML_SIGNAL_BOOST: ['min_confidence', 'trailing_stop_percent', 'take_profit_percent'],
   LSTM_DIRECTION: ['min_confidence', 'trailing_stop_percent'],
-  RL_PPO_AGENT: ['gamma', 'min_confidence', 'trailing_stop_percent'],
+  RL_PPO_AGENT: ['gamma', 'min_confidence', 'risk_per_trade_usd', 'atr_stop_mult'],
   TCN_MULTI_HORIZON: ['min_return', 'min_confidence', 'trailing_stop_percent'],
   VAE_REGIME_DETECTOR: ['anomaly_threshold', 'suppress_threshold', 'trailing_stop_percent'],
   TRANSFORMER_SIGNAL: ['min_confidence', 'trailing_stop_percent'],

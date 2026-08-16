@@ -1,0 +1,459 @@
+"""Tests for the durable ML batch training runner (ML Lab Phase 2)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from app.database import ensure_ml_batch_tables, init_db
+from app.db.connection import get_connection
+from app.services.bots import ml_batch_runner as mbr
+from app.services.bots.ml_job_store import reset_ml_job_store_for_tests
+from app.services.bots.ml_train_runs import list_ml_train_runs, record_ml_train_run_from_job
+
+
+def _items(n: int, *, validate_after: bool = False) -> list[dict]:
+    return [
+        {
+            "strategy": "ML_SIGNAL_BOOST",
+            "config": {"timeframe": "5m", "seq": i},
+            "validate_after": validate_after,
+        }
+        for i in range(n)
+    ]
+
+
+class _BatchTestBase(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        ensure_ml_batch_tables()
+        reset_ml_job_store_for_tests()
+        mbr.reset_ml_batch_runner_for_tests()
+        self._wipe()
+
+    def tearDown(self):
+        self._wipe()
+        mbr.reset_ml_batch_runner_for_tests()
+
+    @staticmethod
+    def _wipe():
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM ml_batch_items")
+            cur.execute("DELETE FROM ml_batches")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _create(self, n=3, **kwargs):
+        batch, created = mbr.create_batch("BTCUSDT", _items(n), **kwargs)
+        assert created
+        return batch
+
+
+class CreateBatchTests(_BatchTestBase):
+    async def test_create_batch_persists_items(self):
+        batch = self._create(2, fail_fast=True, concurrency=2, idempotency_key="k-1")
+        self.assertEqual(batch["status"], "queued")
+        self.assertEqual(batch["total"], 2)
+        self.assertTrue(batch["fail_fast"])
+        self.assertEqual(batch["concurrency"], 2)
+        self.assertEqual(len(batch["items"]), 2)
+        first = batch["items"][0]
+        self.assertEqual(first["status"], "pending")
+        self.assertEqual(first["strategy"], "ML_SIGNAL_BOOST")
+        self.assertEqual(first["config"].get("seq"), 0)
+
+    async def test_create_batch_idempotency_returns_existing(self):
+        batch, created = mbr.create_batch(
+            "BTCUSDT", _items(2), idempotency_key="dup-key",
+        )
+        self.assertTrue(created)
+        again, created_again = mbr.create_batch(
+            "BTCUSDT", _items(5), idempotency_key="dup-key",
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(again["batch_id"], batch["batch_id"])
+        self.assertEqual(again["total"], 2)
+
+        other, created_other = mbr.create_batch(
+            "BTCUSDT", _items(1), idempotency_key="other-key",
+        )
+        self.assertTrue(created_other)
+        self.assertNotEqual(other["batch_id"], batch["batch_id"])
+
+
+class RunBatchTests(_BatchTestBase):
+    async def test_serial_execution_and_status_transitions(self):
+        batch = self._create(3)
+        bid = batch["batch_id"]
+        order = []
+        mid_status = []
+
+        async def exec_ok(b, item):
+            order.append(item["seq"])
+            mid_status.append(mbr.get_batch(bid)["status"])
+            return {"ok": True}
+
+        with patch(
+            "app.services.bots.ml_train_executor.resolve_ml_train_max_workers",
+            return_value=1,
+        ):
+            final = await mbr.run_batch(bid, item_executor=exec_ok)
+
+        self.assertEqual(order, [0, 1, 2])
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(final["completed"], 3)
+        self.assertEqual(final["failed"], 0)
+        self.assertTrue(all(s == "running" for s in mid_status))
+        self.assertTrue(
+            all(i["status"] == "done" for i in final["items"]),
+            msg=str([(i["seq"], i["status"]) for i in final["items"]]),
+        )
+
+    async def test_failure_isolation_without_fail_fast(self):
+        batch = self._create(3, fail_fast=False)
+        bid = batch["batch_id"]
+
+        async def exec_flaky(b, item):
+            if item["seq"] == 1:
+                return {"ok": False, "error": "boom"}
+            return {"ok": True}
+
+        final = await mbr.run_batch(bid, item_executor=exec_flaky)
+        self.assertEqual(final["completed"], 2)
+        self.assertEqual(final["failed"], 1)
+        self.assertEqual(final["status"], "done")
+        by_seq = {i["seq"]: i for i in final["items"]}
+        self.assertEqual(by_seq[1]["status"], "error")
+        self.assertEqual(by_seq[1]["error"], "boom")
+        self.assertEqual(by_seq[0]["status"], "done")
+        self.assertEqual(by_seq[2]["status"], "done")
+
+    async def test_fail_fast_skips_remaining(self):
+        batch = self._create(3, fail_fast=True)
+        bid = batch["batch_id"]
+        calls = []
+
+        async def exec_fail_first(b, item):
+            calls.append(item["seq"])
+            if item["seq"] == 0:
+                return {"ok": False, "error": "first failed"}
+            return {"ok": True}
+
+        final = await mbr.run_batch(bid, item_executor=exec_fail_first)
+        self.assertEqual(calls, [0])
+        self.assertEqual(final["status"], "failed")
+        self.assertEqual(final["failed"], 1)
+        self.assertEqual(final["cancelled"], 2)
+        by_seq = {i["seq"]: i for i in final["items"]}
+        self.assertEqual(by_seq[0]["status"], "error")
+        self.assertEqual(by_seq[1]["status"], "skipped")
+        self.assertEqual(by_seq[2]["status"], "skipped")
+
+    async def test_retry_requeues_only_failed_items(self):
+        batch = self._create(2, fail_fast=False)
+        bid = batch["batch_id"]
+
+        async def exec_a_fails(b, item):
+            if item["seq"] == 0:
+                return {"ok": False, "error": "transient", "job_id": "job-a1"}
+            return {"ok": True, "job_id": "job-b1"}
+
+        first = await mbr.run_batch(bid, item_executor=exec_a_fails)
+        self.assertEqual(first["failed"], 1)
+        job_b1 = {i["seq"]: i["job_id"] for i in first["items"]}[1]
+
+        retried = mbr.retry_batch(bid)
+        self.assertEqual(retried["requeued"], 1)
+        self.assertEqual(retried["status"], "queued")
+        by_seq = {i["seq"]: i for i in retried["items"]}
+        self.assertEqual(by_seq[0]["status"], "pending")
+        self.assertIsNone(by_seq[0]["job_id"])
+        self.assertIsNone(by_seq[0]["error"])
+        self.assertEqual(by_seq[1]["status"], "done")
+
+        ran = []
+
+        async def exec_ok(b, item):
+            ran.append(item["seq"])
+            return {"ok": True, "job_id": "job-a2"}
+
+        final = await mbr.run_batch(bid, item_executor=exec_ok)
+        self.assertEqual(ran, [0])
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(final["completed"], 2)
+        final_by_seq = {i["seq"]: i for i in final["items"]}
+        self.assertEqual(final_by_seq[1]["job_id"], job_b1)
+
+    async def test_retry_on_terminal_batch_without_failures_is_noop(self):
+        batch = self._create(1)
+
+        async def exec_ok(b, item):
+            return {"ok": True}
+
+        await mbr.run_batch(batch["batch_id"], item_executor=exec_ok)
+        retried = mbr.retry_batch(batch["batch_id"])
+        self.assertEqual(retried["requeued"], 0)
+        self.assertEqual(retried["status"], "done")
+
+
+class CancelBatchTests(_BatchTestBase):
+    async def test_cancel_cancels_active_job_and_skips_remaining(self):
+        batch = self._create(3)
+        bid = batch["batch_id"]
+        started = asyncio.Event()
+        release = asyncio.Event()
+        cancelled_jobs = []
+        executed = []
+
+        async def exec_block(b, item):
+            executed.append(item["seq"])
+            mbr.set_item_job_id(item["item_id"], "job-1")
+            started.set()
+            await release.wait()
+            return {"ok": False, "cancelled": True, "error": "cancelled", "job_id": "job-1"}
+
+        def fake_cancel(job_id):
+            cancelled_jobs.append(job_id)
+            release.set()
+            return {"ok": True, "cancelled": True}
+
+        runner = asyncio.create_task(mbr.run_batch(bid, item_executor=exec_block))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            out = mbr.cancel_batch(bid, cancel_job=fake_cancel)
+            self.assertIsNotNone(out)
+            final = await asyncio.wait_for(runner, timeout=5)
+        finally:
+            release.set()
+            if not runner.done():
+                runner.cancel()
+
+        self.assertEqual(cancelled_jobs, ["job-1"])
+        self.assertEqual(executed, [0])
+        self.assertEqual(final["status"], "cancelled")
+        self.assertEqual(final["cancelled"], 3)
+        by_seq = {i["seq"]: i for i in final["items"]}
+        self.assertEqual(by_seq[0]["status"], "cancelled")
+        self.assertEqual(by_seq[1]["status"], "skipped")
+        self.assertEqual(by_seq[2]["status"], "skipped")
+
+    async def test_cancel_terminal_batch_is_noop(self):
+        batch = self._create(1)
+
+        async def exec_ok(b, item):
+            return {"ok": True}
+
+        await mbr.run_batch(batch["batch_id"], item_executor=exec_ok)
+        out = mbr.cancel_batch(batch["batch_id"], cancel_job=lambda j: {"ok": True})
+        self.assertEqual(out["status"], "done")
+        self.assertEqual(out["completed"], 1)
+
+    async def test_cancel_unknown_batch_returns_none(self):
+        self.assertIsNone(mbr.cancel_batch("nope"))
+
+
+class RecoveryTests(_BatchTestBase):
+    async def test_recovery_marks_interrupted_item_and_resumes_pending(self):
+        batch = self._create(2)
+        bid = batch["batch_id"]
+        claimed = mbr.claim_next_pending_item(bid)
+        self.assertIsNotNone(claimed)
+        mbr.set_item_job_id(claimed["item_id"], "job-x")
+        mbr._refresh_batch_status(bid)
+        self.assertEqual(mbr.get_batch(bid)["status"], "running")
+
+        resumed = mbr.recover_interrupted_batches()
+        self.assertIn(bid, resumed)
+        after = mbr.get_batch(bid)
+        self.assertEqual(after["status"], "queued")
+        by_seq = {i["seq"]: i for i in after["items"]}
+        self.assertEqual(by_seq[0]["status"], "error")
+        self.assertEqual(by_seq[0]["error"], "server restarted")
+        self.assertEqual(by_seq[1]["status"], "pending")
+
+        # Resumed batch completes remaining work.
+        async def exec_ok(b, item):
+            return {"ok": True}
+
+        final = await mbr.run_batch(bid, item_executor=exec_ok)
+        self.assertEqual(final["completed"], 1)
+        self.assertEqual(final["failed"], 1)
+        self.assertEqual(final["status"], "done")
+
+    async def test_recovery_terminal_when_no_pending_left(self):
+        batch = self._create(1)
+        bid = batch["batch_id"]
+        claimed = mbr.claim_next_pending_item(bid)
+        mbr._refresh_batch_status(bid)
+
+        resumed = mbr.recover_interrupted_batches()
+        self.assertNotIn(bid, resumed)
+        after = mbr.get_batch(bid)
+        self.assertEqual(after["status"], "failed")
+        self.assertEqual(after["items"][0]["error"], "server restarted")
+
+
+class ValidateAfterTests(_BatchTestBase):
+    @staticmethod
+    def _candles(n=450):
+        base = 1_700_000_000
+        return [
+            {"time": base + i * 300, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}
+            for i in range(n)
+        ]
+
+    async def _run_item(self, *, validate_ok: bool):
+        batch, created = mbr.create_batch("BTCUSDT", _items(1, validate_after=True))
+        assert created
+        item = batch["items"][0]
+        candles = self._candles()
+        with (
+            patch(
+                "app.api.http.app._fetch_training_candles",
+                new=AsyncMock(return_value=candles),
+            ),
+            patch(
+                "app.api.http.app._enrich_training_candles",
+                side_effect=lambda symbol, c, strategy, cfg: c,
+            ),
+            patch(
+                "app.services.bots.ml_train_executor.submit_train_job",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as train,
+            patch(
+                "app.api.http.app._fetch_validate_candles_enough",
+                new=AsyncMock(return_value=(candles, 3, len(candles))),
+            ),
+            patch(
+                "app.services.bots.ml_train_executor.submit_validate_job",
+                new=AsyncMock(
+                    return_value=(
+                        {"ok": True, "mean_accuracy": 0.57}
+                        if validate_ok
+                        else {"ok": False, "error": "overfit"}
+                    )
+                ),
+            ) as validate,
+        ):
+            out = await mbr.execute_batch_item(object(), batch, item)
+        return out, train, validate
+
+    async def test_validate_after_success_marks_validation(self):
+        out, train, validate = await self._run_item(validate_ok=True)
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["validation"]["mean_accuracy"], 0.57)
+        train.assert_awaited_once()
+        validate.assert_awaited_once()
+        # Pre-generated job id lets cancel find the in-flight job.
+        job_id = out.get("job_id")
+        self.assertTrue(job_id)
+        _, kwargs = train.await_args
+        self.assertEqual(kwargs.get("job_id"), job_id)
+
+    async def test_validate_after_failure_marks_item_error(self):
+        out, _, validate = await self._run_item(validate_ok=False)
+        validate.assert_awaited_once()
+        self.assertFalse(out["ok"])
+        self.assertIn("validate_after failed", out["error"])
+        self.assertIn("overfit", out["error"])
+
+
+class _FakeRunsRequest:
+    """Minimal stand-in for the Starlette request ml_list_runs_handler reads."""
+
+    def __init__(self, params: dict):
+        self.query_params = params
+
+
+class RunsBatchFilterTests(_BatchTestBase):
+    """GET /api/v1/ml/runs?batch_id=… filter (ML Lab Phase 3)."""
+
+    def setUp(self):
+        super().setUp()
+        init_db()  # guarantee ml_train_runs exists regardless of test order
+
+    @staticmethod
+    def _record_run(job_id: str, strategy: str = "ML_SIGNAL_BOOST", symbol: str = "TESTSYM_BATCH"):
+        return record_ml_train_run_from_job({
+            "job_id": job_id,
+            "kind": "train",
+            "strategy": strategy,
+            "symbol": symbol,
+            "status": "done",
+            "started_at": "2026-08-01T10:00:00Z",
+            "finished_at": "2026-08-01T10:01:00Z",
+            "result": {"ok": True},
+        })
+
+    def _batch_with_jobs(self, n: int = 2) -> dict:
+        batch = self._create(n)
+        for i, item in enumerate(batch["items"]):
+            mbr.set_item_job_id(item["item_id"], f"job-batch-{batch['batch_id'][:8]}-{i}")
+        return mbr.get_batch(batch["batch_id"])
+
+    async def test_runs_filter_by_batch_id(self):
+        batch = self._batch_with_jobs(2)
+        job_ids = [i["job_id"] for i in batch["items"]]
+        for jid in job_ids:
+            self.assertTrue(self._record_run(jid))
+        self.assertTrue(self._record_run("job-unrelated-batch-filter"))
+
+        runs = list_ml_train_runs(batch_id=batch["batch_id"], limit=10)
+        self.assertEqual(sorted(r["job_id"] for r in runs), sorted(job_ids))
+
+    async def test_runs_filter_unknown_batch_returns_empty(self):
+        self.assertTrue(self._record_run("job-unknown-batch"))
+        runs = list_ml_train_runs(batch_id="batch-does-not-exist", limit=10)
+        self.assertEqual(runs, [])
+
+    async def test_runs_filter_skips_items_without_job_id(self):
+        batch = self._create(2)  # pending items — job_id is NULL
+        runs = list_ml_train_runs(batch_id=batch["batch_id"], limit=10)
+        self.assertEqual(runs, [])
+
+    async def test_runs_batch_filter_composes_with_symbol_and_strategy(self):
+        batch = self._batch_with_jobs(1)
+        jid = batch["items"][0]["job_id"]
+        self.assertTrue(self._record_run(jid, strategy="LSTM_DIRECTION"))
+
+        runs = list_ml_train_runs(
+            symbol="TESTSYM_BATCH", strategy="LSTM_DIRECTION",
+            batch_id=batch["batch_id"], limit=10,
+        )
+        self.assertEqual([r["job_id"] for r in runs], [jid])
+
+        wrong_symbol = list_ml_train_runs(
+            symbol="NOSUCHSYM", batch_id=batch["batch_id"], limit=10,
+        )
+        self.assertEqual(wrong_symbol, [])
+        wrong_strategy = list_ml_train_runs(
+            strategy="TRANSFORMER_SIGNAL", batch_id=batch["batch_id"], limit=10,
+        )
+        self.assertEqual(wrong_strategy, [])
+
+    async def test_runs_handler_accepts_batch_id_query_param(self):
+        from app.api.http.app import ml_list_runs_handler
+
+        batch = self._batch_with_jobs(1)
+        jid = batch["items"][0]["job_id"]
+        self.assertTrue(self._record_run(jid))
+
+        resp = await ml_list_runs_handler(_FakeRunsRequest({"batch_id": batch["batch_id"]}))
+        payload = json.loads(resp.body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["runs"][0]["job_id"], jid)
+
+        empty = await ml_list_runs_handler(_FakeRunsRequest({"batch_id": "batch-gone"}))
+        empty_payload = json.loads(empty.body)
+        self.assertTrue(empty_payload["ok"])
+        self.assertEqual(empty_payload["count"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -258,4 +258,26 @@ class RegimeStrategyAgent(BaseStrategy):
         out.update(base_meta)
         if not out.get("signal"):
             out["signal"] = "NONE"
+
+        # Persist insight_snapshot so the manager can store it on the trade row.
+        # The child may already set one (e.g. CHART_AGENT); if not, build a compact
+        # snapshot from the regime-agent's own output so the calibration/meta-label
+        # pipeline has regime + child strategy context for training.
+        if not out.get("insight_snapshot"):
+            out["insight_snapshot"] = {
+                "signal": out.get("signal"),
+                "score": out.get("score"),
+                "confidence": out.get("confidence"),
+                "reasons": reasons[:5],
+                "sub_reports": out.get("sub_reports"),
+                "regime": base_meta["regime"],
+                "observed_regime": base_meta["observed_regime"],
+                "selected_strategy": base_meta["selected_strategy"],
+                "regime_streak": base_meta["regime_streak"],
+                "bars_since_switch": base_meta["bars_since_switch"],
+                "regime_switched": base_meta["regime_switched"],
+                "bar_time": df_row.get("time") if isinstance(df_row, dict) else None,
+                "timeframe": self._cfg.get("timeframe") or "1m",
+            }
+
         return out

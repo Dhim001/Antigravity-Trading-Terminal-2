@@ -238,8 +238,19 @@ def train_ppo_agent(
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
     from app.services.bots.ml_training_window import apply_champion_train_overrides
 
-    tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
+    from app.services.bots.rl_risk import (
+        MIN_ENT_COEF,
+        PREFERRED_TRAIN_TIMEFRAME,
+        clamp_ent_coef,
+        resolve_rl_costs,
+    )
+
+    raw_tf = cfg.get("timeframe") or raw_cfg.get("timeframe")
+    tf = normalize_model_timeframe(raw_tf or PREFERRED_TRAIN_TIMEFRAME)
     cfg["timeframe"] = tf
+    fee_bps, slip_bps = resolve_rl_costs(cfg)
+    cfg["fee_bps"] = fee_bps
+    cfg["slippage_bps"] = slip_bps
     cfg = apply_champion_train_overrides(cfg, raw_cfg)
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
     if cfg.get("champion_train"):
@@ -286,7 +297,8 @@ def train_ppo_agent(
     ))
     lr = float(cfg.get("learning_rate", 3e-4))
     vf_coef = float(cfg.get("vf_coef", 0.5))
-    ent_coef = float(cfg.get("ent_coef", 0.01))
+    ent_coef = clamp_ent_coef(cfg.get("ent_coef", MIN_ENT_COEF))
+    cfg["ent_coef"] = ent_coef
     max_grad_norm = float(cfg.get("max_grad_norm", 0.5))
     from app.services.bots.ml_torch_device import (
         device_info,
@@ -478,6 +490,22 @@ def train_ppo_agent(
         if episode_returns and math.isfinite(best_mean_return)
         else None
     )
+    if episode_count < 1:
+        return {
+            "ok": False,
+            "error": (
+                f"rejected train: episodes=0 after {total_steps} steps "
+                f"(need completed episodes; raise total_timesteps or lower max_episode_steps)"
+            ),
+            "symbol": symbol,
+            "timeframe": tf,
+            "metrics": {
+                "total_timesteps": total_steps,
+                "episodes": 0,
+                "ent_coef": ent_coef,
+            },
+        }
+
     metrics = {
         "total_timesteps": total_steps,
         "episodes": episode_count,
@@ -486,6 +514,9 @@ def train_ppo_agent(
         "mean_trades_per_episode": round(sum(episode_trades) / max(1, len(episode_trades)), 1) if episode_trades else 0,
         "last_10_returns": [round(r, 4) for r in episode_returns[-10:]],
         "hidden_dim": hidden_dim,
+        "ent_coef": ent_coef,
+        "fee_bps": fee_bps,
+        "slippage_bps": slip_bps,
         "train_device": train_device_meta.get("device"),
     }
 
@@ -545,9 +576,15 @@ def train_ppo_agent(
             "n_steps": n_steps,
             "hidden_dim": hidden_dim,
             "learning_rate": lr,
+            "ent_coef": ent_coef,
             "timeframe": tf,
+            "fee_bps": fee_bps,
+            "slippage_bps": slip_bps,
+            "atr_stop_mult": cfg.get("atr_stop_mult"),
+            "take_profit_r": cfg.get("take_profit_r"),
             "train_device": train_device_meta,
         },
+        "model_version": None,
         "train_device": train_device_meta,
     }
 
@@ -585,10 +622,18 @@ def train_ppo_agent(
             from app.services.bots.ml_model_artifacts import snapshot_current_version
             snap = snapshot_current_version(_model_dir(symbol, tf), strategy="RL_PPO_AGENT")
             if snap:
-                metadata["version_id"] = snap.get("version_id")
+                pinned = snap.get("version_id") or metadata.get("trained_at")
+                metadata["version_id"] = pinned
+                metadata["model_version"] = pinned
                 metadata["version_path"] = snap.get("path")
+                with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
+                    json.dump(metadata, fh, indent=2)
         except Exception:
             logger.exception("Failed to snapshot PPO version for %s", symbol)
+
+    if not metadata.get("model_version"):
+        metadata["model_version"] = metadata.get("trained_at")
+        metadata.setdefault("version_id", metadata["model_version"])
 
     logger.info(
         "PPO agent trained for %s @ %s (steps=%d, episodes=%d, mean_return=%.2f%%)",

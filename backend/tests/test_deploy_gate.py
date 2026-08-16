@@ -133,6 +133,82 @@ def test_split_raw_adjust_warns():
     assert any(c["id"] == "corp_split_adjust" for c in gate["checks"])
 
 
+def test_rl_payoff_gate_blocks_inverted_expectancy():
+    results = {
+        "walk_forward": {
+            "out_of_sample": {"total_pnl": 50.0, "trade_count": 8},
+            "aggregate": {
+                "stability_score": 0.8,
+                "fold_count": 2,
+                "mean_oos_avg_win": 6.0,
+                "mean_oos_avg_loss": -27.0,
+                "mean_oos_profit_factor": 0.11,
+            },
+            "final_holdout": {"total_pnl": 10.0, "trade_count": 4, "passed": True},
+        },
+        "summary": {"total_trades": 8, "avg_win": 6.0, "avg_loss": -27.0, "profit_factor": 0.11},
+        "meta": {"strategy": "RL_PPO_AGENT", "symbol": "ADAUSDT"},
+    }
+    gate = evaluate_deploy_gate(
+        results,
+        symbol="ADAUSDT",
+        run_config={
+            "strategy": "RL_PPO_AGENT",
+            "fee_bps": 10,
+            "slippage_bps": 5,
+            "model_version": "20260815T000000Z",
+        },
+        run_timeframe="5m",
+    )
+    assert any(c["id"] == "rl_payoff" and not c["ok"] for c in gate["checks"])
+    assert gate["blocking"] is True
+
+
+def test_rl_payoff_gate_passes_costed_holdout():
+    results = {
+        "walk_forward": {
+            "out_of_sample": {"total_pnl": 80.0, "trade_count": 10},
+            "aggregate": {
+                "stability_score": 0.8,
+                "fold_count": 2,
+                "mean_oos_avg_win": 12.0,
+                "mean_oos_avg_loss": -8.0,
+                "mean_oos_profit_factor": 1.5,
+            },
+            "final_holdout": {
+                "total_pnl": 20.0,
+                "trade_count": 5,
+                "passed": True,
+                "avg_win": 12.0,
+                "avg_loss": -8.0,
+                "profit_factor": 1.5,
+            },
+        },
+        "summary": {
+            "total_trades": 10,
+            "avg_win": 12.0,
+            "avg_loss": -8.0,
+            "profit_factor": 1.5,
+            "fee_bps": 10,
+        },
+        "meta": {"strategy": "RL_PPO_AGENT", "symbol": "ADAUSDT", "config": {"fee_bps": 10, "slippage_bps": 5}},
+    }
+    gate = evaluate_deploy_gate(
+        results,
+        symbol="ADAUSDT",
+        run_config={
+            "strategy": "RL_PPO_AGENT",
+            "fee_bps": 10,
+            "slippage_bps": 5,
+            "paper_first": True,
+            "model_version": "20260815T000000Z",
+        },
+        run_timeframe="5m",
+    )
+    assert any(c["id"] == "rl_payoff" and c["ok"] for c in gate["checks"])
+    assert any(c["id"] == "rl_paper_first" for c in gate["checks"])
+
+
 def test_enrich_deploy_config_persists_audit_fields():
     out = enrich_deploy_config(
         {"min_confidence": 0.6},

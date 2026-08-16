@@ -23,7 +23,7 @@ from app.services.bots.calibration import (
 
 logger = logging.getLogger(__name__)
 
-FEATURE_SCHEMA_VERSION = 1
+FEATURE_SCHEMA_VERSION = 2
 
 FEATURE_NAMES: tuple[str, ...] = (
     "score",
@@ -47,9 +47,20 @@ FEATURE_NAMES: tuple[str, ...] = (
     "hour_cos",
     "dow_sin",
     "dow_cos",
+    # Regime-agent context (Phase 3): one-hot regime + child strategy.
+    "regime_trending",
+    "regime_ranging",
+    "regime_elevated_vol",
+    "child_brs",
+    "child_supertrend",
+    "child_vwap",
+    "bars_since_switch",
+    "regime_switched_flag",
 )
 
 _ATR_REGIMES = frozenset({"elevated", "compressed", "normal"})
+_REGIME_VALUES = frozenset({"trending", "ranging", "elevated_vol"})
+_CHILD_STRATEGIES = frozenset({"BRS_SCALPING", "SUPERTREND_ADX", "VWAP_PULLBACK"})
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -148,6 +159,13 @@ def insight_to_features(
     atr_regime = str(risk.get("atr_regime") or "unknown").lower()
     trend_regime = str(trend.get("trend_regime") or "unknown").lower()
 
+    # Regime-agent context: read from top-level meta (emitted by
+    # RegimeStrategyAgent.evaluate) with fallbacks for nested shapes.
+    regime = str(insight.get("regime") or insight.get("observed_regime") or "unknown").lower()
+    selected_strategy = str(insight.get("selected_strategy") or "").upper()
+    bars_since_switch = _safe_int(insight.get("bars_since_switch"))
+    regime_switched = bool(insight.get("regime_switched"))
+
     dt = _parse_entry_ts(entry_ts)
     hour = dt.hour if dt else 12
     dow = dt.weekday() if dt else 2
@@ -177,6 +195,14 @@ def insight_to_features(
         "hour_cos": hour_cos,
         "dow_sin": dow_sin,
         "dow_cos": dow_cos,
+        "regime_trending": 1.0 if regime == "trending" else 0.0,
+        "regime_ranging": 1.0 if regime == "ranging" else 0.0,
+        "regime_elevated_vol": 1.0 if regime == "elevated_vol" else 0.0,
+        "child_brs": 1.0 if selected_strategy == "BRS_SCALPING" else 0.0,
+        "child_supertrend": 1.0 if selected_strategy == "SUPERTREND_ADX" else 0.0,
+        "child_vwap": 1.0 if selected_strategy == "VWAP_PULLBACK" else 0.0,
+        "bars_since_switch": float(bars_since_switch),
+        "regime_switched_flag": 1.0 if regime_switched else 0.0,
         # metadata for debugging (not in FEATURE_NAMES)
         "_symbol": symbol,
         "_timeframe": timeframe,
@@ -185,8 +211,12 @@ def insight_to_features(
     }
 
 
-def features_to_vector(features: dict[str, float]) -> np.ndarray:
-    return np.array([float(features.get(name, 0.0)) for name in FEATURE_NAMES], dtype=np.float64)
+def features_to_vector(
+    features: dict[str, float],
+    feature_names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray:
+    names = feature_names if feature_names is not None else FEATURE_NAMES
+    return np.array([float(features.get(name, 0.0)) for name in names], dtype=np.float64)
 
 
 def build_meta_label_dataset(
@@ -606,7 +636,12 @@ class MetaLabelModelStore:
         model = self._ensure_loaded(bot_id)
         if model is None:
             return None
-        vec = features_to_vector(features).reshape(1, -1)
+        meta = self._metadata.get(str(bot_id)) or {}
+        # Backward compatibility: v1 models were trained without the Phase-3
+        # regime features. Use their stored feature list so new keys are
+        # ignored and missing keys default to 0.
+        stored_names = meta.get("feature_names")
+        vec = features_to_vector(features, stored_names).reshape(1, -1)
         try:
             proba = model.predict_proba(vec)[0, 1]
             return float(max(0.0, min(1.0, proba)))
@@ -629,9 +664,18 @@ class MetaLabelModelStore:
             _, _, _, joblib = _load_sklearn()
             with open(meta_path, encoding="utf-8") as fh:
                 meta = json.load(fh)
-            if int(meta.get("feature_schema_version", 0)) != FEATURE_SCHEMA_VERSION:
-                logger.warning("Meta-label schema mismatch for %s — retrain required", key)
+            version = int(meta.get("feature_schema_version", 0))
+            if version > FEATURE_SCHEMA_VERSION:
+                logger.warning(
+                    "Meta-label schema %s newer than supported %s for %s — retrain required",
+                    version, FEATURE_SCHEMA_VERSION, key,
+                )
                 return None
+            if version < FEATURE_SCHEMA_VERSION:
+                logger.info(
+                    "Meta-label schema %s loaded with backward compatibility for %s (current %s)",
+                    version, key, FEATURE_SCHEMA_VERSION,
+                )
             model = joblib.load(path)
         except Exception as exc:
             logger.warning("Meta-label load failed for %s: %s", key, exc)

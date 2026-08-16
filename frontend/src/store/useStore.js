@@ -170,9 +170,23 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         allocation,
         config: pickDeployConfig(id, {
           min_confidence: id === 'RL_PPO_AGENT' ? 0.28 : id === 'TCN_MULTI_HORIZON' ? 0.002 : 0.55,
-          trailing_stop_percent: 2,
-          take_profit_percent: 3,
-          tp_mode: 'percent',
+          ...(id === 'RL_PPO_AGENT'
+            ? {
+              tp_mode: 'strategy',
+              chandelier_stop_enabled: true,
+              chandelier_multiplier: 1.5,
+              atr_stop_mult: 1.5,
+              take_profit_r: 1.5,
+              risk_per_trade_usd: 20,
+              fee_bps: 10,
+              slippage_bps: 5,
+              paper_first: true,
+            }
+            : {
+              trailing_stop_percent: 2,
+              take_profit_percent: 3,
+              tp_mode: 'percent',
+            }),
           direction_mode: 'BOTH',
           allocation,
         }),

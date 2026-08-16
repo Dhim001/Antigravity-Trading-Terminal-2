@@ -24,7 +24,7 @@ STRATEGY_TP_DEFAULTS: dict[str, dict[str, Any]] = {
     "MARKET_MAKING": {"tp_mode": "none"},
     "ML_SIGNAL_BOOST": {"take_profit_percent": 3.0, "tp_mode": "percent"},
     "LSTM_DIRECTION": {"take_profit_percent": 3.0, "tp_mode": "percent"},
-    "RL_PPO_AGENT": {"take_profit_percent": 3.0, "tp_mode": "percent"},
+    "RL_PPO_AGENT": {"tp_mode": "strategy"},
     "TCN_MULTI_HORIZON": {"take_profit_percent": 2.5, "tp_mode": "percent"},
     "VAE_REGIME_DETECTOR": {"take_profit_percent": 2.5, "tp_mode": "percent"},
     "TRANSFORMER_SIGNAL": {"take_profit_percent": 3.0, "tp_mode": "percent"},

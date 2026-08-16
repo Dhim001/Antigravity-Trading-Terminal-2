@@ -24,6 +24,9 @@ def test_rl_recommendation_uses_returns():
         "mean_oos_return_pct": 3.5,
         "total_oos_signals": 12,
         "positive_return_folds": 2,
+        "mean_oos_avg_win": 0.02,
+        "mean_oos_avg_loss": -0.01,
+        "mean_oos_profit_factor": 1.6,
     }
     stab = {"cv": 0.2, "trend": "stable"}
     rec = _make_recommendation(agg, stab, n_success=2, n_total=2)

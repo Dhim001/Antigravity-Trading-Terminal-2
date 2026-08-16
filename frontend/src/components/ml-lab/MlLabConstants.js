@@ -163,6 +163,14 @@ export function readStoredTrainingTimeframe(fallback) {
   return fallback;
 }
 
+/** RL 1m trains fail the DQ gap gate (~21% gaps). Prefer 5m unless the user pinned a TF. */
+export function preferredTrainingTimeframe(strategy, fallback = '1m') {
+  const stored = readStoredTrainingTimeframe(null);
+  if (stored) return stored;
+  if (String(strategy || '').toUpperCase() === 'RL_PPO_AGENT') return '5m';
+  return fallback || '1m';
+}
+
 export const METRIC_LABELS = {
   total_timesteps: 'Timesteps',
   episodes: 'Episodes',

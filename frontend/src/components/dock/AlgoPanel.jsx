@@ -1377,6 +1377,40 @@ export function AlgoTab({ hideToolbar = false }) {
               </div>
             )}
 
+            {botStrategy === 'RL_PPO_AGENT' ? (
+              <>
+                <div className="algo-deploy-field">
+                  <Label className="algo-field-label">Risk per trade</Label>
+                  <InputGroup className="h-8">
+                    <InputGroupInput
+                      type="number"
+                      step="1"
+                      min="15"
+                      max="25"
+                      value={botConfig?.risk_per_trade_usd ?? 20}
+                      onChange={e => updateBotConfig({
+                        risk_per_trade_usd: Math.max(15, Math.min(25, parseFloat(e.target.value) || 20)),
+                      })}
+                      className="text-xs"
+                      aria-label="Risk dollars per trade"
+                    />
+                    <InputGroupAddon align="inline-end">
+                      <InputGroupText className="text-xs">USD</InputGroupText>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <span className="algo-field-hint">
+                    Dollar risk at the ATR×1.5 stop. Clamped to $15–25 — not 2% of the $3k book.
+                  </span>
+                </div>
+                <div className="algo-deploy-field">
+                  <Label className="algo-field-label">ATR stop / TP</Label>
+                  <div className="text-xs text-muted-foreground">
+                    Stop ATR×{botConfig?.atr_stop_mult ?? 1.5} · target {botConfig?.take_profit_r ?? 1.5}R
+                    · chandelier trail. Percent 2%/3% stops are disabled for RL.
+                  </div>
+                </div>
+              </>
+            ) : (
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Trailing Stop Loss</Label>
               <InputGroup className="h-8">
@@ -1399,11 +1433,12 @@ export function AlgoTab({ hideToolbar = false }) {
                 Exits when price retraces this % from the best price since entry. Applied on every new position.
               </span>
             </div>
+            )}
 
             <div className="algo-deploy-field">
               <Label className="algo-field-label">Take Profit</Label>
               <Select
-                value={botConfig?.tp_mode ?? 'percent'}
+                value={botConfig?.tp_mode ?? (botStrategy === 'RL_PPO_AGENT' ? 'strategy' : 'percent')}
                 onValueChange={(mode) => {
                   if (mode === 'none') {
                     updateBotConfig({ tp_mode: 'none', take_profit_percent: undefined });
@@ -1421,9 +1456,15 @@ export function AlgoTab({ hideToolbar = false }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent position="popper">
-                  <SelectItem value="percent" className="text-xs">Fixed % from entry</SelectItem>
-                  <SelectItem value="strategy" className="text-xs" disabled={botStrategy !== 'BRS_SCALPING'}>
-                    Strategy target (BRS mid-band)
+                  <SelectItem value="percent" className="text-xs" disabled={botStrategy === 'RL_PPO_AGENT'}>
+                    Fixed % from entry
+                  </SelectItem>
+                  <SelectItem
+                    value="strategy"
+                    className="text-xs"
+                    disabled={botStrategy !== 'BRS_SCALPING' && botStrategy !== 'RL_PPO_AGENT'}
+                  >
+                    {botStrategy === 'RL_PPO_AGENT' ? 'ATR 1.5R target' : 'Strategy target (BRS mid-band)'}
                   </SelectItem>
                   <SelectItem value="none" className="text-xs">None — trailing stop only</SelectItem>
                 </SelectContent>
@@ -1468,7 +1509,9 @@ export function AlgoTab({ hideToolbar = false }) {
                 </InputGroupAddon>
               </InputGroup>
               <span className="algo-field-hint">
-                Hard limit on position size per trade. Risk is sized at 1% of account balance using ATR-based stops.
+                Hard limit on position size per trade. {botStrategy === 'RL_PPO_AGENT'
+                  ? 'RL risks $15–25 per trade at the ATR×1.5 stop.'
+                  : 'Risk is sized at 1% of account balance using ATR-based stops.'}
                 {botExecutionMode === 'TICK'
                   ? ' Tick strategies evaluate on each trade print (not closed bars).'
                   : ` Signals evaluate on closed ${formatBarTimeframeLabel(botTimeframe)} bars.`}

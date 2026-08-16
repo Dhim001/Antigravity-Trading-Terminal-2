@@ -355,6 +355,7 @@ def list_ml_train_runs(
     strategy: str | None = None,
     timeframe: str | None = None,
     limit: int = 20,
+    batch_id: str | None = None,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit or 20), 100))
     clauses: list[str] = []
@@ -365,6 +366,19 @@ def list_ml_train_runs(
     if strategy:
         clauses.append("strategy = ?")
         params.append(str(strategy).upper())
+    if batch_id:
+        # Batch items span strategies — filter purely via the item job ids.
+        try:
+            from app.database import ensure_ml_batch_tables
+
+            ensure_ml_batch_tables()
+        except Exception:
+            logger.debug("ml_batch table ensure failed for runs filter", exc_info=True)
+        clauses.append(
+            "job_id IN (SELECT job_id FROM ml_batch_items "
+            "WHERE batch_id = ? AND job_id IS NOT NULL)"
+        )
+        params.append(str(batch_id))
     if timeframe:
         try:
             from app.services.bots.ml_model_artifacts import normalize_model_timeframe

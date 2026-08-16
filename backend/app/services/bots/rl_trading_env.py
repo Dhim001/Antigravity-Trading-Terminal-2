@@ -44,7 +44,7 @@ SIDE_LONG = 1
 SIDE_SHORT = -1
 
 # Reward scaling constants
-_TRADE_COST = 0.001        # penalty per trade to discourage overtrading
+_TRADE_COST = 0.001        # legacy fallback when costs are explicitly zero
 _HOLDING_COST = 0.00005    # small per-step cost for holding a position
 _MAX_HOLDING_BARS = 100    # normalize bars_since_entry
 # Default episode cap — without this, one "episode" walks the entire candle
@@ -116,6 +116,20 @@ class TradingEnv:
         self.n_candles = len(candles)
         self._symbol = str(self.config.get("symbol") or "").strip() or None
         self._progress_path = progress_path
+        from app.services.bots.rl_risk import (
+            resolve_atr_stop_mult,
+            resolve_rl_costs,
+            resolve_take_profit_r,
+        )
+
+        self._fee_bps, self._slippage_bps = resolve_rl_costs(self.config)
+        self._atr_stop_mult = resolve_atr_stop_mult(self.config)
+        self._take_profit_r = resolve_take_profit_r(self.config)
+        self._use_atr_stops = self.config.get("use_atr_stops")
+        if self._use_atr_stops is None:
+            self._use_atr_stops = True
+        else:
+            self._use_atr_stops = bool(self._use_atr_stops)
         try:
             cfg_ep = int(self.config.get("max_episode_steps") or 0)
         except (TypeError, ValueError):
@@ -133,6 +147,7 @@ class TradingEnv:
         self._closes: list[float] = []
         self._highs: list[float] = []
         self._lows: list[float] = []
+        self._atrs: list[float] = []
         self._allow_entry: list[bool] = []
 
         _hb_t = 0.0
@@ -141,6 +156,8 @@ class TradingEnv:
             self._closes.append(_safe_float(c.get("close")))
             self._highs.append(_safe_float(c.get("high")))
             self._lows.append(_safe_float(c.get("low")))
+            atr = c.get("ATR_14") or c.get("ATRr_14") or c.get("atr")
+            self._atrs.append(_safe_float(atr, 0.0))
             self._allow_entry.append(_bar_allows_new_entries(self._symbol, c))
 
             lb_start = max(0, i - feature_lookback)
@@ -199,6 +216,10 @@ class TradingEnv:
         self._equity = 1.0  # normalized starting equity
         self._prev_equity = 1.0
         self._total_trades = 0
+        self._stop_price = 0.0
+        self._take_profit_price = 0.0
+        self._stop_distance = 0.0
+        self._closed_pnls: list[float] = []
         self._done = False
 
     def set_feature_scaler(self, feat_mean, feat_std) -> None:
@@ -261,9 +282,13 @@ class TradingEnv:
         self._position_side = SIDE_FLAT
         self._entry_price = 0.0
         self._entry_step = 0
+        self._stop_price = 0.0
+        self._take_profit_price = 0.0
+        self._stop_distance = 0.0
         self._equity = 1.0
         self._prev_equity = 1.0
         self._total_trades = 0
+        self._closed_pnls: list[float] = []
         self._done = False
         return self._get_obs()
 
@@ -298,6 +323,8 @@ class TradingEnv:
             return self._get_obs(), 0.0, True, {"reason": "already_done"}
 
         close = self._closes[self._step_idx]
+        high = self._highs[self._step_idx] if self._step_idx < len(self._highs) else close
+        low = self._lows[self._step_idx] if self._step_idx < len(self._lows) else close
 
         raw_action = int(action)
         action = self._mask_entry_action(raw_action)
@@ -310,45 +337,49 @@ class TradingEnv:
             "entry_masked": action != raw_action,
         }
         traded = False
+        stop_hit = False
+
+        # ATR×1.5 / 1.5R exits fire before the policy can override them.
+        if self._position_side != SIDE_FLAT and self._use_atr_stops:
+            hit_px, hit_reason = self._barrier_hit(high, low)
+            if hit_px is not None:
+                reward += self._close_position(hit_px)
+                traded = True
+                stop_hit = True
+                info["barrier"] = hit_reason
+                action = ACTION_HOLD
 
         # ── Execute action ────────────────────────────────────────────
-        if action == ACTION_BUY:
-            if self._position_side == SIDE_SHORT:
-                # Close short position
-                reward += self._close_position(close)
-                traded = True
-            if self._position_side == SIDE_FLAT:
-                # Open long
-                self._open_position(SIDE_LONG, close)
-                traded = True
+        if not stop_hit:
+            if action == ACTION_BUY:
+                if self._position_side == SIDE_SHORT:
+                    reward += self._close_position(self._fill_price(close, "BUY"))
+                    traded = True
+                if self._position_side == SIDE_FLAT:
+                    self._open_position(SIDE_LONG, self._fill_price(close, "BUY"))
+                    traded = True
 
-        elif action == ACTION_SELL:
-            if self._position_side == SIDE_LONG:
-                # Close long position
-                reward += self._close_position(close)
-                traded = True
-            if self._position_side == SIDE_FLAT:
-                # Open short
-                self._open_position(SIDE_SHORT, close)
-                traded = True
+            elif action == ACTION_SELL:
+                if self._position_side == SIDE_LONG:
+                    reward += self._close_position(self._fill_price(close, "SELL"))
+                    traded = True
+                if self._position_side == SIDE_FLAT:
+                    self._open_position(SIDE_SHORT, self._fill_price(close, "SELL"))
+                    traded = True
 
-        elif action == ACTION_CLOSE:
-            if self._position_side != SIDE_FLAT:
-                reward += self._close_position(close)
-                traded = True
+            elif action == ACTION_CLOSE:
+                if self._position_side != SIDE_FLAT:
+                    exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
+                    reward += self._close_position(self._fill_price(close, exit_side))
+                    traded = True
 
         # ACTION_HOLD → no position change
 
-        # ── Per-step rewards ──────────────────────────────────────────
-        # Unrealized PnL change reward (encourage riding winners)
+        # Holding cost only — no MTM bonus (live is stopped on ATR, not mark).
         if self._position_side != SIDE_FLAT:
-            unrealized_pnl = self._unrealized_pnl(close)
-            reward += unrealized_pnl * 0.1  # small reward for positive drift
-            reward -= _HOLDING_COST  # small cost for being in a position
+            reward -= _HOLDING_COST
 
-        # Trade cost penalty
         if traded:
-            reward -= _TRADE_COST
             self._total_trades += 1
 
         # ── Advance step ──────────────────────────────────────────────
@@ -357,7 +388,8 @@ class TradingEnv:
             # Force close at end of episode window / data
             if self._position_side != SIDE_FLAT:
                 final_close = self._closes[min(self._step_idx, self.n_candles - 1)]
-                reward += self._close_position(final_close)
+                exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
+                reward += self._close_position(self._fill_price(final_close, exit_side))
             self._done = True
             info["reason"] = (
                 "end_of_data"
@@ -369,6 +401,8 @@ class TradingEnv:
         info["position_side"] = self._position_side
         info["total_trades"] = self._total_trades
         info["traded"] = traded
+        info["fee_bps"] = self._fee_bps
+        info["slippage_bps"] = self._slippage_bps
 
         return self._get_obs(), reward, self._done, info
 
@@ -386,13 +420,63 @@ class TradingEnv:
         pos_features = np.array([pos_side, pos_pnl, bars_held], dtype=np.float64)
         return np.concatenate([feat, pos_features]).astype(np.float32)
 
+    def _fill_price(self, price: float, side: str) -> float:
+        slip = self._slippage_bps / 10_000.0
+        if slip <= 0 or price <= 0:
+            return price
+        if str(side).upper() == "BUY":
+            return price * (1.0 + slip)
+        return price * (1.0 - slip)
+
+    def _fee_frac(self) -> float:
+        return self._fee_bps / 10_000.0
+
+    def _barrier_hit(self, high: float, low: float) -> tuple[float | None, str | None]:
+        if self._stop_price <= 0 and self._take_profit_price <= 0:
+            return None, None
+        if self._position_side == SIDE_LONG:
+            if self._stop_price > 0 and low <= self._stop_price:
+                return self._fill_price(self._stop_price, "SELL"), "atr_stop"
+            if self._take_profit_price > 0 and high >= self._take_profit_price:
+                return self._fill_price(self._take_profit_price, "SELL"), "atr_tp"
+        elif self._position_side == SIDE_SHORT:
+            if self._stop_price > 0 and high >= self._stop_price:
+                return self._fill_price(self._stop_price, "BUY"), "atr_stop"
+            if self._take_profit_price > 0 and low <= self._take_profit_price:
+                return self._fill_price(self._take_profit_price, "BUY"), "atr_tp"
+        return None, None
+
+    def _arm_barriers(self, side: int, price: float) -> None:
+        idx = min(self._step_idx, len(self._atrs) - 1) if self._atrs else -1
+        atr = self._atrs[idx] if idx >= 0 else 0.0
+        from app.services.bots.rl_risk import stop_take_prices
+
+        side_name = "BUY" if side == SIDE_LONG else "SELL"
+        dist, sl_px, tp_px = stop_take_prices(
+            side_name,
+            price,
+            atr,
+            stop_mult=self._atr_stop_mult,
+            take_profit_r=self._take_profit_r,
+        )
+        self._stop_distance = float(dist or 0.0)
+        self._stop_price = float(sl_px or 0.0)
+        self._take_profit_price = float(tp_px or 0.0)
+        if not self._use_atr_stops:
+            self._stop_price = 0.0
+            self._take_profit_price = 0.0
+
     def _open_position(self, side: int, price: float) -> None:
         self._position_side = side
         self._entry_price = price
         self._entry_step = self._step_idx
+        self._arm_barriers(side, price)
+        fee = self._fee_frac()
+        if fee > 0:
+            self._equity *= (1.0 - fee)
 
     def _close_position(self, price: float) -> float:
-        """Close position and return realized PnL as fraction of equity."""
+        """Close position and return realized R (pnl / stop distance)."""
         if self._entry_price <= 0:
             self._position_side = SIDE_FLAT
             return 0.0
@@ -404,10 +488,26 @@ class TradingEnv:
         else:
             pnl_pct = 0.0
 
+        fee = self._fee_frac()
+        if fee > 0:
+            pnl_pct -= fee
+
         self._equity *= (1.0 + pnl_pct)
+        self._closed_pnls.append(pnl_pct)
+
+        stop_frac = (
+            self._stop_distance / self._entry_price
+            if self._entry_price > 0 and self._stop_distance > 0
+            else 0.0
+        )
+        reward = (pnl_pct / stop_frac) if stop_frac > 1e-12 else pnl_pct
+
         self._position_side = SIDE_FLAT
         self._entry_price = 0.0
-        return pnl_pct
+        self._stop_price = 0.0
+        self._take_profit_price = 0.0
+        self._stop_distance = 0.0
+        return reward
 
     def _unrealized_pnl(self, current_price: float) -> float:
         """Unrealized PnL as fraction of entry price."""
@@ -420,9 +520,17 @@ class TradingEnv:
 
     def episode_stats(self) -> dict[str, Any]:
         """Return summary statistics for the completed episode."""
+        from app.services.bots.rl_risk import trade_payoff_stats
+
+        payoff = trade_payoff_stats(list(self._closed_pnls))
         return {
             "final_equity": round(self._equity, 6),
             "return_pct": round((self._equity - 1.0) * 100, 4),
             "total_trades": self._total_trades,
             "steps": self._step_idx - self._start_idx,
+            "fee_bps": self._fee_bps,
+            "slippage_bps": self._slippage_bps,
+            "atr_stop_mult": self._atr_stop_mult,
+            "take_profit_r": self._take_profit_r,
+            **payoff,
         }

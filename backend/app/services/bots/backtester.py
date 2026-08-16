@@ -602,6 +602,13 @@ class BacktesterService:
         use_chandelier = bool(cfg.get("chandelier_stop_enabled", False))
         chandelier_mult = float(cfg.get("chandelier_multiplier") or 3.0)
         chandelier_mult = max(1.0, min(10.0, chandelier_mult))
+        if strat_key == "RL_PPO_AGENT" and not cfg.get("rl_percent_stops"):
+            from app.services.bots.rl_risk import resolve_atr_stop_mult, resolve_rl_risk_usd
+
+            use_chandelier = True
+            chandelier_mult = resolve_atr_stop_mult(cfg)
+            trailing_pct = 0.0
+            cfg.setdefault("risk_per_trade_usd", resolve_rl_risk_usd(cfg))
         risk_cfg = parse_risk_sizing_config(cfg)
         loss_limit = allocation * (BOT_DAILY_LOSS_LIMIT_PCT / 100.0)
         slippage_bps, fee_bps = parse_cost_config(cfg)

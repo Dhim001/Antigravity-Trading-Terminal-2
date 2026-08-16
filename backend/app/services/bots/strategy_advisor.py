@@ -29,6 +29,10 @@ ADVISABLE_PARAMS: frozenset[str] = frozenset({
     "confirm_timeframe",
     "fee_bps",
     "slippage_bps",
+    "atr_stop_mult",
+    "chandelier_multiplier",
+    "take_profit_r",
+    "risk_per_trade_usd",
 })
 
 PARAM_BOUNDS: dict[str, tuple[float, float] | tuple[int, int]] = {
@@ -40,6 +44,10 @@ PARAM_BOUNDS: dict[str, tuple[float, float] | tuple[int, int]] = {
     "min_sentiment_score": (-1.0, 1.0),
     "fee_bps": (0.0, 50.0),
     "slippage_bps": (0.0, 100.0),
+    "atr_stop_mult": (0.5, 5.0),
+    "chandelier_multiplier": (0.5, 5.0),
+    "take_profit_r": (0.5, 5.0),
+    "risk_per_trade_usd": (15.0, 25.0),
 }
 
 BOOL_PARAMS = frozenset({

@@ -1582,6 +1582,157 @@ async def ml_cancel_job_handler(request: Request) -> JSONResponse:
     })
 
 
+async def ml_batch_train_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/batch-train — durable batch of Lab train jobs (Phase 2)."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    if not symbol:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return JSONResponse({"ok": False, "error": "items must be a non-empty list"}, status_code=400)
+
+    from app.services.bots import ml_batch_runner as batch_runner
+    from app.services.bots.ml_registry import is_ml_strategy
+
+    if len(raw_items) > batch_runner.MAX_BATCH_ITEMS:
+        return JSONResponse(
+            {"ok": False, "error": f"items capped at {batch_runner.MAX_BATCH_ITEMS} per batch"},
+            status_code=400,
+        )
+
+    items = []
+    for idx, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            return JSONResponse({"ok": False, "error": f"items[{idx}] must be an object"}, status_code=400)
+        strategy = str(raw_item.get("strategy") or "").upper()
+        if not strategy:
+            return JSONResponse({"ok": False, "error": f"items[{idx}].strategy required"}, status_code=400)
+        if not is_ml_strategy(strategy):
+            from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
+            return JSONResponse(
+                {"ok": False, "error": f"items[{idx}]: {lab_train_unsupported_error(strategy)}"},
+                status_code=400,
+            )
+        cfg = raw_item.get("config") if isinstance(raw_item.get("config"), dict) else {}
+        items.append({
+            "strategy": strategy,
+            "config": cfg,
+            "validate_after": bool(raw_item.get("validate_after", False)),
+        })
+
+    try:
+        concurrency = max(1, int(body.get("concurrency") or 1))
+    except (TypeError, ValueError):
+        concurrency = 1
+    fail_fast = bool(body.get("fail_fast", False))
+    idem = body.get("idempotency_key")
+    idem = str(idem).strip() if idem else None
+    schedule = str(body.get("schedule") or "cost_asc").strip().lower()
+    if schedule not in batch_runner.BATCH_SCHEDULES:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "schedule must be one of "
+                    + ", ".join(sorted(batch_runner.BATCH_SCHEDULES))
+                ),
+            },
+            status_code=400,
+        )
+
+    state: AppState = request.app.state.terminal
+    event_bus = getattr(state, "event_bus", None)
+    # First request after a restart resumes crash survivors before queueing new work.
+    batch_runner.resume_incomplete_batches(state, event_bus=event_bus)
+
+    try:
+        batch, created = batch_runner.create_batch(
+            symbol,
+            items,
+            concurrency=concurrency,
+            fail_fast=fail_fast,
+            idempotency_key=idem,
+            schedule=schedule,
+        )
+    except Exception as exc:
+        logger.exception("ML batch create failed for %s", symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    if not created:
+        return JSONResponse(
+            {"ok": True, "batch_id": batch["batch_id"], "status": batch["status"], "idempotent": True},
+            status_code=202,
+        )
+    batch_runner.start_batch_runner(batch["batch_id"], state, event_bus=event_bus)
+    return JSONResponse(
+        {"ok": True, "batch_id": batch["batch_id"], "status": "queued", "schedule": batch["schedule"]},
+        status_code=202,
+    )
+
+
+async def ml_batch_status_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/batch-train/{batch_id} — batch + per-item status."""
+    from app.services.bots import ml_batch_runner as batch_runner
+
+    batch_id = request.path_params.get("batch_id")
+    if not batch_id:
+        return JSONResponse({"ok": False, "error": "batch_id required"}, status_code=400)
+    batch_runner.resume_incomplete_batches(request.app.state.terminal)
+    batch = batch_runner.reconcile_batch_items(batch_id)
+    if not batch:
+        return JSONResponse({"ok": False, "error": "batch not found"}, status_code=404)
+    return JSONResponse({"ok": True, **batch})
+
+
+async def ml_batch_cancel_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/batch-train/{batch_id}/cancel — cancel active job, skip rest."""
+    from app.services.bots import ml_batch_runner as batch_runner
+
+    batch_id = request.path_params.get("batch_id")
+    if not batch_id:
+        return JSONResponse({"ok": False, "error": "batch_id required"}, status_code=400)
+    batch = batch_runner.cancel_batch(batch_id)
+    if not batch:
+        return JSONResponse({"ok": False, "error": "batch not found"}, status_code=404)
+    return JSONResponse({"ok": True, **batch})
+
+
+async def ml_batch_retry_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/batch-train/{batch_id}/retry — re-queue error/cancelled items."""
+    from app.services.bots import ml_batch_runner as batch_runner
+
+    batch_id = request.path_params.get("batch_id")
+    if not batch_id:
+        return JSONResponse({"ok": False, "error": "batch_id required"}, status_code=400)
+    batch = batch_runner.retry_batch(batch_id)
+    if not batch:
+        return JSONResponse({"ok": False, "error": "batch not found"}, status_code=404)
+    if batch.get("requeued"):
+        state: AppState = request.app.state.terminal
+        batch_runner.start_batch_runner(
+            batch_id, state, event_bus=getattr(state, "event_bus", None),
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "batch_id": batch["batch_id"],
+            "status": batch["status"],
+            "requeued": batch.get("requeued", 0),
+        },
+        status_code=202,
+    )
+
+
 async def ml_list_runs_handler(request: Request) -> JSONResponse:
     """GET /api/v1/ml/runs — persistent train/validate history."""
     from app.services.bots.ml_train_runs import list_ml_train_runs
@@ -1589,12 +1740,14 @@ async def ml_list_runs_handler(request: Request) -> JSONResponse:
     symbol = (request.query_params.get("symbol") or "").strip().upper() or None
     strategy = (request.query_params.get("strategy") or "").strip().upper() or None
     timeframe = (request.query_params.get("timeframe") or "").strip() or None
+    batch_id = (request.query_params.get("batch_id") or "").strip() or None
     try:
         limit = int(request.query_params.get("limit", "20"))
     except (TypeError, ValueError):
         limit = 20
     runs = list_ml_train_runs(
         symbol=symbol, strategy=strategy, timeframe=timeframe, limit=limit,
+        batch_id=batch_id,
     )
     return JSONResponse({"ok": True, "runs": runs, "count": len(runs)})
 
@@ -2817,9 +2970,9 @@ async def meta_label_operational_handler(request: Request) -> JSONResponse:
     if not bot:
         return JSONResponse({"ok": False, "error": f"Bot {bot_id} not found"}, status_code=404)
 
-    if str(bot.get("strategy") or "").upper() != "CHART_AGENT":
+    if str(bot.get("strategy") or "").upper() not in ("CHART_AGENT", "REGIME_STRATEGY_AGENT"):
         return JSONResponse(
-            {"ok": False, "error": "Meta-label operational rollout requires CHART_AGENT"},
+            {"ok": False, "error": "Meta-label operational rollout requires CHART_AGENT or REGIME_STRATEGY_AGENT"},
             status_code=400,
         )
 
@@ -3285,6 +3438,10 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/jobs", ml_list_jobs_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs/{job_id}", ml_get_job_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs/{job_id}/cancel", ml_cancel_job_handler, methods=["POST"]),
+        Route("/api/v1/ml/batch-train", ml_batch_train_handler, methods=["POST"]),
+        Route("/api/v1/ml/batch-train/{batch_id}", ml_batch_status_handler, methods=["GET"]),
+        Route("/api/v1/ml/batch-train/{batch_id}/cancel", ml_batch_cancel_handler, methods=["POST"]),
+        Route("/api/v1/ml/batch-train/{batch_id}/retry", ml_batch_retry_handler, methods=["POST"]),
         Route("/api/v1/ml/runs", ml_list_runs_handler, methods=["GET"]),
         Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
         Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),

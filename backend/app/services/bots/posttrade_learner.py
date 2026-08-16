@@ -250,21 +250,34 @@ def build_config_patch(
     cfg = dict(bot_config or {})
     raw: dict[str, Any] = {}
 
+    from app.services.bots.rl_risk import is_rl_strategy, uses_percent_stops
+
+    rl_atr = is_rl_strategy(strategy) and not uses_percent_stops(cfg)
+
     if outcome_class == "stop_too_tight":
-        cur = float(cfg.get("stop_loss_percent") or cfg.get("trailing_stop_percent") or 1.5)
-        raw["stop_loss_percent"] = round(cur + POSTTRADE_LEARNER_STOP_WIDEN_PCT, 4)
-        if cfg.get("trailing_stop_percent") is not None:
-            trail = float(cfg.get("trailing_stop_percent") or cur)
-            raw["trailing_stop_percent"] = round(trail + POSTTRADE_LEARNER_STOP_WIDEN_PCT, 4)
+        if rl_atr:
+            cur = float(cfg.get("atr_stop_mult") or cfg.get("chandelier_multiplier") or 1.5)
+            raw["atr_stop_mult"] = round(min(5.0, cur + 0.25), 4)
+            raw["chandelier_multiplier"] = raw["atr_stop_mult"]
+        else:
+            cur = float(cfg.get("stop_loss_percent") or cfg.get("trailing_stop_percent") or 1.5)
+            raw["stop_loss_percent"] = round(cur + POSTTRADE_LEARNER_STOP_WIDEN_PCT, 4)
+            if cfg.get("trailing_stop_percent") is not None:
+                trail = float(cfg.get("trailing_stop_percent") or cur)
+                raw["trailing_stop_percent"] = round(trail + POSTTRADE_LEARNER_STOP_WIDEN_PCT, 4)
 
     elif outcome_class == "good_entry_bad_exit":
-        # Capture more of the move: prefer trailing if absent; else nudge TP up slightly.
-        if not cfg.get("trailing_stop_percent"):
-            sl = float(cfg.get("stop_loss_percent") or 1.5)
-            raw["trailing_stop_percent"] = round(max(0.5, sl * 0.75), 4)
-        tp = cfg.get("take_profit_percent")
-        if tp is not None:
-            raw["take_profit_percent"] = round(float(tp) * 1.1, 4)
+        if rl_atr:
+            cur = float(cfg.get("take_profit_r") or 1.5)
+            raw["take_profit_r"] = round(min(5.0, cur * 1.1), 4)
+        else:
+            # Capture more of the move: prefer trailing if absent; else nudge TP up slightly.
+            if not cfg.get("trailing_stop_percent"):
+                sl = float(cfg.get("stop_loss_percent") or 1.5)
+                raw["trailing_stop_percent"] = round(max(0.5, sl * 0.75), 4)
+            tp = cfg.get("take_profit_percent")
+            if tp is not None:
+                raw["take_profit_percent"] = round(float(tp) * 1.1, 4)
 
     elif outcome_class == "regime_mismatch":
         raw["block_ranging_markets"] = True

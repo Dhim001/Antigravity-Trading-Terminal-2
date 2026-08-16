@@ -128,6 +128,10 @@ describe('pickDeployConfig', () => {
     expect(out.allocation).toBe(2500);
     expect(out.trailing_stop_percent).toBe(1.5);
     expect(out.direction_mode).toBe('BOTH');
+    expect(out.risk_per_trade_usd).toBe(20);
+    expect(out.atr_stop_mult).toBe(1.5);
+    expect(out.tp_mode).toBe('strategy');
+    expect(out.paper_first).toBe(true);
     expect(out.lookback).toBeUndefined();
     expect(out.total_timesteps).toBeUndefined();
     expect(out.use_llm).toBeUndefined();

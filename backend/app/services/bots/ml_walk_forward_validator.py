@@ -249,9 +249,14 @@ def _evaluate_oos_rl_env(
     feat_mean = (scaler or {}).get("feat_mean")
     feat_std = (scaler or {}).get("feat_std")
     # OOS must walk the full fold once (not a random capped train window).
+    from app.services.bots.rl_risk import resolve_rl_costs
+
     oos_cfg = dict(config or {})
     oos_cfg["max_episode_steps"] = max(len(test_candles), 8)
     oos_cfg["env_seed"] = int(oos_cfg.get("env_seed") or 0)
+    fee_bps, slip_bps = resolve_rl_costs(oos_cfg)
+    oos_cfg["fee_bps"] = fee_bps
+    oos_cfg["slippage_bps"] = slip_bps
     env = TradingEnv(
         test_candles,
         config=oos_cfg,
@@ -285,6 +290,9 @@ def _evaluate_oos_rl_env(
     return_pct = float(stats.get("return_pct") or 0.0)
     trades = int(stats.get("total_trades") or 0)
     score = _rl_return_to_score(return_pct)
+    avg_win = float(stats.get("avg_win") or 0.0)
+    avg_loss = float(stats.get("avg_loss") or 0.0)
+    profit_factor = float(stats.get("profit_factor") or 0.0)
     tot_bars = len(test_candles)
     buy_n = int(action_counts.get(ACTION_BUY, 0))
     sell_n = int(action_counts.get(ACTION_SELL, 0))
@@ -308,6 +316,13 @@ def _evaluate_oos_rl_env(
         "total_bars": tot_bars,
         "total_trades": trades,
         "oos_steps": steps,
+        "avg_win": round(avg_win, 6),
+        "avg_loss": round(avg_loss, 6),
+        "profit_factor": round(profit_factor, 4),
+        "n_wins": int(stats.get("n_wins") or 0),
+        "n_losses": int(stats.get("n_losses") or 0),
+        "fee_bps": stats.get("fee_bps"),
+        "slippage_bps": stats.get("slippage_bps"),
     }
 
 
@@ -1183,6 +1198,30 @@ def _aggregate_fold_metrics(folds: list[dict]) -> dict:
         out["min_oos_return_pct"] = round(min(rl_returns), 4)
         out["max_oos_return_pct"] = round(max(rl_returns), 4)
         out["positive_return_folds"] = sum(1 for r in rl_returns if r > 0)
+        pfs = [
+            float(f["oos_metrics"]["profit_factor"])
+            for f in folds
+            if isinstance(f.get("oos_metrics"), dict)
+            and f["oos_metrics"].get("profit_factor") is not None
+        ]
+        wins = [
+            float(f["oos_metrics"]["avg_win"])
+            for f in folds
+            if isinstance(f.get("oos_metrics"), dict)
+            and f["oos_metrics"].get("avg_win") is not None
+        ]
+        losses = [
+            float(f["oos_metrics"]["avg_loss"])
+            for f in folds
+            if isinstance(f.get("oos_metrics"), dict)
+            and f["oos_metrics"].get("avg_loss") is not None
+        ]
+        if pfs:
+            out["mean_oos_profit_factor"] = round(statistics.mean(pfs), 4)
+        if wins:
+            out["mean_oos_avg_win"] = round(statistics.mean(wins), 6)
+        if losses:
+            out["mean_oos_avg_loss"] = round(statistics.mean(losses), 6)
     return out
 
 
@@ -1247,6 +1286,8 @@ def _make_recommendation(
     trend = stability.get("trend", "stable")
 
     if aggregate.get("metric_kind") == "rl_return":
+        from app.services.bots.rl_risk import MIN_PROFIT_FACTOR, payoff_passes
+
         ret = float(aggregate.get("mean_oos_return_pct") or 0.0)
         trades = int(aggregate.get("total_oos_signals") or 0)
         pos_folds = int(aggregate.get("positive_return_folds") or 0)
@@ -1263,18 +1304,26 @@ def _make_recommendation(
             issues.append(f"only {n_success}/{n_total} folds succeeded")
         if pos_folds == 0 and n_success > 0:
             issues.append("no fold produced a positive OOS return")
+        pf_ok, pf_msg = payoff_passes(
+            avg_win=aggregate.get("mean_oos_avg_win"),
+            avg_loss=aggregate.get("mean_oos_avg_loss"),
+            profit_factor=aggregate.get("mean_oos_profit_factor"),
+            min_pf=MIN_PROFIT_FACTOR,
+        )
+        if not pf_ok:
+            issues.append(pf_msg)
 
         if not issues:
             if ret >= 2.0 and pos_folds >= max(1, n_success // 2):
                 return (
-                    "DEPLOY — Positive OOS episode returns with stable walk-forward "
-                    f"(mean {ret:.2f}%)"
+                    "DEPLOY — Costed OOS payoff passes (avg win ≥ avg loss, "
+                    f"PF > {MIN_PROFIT_FACTOR}) · mean {ret:.2f}%. Paper first."
                 )
             return (
-                "DEPLOY_WITH_CAUTION — Modest OOS returns; monitor live paper closely "
+                "DEPLOY_WITH_CAUTION — Payoff gate passed; paper-trade before live "
                 f"(mean {ret:.2f}%)"
             )
-        if len(issues) >= 3 or ret < -5.0:
+        if len(issues) >= 3 or ret < -5.0 or not pf_ok:
             return f"REJECT — {'; '.join(issues)}"
         return f"REVIEW — {'; '.join(issues)}"
 

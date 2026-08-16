@@ -461,6 +461,67 @@ export function evaluateDeployGate({
     }
   }
 
+  if (String(strategy || config?.strategy || results?.meta?.strategy || '').toUpperCase() === 'RL_PPO_AGENT') {
+    const wf = scoped?.walk_forward || results?.walk_forward;
+    const holdout = scoped?.final_holdout ?? wf?.final_holdout;
+    const agg = wf?.aggregate || {};
+    const summary = scoped?.summary || results?.summary || {};
+    const cfg = { ...(results?.meta?.config || {}), ...(config || {}) };
+    if (!wf) {
+      checks.push(check({
+        id: 'rl_walk_forward',
+        level: 'block',
+        ok: false,
+        message: 'RL redeploy requires a costed walk-forward',
+        detail: 'Validate on 5m (or repaired 1m) before paper deploy.',
+      }));
+    }
+    if (!holdout || holdout.skipped) {
+      checks.push(check({
+        id: 'rl_holdout',
+        level: 'block',
+        ok: false,
+        message: 'RL redeploy requires a reserved holdout',
+      }));
+    }
+    const fee = Number(cfg.fee_bps ?? summary.fee_bps ?? 0);
+    const slip = Number(cfg.slippage_bps ?? summary.slippage_bps ?? 0);
+    if (fee <= 0 && slip <= 0) {
+      checks.push(check({
+        id: 'rl_costs',
+        level: 'block',
+        ok: false,
+        message: 'RL validation is costless (fee_bps=0, slippage_bps=0)',
+      }));
+    }
+    const avgWin = Number(agg.mean_oos_avg_win ?? holdout?.avg_win ?? summary.avg_win ?? 0);
+    const avgLoss = Math.abs(Number(agg.mean_oos_avg_loss ?? holdout?.avg_loss ?? summary.avg_loss ?? 0));
+    const pf = Number(agg.mean_oos_profit_factor ?? holdout?.profit_factor ?? summary.profit_factor ?? 0);
+    const payoffOk = avgWin + 1e-12 >= avgLoss && pf > 1.3;
+    checks.push(check({
+      id: 'rl_payoff',
+      level: payoffOk ? 'pass' : 'block',
+      ok: payoffOk,
+      message: payoffOk
+        ? `Costed payoff passed (avg win ${avgWin.toFixed(2)} ≥ avg loss ${avgLoss.toFixed(2)}, PF ${pf.toFixed(2)})`
+        : `Costed payoff failed — need avg win ≥ avg loss and PF > 1.3 (win ${avgWin.toFixed(2)}, loss ${avgLoss.toFixed(2)}, PF ${pf.toFixed(2)})`,
+    }));
+    if (!cfg.model_version) {
+      checks.push(check({
+        id: 'ml_model_version',
+        level: 'block',
+        ok: false,
+        message: 'RL deploy requires a pinned model_version',
+      }));
+    }
+    checks.push(check({
+      id: 'rl_paper_first',
+      level: 'pass',
+      ok: true,
+      message: 'Paper first — do not enable live capital until paper PF holds',
+    }));
+  }
+
   let stage = 'ready';
   if (checks.some((c) => c.level === 'block' && !c.ok)) stage = 'blocked';
   else if (scoped?.walk_forward) stage = 'oos_validated';
@@ -501,7 +562,20 @@ export function buildDeployPayload({
     backtest_fingerprint: snapshot || fingerprint,
     config: {
       ...config,
-      trailing_stop_percent: config?.trailing_stop_percent ?? 2,
+      ...(String(strategy || '').toUpperCase() === 'RL_PPO_AGENT'
+        ? {
+          paper_first: config?.paper_first !== false,
+          risk_per_trade_usd: config?.risk_per_trade_usd ?? 20,
+          atr_stop_mult: config?.atr_stop_mult ?? 1.5,
+          take_profit_r: config?.take_profit_r ?? 1.5,
+          chandelier_stop_enabled: config?.chandelier_stop_enabled !== false,
+          fee_bps: config?.fee_bps ?? 10,
+          slippage_bps: config?.slippage_bps ?? 5,
+          tp_mode: config?.tp_mode || 'strategy',
+        }
+        : {
+          trailing_stop_percent: config?.trailing_stop_percent ?? 2,
+        }),
       backtest_run_id: runId,
       backtest_fingerprint: snapshot || fingerprint,
     },

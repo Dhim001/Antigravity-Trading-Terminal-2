@@ -8,23 +8,42 @@ import {
   runVersionParts,
 } from '@/lib/mlTrainRunsDisplay';
 
-export function MlTrainRunsTable({ trainRuns, activeSymbol, versions = [] }) {
+export function MlTrainRunsTable({
+  trainRuns,
+  activeSymbol,
+  versions = [],
+  batchFilter = null,
+  onClearBatchFilter,
+}) {
   const { onScroll: onRunsScroll, window: runsWindow } = useVirtualRows(trainRuns, {
     rowHeight: 46,
     overscan: 6,
   });
+  const batchId = batchFilter?.batchId || null;
 
   return (
     <section className="ml-training__card">
       <div className="ml-training__card-head">
         <h4 className="ml-training__section-title">Recent runs</h4>
-        <span className="ml-training__header-meta">
+        <span className="ml-training__header-meta flex items-center gap-1">
+          {batchId && (
+            <button
+              type="button"
+              className="ml-training__batch-filter-chip inline-flex items-center gap-1 rounded-sm border border-primary/40 bg-primary/10 px-1 text-primary hover:bg-primary/20"
+              title={`Showing runs from batch ${batchId} — click to clear the filter`}
+              onClick={() => onClearBatchFilter?.()}
+            >
+              batch {String(batchId).slice(0, 8)}… ×
+            </button>
+          )}
           {trainRuns.length} · {activeSymbol || '—'}
         </span>
       </div>
       {trainRuns.length === 0 ? (
         <p className="text-[0.65rem] text-muted-foreground">
-          No train/validate history yet for this symbol/strategy.
+          {batchId
+            ? 'No runs recorded for this batch yet.'
+            : 'No train/validate history yet for this symbol/strategy.'}
         </p>
       ) : (
         <div className="ml-training__runs-scroll" onScroll={onRunsScroll}>

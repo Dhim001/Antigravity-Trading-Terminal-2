@@ -94,11 +94,31 @@ backend/data/tcn_signal_models/
 backend/data/vae_regime_models/
 backend/data/transformer_signal_models/
 backend/data/gnn_signal_models/
+backend/data/gnn_cross_asset_models/
+backend/data/_orphans/
+
+# Train-job runtime: epoch checkpoints, Optuna studies, job result dumps
+backend/data/ml_checkpoints/
+backend/data/optuna/
+backend/data/ml_job_results/
+
+# Per-bot fitted artifacts written at runtime
+backend/data/calibration/
+backend/data/conformal/
+backend/data/hmm_regime/
+backend/data/stacking/
+backend/data/strategy_state/
+backend/data/journal_screenshots/
+
 *.onnx
 *.joblib
 *.pkl
 *.pt
 *.pth
+
+# Numba JIT caches (ml_feature_kernels and similar)
+*.nbc
+*.nbi
 
 # Frontend production build (also matched by dist/)
 frontend/dist/

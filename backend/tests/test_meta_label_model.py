@@ -37,6 +37,10 @@ def _winning_snap(score: int = 3, conf: float = 0.72, atr: str = "normal"):
     return {
         "score": score,
         "confidence": conf,
+        "regime": "trending",
+        "selected_strategy": "SUPERTREND_ADX",
+        "bars_since_switch": 7,
+        "regime_switched": False,
         "sub_reports": {
             "trend": {"score": 1, "trend_regime": "trending"},
             "momentum": {"score": 1, "volume": {"score": 0}},
@@ -52,6 +56,10 @@ def _losing_snap(score: int = 2, conf: float = 0.58, atr: str = "elevated"):
     return {
         "score": score,
         "confidence": conf,
+        "regime": "ranging",
+        "selected_strategy": "BRS_SCALPING",
+        "bars_since_switch": 2,
+        "regime_switched": True,
         "sub_reports": {
             "trend": {"score": 0, "trend_regime": "ranging"},
             "momentum": {"score": -1},
@@ -70,6 +78,23 @@ class MetaLabelFeatureTests(unittest.TestCase):
         self.assertEqual(len(vec), len(FEATURE_NAMES))
         self.assertEqual(feat["is_buy"], 1.0)
         self.assertEqual(feat["atr_normal"], 1.0)
+
+    def test_regime_context_features(self):
+        feat = insight_to_features(_winning_snap(), symbol="AAPL", side="BUY", entry_ts="2026-06-01T14:30:00Z")
+        self.assertEqual(feat["regime_trending"], 1.0)
+        self.assertEqual(feat["regime_ranging"], 0.0)
+        self.assertEqual(feat["regime_elevated_vol"], 0.0)
+        self.assertEqual(feat["child_supertrend"], 1.0)
+        self.assertEqual(feat["child_brs"], 0.0)
+        self.assertEqual(feat["child_vwap"], 0.0)
+        self.assertEqual(feat["bars_since_switch"], 7.0)
+        self.assertEqual(feat["regime_switched_flag"], 0.0)
+
+        feat_losing = insight_to_features(_losing_snap(), symbol="AAPL", side="BUY", entry_ts="2026-06-01T14:30:00Z")
+        self.assertEqual(feat_losing["regime_ranging"], 1.0)
+        self.assertEqual(feat_losing["child_brs"], 1.0)
+        self.assertEqual(feat_losing["regime_switched_flag"], 1.0)
+        self.assertEqual(feat_losing["bars_since_switch"], 2.0)
 
     def test_parse_unix_entry_ts(self):
         dt = _parse_entry_ts("1704067200")

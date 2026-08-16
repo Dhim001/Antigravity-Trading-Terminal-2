@@ -263,6 +263,18 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "ent_coef": 0.01,
         "max_grad_norm": 0.5,
         "direction_mode": "BOTH",
+        # ATR×1.5 stop / 1.5R target — not 2%/3% of allocation.
+        "atr_stop_mult": 1.5,
+        "take_profit_r": 1.5,
+        "chandelier_stop_enabled": True,
+        "chandelier_multiplier": 1.5,
+        "tp_mode": "strategy",
+        "risk_per_trade_usd": 20,
+        "fee_bps": 10,
+        "slippage_bps": 5,
+        "preferred_train_timeframe": "5m",
+        "paper_first": True,
+        "rl_percent_stops": False,
     },
     "TCN_MULTI_HORIZON": {
         "rsi_length": 14,

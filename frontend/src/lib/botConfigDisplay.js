@@ -43,6 +43,14 @@ export const FIELD_META = {
   trailing_stop_percent: { label: 'Trailing stop', group: 'risk', kind: 'percent', hint: 'Exits when price retraces this % from the best price since entry.' },
   stop_loss_percent: { label: 'Stop loss', group: 'risk', kind: 'percent' },
   take_profit_percent: { label: 'Take profit', group: 'risk', kind: 'percent', hint: 'Closes the position when price reaches this % target.' },
+  risk_per_trade_usd: { label: 'Risk per trade', group: 'risk', kind: 'usd', hint: 'Dollar risk at the ATR×1.5 stop. RL clamps to $15–25.' },
+  atr_stop_mult: { label: 'ATR stop multiple', group: 'risk', kind: 'number', hint: 'Stop distance = ATR × this multiple (default 1.5).' },
+  take_profit_r: { label: 'Take profit R', group: 'risk', kind: 'number', hint: 'Target as a multiple of the ATR stop (1.5R default).' },
+  chandelier_stop_enabled: { label: 'ATR chandelier trail', group: 'risk', kind: 'boolean', hint: 'Trail the stop by ATR instead of a percent of price.' },
+  chandelier_multiplier: { label: 'Chandelier ATR multiple', group: 'risk', kind: 'number' },
+  fee_bps: { label: 'Fee (bps)', group: 'risk', kind: 'number', hint: 'Round-trip train/backtest fee in basis points.' },
+  slippage_bps: { label: 'Slippage (bps)', group: 'risk', kind: 'number' },
+  paper_first: { label: 'Paper first', group: 'risk', kind: 'boolean', hint: 'Redeploy to paper only until costed WF+holdout payoff holds.' },
   take_profit_price: { label: 'Take profit price', group: 'risk', kind: 'price', readOnly: true },
   tp_mode: { label: 'Take profit mode', group: 'risk', kind: 'tp_mode' },
   min_confidence: {
@@ -201,7 +209,12 @@ export const STRATEGY_FIELD_KEYS = {
   // Deploy / live inference only — training hyperparams live in Model Training.
   ML_SIGNAL_BOOST: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
   LSTM_DIRECTION: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
-  RL_PPO_AGENT: ['min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
+  RL_PPO_AGENT: [
+    'min_confidence', 'model_version', 'model_symbol', 'direction_mode',
+    'risk_per_trade_usd', 'atr_stop_mult', 'take_profit_r',
+    'chandelier_stop_enabled', 'chandelier_multiplier',
+    'fee_bps', 'slippage_bps', 'paper_first',
+  ],
   TCN_MULTI_HORIZON: ['min_return', 'min_confidence', 'model_version', 'model_symbol', 'direction_mode'],
   VAE_REGIME_DETECTOR: [
     'anomaly_threshold', 'suppress_threshold', 'model_version', 'model_symbol',
@@ -581,6 +594,21 @@ export function pickDeployConfig(strategy, raw = {}) {
       || strat === 'VAE_REGIME_DETECTOR' || strat === 'TRANSFORMER_SIGNAL'
       || strat === 'GNN_CROSS_ASSET' || strat === 'HYBRID_ENSEMBLE'
     ) ? 'BOTH' : 'LONG_ONLY';
+  }
+  const strat = String(strategy || '').toUpperCase();
+  if (strat === 'RL_PPO_AGENT' && !out.rl_percent_stops) {
+    if (out.trailing_stop_percent == null) delete out.trailing_stop_percent;
+    if (out.take_profit_percent == null) delete out.take_profit_percent;
+    if (out.tp_mode == null) out.tp_mode = 'strategy';
+    if (out.chandelier_stop_enabled == null) out.chandelier_stop_enabled = true;
+    if (out.chandelier_multiplier == null) out.chandelier_multiplier = 1.5;
+    if (out.atr_stop_mult == null) out.atr_stop_mult = 1.5;
+    if (out.take_profit_r == null) out.take_profit_r = 1.5;
+    if (out.risk_per_trade_usd == null) out.risk_per_trade_usd = 20;
+    if (out.fee_bps == null) out.fee_bps = 10;
+    if (out.slippage_bps == null) out.slippage_bps = 5;
+    if (out.paper_first == null) out.paper_first = true;
+    return out;
   }
   if (out.trailing_stop_percent == null) out.trailing_stop_percent = 2;
   if (out.tp_mode == null) out.tp_mode = 'percent';

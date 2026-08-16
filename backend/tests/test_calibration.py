@@ -65,10 +65,12 @@ class TestCalibrationMath(unittest.TestCase):
         self.assertEqual(score_bucket(2), "2")
         self.assertEqual(score_bucket(4), "4+")
         self.assertEqual(score_bucket(-3), "3")
+        self.assertEqual(score_bucket(None), "unknown")
 
     def test_confidence_bucket(self):
         self.assertEqual(confidence_bucket(0.6), "0.55-0.65")
         self.assertEqual(confidence_bucket(0.8), "0.75+")
+        self.assertEqual(confidence_bucket(None), "unknown")
 
 
 class TestPairClosedTrades(unittest.TestCase):
@@ -121,6 +123,18 @@ class TestPairClosedTrades(unittest.TestCase):
 
 
 class TestSuggestThresholds(unittest.TestCase):
+    def test_skips_unknown_imputed_buckets(self):
+        buckets = [
+            {
+                "symbol": "BTCUSDT",
+                "confidence_bucket": "unknown",
+                "score_bucket": "unknown",
+                "sample_size": 17,
+                "wilson_lower": 0.3,
+            },
+        ]
+        self.assertEqual(suggest_thresholds(buckets, min_samples=5), [])
+
     def test_suggests_min_confidence_when_low_buckets_underperform(self):
         buckets = [
             {
@@ -250,6 +264,51 @@ class TestCalibrationIntegration(unittest.TestCase):
         self.assertEqual(data["overall"]["wins"], 1)
         self.assertGreaterEqual(len(data["buckets"]), 1)
 
+    def test_no_suggestions_without_insight_snapshots(self):
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM bot_trades")
+        cursor.execute(
+            """
+            INSERT INTO bots (id, strategy, symbol, timeframe, status, allocation, config)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("bot-regime-1", "REGIME_STRATEGY_AGENT", "BTCUSDT", "1m", "RUNNING", 1000.0, "{}"),
+        )
+        for i in range(8):
+            cursor.execute(
+                """
+                INSERT INTO bot_trades
+                (bot_id, symbol, side, quantity, price, pnl, is_exit, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "bot-regime-1", "BTCUSDT", "BUY", 1.0, 100.0, None, 0,
+                    f"2026-06-0{i+1}T10:00:00Z",
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO bot_trades
+                (bot_id, symbol, side, quantity, price, pnl, is_exit, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "bot-regime-1", "BTCUSDT", "SELL", 1.0, 95.0, -5.0, 1,
+                    f"2026-06-0{i+1}T11:00:00Z",
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        data = get_calibration(bot_id="bot-regime-1", min_samples=3)
+        self.assertEqual(data["overall"]["closed_trades"], 8)
+        self.assertEqual(data["overall"]["with_insight_context"], 0)
+        self.assertEqual(data["suggestions"], [])
+        self.assertEqual(data["buckets"], [])
+        btc = data["symbol_thresholds"].get("BTCUSDT") or {}
+        self.assertEqual(btc.get("suggestions") or [], [])
+
     def test_live_filter_rejects_from_logs(self):
         live = aggregate_live_filter_rejects(bot_id="bot-cal-1")
         self.assertGreaterEqual(live["total"], 1)
@@ -307,6 +366,8 @@ class TestMetaLabelGate(unittest.TestCase):
             "signal": "BUY",
             "score": 2,
             "confidence": 0.6,
+            "regime": "trending",
+            "selected_strategy": "SUPERTREND_ADX",
             "sub_reports": {"risk": {"atr_regime": "normal"}},
         })
         for i in range(6):
@@ -340,6 +401,8 @@ class TestMetaLabelGate(unittest.TestCase):
         insight = {
             "score": 2,
             "confidence": 0.6,
+            "regime": "trending",
+            "selected_strategy": "SUPERTREND_ADX",
             "sub_reports": {"risk": {"atr_regime": "normal"}},
         }
         cfg = {
@@ -387,6 +450,8 @@ class TestMetaLabelGate(unittest.TestCase):
                 "insight_snapshot": {
                     "score": 3,
                     "confidence": 0.72,
+                    "regime": "trending",
+                    "selected_strategy": "SUPERTREND_ADX",
                     "sub_reports": {"risk": {"atr_regime": "elevated"}},
                 },
             },
@@ -404,12 +469,32 @@ class TestMetaLabelGate(unittest.TestCase):
         insight = {
             "score": 3,
             "confidence": 0.72,
+            "regime": "trending",
+            "selected_strategy": "SUPERTREND_ADX",
             "sub_reports": {"risk": {"atr_regime": "elevated"}},
         }
         self.assertEqual(
             setup_bucket_key(symbol="ETHUSDT", timeframe="5m", side="BUY", insight=insight),
             closed[0].bucket_key(),
         )
+
+    def test_setup_bucket_key_regime_aware(self):
+        """Regime-agent bucket keys must differ across regimes/child strategies."""
+        base = {
+            "score": 3,
+            "confidence": 0.72,
+            "sub_reports": {"risk": {"atr_regime": "normal"}},
+        }
+        k1 = setup_bucket_key(symbol="ETHUSDT", timeframe="5m", side="BUY", insight={
+            **base, "regime": "trending", "selected_strategy": "SUPERTREND_ADX",
+        })
+        k2 = setup_bucket_key(symbol="ETHUSDT", timeframe="5m", side="BUY", insight={
+            **base, "regime": "ranging", "selected_strategy": "BRS_SCALPING",
+        })
+        k3 = setup_bucket_key(symbol="ETHUSDT", timeframe="5m", side="BUY", insight=base)
+        self.assertNotEqual(k1, k2)
+        self.assertNotEqual(k1, k3)
+        self.assertNotEqual(k2, k3)
 
 
 class TestApplySuggestions(unittest.TestCase):
@@ -449,7 +534,13 @@ class TestApplySuggestions(unittest.TestCase):
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             ("bot-idx", "CHART_AGENT", "SOLUSDT", "1m", "RUNNING", 1000.0, "{}"),
         )
-        snap = json.dumps({"score": 3, "confidence": 0.7, "sub_reports": {"risk": {"atr_regime": "normal"}}})
+        snap = json.dumps({
+            "score": 3,
+            "confidence": 0.7,
+            "regime": "trending",
+            "selected_strategy": "SUPERTREND_ADX",
+            "sub_reports": {"risk": {"atr_regime": "normal"}},
+        })
         cursor.execute(
             "INSERT INTO bot_trades (bot_id, symbol, side, quantity, price, is_exit, insight_snapshot, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -468,7 +559,13 @@ class TestApplySuggestions(unittest.TestCase):
             symbol="SOLUSDT",
             timeframe="1m",
             side="BUY",
-            insight={"score": 3, "confidence": 0.7, "sub_reports": {"risk": {"atr_regime": "normal"}}},
+            insight={
+                "score": 3,
+                "confidence": 0.7,
+                "regime": "trending",
+                "selected_strategy": "SUPERTREND_ADX",
+                "sub_reports": {"risk": {"atr_regime": "normal"}},
+            },
         )
         stats = store.lookup("bot-idx", key)
         self.assertIsNotNone(stats)

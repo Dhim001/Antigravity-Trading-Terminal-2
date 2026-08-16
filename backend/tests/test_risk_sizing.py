@@ -48,6 +48,14 @@ class RiskSizingTests(unittest.TestCase):
     def test_risk_pct_constant(self):
         self.assertEqual(RISK_PCT, 0.01)
 
+    def test_dollar_risk_override(self):
+        cfg = parse_risk_sizing_config({"risk_base": 3000, "risk_per_trade_usd": 20})
+        self.assertAlmostEqual(entry_risk_amount(cfg, 3000.0), 20.0)
+
+    def test_enrich_rl_injects_dollar_risk(self):
+        out = enrich_backtest_risk_config({"strategy": "RL_PPO_AGENT", "allocation": 3000}, 3000.0)
+        self.assertEqual(out["risk_per_trade_usd"], 20.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,7 +283,7 @@ export default function BotCalibrationPanel({
   };
 
   const handleRunWalkForward = async () => {
-    if (!botId || wfLoading || strategy !== 'CHART_AGENT') return;
+    if (!botId || wfLoading || (strategy !== 'CHART_AGENT' && strategy !== 'REGIME_STRATEGY_AGENT')) return;
     setWfLoading(true);
     setWfResult(null);
     try {
@@ -427,7 +427,7 @@ export default function BotCalibrationPanel({
                 variant="outline"
                 size="sm"
                 className="h-7 text-xs gap-1"
-                disabled={wfLoading}
+                disabled={wfLoading || (strategy !== 'CHART_AGENT' && strategy !== 'REGIME_STRATEGY_AGENT')}
                 onClick={handleRunWalkForward}
               >
                 {wfLoading ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}

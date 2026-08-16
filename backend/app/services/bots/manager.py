@@ -592,6 +592,10 @@ class BotManagerService:
             merged_config,
             bot_timeframe=bot.get("timeframe"),
         )
+        from app.services.bots.rl_risk import apply_rl_live_defaults, is_rl_strategy
+
+        if is_rl_strategy(bot.get("strategy")):
+            merged_config = apply_rl_live_defaults(merged_config)
         bot_cfg = merge_tp_config(bot.get("strategy", ""), merged_config)
 
         conn = get_connection()
@@ -611,7 +615,13 @@ class BotManagerService:
         pos = bot_positions.get_bot_position(bot_id, symbol)
         if abs(pos["size"]) > 1e-8:
             side = "BUY" if pos["size"] > 0 else "SELL"
+            from app.services.bots.rl_risk import is_rl_strategy, uses_percent_stops
+
             sl_pct = merged_config.get("trailing_stop_percent") or merged_config.get("stop_loss_percent")
+            sl_price = pos.get("stop_loss_price")
+            if is_rl_strategy(bot.get("strategy")) and not uses_percent_stops(merged_config):
+                # Keep the ATR stop already on the slice — do not rewrite to 2%.
+                sl_pct = None
             tp_pct, tp_price = resolve_take_profit(bot_cfg, {}, side, pos["avg_price"])
             bot_positions.update_bot_risk(
                 bot_id,
@@ -620,6 +630,7 @@ class BotManagerService:
                 side,
                 stop_loss_percent=sl_pct,
                 take_profit_percent=tp_pct,
+                stop_loss_price=sl_price,
                 take_profit_price=tp_price,
             )
             owners = bot_positions.get_symbol_owners(symbol)
@@ -1660,7 +1671,12 @@ class BotManagerService:
                 bot["_pretrade_pending_cooldown_sec"] = pending_cooldown_sec
 
             account_balance = self.get_account_balance(bot.get("symbol"))
-            risk_amount = account_balance * RISK_PCT
+            from app.services.bots.rl_risk import is_rl_strategy, resolve_rl_risk_usd
+
+            if is_rl_strategy(bot.get("strategy")):
+                risk_amount = resolve_rl_risk_usd(bot.get("config") or {})
+            else:
+                risk_amount = account_balance * RISK_PCT
 
             stop_loss_price = signal_data.get("stop_loss_price")
             if not stop_loss_price:
@@ -1958,18 +1974,62 @@ class BotManagerService:
         tp_price = None
         if not is_exit:
             bot_cfg = merge_tp_config(bot.get("strategy", ""), bot.get("config", {}))
+            from app.services.bots.rl_risk import is_rl_strategy, uses_percent_stops
+
+            if is_rl_strategy(bot.get("strategy")) and not uses_percent_stops(bot.get("config") or {}):
+                bot_cfg = {**bot_cfg, "tp_mode": "strategy"}
             tp_pct, tp_price = resolve_take_profit(bot_cfg, signal_data, side, current_price)
+
+        from app.services.bots.rl_risk import is_rl_strategy, uses_percent_stops
+
+        rl_atr = (
+            is_rl_strategy(bot.get("strategy"))
+            and not uses_percent_stops(bot.get("config") or {})
+        )
+        sl_pct = None
+        sl_price = None
+        if not is_exit:
+            if rl_atr:
+                sl_price = signal_data.get("stop_loss_price")
+                if sl_price is None:
+                    sl_dist = signal_data.get("stop_loss_distance")
+                    try:
+                        sl_dist_f = float(sl_dist) if sl_dist is not None else 0.0
+                    except (TypeError, ValueError):
+                        sl_dist_f = 0.0
+                    if sl_dist_f > 0:
+                        sl_price = (
+                            current_price - sl_dist_f
+                            if side == "BUY"
+                            else current_price + sl_dist_f
+                        )
+            else:
+                sl_pct = (
+                    bot.get("config", {}).get("trailing_stop_percent")
+                    or bot.get("config", {}).get("stop_loss_percent")
+                )
+        if not is_exit and tp_price is None and signal_data.get("take_profit_price") is not None:
+            tp_price = signal_data.get("take_profit_price")
+
+        if not is_exit:
+            snap = dict(insight_snapshot) if isinstance(insight_snapshot, dict) else {}
+            if sl_price is not None:
+                snap["stop_loss_price"] = sl_price
+            if tp_price is not None:
+                snap["take_profit_price"] = tp_price
+            if sl_pct is not None:
+                snap["stop_loss_percent"] = sl_pct
+            if tp_pct is not None:
+                snap["take_profit_percent"] = tp_pct
+            insight_snapshot = snap or insight_snapshot
 
         order_req = {
             "symbol": symbol,
             "type": "MARKET",
             "side": side,
             "quantity": quantity,
-            "stop_loss_percent": (
-                None if is_exit
-                else bot.get("config", {}).get("trailing_stop_percent")
-                or bot.get("config", {}).get("stop_loss_percent")
-            ),
+            "stop_loss_percent": sl_pct,
+            "stop_loss_price": sl_price,
             "take_profit_percent": None if is_exit else tp_pct,
             "take_profit_price": None if is_exit else tp_price,
             "bot_id": bot_id,
@@ -2360,6 +2420,10 @@ class BotManagerService:
         if strategy == "CHART_AGENT":
             config = {**(config or {}), "symbol": symbol, "timeframe": tf}
         config, _ = sanitize_bot_config(config or {})
+        from app.services.bots.rl_risk import apply_rl_live_defaults, is_rl_strategy
+
+        if is_rl_strategy(strategy):
+            config = apply_rl_live_defaults(config)
 
         bot_id = str(uuid.uuid4())
         conn = get_connection()
@@ -2873,6 +2937,23 @@ class BotManagerService:
                 end_mark=_tca_end_mark,
             )
             bot_positions.apply_fill(p["bot_id"], p["symbol"], p["side"], filled_qty, fill_price, feed=getattr(self.oms, "feed", None))
+            if not is_exit:
+                snap = p.get("insight_snapshot") if isinstance(p.get("insight_snapshot"), dict) else {}
+                sl_px = snap.get("stop_loss_price")
+                tp_px = snap.get("take_profit_price")
+                sl_pct = snap.get("stop_loss_percent")
+                tp_pct = snap.get("take_profit_percent")
+                if sl_px is not None or tp_px is not None or sl_pct is not None or tp_pct is not None:
+                    bot_positions.update_bot_risk(
+                        p["bot_id"],
+                        p["symbol"],
+                        fill_price,
+                        p["side"],
+                        stop_loss_percent=sl_pct,
+                        take_profit_percent=tp_pct,
+                        stop_loss_price=sl_px,
+                        take_profit_price=tp_px,
+                    )
             if p.get("signal_id"):
                 signal_ledger.mark_signal_filled(p["signal_id"], order_id=resolved_order_id)
             if resolved_order_id:

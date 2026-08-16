@@ -111,8 +111,8 @@ def run_meta_label_walk_forward_sync(
     from app.services.archive.resolve import resolve_backtest_candles
 
     strat_key = str(strategy or "").upper()
-    if strat_key != "CHART_AGENT":
-        return {"ok": False, "error": "meta-label walk-forward requires CHART_AGENT strategy"}
+    if strat_key not in ("CHART_AGENT", "REGIME_STRATEGY_AGENT"):
+        return {"ok": False, "error": "meta-label walk-forward requires CHART_AGENT or REGIME_STRATEGY_AGENT"}
 
     if not run_backtest or not feed:
         return {"ok": False, "error": "Backtester or market feed not available"}

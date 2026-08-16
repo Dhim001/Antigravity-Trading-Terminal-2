@@ -128,6 +128,17 @@ class BuildPatchTests(unittest.TestCase):
         self.assertIn("stop_loss_percent", patch)
         self.assertGreater(patch["stop_loss_percent"], 1.5)
 
+    def test_rl_stop_too_tight_widens_atr_not_percent(self):
+        patch = build_config_patch(
+            "stop_too_tight",
+            {"atr_stop_mult": 1.5, "chandelier_multiplier": 1.5},
+            strategy="RL_PPO_AGENT",
+        )
+        self.assertIn("atr_stop_mult", patch)
+        self.assertGreater(patch["atr_stop_mult"], 1.5)
+        self.assertNotIn("trailing_stop_percent", patch)
+        self.assertNotIn("stop_loss_percent", patch)
+
     def test_regime_mismatch_blocks_ranging(self):
         patch = build_config_patch(
             "regime_mismatch",
