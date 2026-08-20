@@ -216,6 +216,18 @@ class RlPpoStrategy(BaseStrategy):
         action, confidence = result
         threshold = float(self._cfg.get("min_confidence", 0.28))
 
+        # Replay buffer (AI-FT-PTL-001 §3.2): stash live (obs, action) so the
+        # trade-close hook can persist the full transition with its reward.
+        if not df_row.get("_backtest"):
+            try:
+                from app.services.bots.rl_replay_store import note_pending_action
+
+                _bot_id = self._cfg.get("_bot_id") or self._cfg.get("bot_id")
+                if _bot_id:
+                    note_pending_action(str(_bot_id), symbol, obs, action)
+            except Exception:
+                pass
+
         def _step_payload(sig: str) -> dict:
             return {
                 "observation": obs.tolist()[:24],

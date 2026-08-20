@@ -592,6 +592,57 @@ def init_db():
         )
     """)
 
+    # Closed-loop feature feedback (AI-FT-PTL-001 §4.2): one row per closed bot
+    # trade capturing the outcome class + excursion + execution quality. The
+    # triple-barrier labeller reads this on the next retrain to adjust barrier
+    # widths, down-weight hostile-regime samples, and exclude high-shortfall bars.
+    _ptl_serial = _serial_type()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS posttrade_labels (
+            id {_ptl_serial},
+            bot_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            bar_time INTEGER,
+            outcome_class TEXT,
+            mae REAL,
+            mfe REAL,
+            execution_shortfall_bps REAL,
+            regime TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_posttrade_labels_symbol ON posttrade_labels (symbol)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_posttrade_labels_created ON posttrade_labels (created_at)"
+    )
+
+    # RL replay buffer (AI-FT-PTL-001 §3.2, P1 #4): (state, action, reward,
+    # next_state, done) transitions recorded from live trading, consumed by
+    # replay-based PPO fine-tuning. Ring buffer — capped by ReplayStore.
+    _rlr_serial = _serial_type()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS rl_replay (
+            id {_rlr_serial},
+            bot_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            obs TEXT NOT NULL,
+            action INTEGER NOT NULL,
+            reward REAL NOT NULL,
+            next_obs TEXT,
+            done INTEGER NOT NULL DEFAULT 0,
+            outcome_class TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rl_replay_symbol ON rl_replay (symbol)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rl_replay_id ON rl_replay (id)"
+    )
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ambiguous_orders (
             id TEXT PRIMARY KEY,

@@ -8,6 +8,7 @@
  */
 
 import { isTransientMlPollError } from '@/lib/mlJobTimeouts';
+import { knobsToTrainConfig, knobsToValidateConfig } from '@/lib/mlKnobsToConfig';
 
 /** Batch statuses after which polling stops. */
 export const SERVER_BATCH_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
@@ -48,8 +49,10 @@ export function makeBatchIdempotencyKey() {
 
 /**
  * Build the POST /ml/batch-train items list. Each item carries the shared
- * timeframe/window merged with the per-strategy knob snapshot frozen at
- * batch start (overrides win on key conflicts).
+ * timeframe/window merged with the per-strategy knob snapshot frozen at batch
+ * start, mapped onto the snake_case keys the backend trainers read — shipping
+ * the raw camelCase knob state made the backend silently train/validate on
+ * strategy defaults instead of the user's Lab settings.
  */
 export function buildBatchItems(queue, { configOverrides, timeframe, trainingWindow, autoValidate } = {}) {
   const months = Number(trainingWindow);
@@ -58,11 +61,18 @@ export function buildBatchItems(queue, { configOverrides, timeframe, trainingWin
     ...(Number.isFinite(months) && months > 0 ? { training_window_months: months } : {}),
   };
   const list = Array.isArray(queue) ? queue : [];
-  return list.map((id) => ({
-    strategy: id,
-    config: { ...base, ...((configOverrides && configOverrides[id]) || {}) },
-    validate_after: Boolean(autoValidate),
-  }));
+  return list.map((id) => {
+    const knobs = (configOverrides && configOverrides[id]) || null;
+    return {
+      strategy: id,
+      config: {
+        ...base,
+        ...knobsToTrainConfig(id, knobs),
+        ...knobsToValidateConfig(id, knobs),
+      },
+      validate_after: Boolean(autoValidate),
+    };
+  });
 }
 
 /**

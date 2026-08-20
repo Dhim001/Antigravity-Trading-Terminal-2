@@ -51,6 +51,15 @@ TRAIN_COST_HIGH = 3
 ITEM_MAX_RETRIES = 2
 ITEM_RETRY_BACKOFF_SEC = (30.0, 120.0)
 
+# A live batch with pending work but no running item and no status movement
+# for this long is stalled (runner task gone or wedged). Between-items gaps
+# are milliseconds, so 5 minutes is unambiguous.
+STALL_THRESHOLD_SEC = 300.0
+
+# Minimum seconds between ensure_batch_runner respawn attempts for the same
+# batch — breaks poll-driven crash loops.
+RESPAWN_COOLDOWN_SEC = 30.0
+
 _TRANSIENT_ERROR_TOKENS = (
     "brokenprocesspool",
     "process pool is not usable",
@@ -93,6 +102,7 @@ _PERMANENT_ERROR_TOKENS = (
 
 _runner_lock = threading.Lock()
 _runner_tasks: dict[str, asyncio.Task] = {}
+_last_spawn_attempt: dict[str, float] = {}
 _tables_ready = False
 _resumed = False
 
@@ -130,6 +140,7 @@ def reset_ml_batch_runner_for_tests() -> None:
     global _tables_ready, _resumed
     with _runner_lock:
         _runner_tasks.clear()
+        _last_spawn_attempt.clear()
         _tables_ready = False
         _resumed = False
 
@@ -551,6 +562,48 @@ def set_item_status(
         conn.close()
 
 
+def set_item_status_if_not_terminal(
+    item_id: str,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Like ``set_item_status`` but never overwrites a terminal state.
+
+    Shutdown cancellation races with status-poll reconciliation: a poll may
+    have finalized the item while the runner was still parked in the
+    executor, and the CancelledError handler must not clobber that outcome.
+    """
+    if status not in ITEM_STATUSES:
+        return
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE ml_batch_items SET status = ?, error = ?, updated_at = ? "
+            "WHERE id = ? AND status NOT IN ('done', 'error', 'cancelled', 'skipped')",
+            (status, error, _now_iso(), item_id),
+        )
+        conn.commit()
+    except Exception:
+        logger.debug("ml_batch item guarded status update failed", exc_info=True)
+    finally:
+        conn.close()
+
+
+def validate_phase_pending(item: dict, job: dict | None) -> bool:
+    """True when the item's linked job is a *train* job but the item has
+    ``validate_after`` — the walk-forward phase has not produced a linked
+    validate job yet, so a finished train job must not read as a done item.
+    Once the executor submits validation it re-links the item to the
+    validate job, whose own terminal state then drives reconciliation.
+    """
+    if not item.get("validate_after"):
+        return False
+    kind = str((job or {}).get("kind") or "train").lower()
+    return kind == "train"
+
+
 def set_item_job_id(item_id: str, job_id: str | None) -> None:
     """Record the ml_jobs id on a running item so cancel can find it."""
     if not item_id or not job_id:
@@ -740,8 +793,11 @@ def recover_interrupted_batches() -> list[str]:
             )
             rows = [dict(r) for r in cur.fetchall()]
         except Exception:
-            logger.debug("ml_batch recovery scan failed", exc_info=True)
-            return []
+            # Propagate so resume_incomplete_batches can reopen its guard and
+            # retry on the next request — a transient DB error at boot must
+            # not disable recovery for the rest of the process lifetime.
+            logger.warning("ml_batch recovery scan failed", exc_info=True)
+            raise
         resumed: list[str] = []
         now = _now_iso()
         for row in rows:
@@ -750,7 +806,7 @@ def recover_interrupted_batches() -> list[str]:
                 continue
             affected.append(bid)
             cur.execute(
-                "SELECT id, job_id FROM ml_batch_items WHERE batch_id = ? AND status = 'running'",
+                "SELECT id, job_id, validate_after, error FROM ml_batch_items WHERE batch_id = ? AND status = 'running'",
                 (bid,),
             )
             running_items = [dict(r) for r in cur.fetchall()]
@@ -769,7 +825,15 @@ def recover_interrupted_batches() -> list[str]:
                         job = None
                     if job and job.get("status") in ("done", "error", "cancelled"):
                         js = job["status"]
-                        if js == "done":
+                        if js == "done" and validate_phase_pending(item, job):
+                            # Train finished but the walk-forward never ran —
+                            # not a completed item; retry re-runs it.
+                            cur.execute(
+                                "UPDATE ml_batch_items SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                                ("interrupted before validation — retry to re-run", now, item_id),
+                            )
+                            interrupted += 1
+                        elif js == "done":
                             cur.execute(
                                 "UPDATE ml_batch_items SET status = 'done', error = NULL, updated_at = ? WHERE id = ?",
                                 (now, item_id),
@@ -828,13 +892,171 @@ def resume_incomplete_batches(state: Any = None, *, event_bus: Any = None) -> li
         if _resumed:
             return []
         _resumed = True
+    try:
+        recovered = recover_interrupted_batches()
+    except Exception:
+        # Reopen the guard so the next request retries instead of leaving
+        # recovery disabled for the rest of the process lifetime.
+        with _runner_lock:
+            _resumed = False
+        logger.warning("ML batch recovery failed — will retry on next request", exc_info=True)
+        return []
     started = []
-    for bid in recover_interrupted_batches():
+    for bid in recovered:
         if start_batch_runner(bid, state, event_bus=event_bus):
             started.append(bid)
     if started:
         logger.info("ML batch runner resumed %d interrupted batch(es)", len(started))
     return started
+
+
+def ensure_batch_runner(
+    batch_id: str,
+    state: Any = None,
+    *,
+    event_bus: Any = None,
+) -> bool:
+    """Respawn the runner when a non-terminal batch has no live task.
+
+    The runner is an asyncio task; if it dies mid-process (e.g. a cancelled
+    pool future propagating ``CancelledError`` past ``_run_batch_guarded``)
+    the batch otherwise sits 'queued' forever — ``resume_incomplete_batches``
+    is a once-per-process guard and never fires again. The status endpoint
+    calls this on every poll so a dead runner self-heals. Returns True when a
+    new runner was spawned.
+    """
+    batch = get_batch(batch_id)
+    if batch is None:
+        return False
+    if batch.get("status") not in ("queued", "running"):
+        return False
+    if batch.get("cancel_requested"):
+        return False
+    with _runner_lock:
+        task = _runner_tasks.get(batch_id)
+        alive = task is not None and not task.done()
+    if alive:
+        return False
+    # A 'running' item with no live runner means the task died mid-item.
+    # Reconcile against the job store: terminal jobs finalize the item; a job
+    # still in flight becomes a retryable error instead of retraining
+    # underneath it (two writers on the same artifact would race).
+    changed = False
+    for item in batch.get("items") or []:
+        if item.get("status") != "running":
+            continue
+        job = None
+        if item.get("job_id"):
+            try:
+                from app.services.bots.ml_job_store import get_ml_job
+
+                job = get_ml_job(item["job_id"])
+            except Exception:
+                job = None
+        js = str((job or {}).get("status") or "").lower()
+        if js == "done" and validate_phase_pending(item, job):
+            # Train done but the walk-forward phase never ran and the runner
+            # is dead — surface as a retryable error, not a silent pass.
+            set_item_status(
+                item["item_id"], "error",
+                error="interrupted before validation — retry to re-run",
+            )
+        elif js == "done":
+            set_item_status(item["item_id"], "done")
+        elif js == "cancelled":
+            set_item_status(item["item_id"], "cancelled", error=item.get("error") or "cancelled")
+        elif js == "error":
+            set_item_status(
+                item["item_id"], "error", error=str(job.get("error") or "training failed"),
+            )
+        else:
+            set_item_status(
+                item["item_id"], "error", error="batch runner lost — retry to re-run",
+            )
+        changed = True
+    if changed:
+        batch = _refresh_batch_status(batch_id) or batch
+    if not any((it or {}).get("status") == "pending" for it in (batch.get("items") or [])):
+        return False
+    # Throttle respawns: if the runner crash-loops (e.g. claim keeps raising
+    # on a locked DB), a status poll every few seconds would otherwise spawn
+    # a doomed task each time and hammer the store.
+    now = time.monotonic()
+    with _runner_lock:
+        last = _last_spawn_attempt.get(batch_id) or 0.0
+        if now - last < RESPAWN_COOLDOWN_SEC:
+            return False
+        _last_spawn_attempt[batch_id] = now
+    started = start_batch_runner(batch_id, state, event_bus=event_bus)
+    if started:
+        logger.warning("ML batch %s runner respawned after silent stop", batch_id)
+    return started
+
+
+def is_batch_stalled(
+    batch: dict | None,
+    *,
+    now: float | None = None,
+    threshold_sec: float = STALL_THRESHOLD_SEC,
+) -> bool:
+    """True when a live batch has made no visible progress for threshold_sec.
+
+    'queued' with pending items but no running item is normal for the brief
+    between-items window; past the threshold it means the runner is gone or
+    wedged. Batches with a running item report progress through the job's own
+    progress file, not ``updated_at``, so they are never flagged here.
+    """
+    if not batch:
+        return False
+    if str(batch.get("status") or "") not in ("queued", "running"):
+        return False
+    if batch.get("cancel_requested"):
+        return False
+    items = batch.get("items") or []
+    pending = sum(1 for it in items if (it or {}).get("status") == "pending")
+    running = sum(1 for it in items if (it or {}).get("status") == "running")
+    if not pending or running:
+        return False
+    try:
+        updated = datetime.fromisoformat(
+            str(batch.get("updated_at") or "").replace("Z", "+00:00")
+        ).timestamp()
+    except ValueError:
+        return False
+    ref = time.time() if now is None else now
+    return (ref - updated) >= threshold_sec
+
+
+def latest_active_batch(symbol: str | None = None) -> dict[str, Any] | None:
+    """Most recent non-terminal batch, optionally filtered by symbol.
+
+    Backs ``GET /ml/batch-train/active`` so the UI can re-attach after a
+    reload without having persisted a batch_id.
+    """
+    _ensure_tables()
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if symbol:
+            cur.execute(
+                "SELECT id FROM ml_batches WHERE status IN ('queued', 'running') "
+                "AND symbol = ? ORDER BY created_at DESC LIMIT 1",
+                (str(symbol).upper(),),
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM ml_batches WHERE status IN ('queued', 'running') "
+                "ORDER BY created_at DESC LIMIT 1",
+            )
+        row = cur.fetchone()
+    except Exception:
+        logger.debug("ml_batch latest_active failed", exc_info=True)
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return get_batch(str(dict(row).get("id")))
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +1098,12 @@ async def _run_batch_guarded(
     try:
         await run_batch(batch_id, state=state, event_bus=event_bus, item_executor=item_executor)
     except asyncio.CancelledError:
+        # Cancellation leaves the batch 'queued'/'running' with pending items
+        # and no runner — log loudly so the silent-stall pattern is visible,
+        # and let ensure_batch_runner / restart recovery pick the batch up.
+        logger.warning(
+            "ML batch runner %s cancelled mid-flight — batch left resumable", batch_id,
+        )
         raise
     except Exception as exc:
         logger.exception("ML batch runner %s crashed", batch_id)
@@ -993,7 +1221,9 @@ async def _execute_item_with_retries(
         try:
             result = await executor(batch, item)
         except asyncio.CancelledError:
-            set_item_status(item_id, "cancelled", error="cancelled")
+            # A status poll may have finalized the item while the executor was
+            # parked — never clobber a terminal outcome at shutdown.
+            set_item_status_if_not_terminal(item_id, "cancelled", error="cancelled")
             _refresh_batch_status(batch_id)
             raise
         except Exception as exc:
@@ -1097,6 +1327,10 @@ def reconcile_batch_items(batch_id: str) -> dict[str, Any] | None:
             continue
         js = job["status"]
         if js == "done":
+            if validate_phase_pending(item, job):
+                # Train job done but the walk-forward phase is still ahead of
+                # the live runner — the item is not complete yet.
+                continue
             set_item_status(item["item_id"], "done")
         elif js == "cancelled":
             set_item_status(item["item_id"], "cancelled", error=item.get("error") or "cancelled")
@@ -1121,6 +1355,33 @@ def reconcile_batch_items(batch_id: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # Default item executor — reuses the Lab train / validate submission path
 # ---------------------------------------------------------------------------
+
+# Legacy clients may post the Lab Advanced knob snapshot with camelCase keys
+# (totalTimesteps, gbmMaxIter, nFolds…). Trainers and the validate_after path
+# read snake_case only — map the known keys so user settings are never
+# silently dropped. Snake_case always wins when both are present.
+_CAMEL_TO_SNAKE_ITEM_CONFIG = {
+    "totalTimesteps": "total_timesteps",
+    "hiddenDim": "hidden_dim",
+    "earlyStopPatience": "early_stop_patience",
+    "gbmMaxIter": "gbm_max_iter",
+    "gbmMaxDepth": "gbm_max_depth",
+    "nFolds": "validate_folds",
+    "validateMaxBars": "validate_max_bars",
+    "pboSegments": "pbo_segments",
+    "pboMaxCombos": "pbo_max_combos",
+}
+
+
+def _normalize_item_config_keys(cfg: dict) -> dict:
+    out = dict(cfg)
+    for camel, snake in _CAMEL_TO_SNAKE_ITEM_CONFIG.items():
+        if camel not in out:
+            continue
+        if snake not in out:
+            out[snake] = out[camel]
+        del out[camel]
+    return out
 
 
 async def execute_batch_item(
@@ -1152,7 +1413,9 @@ async def execute_batch_item(
 
     strategy = str(item.get("strategy") or "").upper()
     symbol = str(batch.get("symbol") or "").upper()
-    cfg = prepare_lab_champion_train_config(dict(item.get("config") or {}))
+    cfg = prepare_lab_champion_train_config(
+        _normalize_item_config_keys(dict(item.get("config") or {}))
+    )
     try:
         from app.services.bots.optimization_store import merge_optimized_train_hyperparams
 
@@ -1202,15 +1465,24 @@ async def execute_batch_item(
         return out
 
     if item.get("validate_after"):
-        vres = await _validate_trained_item(state, strategy, symbol, cfg, event_bus=event_bus)
+        # Re-link the item to the validate job before submitting it: status
+        # reconciliation and crash recovery key off the item's job_id, and a
+        # done train job must not mask a walk-forward that is still running
+        # (or one that failed) — the validate job's own state drives those
+        # paths from here on.
+        validate_job_id = str(uuid.uuid4())
+        set_item_job_id(item["item_id"], validate_job_id)
+        vres = await _validate_trained_item(
+            state, strategy, symbol, cfg, event_bus=event_bus, job_id=validate_job_id,
+        )
         if not isinstance(vres, dict):
             vres = {"ok": False, "error": "invalid validate result"}
         if vres.get("cancelled"):
-            return {"ok": False, "cancelled": True, "error": "cancelled", "job_id": job_id}
+            return {"ok": False, "cancelled": True, "error": "cancelled", "job_id": validate_job_id}
         if not vres.get("ok"):
             return {
                 "ok": False,
-                "job_id": job_id,
+                "job_id": validate_job_id,
                 "error": f"validate_after failed: {vres.get('error') or 'validation failed'}",
             }
         out["validation"] = {
@@ -1228,6 +1500,7 @@ async def _validate_trained_item(
     cfg: dict,
     *,
     event_bus: Any = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Walk-forward validate a freshly trained item (same path as Lab Validate)."""
     from app.api.http.app import _fetch_validate_candles_enough
@@ -1301,5 +1574,6 @@ async def _validate_trained_item(
         mode=mode,
         run_pbo=run_pbo,
         pbo_segments=pbo_segments,
+        job_id=job_id,
         event_bus=event_bus,
     )

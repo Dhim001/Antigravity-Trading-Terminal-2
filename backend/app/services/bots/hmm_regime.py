@@ -229,6 +229,8 @@ def regime_signal_scale(
 
 _bot_models: dict[str, RegimeModel] = {}
 _cache_lru = None
+# bot_id -> last adaptive-recalibration epoch (24h debounce)
+_last_boundary_calib: dict[str, float] = {}
 
 
 def _get_cache_lru():
@@ -290,6 +292,130 @@ def invalidate_regime_cache(bot_id: str | None = None) -> None:
     else:
         _bot_models.pop(bot_id, None)
         _get_cache_lru().discard(bot_id)
+
+
+# ── Adaptive regime boundary calibration (AI-FT-PTL-001 §3.3, P2 #10) ──────
+
+
+def adaptive_recalibrate_regime(
+    bot_id: str,
+    candles: Sequence[dict],
+    *,
+    vol_lookback: int = DEFAULT_VOL_LOOKBACK,
+    now: float | None = None,
+) -> dict:
+    """EMA-update mixture centroids/covariances on a rolling window.
+
+    ``μ_new = (1-α)·μ_old + α·μ_batch`` with α=0.05 over the last
+    ``REGIME_BOUNDARY_CALIB_WINDOW`` bars, at most once per
+    ``REGIME_BOUNDARY_CALIB_INTERVAL_SEC``. Risk controls: component weight
+    floor (min 5%), centroid shift clamped to 2σ per update, and a logged
+    alert when the effective regime count changes. Never raises.
+    """
+    import time as _time
+
+    try:
+        from app.config import (
+            REGIME_BOUNDARY_CALIB_ALPHA,
+            REGIME_BOUNDARY_CALIB_ENABLED,
+            REGIME_BOUNDARY_CALIB_INTERVAL_SEC,
+            REGIME_BOUNDARY_CALIB_WINDOW,
+            REGIME_BOUNDARY_MAX_SHIFT_SIGMA,
+            REGIME_BOUNDARY_MIN_WEIGHT,
+        )
+
+        if not REGIME_BOUNDARY_CALIB_ENABLED:
+            return {"updated": False, "reason": "disabled"}
+        key = str(bot_id)
+        ts = float(now if now is not None else _time.time())
+        last = _last_boundary_calib.get(key, 0.0)
+        if ts - last < float(REGIME_BOUNDARY_CALIB_INTERVAL_SEC):
+            return {"updated": False, "reason": "debounced"}
+
+        model = load_regime_model(key)
+        if model is None or len(model.means) == 0:
+            return {"updated": False, "reason": "no_model"}
+
+        window = max(100, int(REGIME_BOUNDARY_CALIB_WINDOW))
+        feats = _features_from_candles(list(candles)[-window:], vol_lookback=vol_lookback)
+        if len(feats) < 50:
+            return {"updated": False, "reason": "insufficient_bars"}
+
+        # Assign each bar to its MAP state, then compute batch centroids.
+        n = len(model.weights)
+        assign = np.zeros(len(feats), dtype=int)
+        for i in range(len(feats)):
+            post = predict_regime_posteriors(model, feats[i:i + 1])
+            assign[i] = int(np.argmax(post)) if len(post) == n else 0
+
+        alpha = max(0.0, min(1.0, float(REGIME_BOUNDARY_CALIB_ALPHA)))
+        max_shift = float(REGIME_BOUNDARY_MAX_SHIFT_SIGMA)
+        min_weight = float(REGIME_BOUNDARY_MIN_WEIGHT)
+
+        new_means: list[tuple[float, float]] = []
+        new_covs: list[np.ndarray] = []
+        new_weights: list[float] = []
+        active_states = 0
+        for s in range(n):
+            mask = assign == s
+            count = int(mask.sum())
+            old_mean = np.array(model.means[s], dtype=float)
+            old_cov = np.array(model.covariances[s], dtype=float)
+            old_w = float(model.weights[s])
+
+            batch_w = count / max(1, len(feats))
+            # Component weight floor — never let a state vanish.
+            w_new = max(min_weight, (1.0 - alpha) * old_w + alpha * batch_w)
+            if count >= 10:
+                active_states += 1
+                batch_mean = feats[mask].mean(axis=0)
+                batch_cov = np.cov(feats[mask].T) if count >= 3 else old_cov
+                # Clamp centroid shift to 2σ of the state's own covariance.
+                sigma = np.sqrt(np.maximum(np.diag(old_cov), 1e-12))
+                delta = batch_mean - old_mean
+                delta = np.clip(delta, -max_shift * sigma, max_shift * sigma)
+                mean_new = (1.0 - alpha) * old_mean + alpha * (old_mean + delta)
+                cov_new = (1.0 - alpha) * old_cov + alpha * batch_cov
+            else:
+                mean_new, cov_new = old_mean, old_cov
+            new_means.append((float(mean_new[0]), float(mean_new[1])))
+            new_covs.append(cov_new)
+            new_weights.append(float(w_new))
+
+        # Renormalize weights after the floor.
+        w_sum = sum(new_weights) or 1.0
+        new_weights = [w / w_sum for w in new_weights]
+
+        prev_active = sum(1 for w in model.weights if w >= min_weight)
+        if active_states != prev_active:
+            logger.warning(
+                "Regime boundary calibration for %s: active regime count changed "
+                "%d → %d (window=%d bars)",
+                key, prev_active, active_states, len(feats),
+            )
+
+        vols = [m[1] for m in new_means]
+        updated = RegimeModel(
+            means=tuple(new_means),
+            covariances=tuple(new_covs),
+            weights=tuple(new_weights),
+            state_labels=tuple(
+                _label_state(m[0], m[1], float(np.median(vols)) if vols else 0.0)
+                for m in new_means
+            ),
+            vol_threshold=float(np.median(vols)) if vols else model.vol_threshold,
+            n_states=model.n_states,
+        )
+        save_regime_model(key, updated)
+        _last_boundary_calib[key] = ts
+        logger.info(
+            "Regime boundaries recalibrated for %s (α=%.2f, window=%d, active=%d/%d)",
+            key, alpha, len(feats), active_states, n,
+        )
+        return {"updated": True, "active_states": active_states, "n_states": n}
+    except Exception as exc:
+        logger.debug("adaptive_recalibrate_regime failed for %s: %s", bot_id, exc)
+        return {"updated": False, "reason": "error"}
 
 
 # ── Live gate ──────────────────────────────────────────────────────────────

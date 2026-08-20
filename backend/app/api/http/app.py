@@ -490,6 +490,26 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         pass
     meta = apply_validation_sidecar(meta if isinstance(meta, dict) else {}, model_dir)
     versions = list_model_versions(model_dir)
+    # Surface transfer lineage on version rows (badge in the Lab UI).
+    import os as _os
+    import json as _json
+
+    for v in versions:
+        try:
+            vpath = v.get("path") or f"versions/{v.get('version_id')}"
+            vmeta_p = _os.path.join(model_dir, vpath, "metadata.json")
+            if _os.path.isfile(vmeta_p):
+                with open(vmeta_p, encoding="utf-8") as fh:
+                    vmeta = _json.load(fh)
+                tr = vmeta.get("transfer") if isinstance(vmeta, dict) else None
+                if isinstance(tr, dict):
+                    v["transfer"] = {
+                        "donor_symbol": tr.get("donor_symbol"),
+                        "donor_trained_at": tr.get("donor_trained_at"),
+                        "method": tr.get("method"),
+                    }
+        except Exception:
+            continue
     try:
         dataset = dataset_summary_from_metadata(meta)
     except Exception:
@@ -536,6 +556,7 @@ def _ml_status_enrich(model_dir: str, meta: dict, artifact: str | None) -> dict:
         "champion_desynced": bool(sync.get("desynced")),
         "newest_version_id": sync.get("newest_version_id"),
         "newest_trained_at": sync.get("newest_trained_at"),
+        "transfer": meta.get("transfer") if isinstance(meta.get("transfer"), dict) else None,
     }
 
 
@@ -734,6 +755,56 @@ async def ml_train_handler(request: Request) -> JSONResponse:
             config["ml_calendar_holdout"] = True
     except Exception:
         pass
+
+    # Cross-asset donor transfer: validate compatibility up front so a hard
+    # mismatch fails fast with reasons instead of silently training from
+    # scratch inside the worker.
+    donor_cfg = config.get("donor") if isinstance(config.get("donor"), dict) else None
+    if donor_cfg and donor_cfg.get("symbol"):
+        from app.services.bots import model_transfer as _mt
+
+        donor_symbol = _normalize_ml_symbol(str(donor_cfg.get("symbol") or ""))
+        if not _mt.transfer_enabled():
+            return JSONResponse(
+                {"ok": False, "error": "model transfer is disabled (MODEL_TRANSFER_ENABLED=false)"},
+                status_code=400,
+            )
+        if donor_symbol == symbol:
+            return JSONResponse(
+                {"ok": False, "error": "donor symbol must differ from target symbol"},
+                status_code=400,
+            )
+        donor = await asyncio.to_thread(
+            _mt.resolve_donor, strategy, donor_symbol, tf, donor_cfg.get("version_id"),
+        )
+        if donor is None:
+            return JSONResponse(
+                {"ok": False, "error": f"no trained {strategy} model found for donor {donor_symbol} @ {tf}"},
+                status_code=400,
+            )
+        compat_errs = _mt.check_compatibility(donor["metadata"], strategy, tf)
+        if compat_errs:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"donor {donor_symbol} is not compatible",
+                    "reasons": compat_errs,
+                },
+                status_code=400,
+            )
+        needs_ckpt = _mt.TRANSFER_CHECKPOINT_FILES.get(strategy) is not None
+        if needs_ckpt and _mt.donor_checkpoint_path(donor, strategy) is None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        f"donor {donor_symbol} has no trainable checkpoint "
+                        f"({_mt.TRANSFER_CHECKPOINT_FILES.get(strategy)}) — retrain the donor first"
+                    ),
+                },
+                status_code=400,
+            )
+        config["donor"] = {**donor_cfg, "symbol": donor_symbol}
 
     if async_mode:
         from app.services.bots.ml_job_progress import make_progress_path, write_ml_progress
@@ -1564,6 +1635,25 @@ async def ml_get_job_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "job": public_ml_job(job, include_result=True)})
 
 
+async def ml_transfer_donors_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/transfer/donors?strategy=&symbol=&timeframe= — compatible donors."""
+    import asyncio as _asyncio
+
+    from app.services.bots import model_transfer as _mt
+
+    strategy = (request.query_params.get("strategy") or "").upper()
+    symbol = _normalize_ml_symbol(request.query_params.get("symbol") or "")
+    if not strategy or not symbol:
+        return JSONResponse(
+            {"ok": False, "error": "strategy and symbol required"}, status_code=400,
+        )
+    tf = request.query_params.get("timeframe") or None
+    if not _mt.transfer_enabled():
+        return JSONResponse({"ok": True, "enabled": False, "donors": []})
+    donors = await _asyncio.to_thread(_mt.list_donors, strategy, symbol, tf)
+    return JSONResponse({"ok": True, "enabled": True, "donors": donors})
+
+
 async def ml_cancel_job_handler(request: Request) -> JSONResponse:
     """POST /api/v1/ml/jobs/{job_id}/cancel — cooperative cancel."""
     from app.services.bots.ml_job_store import get_ml_job, public_ml_job, request_ml_job_cancel
@@ -1687,11 +1777,41 @@ async def ml_batch_status_handler(request: Request) -> JSONResponse:
     batch_id = request.path_params.get("batch_id")
     if not batch_id:
         return JSONResponse({"ok": False, "error": "batch_id required"}, status_code=400)
-    batch_runner.resume_incomplete_batches(request.app.state.terminal)
+    state: AppState = request.app.state.terminal
+    batch_runner.resume_incomplete_batches(state)
     batch = batch_runner.reconcile_batch_items(batch_id)
     if not batch:
         return JSONResponse({"ok": False, "error": "batch not found"}, status_code=404)
+    # Self-heal: a runner task that died mid-process leaves the batch
+    # 'queued' forever — respawn it when pending work remains.
+    if batch_runner.ensure_batch_runner(
+        batch_id, state, event_bus=getattr(state, "event_bus", None),
+    ):
+        batch = batch_runner.get_batch(batch_id) or batch
+    batch["stalled"] = batch_runner.is_batch_stalled(batch)
     return JSONResponse({"ok": True, **batch})
+
+
+async def ml_batch_active_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/batch-train/active?symbol=... — latest non-terminal batch.
+
+    Lets the UI re-attach to an in-flight batch after a reload without having
+    persisted the batch_id. Also self-heals a dead runner for that batch.
+    """
+    from app.services.bots import ml_batch_runner as batch_runner
+
+    state: AppState = request.app.state.terminal
+    batch_runner.resume_incomplete_batches(state, event_bus=getattr(state, "event_bus", None))
+    symbol = request.query_params.get("symbol")
+    batch = batch_runner.latest_active_batch(symbol)
+    if not batch:
+        return JSONResponse({"ok": True, "batch": None})
+    if batch_runner.ensure_batch_runner(
+        batch["batch_id"], state, event_bus=getattr(state, "event_bus", None),
+    ):
+        batch = batch_runner.get_batch(batch["batch_id"]) or batch
+    batch["stalled"] = batch_runner.is_batch_stalled(batch)
+    return JSONResponse({"ok": True, "batch": batch})
 
 
 async def ml_batch_cancel_handler(request: Request) -> JSONResponse:
@@ -3412,6 +3532,52 @@ async def agent_tools_list_handler(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "tools": [t.to_dict() for t in registry.list()]})
 
 
+async def copilot_intent_lora_status_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/copilot/intent-lora/status — router + training-log status."""
+    import asyncio
+    from app.services.agent.copilot_intent_lora import intent_router_status
+
+    data = await asyncio.to_thread(intent_router_status)
+    return JSONResponse({"ok": True, **data})
+
+
+async def posttrade_learning_status_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/posttrade/status — fleet-wide post-trade learning snapshot."""
+    import asyncio
+    from app.services.bots.posttrade_status import get_posttrade_learning_status
+
+    state: AppState = request.app.state.terminal
+    data = await asyncio.to_thread(get_posttrade_learning_status, state.bot_manager)
+    return JSONResponse(data)
+
+
+async def copilot_intent_lora_train_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/copilot/intent-lora/train — fine-tune LoRA adapters on the
+    logged (query, intent, tool_call) pairs (P3 #14)."""
+    import asyncio
+    from app.services.agent.copilot_intent_lora import train_intent_lora
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    kwargs = {}
+    for key in ("min_samples", "epochs", "rank"):
+        if body.get(key) is not None:
+            try:
+                kwargs[key] = int(body[key])
+            except (TypeError, ValueError):
+                pass
+    if body.get("lr") is not None:
+        try:
+            kwargs["lr"] = float(body["lr"])
+        except (TypeError, ValueError):
+            pass
+    result = await asyncio.to_thread(train_intent_lora, **kwargs)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
+
+
 async def agent_eval_handler(request: Request) -> JSONResponse:
     """GET /api/v1/agent/eval — per-agent decision scores + recent graded outcomes."""
     import asyncio
@@ -3550,7 +3716,10 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/jobs", ml_list_jobs_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs/{job_id}", ml_get_job_handler, methods=["GET"]),
         Route("/api/v1/ml/jobs/{job_id}/cancel", ml_cancel_job_handler, methods=["POST"]),
+        Route("/api/v1/ml/transfer/donors", ml_transfer_donors_handler, methods=["GET"]),
         Route("/api/v1/ml/batch-train", ml_batch_train_handler, methods=["POST"]),
+        # Declared before /{batch_id} so "active" is not captured as an id.
+        Route("/api/v1/ml/batch-train/active", ml_batch_active_handler, methods=["GET"]),
         Route("/api/v1/ml/batch-train/{batch_id}", ml_batch_status_handler, methods=["GET"]),
         Route("/api/v1/ml/batch-train/{batch_id}/cancel", ml_batch_cancel_handler, methods=["POST"]),
         Route("/api/v1/ml/batch-train/{batch_id}/retry", ml_batch_retry_handler, methods=["POST"]),
@@ -3608,6 +3777,9 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/copilot/confirm", copilot_confirm_handler, methods=["POST"]),
         Route("/api/v1/copilot/history", copilot_history_handler, methods=["GET"]),
         Route("/api/v1/copilot/history/{session_id}", copilot_clear_handler, methods=["DELETE"]),
+        Route("/api/v1/copilot/intent-lora/status", copilot_intent_lora_status_handler, methods=["GET"]),
+        Route("/api/v1/copilot/intent-lora/train", copilot_intent_lora_train_handler, methods=["POST"]),
+        Route("/api/v1/posttrade/status", posttrade_learning_status_handler, methods=["GET"]),
     ]
 
     seen: set[tuple[str, str]] = set()

@@ -2940,6 +2940,95 @@
   min-height: 0;
 }
 
+/* Post-Trade Learning status panel (P0–P3 visibility) */
+.ptl-panel {
+  flex-shrink: 0;
+  background: color-mix(in oklab, var(--bg-primary) 88%, var(--muted) 12%);
+}
+
+.ptl-panel__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--foreground);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ptl-panel__toggle:hover {
+  background: color-mix(in oklab, var(--muted) 40%, transparent);
+}
+
+.ptl-panel__toggle span:first-of-type {
+  flex: 1;
+}
+
+.ptl-panel__body {
+  padding: 0.25rem 0.75rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.ptl-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.ptl-panel__section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+.ptl-panel__router {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.ptl-panel__bot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.375rem;
+  background: color-mix(in oklab, var(--muted) 25%, transparent);
+}
+
+.ptl-panel__bot-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.72rem;
+}
+
+.ptl-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.ptl-panel__chips .ptl-chip,
+.ptl-panel__chips [data-slot="badge"] {
+  font-size: 0.62rem;
+  padding: 0.05rem 0.35rem;
+  height: auto;
+}
+
 .copilot-panel__thread {
   width: 100%;
   max-width: none;

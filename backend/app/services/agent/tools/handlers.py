@@ -117,6 +117,23 @@ def tool_portfolio(oms: Any) -> dict[str, Any]:
     except Exception as exc:
         body["risk_utilization_error"] = str(exc)
     body["risk_max_drawdown_pct_limit"] = RISK_MAX_DRAWDOWN_PCT
+    # Ground RiskSentinel claims: without this block the narrator can only
+    # guess at sentinel alert state (the sentinel otherwise speaks via
+    # proactive push events, not the portfolio snapshot).
+    try:
+        from app.config import RISK_SENTINEL_AUTO_PAUSE_ON_STREAK, RISK_SENTINEL_ENABLED
+        from app.services.bots.agent_event_subscribers import recently_paused_bot_ids
+
+        paused = sorted(recently_paused_bot_ids(3600.0))
+        body["risk_sentinel"] = {
+            "enabled": bool(RISK_SENTINEL_ENABLED),
+            "auto_pause_on_streak": bool(RISK_SENTINEL_AUTO_PAUSE_ON_STREAK),
+            "recently_paused_bot_ids": paused,
+            "recently_paused_count": len(paused),
+            "lookback_sec": 3600,
+        }
+    except Exception as exc:
+        body["risk_sentinel_error"] = str(exc)
     return body
 
 

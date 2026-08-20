@@ -33,6 +33,10 @@ DRIFT_DATA_DIR = os.path.join(BASE_DIR, "data", "feature_drift")
 PSI_STABLE = 0.1
 PSI_MODERATE = 0.25
 
+# Retrain alerts need a real training sample, not the Gaussian scaler
+# fallback — live TCN windows vs synthetic N(mean, std) trip PSI immediately.
+MIN_LIVE_FOR_RETRAIN = int(os.environ.get("FEATURE_DRIFT_MIN_LIVE_FOR_RETRAIN", "100"))
+
 # Sliding window: keep the last N inference feature vectors
 DEFAULT_WINDOW_SIZE = 500
 
@@ -305,9 +309,9 @@ class FeatureDriftMonitor:
 
             live_arr = np.array(homogeneous[-self._window_size:], dtype=np.float32)
 
-        # Attempt to load training baseline if not provided
+        baseline_source = "provided"
         if training_features is None:
-            training_features = self._load_training_baseline(symbol, strategy)
+            training_features, baseline_source = self._load_training_baseline(symbol, strategy)
 
         if training_features is None or len(training_features) < 10:
             return None
@@ -318,19 +322,26 @@ class FeatureDriftMonitor:
 
         # Ensure shape compatibility
         n_features = min(training_features.shape[1], live_arr.shape[1])
-        return compute_feature_drift(
+        result = compute_feature_drift(
             training_features[:, :n_features],
             live_arr[:, :n_features],
             feature_names[:n_features],
         )
+        result["baseline"] = baseline_source
+        return result
 
-    def _load_training_baseline(self, symbol: str, strategy: str) -> np.ndarray | None:
-        """Load the real training feature baseline; fall back to Gaussian approx."""
+    def _load_training_baseline(self, symbol: str, strategy: str) -> tuple[np.ndarray | None, str | None]:
+        """Load the real training feature baseline; fall back to Gaussian approx.
+
+        Returns (array, source) where source is ``json`` or ``synthetic``.
+        Retrain recommendations must ignore ``synthetic`` — live bars vs
+        N(scaler_mean, scaler_std) almost always look drifted.
+        """
         try:
             from app.services.bots.ml_model_artifacts import model_root_for
             root = model_root_for(strategy, symbol)
             if not root:
-                return None
+                return None, None
 
             # Prefer the real persisted training sample (no synthetic drift noise).
             baseline_path = os.path.join(root, "feature_baseline.json")
@@ -339,7 +350,7 @@ class FeatureDriftMonitor:
                     payload = json.load(fh)
                 feats = np.array(payload.get("features", []), dtype=np.float32)
                 if feats.ndim == 2 and feats.shape[0] > 10 and feats.shape[1] > 0:
-                    return feats
+                    return feats, "json"
 
             # Legacy fallback: synthesize from scaler mean/std (approximate —
             # kept for models trained before feature_baseline.json existed).
@@ -355,10 +366,10 @@ class FeatureDriftMonitor:
                     baseline = rng.normal(
                         loc=mean, scale=std, size=(n_synth, len(mean)),
                     ).astype(np.float32)
-                    return baseline
+                    return baseline, "synthetic"
         except Exception as exc:
             logger.debug("Could not load training baseline for %s/%s: %s", strategy, symbol, exc)
-        return None
+        return None, None
 
 
 # ── Module-level singleton ───────────────────────────────────────────────
@@ -414,14 +425,31 @@ def get_drift_summary_for_ui(symbol: str, strategy: str) -> dict[str, Any]:
             "drifted_features_count": drifted_count,
             "n_live": res.get("n_live", 0),
             "n_training": res.get("n_training", 0),
+            "baseline": res.get("baseline") or "unknown",
         }
     except Exception:
         return {"available": False, "assessment": "unknown"}
 
 
+def _summary_warrants_retrain(summary: dict[str, Any] | None) -> bool:
+    """Retrain only on a real training sample with enough live bars and overall PSI."""
+    if not summary or not summary.get("available"):
+        return False
+    if summary.get("baseline") != "json":
+        return False
+    if int(summary.get("n_live") or 0) < MIN_LIVE_FOR_RETRAIN:
+        return False
+    return summary.get("assessment") == "significant_drift"
+
+
+def drift_retrain_verdict(symbol: str, strategy: str) -> dict[str, Any] | None:
+    """Return the drift summary when a retrain is warranted, else None."""
+    summary = get_drift_summary_for_ui(symbol, strategy)
+    if not _summary_warrants_retrain(summary):
+        return None
+    return summary
+
+
 def should_recommend_retrain(symbol: str, strategy: str) -> bool:
     """True when drift monitor detects significant drift requiring retrain."""
-    summary = get_drift_summary_for_ui(symbol, strategy)
-    if not summary.get("available"):
-        return False
-    return summary.get("assessment") == "significant_drift" or summary.get("drifted_features_count", 0) >= 3
+    return drift_retrain_verdict(symbol, strategy) is not None

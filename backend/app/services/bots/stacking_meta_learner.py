@@ -272,3 +272,101 @@ def invalidate_stacking_cache(bot_id: str | None = None) -> None:
     else:
         _bot_models.pop(bot_id, None)
         _get_cache_lru().discard(bot_id)
+
+
+# ---------------------------------------------------------------------------
+# Online update from live trade outcomes (AI-FT-PTL-001 §4.6, P2 #9)
+# ---------------------------------------------------------------------------
+
+# bot_id -> ring buffer of {"base_probs": [...], "label": 0|1}
+_online_buffers: dict[str, list[dict]] = {}
+# bot_id -> pending base_probs captured at entry, consumed at close
+_pending_base_probs: dict[str, list[float]] = {}
+# bot_id -> outcomes seen since last refit
+_online_since_update: dict[str, int] = {}
+
+
+def note_pending_base_probs(bot_id: str, base_probs: Sequence[float]) -> None:
+    """Stash the base-learner probability vector at entry for later labelling."""
+    from app.config import STACKING_ONLINE_UPDATE_ENABLED
+
+    if not STACKING_ONLINE_UPDATE_ENABLED or not bot_id:
+        return
+    try:
+        _pending_base_probs[str(bot_id)] = [float(p) for p in base_probs]
+    except (TypeError, ValueError):
+        pass
+
+
+def record_stacking_outcome(bot_id: str, *, win: bool) -> None:
+    """Append the pending base-probs + realised label to the online buffer."""
+    from app.config import STACKING_ONLINE_BUFFER, STACKING_ONLINE_UPDATE_ENABLED
+
+    if not STACKING_ONLINE_UPDATE_ENABLED:
+        return
+    base = _pending_base_probs.pop(str(bot_id), None)
+    if not base:
+        return
+    buf = _online_buffers.setdefault(str(bot_id), [])
+    buf.append({"base_probs": base, "label": 1 if win else 0})
+    cap = max(50, int(STACKING_ONLINE_BUFFER))
+    if len(buf) > cap:
+        del buf[: len(buf) - cap]
+    _online_since_update[str(bot_id)] = _online_since_update.get(str(bot_id), 0) + 1
+
+
+def maybe_update_stacking(bot_id: str) -> dict:
+    """Recompute combination weights from the online buffer every N trades.
+
+    Inverse-MSE weights are always refreshed; when the persisted model is in
+    gating mode, the logistic gating coefficients are re-fit on the buffer.
+    The updated model is persisted alongside the model artifacts. Never raises.
+    """
+    from app.config import (
+        STACKING_ONLINE_UPDATE_EVERY_N,
+        STACKING_ONLINE_UPDATE_ENABLED,
+    )
+
+    if not STACKING_ONLINE_UPDATE_ENABLED:
+        return {"updated": False, "reason": "disabled"}
+    key = str(bot_id)
+    every = max(1, int(STACKING_ONLINE_UPDATE_EVERY_N))
+    if _online_since_update.get(key, 0) < every:
+        return {"updated": False, "reason": "not_due"}
+
+    existing = load_stacking_model(key)
+    if existing is None or not existing.base_names:
+        return {"updated": False, "reason": "no_model"}
+
+    buf = list(_online_buffers.get(key) or [])
+    if len(buf) < MIN_OOS_SAMPLES:
+        return {"updated": False, "reason": f"buffer too small ({len(buf)} < {MIN_OOS_SAMPLES})"}
+
+    try:
+        n_bases = len(existing.base_names)
+        rows = [r for r in buf if len(r.get("base_probs") or []) == n_bases]
+        if len(rows) < MIN_OOS_SAMPLES:
+            return {"updated": False, "reason": "base_dim_mismatch"}
+        base_preds = np.array([r["base_probs"] for r in rows], dtype=float)
+        labels = np.array([r["label"] for r in rows], dtype=float)
+
+        if existing.mode == "gating":
+            updated = fit_gating(base_preds, labels, existing.base_names)
+        else:
+            updated = fit_inverse_mse(base_preds, labels, existing.base_names)
+        save_stacking_model(key, updated)
+        _online_since_update[key] = 0
+        logger.info(
+            "Stacking meta-learner online update for %s: mode=%s n=%d weights=%s",
+            key, updated.mode, updated.n_oos,
+            [round(w, 3) for w in updated.weights],
+        )
+        return {
+            "updated": True,
+            "mode": updated.mode,
+            "n": updated.n_oos,
+            "weights": [round(float(w), 4) for w in updated.weights],
+        }
+    except Exception as exc:
+        logger.debug("stacking online update failed for %s: %s", key, exc)
+        return {"updated": False, "reason": "error"}

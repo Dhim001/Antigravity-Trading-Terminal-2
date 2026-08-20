@@ -58,9 +58,26 @@ def apply_ml_meta_label_gate(
     try:
         from app.services.bots.calibration import check_meta_label_gate
 
+        # Cross-strategy transfer (AI-FT-PTL-001 §4.4): a symbol-wide
+        # REGIME_WARNING raises the entry confidence floor for every bot on
+        # the symbol until the warning expires.
+        gate_cfg = cfg
+        try:
+            from app.config import REGIME_WARNING_CONFIDENCE_BUMP
+            from app.services.bots.agent_event_subscribers import regime_warning_active
+
+            if symbol and regime_warning_active(symbol):
+                gate_cfg = dict(cfg)
+                cur = float(gate_cfg.get("min_confidence") or 0.55)
+                gate_cfg["min_confidence"] = round(
+                    min(0.95, cur + float(REGIME_WARNING_CONFIDENCE_BUMP)), 4
+                )
+        except Exception:
+            gate_cfg = cfg
+
         reject = check_meta_label_gate(
             insight,
-            cfg,
+            gate_cfg,
             symbol=symbol,
             timeframe=timeframe,
             signal=signal,

@@ -359,12 +359,14 @@ def apply_bot_trade_pnl_overrides(cursor) -> int:
 
 
 def scrub_position_drift_pnl(cursor) -> int:
-    """Null FIFO PnL after the last flat when order-stream size ≠ live position.
+    """Drop FIFO PnL that cannot be trusted once the fill stream diverges from the live book.
 
-    Orphan inventory clears (and similar) leave unmatched buys in ``orders`` while
-    ``positions`` is flat. FIFO then books every later short-open SELL as a long
-    close. Wipe non-authoritative PnL in that drift window; bot exit overlays
-    restore real closed-trade PnL afterward.
+    Orphan inventory (flatten without a sell, leftover longs) makes a full-stream
+    FIFO rebuild treat later short *opens* as long *closes*. Bot exits are the
+    authority for those symbols; non-bot FIFO on a drifted symbol is removed so
+    History Realized P&L does not invent closed-trade profit.
+
+    Pre-drift round-trips that still have a ``bot_trades`` exit row are kept.
     """
     cursor.execute(
         """
@@ -387,23 +389,16 @@ def scrub_position_drift_pnl(cursor) -> int:
         live_size = {}
 
     running: dict[str, float] = {}
-    last_flat_idx: dict[str, int] = {}
-    # Treat start as flat for every symbol that appears.
-    for i, order in enumerate(rows):
+    for order in rows:
         sym = order["symbol"]
-        if sym not in last_flat_idx:
-            last_flat_idx[sym] = -1
         qty = float(order["filled_quantity"] or 0)
         if qty <= 0:
             continue
         size = float(running.get(sym, 0.0))
-        if abs(size) <= _EPS:
-            last_flat_idx[sym] = i - 1
         delta = qty if order["side"] == "BUY" else -qty
         size += delta
         if abs(size) <= _EPS:
             size = 0.0
-            last_flat_idx[sym] = i
         running[sym] = size
 
     drift_symbols = {
@@ -427,11 +422,8 @@ def scrub_position_drift_pnl(cursor) -> int:
         protected = set()
 
     updates = 0
-    for i, order in enumerate(rows):
-        sym = order["symbol"]
-        if sym not in drift_symbols:
-            continue
-        if i <= last_flat_idx.get(sym, -1):
+    for order in rows:
+        if order["symbol"] not in drift_symbols:
             continue
         oid = order["id"]
         if oid in protected:
@@ -448,8 +440,8 @@ def rebuild_order_realized_pnl(cursor) -> int:
     """Recompute every FILLED order's realized_pnl with position-aware FIFO.
 
     Fixes History totals inflated by short-open fills that inherited PnL from
-    stale long lots after position/orphan resets. Drift windows are scrubbed,
-    then bot-attributed fills are corrected via ``apply_bot_trade_pnl_overrides``.
+    stale long lots after position/orphan resets. Drifted symbols keep only
+    bot-exit PnL; then ``apply_bot_trade_pnl_overrides`` restores those rows.
     """
     cursor.execute(
         """

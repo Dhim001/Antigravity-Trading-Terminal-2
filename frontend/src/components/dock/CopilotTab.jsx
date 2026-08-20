@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { DockScrollPanel } from '../WidgetShell';
+import PostTradeLearningPanel from '../PostTradeLearningPanel';
 import { cn } from '@/lib/utils';
 
 const SESSION_KEY = 'trade_copilot_session_id';
@@ -486,6 +487,8 @@ export default function CopilotTab() {
           </Button>
         </div>
       </header>
+
+      <PostTradeLearningPanel />
 
       <DockScrollPanel className="copilot-panel__scroll min-h-0 flex-1">
         <div className="copilot-panel__thread">

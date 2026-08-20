@@ -25,6 +25,11 @@ import {
 import { isOrderBookRetentionEnabled } from '../services/orderBookInterest';
 import { pickDeployConfig } from '../lib/botConfigDisplay';
 import {
+  MAX_TRADE_HISTORY,
+  computeTradeStats,
+  normalizeTradeTimestamp,
+} from '../lib/tradeHistoryStats';
+import {
   defaultAllocationFor,
   getStrategyMeta,
   ML_STRATEGY_IDS,
@@ -67,8 +72,6 @@ const MAX_TICKDATA_ENTRIES = 500;
  * not re-render subscribers; pruned alongside tickerData. */
 const tickerUpdateStamp = new Map();
 let tickerStampCounter = 0;
-/** Max trade history entries retained client-side. */
-const MAX_TRADE_HISTORY = 500;
 /** Max bot-history entries mirrored client-side (#40b). */
 const MAX_BOT_HISTORY = 200;
 /** Max symbols with chart drawings. */
@@ -314,89 +317,18 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
 
   setTradeHistory: (data) => {
     const rawTrades = Array.isArray(data) ? data : (data.trades || []);
-    const trades = [];
-    let wins = 0;
-    let losses = 0;
-    let total_exits = 0;
-    let total_pnl = 0;
-    let totalWinPnl = 0;
-    let totalLossPnl = 0;
-    let best_trade = 0;
-    let worst_trade = 0;
-    let total_fills = 0;
-    let gross_volume = 0;
-
-    const limit = Math.min(rawTrades.length, MAX_TRADE_HISTORY);
-    for (let i = 0; i < limit; i++) {
-      const t = rawTrades[i];
-      let ts = t.timestamp;
-      if (typeof ts === 'number') {
-        ts = ts < 10000000000 ? ts * 1000 : ts;
-      } else if (typeof ts === 'string' && ts) {
-        // SQLite/OMS often emit naive UTC ("2026-08-04 10:45:00"). Treat as UTC so
-        // chart markers align with exchange candle times (local Date() shifts them).
-        const raw = ts.trim();
-        const normalized = /Z|[+-]\d{2}:?\d{2}$/.test(raw)
-          ? raw
-          : `${raw.replace(' ', 'T')}Z`;
-        const parsed = new Date(normalized).getTime();
-        ts = Number.isNaN(parsed) ? Date.now() : parsed;
-      } else {
-        ts = Date.now();
-      }
-      
-      const trade = { ...t, timestamp: ts };
-      trades.push(trade);
-
-      if (trade.status === 'FILLED') {
-        total_fills++;
-        // Exit notional only — summing every fill double-counts round-trips.
-        if (trade.realized_pnl != null) {
-          gross_volume += (trade.trade_value || 0);
-        }
-
-        // Exit fills only: entries never persist realized_pnl; count by pnl so
-        // BUY-to-cover exits are included (previous SELL-only check dropped them).
-        if (trade.realized_pnl != null) {
-          total_exits++;
-          const pnl = trade.realized_pnl;
-          total_pnl += pnl;
-
-          if (pnl > best_trade || total_exits === 1) best_trade = pnl;
-          if (pnl < worst_trade || total_exits === 1) worst_trade = pnl;
-
-          if (pnl > 0) {
-            wins++;
-            totalWinPnl += pnl;
-          } else if (pnl < 0) {
-            losses++;
-            totalLossPnl += pnl;
-          }
-        }
-      }
-    }
-
-    const win_rate = total_exits > 0 ? (wins / total_exits) * 100 : 0.0;
-    const profit_factor = Math.abs(totalLossPnl) > 0 ? (totalWinPnl / Math.abs(totalLossPnl)) : (totalWinPnl > 0 ? 99.9 : 0.0);
-    const avg_win = wins > 0 ? totalWinPnl / wins : 0.0;
-    const avg_loss = losses > 0 ? totalLossPnl / losses : 0.0;
+    const now = Date.now();
+    const normalized = rawTrades.map((t) => ({
+      ...t,
+      timestamp: normalizeTradeTimestamp(t.timestamp, now),
+    }));
+    // Headline stats must use every fill. The table still caps rows for RAM.
+    const tradeStats = computeTradeStats(normalized);
+    const trades = normalized.slice(0, MAX_TRADE_HISTORY);
 
     set({
       tradeHistory: trades,
-      tradeStats: {
-        total_pnl,
-        wins,
-        losses,
-        total_exits,
-        win_rate,
-        profit_factor,
-        best_trade,
-        worst_trade,
-        avg_win,
-        avg_loss,
-        total_fills,
-        gross_volume,
-      },
+      tradeStats,
     });
   },
 

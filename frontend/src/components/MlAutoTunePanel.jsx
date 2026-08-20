@@ -12,6 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { cancelMlJob, fetchLatestMlHyperparamSweep } from '@/lib/mlLabApi';
 import { mlHyperparamSweepPollDeadlineMs } from '@/lib/mlJobTimeouts';
+import { floorTunedBudgetKnobs } from '@/lib/mlTunedApply';
 import {
   isMlHyperparamSweepPolling,
   startMlHyperparamSweepPolling,
@@ -583,7 +584,9 @@ export default function MlAutoTunePanel({
       toast.error('Best hyperparams were empty after sanitizing — re-run auto-tune');
       return;
     }
-    onApplyAndRetrain(clean, result);
+    // Sweep budgets are tuned at reduced fidelity (epochs/5, timesteps/5) —
+    // never let them shrink the champion below the Lab retrain budget.
+    onApplyAndRetrain(floorTunedBudgetKnobs(strategy, clean), result);
   }, [result, onApplyAndRetrain, disabled, strategy]);
 
   return (

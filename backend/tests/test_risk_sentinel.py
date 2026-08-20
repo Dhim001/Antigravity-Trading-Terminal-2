@@ -1,6 +1,7 @@
 """Unit tests for the Risk Sentinel Agent."""
 
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.bots.risk_sentinel import RiskSentinel
@@ -125,3 +126,71 @@ class RiskSentinelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["correlation_warnings"][0]["a"], "AAPL")
         self.assertEqual(res["correlation_warnings"][0]["b"], "MSFT")
         mock_emit.assert_called_once()
+
+    @patch("app.services.bots.ml_walk_forward_validator.is_ml_strategy", return_value=True)
+    @patch("app.services.bots.ml_feature_drift.drift_retrain_verdict")
+    @patch("app.services.bots.risk_sentinel.list_bot_exposures")
+    @patch("app.services.bots.risk_sentinel.bot_analytics.get_recent_consecutive_losses")
+    @patch("app.services.bots.risk_sentinel.emit_notification", new_callable=AsyncMock)
+    async def test_drift_alert_is_debounced(
+        self, mock_emit, mock_losses, mock_exposures, mock_verdict, mock_is_ml,
+    ):
+        """The same drift WARN must not be written on every 30s sentinel tick."""
+        mock_losses.return_value = 0
+        mock_exposures.return_value = []
+        mock_verdict.return_value = {
+            "available": True,
+            "assessment": "significant_drift",
+            "overall_psi": 0.41,
+            "n_live": 250,
+            "baseline": "json",
+        }
+        self.bot_manager.active_bots = {
+            "ad49d0d4": {
+                "id": "ad49d0d4",
+                "symbol": "SOLUSDT",
+                "strategy": "TCN_MULTI_HORIZON",
+                "status": "RUNNING",
+                "created_at": "2020-01-01T00:00:00Z",
+                "config": {},
+            }
+        }
+        snapshot = FakeSnapshot(current_drawdown_pct=0.0)
+        await self.sentinel.evaluate(snapshot, self.oms, self.bot_manager)
+        await self.sentinel.evaluate(snapshot, self.oms, self.bot_manager)
+        self.assertEqual(self.bot_manager.log_bot_event.await_count, 1)
+        self.assertEqual(mock_emit.await_count, 1)
+
+    @patch("app.services.bots.ml_walk_forward_validator.is_ml_strategy", return_value=True)
+    @patch("app.services.bots.ml_feature_drift.drift_retrain_verdict")
+    @patch("app.services.bots.risk_sentinel.list_bot_exposures")
+    @patch("app.services.bots.risk_sentinel.bot_analytics.get_recent_consecutive_losses")
+    @patch("app.services.bots.risk_sentinel.emit_notification", new_callable=AsyncMock)
+    async def test_drift_alert_skipped_for_new_bot(
+        self, mock_emit, mock_losses, mock_exposures, mock_verdict, mock_is_ml,
+    ):
+        """A just-deployed ML bot must not inherit leftover symbol×strategy drift."""
+        mock_losses.return_value = 0
+        mock_exposures.return_value = []
+        mock_verdict.return_value = {
+            "available": True,
+            "assessment": "significant_drift",
+            "overall_psi": 0.41,
+            "n_live": 250,
+            "baseline": "json",
+        }
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        self.bot_manager.active_bots = {
+            "ad49d0d4": {
+                "id": "ad49d0d4",
+                "symbol": "SOLUSDT",
+                "strategy": "TCN_MULTI_HORIZON",
+                "status": "RUNNING",
+                "created_at": now_iso,
+                "config": {},
+            }
+        }
+        snapshot = FakeSnapshot(current_drawdown_pct=0.0)
+        await self.sentinel.evaluate(snapshot, self.oms, self.bot_manager)
+        self.bot_manager.log_bot_event.assert_not_awaited()
+        mock_verdict.assert_not_called()

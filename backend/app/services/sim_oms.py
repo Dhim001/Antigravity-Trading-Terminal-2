@@ -36,7 +36,7 @@ class SimulatedOMSService(BaseOMSService):
         # Bump when FIFO backfill semantics change so a running process re-runs
         # once (e.g. bot_trades overlay + no read-path recompute).
         self._pnl_backfill_version = 0
-        self._PNL_BACKFILL_TARGET = 3
+        self._PNL_BACKFILL_TARGET = 4
 
     def invalidate_trade_history_cache(self) -> None:
         self._trade_history_cache = None

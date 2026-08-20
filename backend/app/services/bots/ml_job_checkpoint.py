@@ -23,6 +23,32 @@ def optuna_study_path(job_id: str) -> str:
     return os.path.join(root, f"{safe}.db")
 
 
+def optuna_transfer_study_path(strategy: str, symbol: str, timeframe: str | None) -> str:
+    """Persistent per-model study path for warm-start transfer (P2 #11).
+
+    Convention: one ``.db`` per ``{strategy}_{symbol}_{timeframe}`` under the
+    model root's ``optuna/transfer/`` dir so sweeps for the same model resume
+    from prior trial history instead of starting cold.
+    """
+    from app.config import DATA_DIR
+
+    root = os.path.join(DATA_DIR, "optuna", "transfer")
+    os.makedirs(root, exist_ok=True)
+
+    def _safe(v: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(v or ""))
+
+    tf = _safe(timeframe or "none")
+    name = f"{_safe(str(strategy).upper())}_{_safe(str(symbol).upper())}_{tf}"
+    return os.path.join(root, f"{name}.db")
+
+
+def optuna_transfer_study_name(strategy: str, symbol: str, timeframe: str | None) -> str:
+    """Study name convention ``{strategy}_{symbol}_{timeframe}`` (P2 #11)."""
+    tf = str(timeframe or "none")
+    return f"{str(strategy).upper()}_{str(symbol).upper()}_{tf}"
+
+
 def deep_checkpoint_dir(job_id: str) -> str:
     from app.config import DATA_DIR
 

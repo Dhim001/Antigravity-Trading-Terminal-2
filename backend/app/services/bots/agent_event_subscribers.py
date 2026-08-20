@@ -14,7 +14,13 @@ import logging
 import time
 from typing import Any
 
+from app.services.agent.agent_event_bus import AgentEvent
+
 logger = logging.getLogger(__name__)
+
+# Shared bus reference captured at registration so subscribers can publish
+# derived events (e.g. REGIME_WARNING) back onto the bus.
+_bus_ref: Any | None = None
 
 # bot_id -> pause timestamp (monotonic wall clock of when we saw BOT_PAUSED)
 _paused_bots: dict[str, float] = {}
@@ -25,6 +31,46 @@ _streak_ignore_until: dict[str, float] = {}
 # How long a streak escalation suppresses alpha-decay evaluation when the
 # event payload carries no explicit cool_until_ts.
 STREAK_IGNORE_DEFAULT_SEC = 900.0
+
+# Cross-strategy learning transfer (AI-FT-PTL-001 §4.4, P1 #8): symbol-level
+# regime_mismatch lesson timestamps + the last REGIME_WARNING broadcast per
+# symbol. Bots on a warned symbol raise their min_confidence until expiry.
+_regime_mismatch_events: dict[str, list[float]] = {}
+_regime_warning_until: dict[str, float] = {}
+
+
+def note_regime_mismatch(symbol: str, ts: float | None = None) -> int:
+    """Record a regime_mismatch lesson for ``symbol``; return 24h count."""
+    sym = str(symbol or "").upper()
+    if not sym:
+        return 0
+    now = float(ts if ts is not None else time.time())
+    from app.config import REGIME_WARNING_WINDOW_SEC
+
+    window = max(60.0, float(REGIME_WARNING_WINDOW_SEC))
+    events = _regime_mismatch_events.setdefault(sym, [])
+    events.append(now)
+    cutoff = now - window
+    _regime_mismatch_events[sym] = [t for t in events if t >= cutoff]
+    return len(_regime_mismatch_events[sym])
+
+
+def mark_regime_warning(symbol: str, until_ts: float) -> None:
+    sym = str(symbol or "").upper()
+    if sym:
+        _regime_warning_until[sym] = float(until_ts)
+
+
+def regime_warning_active(symbol: str) -> bool:
+    """True while a symbol-wide REGIME_WARNING is in effect."""
+    sym = str(symbol or "").upper()
+    until = _regime_warning_until.get(sym)
+    if until is None:
+        return False
+    if until <= time.time():
+        _regime_warning_until.pop(sym, None)
+        return False
+    return True
 
 
 def mark_bot_paused(bot_id: str, ts: float | None = None) -> None:
@@ -138,11 +184,57 @@ async def _on_posttrade_lesson(event) -> None:
         },
     )
 
+    # Cross-strategy transfer (P1 #8): aggregate regime_mismatch lessons per
+    # symbol; at ≥N inside the window, broadcast a symbol-wide REGIME_WARNING
+    # so every bot on the symbol tightens its entry gate.
+    try:
+        from app.config import (
+            CROSS_STRATEGY_TRANSFER_ENABLED,
+            REGIME_WARNING_MIN_LESSONS,
+            REGIME_WARNING_WINDOW_SEC,
+        )
+
+        if not CROSS_STRATEGY_TRANSFER_ENABLED:
+            return
+        outcome = (lesson or {}).get("outcome_class") if isinstance(lesson, dict) else None
+        symbol = str(event.payload.get("symbol") or "").upper()
+        if outcome != "regime_mismatch" or not symbol:
+            return
+        count = note_regime_mismatch(symbol, ts=event.timestamp or None)
+        if count < int(REGIME_WARNING_MIN_LESSONS):
+            return
+        if regime_warning_active(symbol):
+            return  # already broadcasting — don't spam the bus
+        until = time.time() + float(REGIME_WARNING_WINDOW_SEC)
+        mark_regime_warning(symbol, until)
+        if _bus_ref is not None:
+            await _bus_ref.publish(
+                AgentEvent(
+                    source_agent="CROSS_STRATEGY_AGGREGATOR",
+                    event_type="REGIME_WARNING",
+                    payload={
+                        "symbol": symbol,
+                        "mismatch_count": count,
+                        "window_sec": float(REGIME_WARNING_WINDOW_SEC),
+                        "until_ts": until,
+                    },
+                    timestamp=time.time(),
+                )
+            )
+        logger.warning(
+            "REGIME_WARNING broadcast for %s: %d regime_mismatch lessons in window",
+            symbol, count,
+        )
+    except Exception as exc:
+        logger.debug("cross-strategy regime aggregation skipped: %s", exc)
+
 
 def register_agent_event_subscribers(agent_event_bus: Any) -> None:
     """Subscribe the production handlers to the shared bus (idempotent)."""
+    global _bus_ref
     if agent_event_bus is None:
         return
+    _bus_ref = agent_event_bus
     if getattr(agent_event_bus, "_real_subscribers_registered", False):
         return
     agent_event_bus.subscribe("BOT_PAUSED", _on_bot_paused)

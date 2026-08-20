@@ -337,6 +337,39 @@ ML_TRAIN_HYPERPARAM_KEYS = frozenset({
     "latent_dim", "anomaly_threshold",
 })
 
+# Capacity floors for merge-filled budget knobs. Sweep trials run at reduced
+# fidelity (epochs/5, timesteps/5 on a data slice), so a tuned budget value is
+# only meaningful relative to that proxy — applied verbatim it undertrains the
+# champion (Apply & Retrain finishing far faster than Trigger retrain). Values
+# at/above the floor (deliberate upward tuning) pass through unchanged. Only
+# merge-filled values are floored — explicit client keys (Lab Advanced tab)
+# stay authoritative.
+ML_TRAIN_CAPACITY_FLOORS: dict[str, dict[str, int]] = {
+    "RL_PPO_AGENT": {"total_timesteps": 200_000},
+    "LSTM_DIRECTION": {"epochs": 100, "early_stop_patience": 10},
+    "TCN_MULTI_HORIZON": {"epochs": 100, "early_stop_patience": 10},
+    "TRANSFORMER_SIGNAL": {"epochs": 80, "early_stop_patience": 10},
+    "GNN_CROSS_ASSET": {"epochs": 60, "early_stop_patience": 10},
+    "VAE_REGIME_DETECTOR": {"epochs": 120},
+    "ML_SIGNAL_BOOST": {"gbm_max_iter": 300},
+}
+
+
+def _floor_merged_capacity(strategy: str, applied: dict[str, Any]) -> dict[str, Any]:
+    """Floor merge-sourced budget knobs at the production Lab defaults."""
+    floors = ML_TRAIN_CAPACITY_FLOORS.get(str(strategy or "").upper())
+    if not floors:
+        return applied
+    out = dict(applied)
+    for key, floor in floors.items():
+        if key not in out:
+            continue
+        try:
+            out[key] = max(int(out[key]), int(floor))
+        except (TypeError, ValueError):
+            out[key] = int(floor)
+    return out
+
 
 def merge_live_model_train_hyperparams(
     config: dict[str, Any] | None,
@@ -374,6 +407,9 @@ def merge_live_model_train_hyperparams(
         ):
             applied[key] = meta[key]
     if applied:
+        # A live champion whose budget came from a low-fidelity sweep must not
+        # shrink later queue retrains below the production budget.
+        applied = _floor_merged_capacity(strategy, applied)
         cfg.update(applied)
         cfg["retrain_from_live_model"] = True
         cfg["_live_model_hyperparams_applied"] = sorted(applied.keys())
@@ -418,6 +454,7 @@ def merge_optimized_train_hyperparams(
             continue
         applied[key] = best[key]
     if applied:
+        applied = _floor_merged_capacity(strategy, applied)
         cfg.update(applied)
         cfg["retrain_from_optimized"] = True
         cfg["_optimized_hyperparams_applied"] = sorted(applied.keys())

@@ -24,7 +24,6 @@ import {
 import {
   cancelMlBatch,
   cancelMlJob,
-  fetchMlBatch,
   retryMlBatch,
   submitMlBatchTrain,
 } from '@/lib/mlLabApi';
@@ -45,12 +44,17 @@ import {
 } from '@/components/ml-lab/batchTrainRunner';
 import {
   buildBatchItems,
+  deriveServerProgress,
   isBatchApiUnavailableError,
   makeBatchIdempotencyKey,
   retryServerBatch,
-  runServerBatchTrain,
   trySubmitServerBatch,
 } from '@/components/ml-lab/batchTrainServerRunner';
+import {
+  getMlBatchTracker,
+  startMlBatchTracking,
+  subscribeMlBatchTracker,
+} from '@/lib/mlBatchTracker';
 import { BatchDetailsDrawer } from '@/components/ml-lab/BatchDetailsDrawer';
 import {
   describeBatchItemError,
@@ -131,8 +135,20 @@ export default function BatchTrainDialog({
     getMlTrainingSession,
     getMlTrainingSession,
   );
+  // Store-level server-batch tracking — survives dialog remounts/reloads.
+  const tracker = useSyncExternalStore(
+    subscribeMlBatchTracker,
+    getMlBatchTracker,
+    getMlBatchTracker,
+  );
   const activePct = (() => {
     if (!running || !progress.strategy) return null;
+    // Server batch: live per-item progress comes from the tracker's job poll.
+    const followed = serverBatchRef.current?.batchId;
+    if (followed && tracker.batchId === followed) {
+      const n = Number(tracker.activeJobProgress?.pct);
+      return Number.isFinite(n) ? n : null;
+    }
     if (mlSession.strategy !== progress.strategy) return null;
     const raw = mlSession.serverProgress?.pct;
     if (raw == null || raw === '') return null;
@@ -178,6 +194,68 @@ export default function BatchTrainDialog({
     if (scope === 'custom') return;
     setSelected(selectStrategiesForScope(inventory, scope));
   }, [open, inventory, scope]);
+
+  // Re-attach to an in-flight server batch when the dialog (re)opens — the
+  // tracker keeps polling across remounts, so the run is never lost.
+  useEffect(() => {
+    if (!open || runningRef.current) return;
+    if (!tracker.active || !tracker.batchId) return;
+    if (tracker.symbol && symbol && tracker.symbol !== String(symbol).toUpperCase()) return;
+    serverBatchRef.current = {
+      batchId: tracker.batchId,
+      queue: tracker.meta?.queue || [],
+      configSnapshot: tracker.meta?.configSnapshot || null,
+      startedAt: tracker.meta?.startedAt || tracker.trackingSince || Date.now(),
+    };
+    // Suppress toasts for failures that happened before the attach.
+    seenBatchRef.current = tracker.batch || null;
+    setRunning(true);
+    setFailedIds([]);
+    if (tracker.batch) {
+      setServerBatch(tracker.batch);
+      setProgress(deriveServerProgress(tracker.batch));
+    }
+  }, [open, tracker.active, tracker.batchId, tracker.symbol, tracker.batch, tracker.meta, tracker.trackingSince, symbol]);
+
+  // Server batch progress + finalize flow through the tracker (not a dialog-
+  // owned poll) so a remount mid-run never abandons tracking.
+  const followedBatchId = serverBatchRef.current?.batchId || null;
+  useEffect(() => {
+    if (!followedBatchId || tracker.batchId !== followedBatchId) return;
+    const batch = tracker.batch;
+    if (batch) {
+      // Per-item failure toasts — diffed by item_id so each failure toasts
+      // once, while a server retry (error → pending → error) re-toasts.
+      const fresh = diffNewBatchItemFailures(seenBatchRef.current, batch);
+      seenBatchRef.current = batch;
+      for (const item of fresh) {
+        const reason = describeBatchItemError(item?.error);
+        const snippet = truncateBatchError(item?.error);
+        toast.error(`${item?.strategy || 'Strategy'}: ${reason}`, {
+          description: snippet && snippet !== reason ? snippet : undefined,
+        });
+      }
+      setServerBatch(batch);
+      setProgress(deriveServerProgress(batch));
+    }
+    if (tracker.terminal && runningRef.current) {
+      if (tracker.terminal.status === 'lost') {
+        setRunning(false);
+        setProgress({ index: 0, total: 0, strategy: null });
+        toast.error(`Server batch tracking lost: ${tracker.terminal.error || 'batch unavailable'}`);
+        return;
+      }
+      const meta = tracker.meta || {};
+      const followed = serverBatchRef.current || {};
+      finalizeBatch(tracker.terminal, {
+        queue: meta.queue || followed.queue || [],
+        configSnapshot: meta.configSnapshot ?? followed.configSnapshot ?? null,
+        startedAt: meta.startedAt || followed.startedAt || Date.now(),
+      });
+    }
+    // finalizeBatch is stable enough for this flow (reads latest state via refs/setters)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracker, followedBatchId]);
 
   const applyScope = useCallback((nextScope) => {
     setScope(nextScope);
@@ -227,30 +305,6 @@ export default function BatchTrainDialog({
     }
     onOpenChange?.(false);
   };
-
-  // Poll a server batch until terminal. Both the initial batch and a
-  // server-side retry funnel through this so UI updates come from the server.
-  const pollServerBatchToCompletion = (batchId) => runServerBatchTrain({
-    batchId,
-    fetchBatch: fetchMlBatch,
-    cancelBatch: cancelMlBatch,
-    shouldCancel: () => cancelRef.current,
-    onProgress: setProgress,
-    onBatchUpdate: (batch) => {
-      // Per-item failure toasts — diffed by item_id so each failure toasts
-      // once, while a server retry (error → pending → error) re-toasts.
-      const fresh = diffNewBatchItemFailures(seenBatchRef.current, batch);
-      seenBatchRef.current = batch;
-      for (const item of fresh) {
-        const reason = describeBatchItemError(item?.error);
-        const snippet = truncateBatchError(item?.error);
-        toast.error(`${item?.strategy || 'Strategy'}: ${reason}`, {
-          description: snippet && snippet !== reason ? snippet : undefined,
-        });
-      }
-      setServerBatch(batch);
-    },
-  });
 
   // Shared end-of-batch bookkeeping for the server and local-queue paths
   // (identical summary shapes — see summarizeServerBatch / runBatchTrainQueue).
@@ -326,13 +380,13 @@ export default function BatchTrainDialog({
         serverBatchRef.current = { batchId: submission.batchId, queue, configSnapshot, startedAt };
         // The server owns durability now — no local resume entry needed.
         clearSavedBatchQueue(getBatchQueueStorage());
-        try {
-          finalize(await pollServerBatchToCompletion(submission.batchId));
-        } catch (err) {
-          setRunning(false);
-          setProgress({ index: 0, total: 0, strategy: null });
-          toast.error(`Server batch tracking lost: ${err?.message || 'poll failed'}`);
-        }
+        // Store-level tracking: polling + finalize continue across dialog
+        // remounts/reloads via the tracker effects above.
+        startMlBatchTracking({
+          batchId: submission.batchId,
+          symbol,
+          meta: { queue, configSnapshot, startedAt, autoValidate },
+        });
         return;
       }
     } catch (err) {
@@ -442,18 +496,16 @@ export default function BatchTrainDialog({
       setFailedIds([]);
       setServerBatch(null);
       toast.message(`Retrying ${retried.requeued || failedIds.length} failed on server…`);
-      try {
-        const summary = await pollServerBatchToCompletion(server.batchId);
-        finalizeBatch(summary, {
+      startMlBatchTracking({
+        batchId: server.batchId,
+        symbol,
+        meta: {
           queue: server.queue,
           configSnapshot: server.configSnapshot,
           startedAt: server.startedAt,
-        });
-      } catch (err) {
-        setRunning(false);
-        setProgress({ index: 0, total: 0, strategy: null });
-        toast.error(`Server batch tracking lost: ${err?.message || 'poll failed'}`);
-      }
+          autoValidate,
+        },
+      });
       return;
     }
     await startBatch(failedIds, configOverridesRef.current || configOverrides);
@@ -556,7 +608,7 @@ export default function BatchTrainDialog({
             const meta = getStrategyMeta(id);
             const checked = selected.includes(id);
             const isActiveTrain = running && progress.strategy === id;
-            const hintPct = isActiveTrain ? (activePct ?? 0) : null;
+            const hintPct = isActiveTrain ? activePct : null;
             return (
               <li key={id} className="flex items-center gap-2 text-xs">
                 <Checkbox
@@ -568,7 +620,9 @@ export default function BatchTrainDialog({
                 <Label htmlFor={`batch-strat-${id}`} className="flex-1 cursor-pointer font-normal">
                   <span className="font-medium">{meta?.shortLabel || id}</span>
                   <span className="text-muted-foreground ml-2">
-                    {formatTrainedHint(row, { trainingPct: hintPct })}
+                    {isActiveTrain && hintPct == null
+                      ? 'starting…'
+                      : formatTrainedHint(row, { trainingPct: hintPct })}
                   </span>
                 </Label>
               </li>
@@ -599,6 +653,8 @@ export default function BatchTrainDialog({
           <p className="text-[0.65rem] text-muted-foreground num-mono">
             Server batch: {Number(serverBatch.completed) || 0}/{Number(serverBatch.total) || progress.total} done
             {` · ${Number(serverBatch.failed) || 0} failed · ${Number(serverBatch.cancelled) || 0} cancelled`}
+            {serverBatch.stalled ? ' · stalled — restarting runner…' : ''}
+            {tracker.pollErrors > 2 ? ' · reconnecting…' : ''}
           </p>
         )}
 

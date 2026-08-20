@@ -111,6 +111,35 @@ def train_ml_signal_model(
     wf_mode = bool(cfg.get("_wf_mode") or cfg.get("wf_mode"))
     if cfg.get("champion_train"):
         wf_mode = False
+
+    # ── Cross-asset recipe transfer ───────────────────────────────
+    # GBM trees can't warm-start weights (sklearn HistGradientBoosting has no
+    # init_model); what transfers is the *recipe*: the donor's triple-barrier
+    # labeling params as defaults (explicit target config wins) and the
+    # donor's feature importances recorded into lineage for comparison.
+    # Optuna hyperparameter transfer is handled separately (P2 #11).
+    donor_recipe: dict[str, Any] | None = None
+    _donor_cfg = cfg.get("donor") if isinstance(cfg.get("donor"), dict) else None
+    if _donor_cfg and _donor_cfg.get("symbol") and not wf_mode:
+        from app.services.bots import model_transfer as _mt
+
+        if _mt.transfer_enabled():
+            donor = _mt.resolve_donor(
+                "ML_SIGNAL_BOOST", str(_donor_cfg["symbol"]), tf,
+                _donor_cfg.get("version_id"),
+            )
+            compat = (
+                _mt.check_compatibility(donor["metadata"], "ML_SIGNAL_BOOST", tf)
+                if donor else ["donor not found"]
+            )
+            if donor and not compat:
+                donor_recipe = donor
+            else:
+                logger.warning(
+                    "GBM donor %s unusable (compat=%s) — training from scratch",
+                    _donor_cfg.get("symbol"), compat,
+                )
+
     wf_parity = bool(cfg.get("wf_capacity_parity", True))
     # Strategy defaults always inject min_train_samples=200 via merge — that
     # crushed lean WF folds. Prefer an explicit Lab override, else WF floor.
@@ -118,8 +147,21 @@ def train_ml_signal_model(
         min_samples = int(cfg.get("wf_min_train_samples", 80))
     else:
         min_samples = int(cfg.get("min_train_samples", 80 if wf_mode else 200))
-    atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
-    max_bars = int(cfg.get("triple_barrier_max_bars", 30))
+    # Donor recipe supplies barrier-param defaults; explicit target config
+    # (raw_cfg) always wins over the donor, which wins over strategy defaults.
+    _donor_conf = (donor_recipe["metadata"].get("config") or {}) if donor_recipe else {}
+    if "triple_barrier_atr_mult" in raw_cfg:
+        atr_mult = float(raw_cfg["triple_barrier_atr_mult"])
+    elif _donor_conf.get("atr_mult") is not None:
+        atr_mult = float(_donor_conf["atr_mult"])
+    else:
+        atr_mult = float(cfg.get("triple_barrier_atr_mult", 2.0))
+    if "triple_barrier_max_bars" in raw_cfg:
+        max_bars = int(raw_cfg["triple_barrier_max_bars"])
+    elif _donor_conf.get("max_holding_bars") is not None:
+        max_bars = int(_donor_conf["max_holding_bars"])
+    else:
+        max_bars = int(cfg.get("triple_barrier_max_bars", 30))
     val_fraction = float(cfg.get("val_fraction", 0.2))
     # UI / Optuna use gbm_max_iter; older callers use max_iter — prefer explicit gbm_*.
     _iter_default = 40 if (wf_mode and not wf_parity) else 150
@@ -166,12 +208,23 @@ def train_ml_signal_model(
 
     labels = resolve_precomputed_labels(candles, cfg)
     if labels is None:
+        # Closed-loop feedback (AI-FT-PTL-001 §4.2): scale barrier widths from
+        # post-trade excursion, then down-weight/exclude unreliable labels.
+        from app.services.bots.ml_posttrade_labels import (
+            apply_posttrade_feedback,
+            barrier_width_scale,
+            tp_is_adjusted_upper_mult,
+        )
+
+        _bw = barrier_width_scale(symbol)
+        _upper = tp_is_adjusted_upper_mult(symbol, atr_mult * _bw, candles)
         labels = label_triple_barrier(
             candles,
-            atr_mult_upper=atr_mult,
-            atr_mult_lower=atr_mult,
+            atr_mult_upper=_upper,
+            atr_mult_lower=atr_mult * _bw,
             max_holding_bars=max_bars,
         )
+        labels = apply_posttrade_feedback(candles, labels, symbol=symbol)
     dist = label_distribution(labels)
 
     # Step 2: Extract features for each labelled bar
@@ -271,19 +324,47 @@ def train_ml_signal_model(
     l2_reg = max(0.1, gbm_l2_reg) if gbm_l2_reg > 0 else 0.1
     min_leaf = max(5, int(len(y_train) // 50))
 
-    model = HistGBC(
-        max_depth=gbm_max_depth,
-        max_iter=max(20, max_iter),
-        learning_rate=gbm_lr,
-        l2_regularization=l2_reg,
-        min_samples_leaf=min_leaf,
-        random_state=42,
-        class_weight="balanced",
-    )
-    try:
-        model.fit(X_train, y_train, sample_weight=w_train)
-    except TypeError:
-        model.fit(X_train, y_train)
+    # Incremental boosting (AI-FT-PTL-001 §3.1.1): resume the champion's trees
+    # and add Δ rounds on the latest window instead of cold-starting. Only for
+    # live champion trains (never WF folds) when the feature schema matches.
+    warm_started = False
+    model = None
+    from app.config import GBM_WARM_START_DELTA_ITERS, GBM_WARM_START_ENABLED
+
+    if GBM_WARM_START_ENABLED and not wf_mode and not skip_persist:
+        try:
+            _prev = joblib.load(_model_path(symbol, tf))
+            _prev_names = getattr(_prev, "feature_names_in_", None)
+            _schema_ok = _prev_names is None or len(_prev_names) == len(feat_names)
+            _prev_iters = int(getattr(_prev, "max_iter", 0) or 0)
+            if _schema_ok and _prev_iters > 0:
+                _prev.warm_start = True
+                _prev.max_iter = _prev_iters + max(10, GBM_WARM_START_DELTA_ITERS)
+                _prev.fit(X_train, y_train, sample_weight=w_train)
+                model = _prev
+                warm_started = True
+                metrics_note = f"warm_start {_prev_iters}→{_prev.max_iter} iters"
+                logger.info("ML_SIGNAL_BOOST %s %s", symbol, metrics_note)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug("GBM warm-start skipped for %s: %s", symbol, exc)
+            model = None
+
+    if model is None:
+        model = HistGBC(
+            max_depth=gbm_max_depth,
+            max_iter=max(20, max_iter),
+            learning_rate=gbm_lr,
+            l2_regularization=l2_reg,
+            min_samples_leaf=min_leaf,
+            random_state=42,
+            class_weight="balanced",
+        )
+        try:
+            model.fit(X_train, y_train, sample_weight=w_train)
+        except TypeError:
+            model.fit(X_train, y_train)
 
     # Step 6: Validation & Training metrics
     y_pred_train = model.predict(X_train)
@@ -294,6 +375,9 @@ def train_ml_signal_model(
         "val_samples": int(len(y_val)),
         "train_accuracy": train_acc,
     }
+    if warm_started:
+        metrics["warm_started"] = True
+        metrics["warm_start_iters"] = int(getattr(model, "max_iter", 0) or 0)
 
     if len(y_val) >= 3 and len(np.unique(y_val)) >= 2:
         y_pred_val = model.predict(X_val)
@@ -317,7 +401,7 @@ def train_ml_signal_model(
                 )
 
     # Step 7: Refit on all data for production inference (skip in WF/PBO folds)
-    if not skip_refit:
+    if not skip_refit and not warm_started:
         if ml_cancel_requested(progress_path):
             return cancelled_train_result(symbol, "ML_SIGNAL_BOOST")
         try:
@@ -426,6 +510,20 @@ def train_ml_signal_model(
             "ml_include_trade_state": include_trade_state,
         },
     }
+    if donor_recipe is not None:
+        from app.services.bots import model_transfer as _mt
+
+        donor_meta = donor_recipe["metadata"]
+        lineage = _mt.build_lineage(donor_recipe, method=_mt.METHOD_RECIPE)
+        donor_top = donor_meta.get("top_features")
+        if isinstance(donor_top, list) and donor_top:
+            lineage["donor_feature_importances"] = donor_top[:10]
+        metadata["transfer"] = lineage
+        metrics["transfer"] = {
+            "donor_symbol": lineage.get("donor_symbol"),
+            "donor_version_id": lineage.get("donor_version_id"),
+            "method": _mt.METHOD_RECIPE,
+        }
     cal = cfg.get("_data_calendar")
     if isinstance(cal, dict):
         from app.services.bots.ml_data_calendar import merge_calendar_into_metadata

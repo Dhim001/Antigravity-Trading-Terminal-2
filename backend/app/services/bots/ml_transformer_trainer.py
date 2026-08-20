@@ -53,6 +53,11 @@ def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
+def _checkpoint_path(symbol: str, timeframe: str | None = None) -> str:
+    """Trainable state_dict sidecar (cross-asset transfer donor)."""
+    return os.path.join(_model_dir(symbol, timeframe), "checkpoint.pt")
+
+
 def _get_torch():
     try:
         import torch
@@ -266,13 +271,37 @@ def train_transformer_model(
     y_tr, y_va = y[:split], y[split:]
 
     model = _build_transformer(N_FEATURES, d_model, nhead, n_layers, lookback).to(device)
+
+    # Cross-asset donor warm-start (never for WF folds — honest OOS).
+    donor_lineage: dict[str, Any] | None = None
+    if not bool(cfg.get("_wf_mode")):
+        from app.services.bots import model_transfer as _mt
+
+        _ws = _mt.load_donor_weights(
+            model, "TRANSFORMER_SIGNAL", cfg.get("donor"), tf,
+            device=device, head_prefixes=("classifier",),
+        )
+        if _ws:
+            from app.config import ML_WARM_START_EPOCHS, ML_WARM_START_LR_FACTOR
+
+            donor_lineage = _ws["lineage"]
+            epochs = max(1, int(ML_WARM_START_EPOCHS))
+            lr = lr * float(ML_WARM_START_LR_FACTOR)
+            donor_lineage["finetune_budget"] = {
+                **(donor_lineage.get("finetune_budget") or {}),
+                "epochs": epochs,
+                "learning_rate": lr,
+            }
+
     class_counts = np.bincount(y_tr, minlength=N_CLASSES).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
     w_arr = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
     w_arr = np.clip(w_arr, 0.5, 5.0)
     weights = torch.tensor(w_arr, dtype=torch.float32, device=device)
     criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-4,
+    )
 
     X_t = cpu_tensor(X_tr, dtype=torch.float32)
     y_t = cpu_tensor(y_tr, dtype=torch.long)
@@ -474,6 +503,12 @@ def train_transformer_model(
     with open(_scaler_path(symbol, tf), "w") as f:
         json.dump({"mean": mean.tolist(), "std": std.tolist()}, f, indent=2)
 
+    # Persist the trainable checkpoint so other assets can warm-start from it.
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
+    except Exception:
+        logger.debug("Transformer checkpoint.pt save failed for %s", symbol, exc_info=True)
+
     meta = {
         "symbol": symbol, "timeframe": tf, "model_type": "transformer_signal",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
@@ -500,6 +535,15 @@ def train_transformer_model(
         "early_stopped": bool(early_stop_meta.get("early_stopped")),
         "epochs_trained": int(early_stop_meta.get("epochs_trained") or len(loss_history)),
     }
+    if donor_lineage is not None:
+        meta["transfer"] = donor_lineage
+        meta["metrics"]["transfer"] = {
+            "donor_symbol": donor_lineage.get("donor_symbol"),
+            "donor_version_id": donor_lineage.get("donor_version_id"),
+            "freeze_trunk": bool(
+                (donor_lineage.get("finetune_budget") or {}).get("freeze_trunk")
+            ),
+        }
     tw = cfg.get("_training_window") if isinstance(cfg.get("_training_window"), dict) else None
     if tw:
         meta["training_window"] = tw

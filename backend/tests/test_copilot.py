@@ -741,6 +741,136 @@ class CopilotHandleTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(deleted, 1)
 
 
+class CopilotRegressionTests(unittest.IsolatedAsyncioTestCase):
+    """Regression tests for the 2026-08-18 copilot review fixes."""
+
+    def setUp(self):
+        self.state = MagicMock()
+        self.state.oms = MagicMock()
+        self.state.oms.get_account_data.return_value = {
+            "balances": {"USD": {"balance": 10000}},
+            "positions": {},
+        }
+        self.state.bot_manager = MagicMock()
+        self.state.bot_manager.active_bots = {}
+        self.state.bot_manager.list_bots_public.return_value = []
+        self.state.chart_analyst = None
+        _SESSION_MEMORY.clear()
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", True)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot_agent.plan_tool_calls", new_callable=AsyncMock)
+    async def test_direct_reply_not_duplicated(self, mock_plan):
+        """Planner prose-only answer must render once, not twice."""
+        mock_plan.return_value = {
+            "tool_calls": [],
+            "direct_reply": "Account summary prose.",
+        }
+        res = await handle_message(self.state, "summarize my account", session_id="dup-1")
+        self.assertTrue(res.ok)
+        self.assertEqual(res.reply, "Account summary prose.")
+        self.assertEqual(res.reply.count("Account summary prose."), 1)
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", True)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot_agent.plan_tool_calls", new_callable=AsyncMock)
+    async def test_direct_reply_after_tools_not_duplicated(self, mock_plan):
+        """Turn-2 final answer must not be echoed again after the template."""
+        mock_plan.side_effect = [
+            {"tool_calls": [{"name": "get_portfolio_status", "arguments": {}}], "direct_reply": None},
+            {"tool_calls": [], "direct_reply": "All cash, no positions."},
+        ]
+        res = await handle_message(self.state, "summarize my account", session_id="dup-2")
+        self.assertTrue(res.ok)
+        self.assertEqual(res.reply.count("All cash, no positions."), 1)
+        self.assertIn("Portfolio status", res.reply)
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", False)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot._tool_portfolio")
+    @patch("app.services.agent.copilot_intent_lora.predict_intent")
+    async def test_lora_override_skipped_when_rules_have_tool(self, mock_predict, mock_port):
+        """LoRA label must not contradict a concrete rules-selected tool."""
+        mock_port.return_value = {
+            "account_equity": 10000,
+            "gross_exposure": 0,
+            "group_exposure": {},
+            "symbol_exposure": {},
+        }
+        mock_predict.return_value = ("action", 0.95)
+        res = await handle_message(self.state, "How is my portfolio?", session_id="lora-1")
+        self.assertTrue(res.ok)
+        self.assertEqual(res.intent, "query")
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", False)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot_intent_lora.predict_intent")
+    async def test_lora_override_applies_when_rules_blank(self, mock_predict):
+        """When rules fall back to help/clarify, the LoRA label may relabel."""
+        mock_predict.return_value = ("analysis", 0.9)
+        res = await handle_message(self.state, "asdf qwerty zxcv", session_id="lora-2")
+        self.assertTrue(res.ok)
+        self.assertEqual(res.intent, "analysis")
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", False)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot._tool_portfolio")
+    @patch("app.services.agent.copilot_intent_lora.log_copilot_turn")
+    @patch("app.services.agent.copilot_intent_lora.predict_intent")
+    async def test_lora_training_log_uses_rules_intent(self, mock_predict, mock_log, mock_port):
+        """The adapter must never train on its own prediction."""
+        mock_port.return_value = {
+            "account_equity": 10000,
+            "gross_exposure": 0,
+            "group_exposure": {},
+            "symbol_exposure": {},
+        }
+        mock_predict.return_value = ("action", 0.95)
+        res = await handle_message(self.state, "How is my portfolio?", session_id="lora-3")
+        self.assertTrue(res.ok)
+        mock_log.assert_called_once()
+        logged_intent = mock_log.call_args.args[1]
+        self.assertEqual(logged_intent, "query")
+
+    @patch("app.services.agent.copilot.TRADE_COPILOT_USE_LLM", False)
+    @patch("app.services.agent.copilot.TRADE_COPILOT_ENABLED", True)
+    @patch("app.services.agent.copilot._tool_portfolio")
+    async def test_portfolio_template_includes_sentinel_line(self, mock_port):
+        mock_port.return_value = {
+            "account_equity": 10000,
+            "gross_exposure": 0,
+            "group_exposure": {},
+            "symbol_exposure": {},
+            "risk_sentinel": {
+                "enabled": True,
+                "auto_pause_on_streak": True,
+                "recently_paused_bot_ids": [],
+                "recently_paused_count": 0,
+                "lookback_sec": 3600,
+            },
+        }
+        res = await handle_message(self.state, "How is my portfolio?", session_id="sent-1")
+        self.assertTrue(res.ok)
+        self.assertIn("Risk sentinel: active · no recent auto-pauses", res.reply)
+
+
+class ToolPortfolioSentinelTests(unittest.TestCase):
+    def test_tool_portfolio_includes_risk_sentinel_block(self):
+        from app.services.agent.tools.handlers import tool_portfolio
+
+        oms = MagicMock()
+        oms.get_account_data.return_value = {
+            "balances": {"USD": {"balance": 10000}},
+            "positions": {},
+        }
+        out = tool_portfolio(oms)
+        sentinel = out.get("risk_sentinel")
+        self.assertIsInstance(sentinel, dict)
+        self.assertIn("enabled", sentinel)
+        self.assertEqual(sentinel.get("recently_paused_count"), 0)
+        self.assertEqual(sentinel.get("recently_paused_bot_ids"), [])
+
+
 class SessionMemoryCapTests(unittest.TestCase):
     def setUp(self):
         _SESSION_MEMORY.clear()

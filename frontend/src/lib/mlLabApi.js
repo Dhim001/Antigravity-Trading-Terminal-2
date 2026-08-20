@@ -173,6 +173,17 @@ export async function fetchMlBatch(batchId) {
   });
 }
 
+/**
+ * Latest non-terminal batch (optionally symbol-filtered) — backs UI re-attach
+ * after a reload when no batch_id was persisted locally.
+ */
+export async function fetchActiveMlBatch(symbol) {
+  const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+  return apiRequest(`/api/v1/ml/batch-train/active${qs}`, {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+}
+
 export async function cancelMlBatch(batchId) {
   return apiRequest(`/api/v1/ml/batch-train/${encodeURIComponent(batchId)}/cancel`, {
     method: 'POST',

@@ -437,7 +437,9 @@ def test_live_hyperparams_do_not_block_optuna_when_not_requested(monkeypatch):
         cfg, "BTCUSDT", "ML_SIGNAL_BOOST", require_opt_in=True,
     )
     assert cfg["gbm_learning_rate"] == 0.02
-    assert cfg["gbm_max_iter"] == 250
+    # Sweep-tuned budget below the Lab default is floored (fidelity-shrunk
+    # budgets must not undertrain the champion).
+    assert cfg["gbm_max_iter"] == 300
     assert "gbm_max_depth" not in cfg  # live must not have injected depth=9
 
     # Queue path: live first, then Optuna gap-fill only.
@@ -452,4 +454,4 @@ def test_live_hyperparams_do_not_block_optuna_when_not_requested(monkeypatch):
     )
     assert q["gbm_learning_rate"] == 0.3  # live wins
     assert q["gbm_max_depth"] == 9
-    assert q["gbm_max_iter"] == 250  # Optuna fills gap
+    assert q["gbm_max_iter"] == 300  # Optuna fills gap, floored to Lab default

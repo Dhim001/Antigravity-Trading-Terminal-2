@@ -809,13 +809,13 @@ def snapshot_current_version(
     if "metadata.json" not in names:
         names.append("metadata.json")
 
-    # Also pick up any loose scaler/joblib/onnx in root if not listed
+    # Also pick up any loose scaler/joblib/onnx/pt checkpoint in root if not listed
     for fname in os.listdir(model_root):
         if fname in ("versions",):
             continue
         fpath = os.path.join(model_root, fname)
         if os.path.isfile(fpath) and (
-            fname.endswith((".onnx", ".joblib", ".json")) or fname in names
+            fname.endswith((".onnx", ".joblib", ".json", ".pt")) or fname in names
         ):
             if fname not in names:
                 names.append(fname)

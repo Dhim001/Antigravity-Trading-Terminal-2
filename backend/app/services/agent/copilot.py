@@ -78,6 +78,7 @@ When narrating a market scan (`scan_market`), make it highly conversational (e.g
 For other responses, use short, readable markdown.
 Never dump a command menu unless the user asked for help.
 Never invent prices or tool data. Format money with $ and commas.
+Only describe RiskSentinel alert status when the tool results include a `risk_sentinel` block — never assume it.
 If requires_confirmation is true, tell the user to confirm or cancel.
 """
 
@@ -1017,6 +1018,16 @@ def _template_reply(
                 limit = data.get("risk_max_drawdown_pct_limit")
                 limit_s = f" / limit {_pct(limit)}" if limit is not None else ""
                 lines.append(f"- Drawdown: {_pct(dd)}{limit_s}")
+            sentinel = data.get("risk_sentinel") if isinstance(data.get("risk_sentinel"), dict) else None
+            if sentinel is not None:
+                if not sentinel.get("enabled"):
+                    lines.append("- Risk sentinel: disabled")
+                else:
+                    n_paused = int(sentinel.get("recently_paused_count") or 0)
+                    if n_paused:
+                        lines.append(f"- Risk sentinel: active · {n_paused} auto-pause(s) in the last hour")
+                    else:
+                        lines.append("- Risk sentinel: active · no recent auto-pauses")
             sym_exp = data.get("symbol_exposure") or {}
             if isinstance(sym_exp, dict) and sym_exp:
                 top = sorted(sym_exp.items(), key=lambda kv: abs(float(kv[1] or 0)), reverse=True)[:5]
@@ -1311,8 +1322,21 @@ async def _narrate(
             "tool_results": tool_results,
             "pending_action": pending,
         })
+        # Domain prompt library (AI-FT-PTL-001 §3.5, P2 #13): swap the default
+        # system prompt for a versioned, few-shot-retrieved one per intent.
+        system = NARRATE_SYSTEM
+        try:
+            from app.config import COPILOT_PROMPT_LIBRARY_ENABLED
+            from app.services.agent.prompt_library import build_system_prompt
+
+            if COPILOT_PROMPT_LIBRARY_ENABLED:
+                lib_prompt = build_system_prompt(intent, message)
+                if lib_prompt:
+                    system = lib_prompt
+        except Exception:
+            pass
         result = await _chat(
-            system=NARRATE_SYSTEM,
+            system=system,
             user=user,
             task="narrator",
             max_tokens=500,
@@ -1740,6 +1764,7 @@ async def handle_message(
     pending_action: dict[str, Any] | None = None
     pending_id: str | None = None
     intent = INTENT_HELP
+    rules_intent: str | None = None
     used_agent = False
 
     # LLM tool planner first — respects natural language (timeframe, follow-ups).
@@ -1811,6 +1836,20 @@ async def handle_message(
 
     if not used_agent:
         intent, tool_hint = classify_intent(text)
+        rules_intent = intent
+        # LoRA intent router (AI-FT-PTL-001 §3.5, P3 #14): tuned embeddings
+        # classify the intent without an LLM call; rules are the fallback.
+        # tool_hint still comes from the rules so tool execution is unchanged.
+        # Only relabel when the rules drew a blank (help/clarify) — otherwise
+        # the intent badge could contradict the tool that actually ran.
+        try:
+            from app.services.agent.copilot_intent_lora import predict_intent
+
+            routed = predict_intent(text)
+            if routed is not None and intent == INTENT_HELP:
+                intent = routed[0]
+        except Exception:
+            pass
         try:
             if tool_hint == "help":
                 tool_results.append({"tool": "help", "result": _help_text()})
@@ -2012,10 +2051,33 @@ async def handle_message(
     if pending_action:
         pending_id = _store_pending(pending_action)
 
+    # LoRA training-data collection (AI-FT-PTL-001 §3.5, P3 #14): log the
+    # (query, intent, tool_call) tuple for the offline fine-tune. Always log
+    # the rules/planner-derived intent — never the LoRA router's own
+    # prediction, so the adapter never trains on its own output.
+    try:
+        from app.services.agent.copilot_intent_lora import log_copilot_turn
+
+        log_copilot_turn(text, rules_intent or intent, tool_hint if not used_agent else None)
+    except Exception:
+        pass
+
     reply = ""
     if direct_reply:
         reply = direct_reply
-        template = _template_reply(intent, tool_results, pending_action, user_message=text, session_id=sid)
+        # execute_planned_calls wraps a direct_reply as a synthetic "clarify"
+        # tool result — exclude that echo from the template so the planner's
+        # prose is not rendered a second time.
+        template_results = [
+            tr
+            for tr in tool_results
+            if not (
+                tr.get("tool") == "clarify"
+                and isinstance(tr.get("result"), dict)
+                and tr["result"].get("text") == direct_reply
+            )
+        ]
+        template = _template_reply(intent, template_results, pending_action, user_message=text, session_id=sid)
         if template and template != "Done.":
             reply += "\n\n" + template
     else:

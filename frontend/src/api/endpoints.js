@@ -184,6 +184,33 @@ export async function clearCopilotSession(session_id) {
   });
 }
 
+/** GET /api/v1/posttrade/status — fleet-wide post-trade learning snapshot */
+export async function fetchPostTradeStatus() {
+  return apiRequest('/api/v1/posttrade/status', { timeoutMs: 15000 });
+}
+
+/**
+ * GET /api/v1/ml/transfer/donors?strategy=&symbol=&timeframe= —
+ * compatible cross-asset donor models for the Lab donor picker.
+ */
+export async function fetchTransferDonors(strategy, symbol, timeframe) {
+  const qs = new URLSearchParams({
+    strategy: String(strategy || ''),
+    symbol: String(symbol || ''),
+  });
+  if (timeframe) qs.set('timeframe', timeframe);
+  return apiRequest(`/api/v1/ml/transfer/donors?${qs.toString()}`, { timeoutMs: 15000 });
+}
+
+/** POST /api/v1/copilot/intent-lora/train — fine-tune the copilot intent router */
+export async function trainCopilotIntentLora(params = {}) {
+  return apiRequest('/api/v1/copilot/intent-lora/train', {
+    method: 'POST',
+    timeoutMs: 120000,
+    body: params,
+  });
+}
+
 /** GET /health — liveness + partial terminal metadata (not action-router envelope). */
 export async function fetchHealth(storeActions) {
   const body = await apiRequest('/health');

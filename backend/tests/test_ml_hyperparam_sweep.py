@@ -392,6 +392,80 @@ def test_apply_champion_train_overrides_clears_wf():
     assert apply_champion_train_overrides({"_wf_mode": True}, {})["_wf_mode"] is True
 
 
+def test_merge_optimized_floors_fidelity_shrunk_budgets(monkeypatch):
+    """Sweep-tuned budget knobs (screen trials run epochs/5, timesteps/5) must
+    never shrink a champion train below the Lab retrain budget."""
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda *a, **k: {
+            "total_timesteps": 16384,  # sweep search-space max is 65536
+            "learning_rate": 0.0005,
+            "hidden_dim": 128,
+        },
+    )
+    out = store.merge_optimized_train_hyperparams(
+        {"champion_train": True}, "ADAUSD", "RL_PPO_AGENT", require_opt_in=True,
+    )
+    assert out["total_timesteps"] == 200_000  # floored to the Lab default
+    assert out["learning_rate"] == 0.0005  # architecture knobs pass verbatim
+    assert out["hidden_dim"] == 128
+
+
+def test_merge_optimized_keeps_tuned_budget_above_floor(monkeypatch):
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda *a, **k: {"epochs": 150, "early_stop_patience": 5},
+    )
+    out = store.merge_optimized_train_hyperparams(
+        {"champion_train": True}, "AAPL", "LSTM_DIRECTION", require_opt_in=True,
+    )
+    assert out["epochs"] == 150  # deliberate upward tuning applies
+    assert out["early_stop_patience"] == 10  # floored at the Lab default
+
+
+def test_merge_optimized_never_floors_explicit_client_keys(monkeypatch):
+    """A deliberate Lab Advanced budget (e.g. quick experiment) stays as set."""
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        store,
+        "get_latest_optimized_hyperparams",
+        lambda *a, **k: {"total_timesteps": 65536},
+    )
+    out = store.merge_optimized_train_hyperparams(
+        {"champion_train": True, "total_timesteps": 50_000},
+        "ADAUSD",
+        "RL_PPO_AGENT",
+        require_opt_in=True,
+    )
+    assert out["total_timesteps"] == 50_000
+
+
+def test_merge_live_model_floors_sweep_contaminated_budget(monkeypatch):
+    """A champion written with a shrunken sweep budget must not propagate it
+    into later queue retrains via live-metadata HP reuse."""
+    from app.services.bots import optimization_store as store
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_retrain_scheduler.get_model_metadata",
+        lambda *a, **k: {
+            "config": {"epochs": 30, "learning_rate": 0.002},
+            "trained_at": "2026-08-01T00:00:00Z",
+        },
+    )
+    out = store.merge_live_model_train_hyperparams(
+        {"champion_train": True}, "AAPL", "LSTM_DIRECTION",
+    )
+    assert out["epochs"] == 100  # floored to the Lab default
+    assert out["learning_rate"] == 0.002
+
+
 
 def test_merge_optimized_skips_when_opted_out(monkeypatch):
     from app.services.bots import optimization_store as store

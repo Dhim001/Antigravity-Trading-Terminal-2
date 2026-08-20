@@ -247,6 +247,81 @@ def invalidate_conformal_cache(bot_id: str | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Adaptive recalibration (AI-FT-PTL-001 §4.5, P1 #7)
+# ---------------------------------------------------------------------------
+
+
+def recalibrate_conformal_gate(bot_id: str) -> dict:
+    """Recompute ``q_hat`` from recent live predictions vs outcomes (EMA).
+
+    Reads the rolling (predicted_prob, actual_win) tracker, fits a fresh
+    conformal quantile over the last ``CONFORMAL_RECALIB_WINDOW`` pairs, then
+    blends it into the persisted calibration via exponential smoothing:
+    ``q_hat_new = (1-α)·q_hat_old + α·q_hat_recent``. Persists the updated
+    calibration alongside the model artifacts. Never raises.
+
+    Returns a small status dict (``updated`` False when data is insufficient).
+    """
+    try:
+        from app.config import (
+            CONFORMAL_RECALIB_ENABLED,
+            CONFORMAL_RECALIB_EMA_ALPHA,
+            CONFORMAL_RECALIB_WINDOW,
+        )
+        from app.services.bots.meta_label_operational import _rolling_predictions
+
+        if not CONFORMAL_RECALIB_ENABLED:
+            return {"updated": False, "reason": "disabled"}
+
+        preds = list(_rolling_predictions.get(bot_id) or [])[-int(CONFORMAL_RECALIB_WINDOW):]
+        if len(preds) < MIN_CALIB_SAMPLES:
+            return {
+                "updated": False,
+                "reason": f"insufficient outcomes ({len(preds)} < {MIN_CALIB_SAMPLES})",
+                "n": len(preds),
+            }
+
+        probs = [p["predicted"] for p in preds]
+        labels = [1 if p["actual"] else 0 for p in preds]
+        recent = fit_conformal(probs, labels, alpha=DEFAULT_ALPHA, min_samples=MIN_CALIB_SAMPLES)
+        if recent is None:
+            return {"updated": False, "reason": "fit_failed", "n": len(preds)}
+
+        existing = load_conformal(bot_id)
+        alpha = max(0.0, min(1.0, float(CONFORMAL_RECALIB_EMA_ALPHA)))
+        if existing is not None and existing.n > 0:
+            q_hat = (1.0 - alpha) * existing.q_hat + alpha * recent.q_hat
+        else:
+            q_hat = recent.q_hat
+        q_hat = max(0.0, min(1.0, q_hat))
+
+        updated = ConformalCalibration(
+            q_hat=q_hat,
+            threshold=max(0.0, min(1.0, 1.0 - q_hat)),
+            n=recent.n,
+            alpha=recent.alpha,
+            scores=recent.scores,
+        )
+        save_conformal(bot_id, updated)
+        logger.info(
+            "Conformal gate recalibrated for %s: q_hat %.4f → %.4f (n=%d)",
+            bot_id,
+            existing.q_hat if existing else float("nan"),
+            updated.q_hat,
+            updated.n,
+        )
+        return {
+            "updated": True,
+            "q_hat": round(updated.q_hat, 6),
+            "threshold": round(updated.threshold, 6),
+            "n": updated.n,
+        }
+    except Exception as exc:
+        logger.debug("recalibrate_conformal_gate failed for %s: %s", bot_id, exc)
+        return {"updated": False, "reason": "error"}
+
+
+# ---------------------------------------------------------------------------
 # Live gate — drop-in companion to apply_ml_meta_label_gate
 # ---------------------------------------------------------------------------
 

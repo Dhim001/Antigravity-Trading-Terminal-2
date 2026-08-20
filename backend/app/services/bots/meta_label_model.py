@@ -377,6 +377,10 @@ def _model_path(bot_id: str) -> str:
     return os.path.join(_bot_model_dir(bot_id), "model.joblib")
 
 
+def _calibrator_path(bot_id: str) -> str:
+    return os.path.join(_bot_model_dir(bot_id), "calibrator.joblib")
+
+
 def _load_sklearn():
     try:
         from sklearn.ensemble import HistGradientBoostingClassifier
@@ -468,6 +472,7 @@ def train_model_from_rows(
         "val_samples": int(len(y_val)),
         "train_win_rate": round(float(y_train.mean()), 4) if len(y_train) else 0.0,
     }
+    calibrator = None
     if len(y_val) >= 3 and len(np.unique(y_val)) >= 2:
         proba_val = model.predict_proba(X_val)[:, 1]
         try:
@@ -478,6 +483,30 @@ def train_model_from_rows(
             metrics["val_log_loss"] = round(float(log_loss_fn(y_val, proba_val)), 4)
         except ValueError:
             metrics["val_log_loss"] = None
+
+        # Isotonic calibration layer (AI-FT-PTL-001 §3.4, P2 #12): fit on the
+        # held-out 20% predictions so a predicted 70% P(win) wins ~70%.
+        try:
+            from app.config import (
+                META_LABEL_ISOTONIC_ENABLED,
+                META_LABEL_ISOTONIC_MIN_SAMPLES,
+            )
+
+            if META_LABEL_ISOTONIC_ENABLED and len(y_val) >= int(META_LABEL_ISOTONIC_MIN_SAMPLES):
+                from sklearn.isotonic import IsotonicRegression
+
+                calibrator = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+                calibrator.fit(proba_val, y_val)
+                cal_proba = calibrator.predict(proba_val)
+                try:
+                    metrics["val_log_loss_calibrated"] = round(
+                        float(log_loss_fn(y_val, np.clip(cal_proba, 1e-7, 1 - 1e-7))), 4
+                    )
+                except ValueError:
+                    metrics["val_log_loss_calibrated"] = None
+        except Exception:
+            logger.debug("isotonic calibrator fit skipped", exc_info=True)
+            calibrator = None
 
     # Refit on all rows for production inference (val split is metrics-only).
     # Recompute class balance from the full dataset (may differ from train split).
@@ -510,6 +539,7 @@ def train_model_from_rows(
     return {
         "ok": True,
         "model": model,
+        "calibrator": calibrator,
         "sample_count": n,
         "metrics": metrics,
         "top_features": top_features,
@@ -564,6 +594,18 @@ def train_meta_label_model(
     os.makedirs(_bot_model_dir(bot_id), exist_ok=True)
     joblib.dump(model, _model_path(bot_id))
 
+    # Persist the isotonic calibrator alongside the model (P2 #12). Remove any
+    # stale calibrator when this train didn't produce one.
+    calibrator = trained.get("calibrator")
+    calib_path = _calibrator_path(bot_id)
+    try:
+        if calibrator is not None:
+            joblib.dump(calibrator, calib_path)
+        elif os.path.isfile(calib_path):
+            os.remove(calib_path)
+    except Exception:
+        logger.debug("calibrator persist skipped for %s", bot_id, exc_info=True)
+
     metadata = {
         "bot_id": bot_id,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
@@ -572,6 +614,7 @@ def train_meta_label_model(
         "sample_count": trained.get("sample_count"),
         "metrics": metrics,
         "top_features": top_features,
+        "isotonic_calibrated": calibrator is not None,
     }
     with open(_metadata_path(bot_id), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
@@ -595,6 +638,7 @@ class MetaLabelModelStore:
 
         self._models: dict[str, Any] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
+        self._calibrators: dict[str, Any] = {}
         self._mtime: dict[str, float] = {}
         self._lru = bind_dict_cache(
             self._models, self._metadata, self._mtime,
@@ -608,11 +652,13 @@ class MetaLabelModelStore:
             self._lru.discard(key)
             self._models.pop(key, None)
             self._metadata.pop(key, None)
+            self._calibrators.pop(key, None)
             self._mtime.pop(key, None)
         else:
             self._lru.clear()
             self._models.clear()
             self._metadata.clear()
+            self._calibrators.clear()
             self._mtime.clear()
 
     def get_metadata(self, bot_id: str) -> dict[str, Any] | None:
@@ -644,7 +690,16 @@ class MetaLabelModelStore:
         vec = features_to_vector(features, stored_names).reshape(1, -1)
         try:
             proba = model.predict_proba(vec)[0, 1]
-            return float(max(0.0, min(1.0, proba)))
+            proba = float(max(0.0, min(1.0, proba)))
+            # Isotonic calibration layer (P2 #12): map raw P(win) through the
+            # held-out-fitted calibrator when one is persisted.
+            calibrator = self._calibrators.get(str(bot_id))
+            if calibrator is not None:
+                try:
+                    proba = float(max(0.0, min(1.0, calibrator.predict([proba])[0])))
+                except Exception:
+                    pass
+            return proba
         except Exception as exc:
             logger.warning("Meta-label predict failed for %s: %s", bot_id, exc)
             return None
@@ -681,8 +736,22 @@ class MetaLabelModelStore:
             logger.warning("Meta-label load failed for %s: %s", key, exc)
             return None
 
+        # Isotonic calibrator (P2 #12) — optional sidecar artifact.
+        calibrator = None
+        calib_path = _calibrator_path(key)
+        if os.path.isfile(calib_path):
+            try:
+                calibrator = joblib.load(calib_path)
+            except Exception:
+                logger.debug("calibrator load failed for %s", key, exc_info=True)
+                calibrator = None
+
         self._models[key] = model
         self._metadata[key] = meta
+        if calibrator is not None:
+            self._calibrators[key] = calibrator
+        else:
+            self._calibrators.pop(key, None)
         self._mtime[key] = mtime
         self._lru.touch(key)
         return model

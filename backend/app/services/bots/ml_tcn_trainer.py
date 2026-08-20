@@ -53,6 +53,15 @@ def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
+def _checkpoint_path(symbol: str, timeframe: str | None = None) -> str:
+    """Trainable state_dict sidecar (cross-asset transfer donor)."""
+    return os.path.join(_model_dir(symbol, timeframe), "checkpoint.pt")
+
+
+def _feature_baseline_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "feature_baseline.json")
+
+
 def _get_torch():
     try:
         import torch
@@ -225,6 +234,9 @@ def train_tcn_model(
     if n < min_samples:
         return {"ok": False, "error": f"insufficient sequences ({n} < {min_samples})", "symbol": symbol}
 
+    # Live drift recording uses the last timestep of the window (unscaled).
+    last_step_raw = np.asarray(X[:, -1, :], dtype=np.float32)
+
     # Normalize features
     flat = X.reshape(-1, N_FEATURES)
     feat_mean = flat.mean(axis=0)
@@ -241,7 +253,31 @@ def train_tcn_model(
     model = _build_tcn(
         input_dim=N_FEATURES, hidden_dim=hidden_dim, num_blocks=num_blocks,
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+
+    # Cross-asset donor warm-start (never for WF folds — honest OOS).
+    donor_lineage: dict[str, Any] | None = None
+    if not bool(cfg.get("_wf_mode")):
+        from app.services.bots import model_transfer as _mt
+
+        _ws = _mt.load_donor_weights(
+            model, "TCN_MULTI_HORIZON", cfg.get("donor"), tf,
+            device=device, head_prefixes=("head",),
+        )
+        if _ws:
+            from app.config import ML_WARM_START_EPOCHS, ML_WARM_START_LR_FACTOR
+
+            donor_lineage = _ws["lineage"]
+            epochs = max(1, int(ML_WARM_START_EPOCHS))
+            lr = lr * float(ML_WARM_START_LR_FACTOR)
+            donor_lineage["finetune_budget"] = {
+                **(donor_lineage.get("finetune_budget") or {}),
+                "epochs": epochs,
+                "learning_rate": lr,
+            }
+
+    optimizer = torch.optim.Adam(
+        (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-5,
+    )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     criterion = nn.MSELoss()
 
@@ -413,6 +449,20 @@ def train_tcn_model(
     with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(scaler, fh, indent=2)
 
+    # Persist the trainable checkpoint so other assets can warm-start from it.
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
+    except Exception:
+        logger.debug("TCN checkpoint.pt save failed for %s", symbol, exc_info=True)
+
+    # Real training sample for PSI (not the Gaussian scaler fallback).
+    try:
+        sample = last_step_raw[:: max(1, len(last_step_raw) // 500)][:500]
+        with open(_feature_baseline_path(symbol, tf), "w", encoding="utf-8") as fh:
+            json.dump({"features": sample.tolist()}, fh)
+    except Exception:
+        pass
+
     metadata = {
         "symbol": symbol, "timeframe": tf, "model_type": "tcn_multi_horizon",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
@@ -429,6 +479,15 @@ def train_tcn_model(
         },
         "train_device": train_device_meta,
     }
+    if donor_lineage is not None:
+        metadata["transfer"] = donor_lineage
+        metrics["transfer"] = {
+            "donor_symbol": donor_lineage.get("donor_symbol"),
+            "donor_version_id": donor_lineage.get("donor_version_id"),
+            "freeze_trunk": bool(
+                (donor_lineage.get("finetune_budget") or {}).get("freeze_trunk")
+            ),
+        }
     with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 

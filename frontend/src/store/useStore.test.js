@@ -100,6 +100,23 @@ describe('setBotHistory cap (#40b)', () => {
   });
 });
 
+describe('setTradeHistory realized P&L', () => {
+  it('aggregates Realized P&L from the full payload, not the table cap', () => {
+    const trades = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`,
+      status: 'FILLED',
+      realized_pnl: i === 5 ? -40 : 1,
+      trade_value: 10,
+      timestamp: `2026-08-16 10:0${i}:00`,
+    }));
+    useStore.getState().setTradeHistory(trades);
+    const stats = useStore.getState().tradeStats;
+    expect(stats.total_pnl).toBe(-35);
+    expect(stats.total_exits).toBe(6);
+    expect(useStore.getState().tradeHistory.length).toBe(6);
+  });
+});
+
 describe('safeMode store sync (H1)', () => {
   beforeEach(() => {
     useStore.setState({

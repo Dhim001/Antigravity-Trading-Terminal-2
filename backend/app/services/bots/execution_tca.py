@@ -306,6 +306,43 @@ def measured_symbol_impact(symbol: str | None) -> dict | None:
         return None
 
 
+def mean_is_bps_for_symbol(symbol: str, *, lookback_days: int = 30) -> float | None:
+    """Mean implementation shortfall (bps) for a symbol over the trailing window.
+
+    Returns None when there are no measured fills. Never raises.
+    """
+    if not symbol:
+        return None
+    conn = None
+    try:
+        cutoff = (_utcnow_naive() - timedelta(days=max(1, lookback_days))).isoformat(sep=" ")
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT AVG(is_bps) AS avg_is_bps
+            FROM execution_quality_log
+            WHERE symbol = ? AND is_bps IS NOT NULL AND created_at >= ?
+            """,
+            (str(symbol).upper(), cutoff),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        val = row.get("avg_is_bps") if isinstance(row, dict) else row[0]
+        return float(val) if val is not None else None
+    except Exception:
+        logger.debug("mean_is_bps_for_symbol failed for %s", symbol, exc_info=True)
+        return None
+    finally:
+        # A failed query must not leak the pooled connection.
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _quality_filters(
     *, bot_id: str | None, symbol: str | None, strategy: str | None, hours: int | None
 ) -> tuple[str, list[Any]]:

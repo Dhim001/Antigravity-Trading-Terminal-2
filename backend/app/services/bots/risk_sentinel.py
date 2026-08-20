@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import (
@@ -13,6 +14,8 @@ from app.config import (
     RISK_CORRELATION_THRESHOLD,
     RISK_DYNAMIC_CORRELATION_ENABLED,
     RISK_SENTINEL_AUTO_PAUSE_ON_STREAK,
+    RISK_SENTINEL_DRIFT_ALERT_SEC,
+    RISK_SENTINEL_DRIFT_MIN_BOT_AGE_SEC,
     RISK_SENTINEL_ENABLED,
     RISK_SENTINEL_MAX_CORRELATION_EXPOSURE_PCT,
     RISK_SENTINEL_MAX_VELOCITY,
@@ -31,6 +34,24 @@ from app.services.agent.copilot import agent_narrate_event
 logger = logging.getLogger(__name__)
 
 
+def _parse_bot_created_ts(bot: dict[str, Any]) -> float | None:
+    raw = bot.get("created_at")
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
 class RiskSentinel:
     def __init__(self, agent_event_bus: Any | None = None) -> None:
         # Store historical drawdown percentages to compute velocity
@@ -38,6 +59,7 @@ class RiskSentinel:
         self.bot_memories: dict[str, WorkingMemory] = {}
         self.agent_event_bus = agent_event_bus
         self._velocity_strikes = 0
+        self._drift_alert_at: dict[str, float] = {}
 
     async def evaluate(self, snapshot: Any, oms: Any, bot_manager: Any) -> dict[str, Any]:
         """Evaluate portfolio-level and bot-level risk parameters.
@@ -349,7 +371,7 @@ class RiskSentinel:
 
         # 4. ML Model Feature Drift & Performance Monitoring
         try:
-            from app.services.bots.ml_feature_drift import should_recommend_retrain
+            from app.services.bots.ml_feature_drift import drift_retrain_verdict
             from app.services.bots.ml_walk_forward_validator import is_ml_strategy
 
             for bot_id, bot in list(bot_manager.active_bots.items()):
@@ -357,23 +379,42 @@ class RiskSentinel:
                     continue
                 sym = str(bot.get("symbol") or "").upper()
                 strat = str(bot.get("strategy") or "").upper()
-                if is_ml_strategy(strat) and sym:
-                    if should_recommend_retrain(sym, strat):
-                        drift_msg = (
-                            f"Risk Sentinel: Significant feature drift detected for ML bot {sym} ({strat}). "
-                            f"Live market features have drifted from training baseline. Retrain recommended."
-                        )
-                        logger.warning(drift_msg)
-                        await bot_manager.log_bot_event(bot_id, "WARN", drift_msg)
-                        await emit_notification(
-                            NotificationEvent(
-                                event_type=ntypes.RISK_SENTINEL,
-                                title="ML Model Feature Drift Alert",
-                                body=drift_msg,
-                                severity="warning",
-                                payload={"bot_id": bot_id, "symbol": sym, "strategy": strat},
-                            )
-                        )
+                if not (is_ml_strategy(strat) and sym):
+                    continue
+                created_ts = _parse_bot_created_ts(bot)
+                if created_ts is not None and (now - created_ts) < RISK_SENTINEL_DRIFT_MIN_BOT_AGE_SEC:
+                    continue
+                cooldown_key = f"{bot_id}:{sym}:{strat}"
+                last_alert = self._drift_alert_at.get(cooldown_key, 0.0)
+                if RISK_SENTINEL_DRIFT_ALERT_SEC > 0 and (now - last_alert) < RISK_SENTINEL_DRIFT_ALERT_SEC:
+                    continue
+                verdict = drift_retrain_verdict(sym, strat)
+                if not verdict:
+                    continue
+                psi = float(verdict.get("overall_psi") or 0.0)
+                n_live = int(verdict.get("n_live") or 0)
+                drift_msg = (
+                    f"Risk Sentinel: Significant feature drift detected for ML bot {sym} ({strat}) "
+                    f"[PSI={psi:.2f}, n_live={n_live}]. Retrain recommended."
+                )
+                self._drift_alert_at[cooldown_key] = now
+                logger.warning(drift_msg)
+                await bot_manager.log_bot_event(bot_id, "WARN", drift_msg)
+                await emit_notification(
+                    NotificationEvent(
+                        event_type=ntypes.RISK_SENTINEL,
+                        title="ML Model Feature Drift Alert",
+                        body=drift_msg,
+                        severity="warning",
+                        payload={
+                            "bot_id": bot_id,
+                            "symbol": sym,
+                            "strategy": strat,
+                            "overall_psi": psi,
+                            "n_live": n_live,
+                        },
+                    )
+                )
         except Exception as exc:
             logger.debug("Sentinel ML drift check failed: %s", exc)
 

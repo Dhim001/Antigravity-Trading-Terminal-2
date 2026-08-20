@@ -59,43 +59,56 @@ describe('isBatchApiUnavailableError', () => {
 });
 
 describe('buildBatchItems', () => {
-  it('merges timeframe/window with per-strategy overrides and validate_after', () => {
+  it('maps camelCase knob snapshots onto snake_case train + validate config', () => {
     const items = buildBatchItems(['ML_SIGNAL_BOOST', 'LSTM_DIRECTION'], {
       timeframe: '5m',
       trainingWindow: '6',
       autoValidate: true,
       configOverrides: {
-        ML_SIGNAL_BOOST: { gbm_max_iter: 500 },
-        LSTM_DIRECTION: { epochs: 40, hidden_dim: 128 },
+        ML_SIGNAL_BOOST: {
+          gbmMaxIter: '500', nFolds: '4', validateMaxBars: '50000', pboSegments: '6',
+        },
+        LSTM_DIRECTION: { epochs: '40', hiddenDim: '128' },
       },
     });
-    expect(items).toEqual([
-      {
-        strategy: 'ML_SIGNAL_BOOST',
-        config: { timeframe: '5m', training_window_months: 6, gbm_max_iter: 500 },
-        validate_after: true,
-      },
-      {
-        strategy: 'LSTM_DIRECTION',
-        config: { timeframe: '5m', training_window_months: 6, epochs: 40, hidden_dim: 128 },
-        validate_after: true,
-      },
-    ]);
+    expect(items[0].strategy).toBe('ML_SIGNAL_BOOST');
+    expect(items[0].validate_after).toBe(true);
+    expect(items[0].config).toMatchObject({
+      timeframe: '5m',
+      training_window_months: 6,
+      gbm_max_iter: 500,
+      gbm_max_depth: 6,
+      validate_folds: 4,
+      validate_max_bars: 50_000,
+      pbo_segments: 6,
+      validate_pbo: true,
+      wf_capacity_parity: true,
+    });
+    // camelCase knob keys must not leak into the posted config
+    expect(items[0].config.gbmMaxIter).toBeUndefined();
+    expect(items[0].config.nFolds).toBeUndefined();
+    expect(items[1].config).toMatchObject({
+      timeframe: '5m',
+      training_window_months: 6,
+      epochs: 40,
+      hidden_dim: 128,
+      validate_folds: 3,
+      validate_pbo: false,
+    });
   });
 
-  it('lets per-strategy overrides win on key conflicts', () => {
-    const items = buildBatchItems(['A'], {
-      timeframe: '1m',
-      trainingWindow: '3',
-      configOverrides: { A: { timeframe: '15m', training_window_months: 12 } },
-    });
-    expect(items[0].config).toEqual({ timeframe: '15m', training_window_months: 12 });
+  it('falls back to Lab defaults when a strategy has no snapshot', () => {
+    const items = buildBatchItems(['RL_PPO_AGENT'], { timeframe: '1m', trainingWindow: '3' });
+    expect(items[0].config.total_timesteps).toBe(200_000);
+    expect(items[0].config.hidden_dim).toBe(256);
+    expect(items[0].config.validate_folds).toBe(2);
     expect(items[0].validate_after).toBe(false);
   });
 
-  it('tolerates missing overrides and drops invalid windows', () => {
-    const items = buildBatchItems(['A'], { timeframe: '1m', trainingWindow: 'nope' });
-    expect(items).toEqual([{ strategy: 'A', config: { timeframe: '1m' }, validate_after: false }]);
+  it('tolerates invalid windows', () => {
+    const items = buildBatchItems(['ML_SIGNAL_BOOST'], { timeframe: '1m', trainingWindow: 'nope' });
+    expect(items[0].config.timeframe).toBe('1m');
+    expect(items[0].config.training_window_months).toBeUndefined();
   });
 });
 

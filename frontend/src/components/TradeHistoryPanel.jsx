@@ -22,6 +22,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { WidgetToolbar, WidgetEmpty } from './WidgetShell';
 import { StatCard } from './StatCard';
 import { buildBotLookup, parseTradeTimestamp, tradeSourceDetail } from '@/lib/botAttribution';
+import { computeTradeStats, historyRangeCutoff } from '@/lib/tradeHistoryStats';
 import TradeOriginCell from './TradeOriginCell';
 import { useVirtualRows, VirtualTablePadding } from './VirtualTableBody';
 import {
@@ -38,11 +39,13 @@ const fmt = (n, dec = 2) =>
   n == null ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
 function FmtPnl({ value }) {
-  if (value == null) return <span className="text-muted-foreground">—</span>;
-  const pos = value >= 0;
+  if (value == null || value === '') return <span className="text-muted-foreground">—</span>;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return <span className="text-muted-foreground">—</span>;
+  const pos = n >= 0;
   return (
     <span className={cn('num-mono font-bold', pos ? 'text-trading-up' : 'text-trading-down')}>
-      {pos ? '+' : ''}${fmt(value)}
+      {pos ? '+' : ''}${fmt(n)}
     </span>
   );
 }
@@ -108,8 +111,7 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     [tradeHistory],
   );
 
-  const selectedRange = DATE_RANGES.find(r => r.label === dateRange);
-  const cutoff = selectedRange?.days === Infinity ? 0 : Date.now() - selectedRange.days * 86400000;
+  const cutoff = historyRangeCutoff(dateRange);
 
   const filtered = useMemo(() => {
     let rows = tradeHistory;
@@ -183,51 +185,21 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
     URL.revokeObjectURL(url);
   };
 
-  const filteredExits = filtered.filter((t) => t.realized_pnl != null);
-  const filteredPnl = filteredExits.reduce((s, t) => s + t.realized_pnl, 0);
-  const filteredVol = filteredExits.reduce((s, t) => s + (t.trade_value || 0), 0);
+  const filtersIdle = (
+    dateRange === 'All'
+    && symFilter === 'ALL'
+    && sideFilter === 'ALL'
+    && statFilter === 'ALL'
+    && sourceFilter === 'ALL'
+    && originFilter === 'ALL'
+    && !search.trim()
+  );
 
   const displayStats = useMemo(() => {
-    const pnls = filteredExits.map((t) => t.realized_pnl);
-    const exits = pnls.length;
-    if (exits === 0) {
-      return {
-        total_pnl: 0,
-        wins: 0,
-        losses: 0,
-        win_rate: 0,
-        profit_factor: null,
-        best_trade: 0,
-        worst_trade: 0,
-        avg_win: 0,
-        avg_loss: 0,
-        total_exits: 0,
-        total_fills: filtered.length,
-        gross_volume: filteredVol,
-      };
-    }
-    const wins = pnls.filter((p) => p > 0);
-    const losses = pnls.filter((p) => p < 0);
-    const totalWin = wins.reduce((s, p) => s + p, 0);
-    const totalLoss = losses.reduce((s, p) => s + p, 0);
-    const profitFactor = Math.abs(totalLoss) > 0
-      ? totalWin / Math.abs(totalLoss)
-      : (totalWin > 0 ? 99.9 : 0);
-    return {
-      total_pnl: filteredPnl,
-      wins: wins.length,
-      losses: losses.length,
-      win_rate: (wins.length / exits) * 100,
-      profit_factor: profitFactor,
-      best_trade: Math.max(...pnls),
-      worst_trade: Math.min(...pnls),
-      avg_win: wins.length ? totalWin / wins.length : 0,
-      avg_loss: losses.length ? totalLoss / losses.length : 0,
-      total_exits: exits,
-      total_fills: filtered.length,
-      gross_volume: filteredVol,
-    };
-  }, [filtered, filteredExits, filteredPnl, filteredVol]);
+    // Unfiltered All-time uses the full payload stats (not the RAM-capped table).
+    if (filtersIdle && tradeStats) return tradeStats;
+    return computeTradeStats(filtered);
+  }, [filtersIdle, tradeStats, filtered]);
 
   const activeFilterCount = [
     dateRange !== 'All',
@@ -309,15 +281,15 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
           <StatCard
             label="Best Trade"
             icon={Award}
-            value={`+$${fmt(displayStats.best_trade)}`}
-            tone="up"
+            value={`${displayStats.best_trade >= 0 ? '+' : '-'}$${fmt(Math.abs(displayStats.best_trade))}`}
+            tone={displayStats.best_trade >= 0 ? 'up' : 'down'}
             sub={`Avg win: +$${fmt(displayStats.avg_win)}`}
           />
           <StatCard
             label="Worst Trade"
             icon={TrendingDown}
-            value={`-$${fmt(Math.abs(displayStats.worst_trade))}`}
-            tone="down"
+            value={`${displayStats.worst_trade > 0 ? '+' : '-'}$${fmt(Math.abs(displayStats.worst_trade))}`}
+            tone={displayStats.worst_trade < 0 ? 'down' : 'neutral'}
             sub={`Avg loss: -$${fmt(Math.abs(displayStats.avg_loss))}`}
           />
           <StatCard
@@ -574,11 +546,11 @@ export function TradeHistoryContent({ embedded = true, onClose }) {
           <span className="flex gap-3">
             <span>
               Filtered P&L:{' '}
-              <FmtPnl value={filteredPnl} />
+              <FmtPnl value={displayStats.total_pnl} />
             </span>
             <span>
               Vol:{' '}
-              <span className="num-mono text-secondary-foreground">${fmt(filteredVol)}</span>
+              <span className="num-mono text-secondary-foreground">${fmt(displayStats.gross_volume)}</span>
             </span>
           </span>
         )}

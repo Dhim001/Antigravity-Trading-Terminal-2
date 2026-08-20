@@ -1358,6 +1358,17 @@ class BotManagerService:
                     except Exception:
                         hmm_feats = None
 
+                    # Adaptive regime boundary calibration (AI-FT-PTL-001 §3.3):
+                    # EMA-update the mixture centroids on a rolling window.
+                    # Self-debounced to once per 24h per bot.
+                    try:
+                        from app.services.bots.hmm_regime import adaptive_recalibrate_regime
+
+                        if ohlcv_data and len(ohlcv_data) >= 100:
+                            adaptive_recalibrate_regime(bot_id, ohlcv_data)
+                    except Exception:
+                        pass
+
                     gate_cfg = dict(bot_config or {})
                     gate_cfg.setdefault("_bot_id", bot_id)
                     gate_cfg.setdefault("bot_id", bot_id)
@@ -2514,6 +2525,7 @@ class BotManagerService:
             "last_signal_at": None,
             "last_tick_signal_at": 0,
             "signal_history": deque(maxlen=20),
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         if mode == "TICK":
             self.active_bots[bot_id]["tick_strategy_instance"] = get_tick_strategy(

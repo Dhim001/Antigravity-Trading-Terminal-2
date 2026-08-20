@@ -29,12 +29,16 @@ import MlAutoTunePanel from '@/components/MlAutoTunePanel';
 import PipelineStatusBar from '@/components/PipelineStatusBar';
 import PipelineAutoDeploySettings from '@/components/PipelineAutoDeploySettings';
 import BatchTrainDialog from '@/components/ml-lab/BatchTrainDialog';
+import MlBatchStrip from '@/components/ml-lab/MlBatchStrip';
+import { rehydrateMlBatchTracker } from '@/lib/mlBatchTracker';
 import { MlJobCancelledError } from '@/components/ml-lab/batchTrainRunner';
 import { MetricChips } from '@/components/ml-lab/MlMetricChips';
 import { LossHistoryChart } from '@/components/ml-lab/MlLossChart';
 import { DeployReadinessStrip, DataCalendarStrip } from '@/components/ml-lab/MlDeployReadiness';
 import { JobProgressBar, JobPollLog, POLL_LOG_PREF_KEY } from '@/components/ml-lab/MlJobProgress';
 import { DatasetBrowser } from '@/components/ml-lab/MlDatasetBrowser';
+import { MlTransferDonorPicker } from '@/components/ml-lab/MlTransferDonorPicker';
+import { buildDonorConfig } from '@/lib/modelTransfer';
 import { MlRetrainQueue } from '@/components/ml-lab/MlRetrainQueue';
 import { MlTrainRunsTable } from '@/components/ml-lab/MlTrainRunsTable';
 import { MlAdvancedKnobs } from '@/components/ml-lab/MlAdvancedKnobs';
@@ -108,6 +112,14 @@ export default function ModelTrainingDashboard({
   useSyncExternalStore(subscribeMlPipeline, getMlPipeline, getMlPipeline);
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchScope, setBatchScope] = useState('untrained');
+  // Cross-asset donor transfer selection for the next train job.
+  const [donorSel, setDonorSel] = useState({
+    enabled: false,
+    symbol: '',
+    versionId: '',
+    scalerStrategy: 'recompute',
+    freezeTrunk: false,
+  });
   // Scroll target for the batch drawer "View runs" action.
   const runsSectionRef = useRef(null);
   const [autoAdvanceOn, setAutoAdvanceOn] = useState(() => getAutoAdvance());
@@ -412,6 +424,17 @@ export default function ModelTrainingDashboard({
                   : {}
               )),
           };
+      // Cross-asset donor warm-start — only for the interactively selected
+      // pair (batch/queue trains pass their own frozen knob snapshot).
+      const donorConfig = buildDonorConfig({
+        enabled: donorSel.enabled && strat === strategy && symbol === activeSymbol,
+        strategy: strat,
+        donorSymbol: donorSel.symbol,
+        donorVersionId: donorSel.versionId,
+        scalerStrategy: donorSel.scalerStrategy,
+        freezeTrunk: donorSel.freezeTrunk,
+      });
+      if (donorConfig) baseConfig.donor = donorConfig;
       const body = await submitMlTrainJob({
         symbol,
         strategy: strat,
@@ -467,6 +490,26 @@ export default function ModelTrainingDashboard({
           metricBits.push(`${m.train_samples}/${m.val_samples} tv`);
         }
         const metricNote = metricBits.length ? ` · ${metricBits.join(' · ')}` : '';
+        // Cross-asset transfer outcome: jumpstart / breakeven / KL rejection.
+        const tr = m.transfer && typeof m.transfer === 'object' ? m.transfer : null;
+        let transferNote = '';
+        if (tr?.donor_symbol) {
+          const bits = [`donor ${tr.donor_symbol}`];
+          if (tr.jumpstart_return != null && Number.isFinite(Number(tr.jumpstart_return))) {
+            bits.push(`jumpstart ${(Number(tr.jumpstart_return) * 100).toFixed(2)}%`);
+          }
+          if (tr.episodes_to_breakeven != null) {
+            bits.push(`breakeven ep ${tr.episodes_to_breakeven}`);
+          }
+          transferNote = ` · ${bits.join(' · ')}`;
+          if (tr.transfer_rejected) {
+            toast.warning(
+              `Transfer from ${tr.donor_symbol} rejected by the KL guard`
+              + `${tr.kl_divergence != null ? ` (KL ${Number(tr.kl_divergence).toFixed(4)})` : ''}`
+              + ' — donor weights restored; gates will decide.',
+            );
+          }
+        }
         const metricsMissing = !result.metrics
           || (typeof result.metrics === 'object' && !Object.keys(result.metrics).length);
         if (metricsMissing && !metricBits.length) {
@@ -474,7 +517,7 @@ export default function ModelTrainingDashboard({
             `Training finished for ${strat} / ${symbol}${twNote} — metrics missing from job result; check Recent runs / model status.`,
           );
         } else {
-          toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}${metricNote}`);
+          toast.success(`Training complete for ${strat} / ${symbol}${twNote}${epNote}${metricNote}${transferNote}`);
         }
         if (isChampion) {
           try {
@@ -854,6 +897,18 @@ export default function ModelTrainingDashboard({
     void runTrainJob(strategy, activeSymbol);
   };
 
+  // Reset the donor selection when the target pair changes — a donor picked
+  // for ADA/RL must not leak into a BTC/LSTM train.
+  useEffect(() => {
+    setDonorSel((prev) => ({ ...prev, enabled: false, symbol: '', versionId: '' }));
+  }, [strategy, activeSymbol, trainingTimeframe]);
+
+  // Re-attach the store-level batch tracker after remounts/reloads so the
+  // progress strip + dialog can follow an in-flight server batch.
+  useEffect(() => {
+    rehydrateMlBatchTracker({ symbol: activeSymbol });
+  }, [activeSymbol]);
+
   useEffect(() => {
     const onRunPipeline = (e) => {
       clearMlLabRequest('ml-lab-run-pipeline');
@@ -1104,6 +1159,8 @@ export default function ModelTrainingDashboard({
 
       <PipelineStatusBar className="mx-3 mt-2" />
 
+      <MlBatchStrip onView={() => setBatchOpen(true)} />
+
       <section className="ml-training__controls">
         <div className="ml-training__controls-grid">
           <div className="ml-training__field">
@@ -1258,6 +1315,15 @@ export default function ModelTrainingDashboard({
         {status?.error && !status?.trained && (
           <p className="text-xs text-destructive">{status.error}</p>
         )}
+
+        <MlTransferDonorPicker
+          strategy={strategy}
+          symbol={activeSymbol}
+          timeframe={trainingTimeframe}
+          disabled={training || validating || busyElsewhere || !activeSymbol}
+          value={donorSel}
+          onChange={setDonorSel}
+        />
 
         <div className="ml-training__actions">
           {(status?.artifact || status?.version_id) && (

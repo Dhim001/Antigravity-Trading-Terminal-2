@@ -64,7 +64,7 @@ def test_parallel_wf_folds_match_sequential(monkeypatch):
             },
         }
 
-    def fake_oos(strategy, test_candles, config, train_result=None):
+    def fake_oos(strategy, test_candles, config, train_result=None, **_kwargs):
         h = sum(int(c.get("time") or 0) for c in test_candles[:5])
         acc = 0.5 + (h % 17) * 0.001
         return {
@@ -220,7 +220,7 @@ def test_parallel_wf_cancel_does_not_aggregate_success(monkeypatch):
         # First fold completes; later folds see cancel.
         return {"ok": True, "metrics": {"val_accuracy": 0.55}, "_wf_bundle": {}}
 
-    def fake_oos(strategy, test_candles, config, train_result=None):
+    def fake_oos(strategy, test_candles, config, train_result=None, **_kwargs):
         return {
             "accuracy": 0.55,
             "n_signals": 10,

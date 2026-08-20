@@ -35,8 +35,8 @@ import BacktestProgressBar from '../BacktestProgressBar';
 import ChartAgentDeployPreview from '../ChartAgentDeployPreview';
 import { pickDeployConfig, confidenceRangeForStrategy } from '@/lib/botConfigDisplay';
 import { openModelTrainingDock } from '@/lib/workspaceNav';
-import { useVirtualRows } from '../VirtualTableBody';
 import { ScrollTablePanel, WidgetEmpty } from '../WidgetShell';
+import { usePinnedPrependScroll } from '@/hooks/usePinnedPrependScroll';
 import {
   DataTableRoot,
   DataTableHeader,
@@ -239,8 +239,6 @@ export function AlgoTab({ hideToolbar = false }) {
   const agentLlmAvailable = useStore((s) => s.agentLlmAvailable);
   const agentLlmEnabled = useStore((s) => s.agentLlmEnabled);
   const [botCategoryTab, setBotCategoryTab] = useState('normal');
-  const logScrollRef = useRef(null);
-  const logCountRef = useRef(0);
   const filteredBotLogs = useMemo(() => {
     if (logFilter === 'agent_skips') {
       return botLogs.filter((l) => {
@@ -254,17 +252,7 @@ export function AlgoTab({ hideToolbar = false }) {
     }
     return botLogs;
   }, [botLogs, logFilter]);
-  const { onScroll: onLogScroll, window: logWindow } = useVirtualRows(filteredBotLogs, {
-    rowHeight: 22,
-    overscan: 14,
-  });
-
-  useEffect(() => {
-    if (botLogs.length > logCountRef.current && logScrollRef.current) {
-      logScrollRef.current.scrollTop = 0;
-    }
-    logCountRef.current = botLogs.length;
-  }, [botLogs]);
+  const { ref: logScrollRef, onScroll: onLogScroll } = usePinnedPrependScroll(filteredBotLogs);
 
   useEffect(() => {
     fetchBots(getStoreActions()).catch(() => {});
@@ -2427,59 +2415,55 @@ export function AlgoTab({ hideToolbar = false }) {
             {filteredBotLogs.length === 0 ? (
               <WidgetEmpty icon={Cpu} message="Bot console is empty" className="min-h-[80px]" />
             ) : (
-              <>
-                <div style={{ height: logWindow.topPad }} aria-hidden />
-                {logWindow.slice.map((log, i) => {
-                  const idx = logWindow.start + i;
-                  const hasInsightMeta = Boolean(
-                    log.meta?.insight_id
-                    || log.meta?.sub_reports
-                    || (log.meta?.reasons?.length > 0),
-                  );
-                  const showInsight = isSignalLog(log) && (
-                    hasInsightMeta
-                    || log.meta?.bar_time != null
-                    || /signal @/i.test(log.message || log.line || '')
-                  );
-                  const display = log.line ?? log.message ?? String(log);
-                  const openInsight = () => {
-                    window.dispatchEvent(new CustomEvent('signal-insight-open', { detail: { log } }));
-                  };
-                  return (
-                    <div
-                      key={log.id ?? `log-${idx}-${display.slice(0, 24)}`}
-                      className={cn(
-                        logLineClassLocal(log),
-                        showInsight && 'group relative cursor-pointer hover:bg-muted/30',
-                      )}
-                      role={showInsight ? 'button' : undefined}
-                      tabIndex={showInsight ? 0 : undefined}
-                      onClick={showInsight ? openInsight : undefined}
-                      onKeyDown={showInsight ? (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
+              filteredBotLogs.map((log, idx) => {
+                const hasInsightMeta = Boolean(
+                  log.meta?.insight_id
+                  || log.meta?.sub_reports
+                  || (log.meta?.reasons?.length > 0),
+                );
+                const showInsight = isSignalLog(log) && (
+                  hasInsightMeta
+                  || log.meta?.bar_time != null
+                  || /signal @/i.test(log.message || log.line || '')
+                );
+                const display = log.line ?? log.message ?? String(log);
+                const openInsight = () => {
+                  window.dispatchEvent(new CustomEvent('signal-insight-open', { detail: { log } }));
+                };
+                return (
+                  <div
+                    key={log.id ?? `log-${idx}-${display.slice(0, 24)}`}
+                    data-scroll-anchor-id={log.id ?? `log-${idx}`}
+                    className={cn(
+                      logLineClassLocal(log),
+                      showInsight && 'group relative cursor-pointer hover:bg-muted/30',
+                    )}
+                    role={showInsight ? 'button' : undefined}
+                    tabIndex={showInsight ? 0 : undefined}
+                    onClick={showInsight ? openInsight : undefined}
+                    onKeyDown={showInsight ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openInsight();
+                      }
+                    } : undefined}
+                  >
+                    <span>{display}</span>
+                    {showInsight && (
+                      <button
+                        type="button"
+                        className="ml-2 text-xs text-primary opacity-70 group-hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           openInsight();
-                        }
-                      } : undefined}
-                    >
-                      <span>{display}</span>
-                      {showInsight && (
-                        <button
-                          type="button"
-                          className="ml-2 text-xs text-primary opacity-70 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openInsight();
-                          }}
-                        >
-                          Explain
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-                <div style={{ height: logWindow.bottomPad }} aria-hidden />
-              </>
+                        }}
+                      >
+                        Explain
+                      </button>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

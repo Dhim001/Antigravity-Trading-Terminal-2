@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import time
 from typing import Any, Callable
 
@@ -107,6 +108,32 @@ def default_search_space(strategy: str) -> dict[str, Any]:
             "epochs": {"type": "int", "low": 40, "high": 120},
         }
     return {}
+
+
+def _safe_token(value: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(value or ""))
+
+
+def optuna_transfer_study_name(strategy: str, symbol: str, timeframe: str | None) -> str:
+    """Study name ``{strategy}_{symbol}_{timeframe}`` (P2 #11).
+
+    Defined here so Auto-Tune does not depend on a named import from
+    ``ml_job_checkpoint``. RL_PPO_AGENT runs in-process; a long-lived backend
+    can keep an older checkpoint module loaded after a live edit.
+    """
+    tf = str(timeframe or "none")
+    return f"{str(strategy).upper()}_{str(symbol).upper()}_{tf}"
+
+
+def optuna_transfer_study_path(strategy: str, symbol: str, timeframe: str | None) -> str:
+    """Persistent per-model Optuna transfer study path (P2 #11)."""
+    from app.config import DATA_DIR
+
+    root = os.path.join(DATA_DIR, "optuna", "transfer")
+    os.makedirs(root, exist_ok=True)
+    tf = _safe_token(timeframe or "none")
+    name = f"{_safe_token(str(strategy).upper())}_{_safe_token(str(symbol).upper())}_{tf}"
+    return os.path.join(root, f"{name}.db")
 
 
 def merge_search_space(strategy: str, custom: dict | None) -> dict[str, Any]:
@@ -452,15 +479,35 @@ def run_ml_hyperparam_sweep(
     cv_folds_full = max(2, min(5, int(cv_folds_full or 3)))
     n_startup = min(5, max_trials)
 
-    from app.services.bots.ml_job_checkpoint import (
-        merge_hyperparam_trial,
-        optuna_study_path,
-    )
+    from app.services.bots.ml_job_checkpoint import merge_hyperparam_trial, optuna_study_path
     from app.services.bots.ml_job_store import load_ml_job_checkpoint, save_ml_job_checkpoint
 
     study_path = resume_study_path or base_cfg.get("resume_study_path")
     if not study_path and job_id:
         study_path = optuna_study_path(job_id)
+
+    # Optuna transfer (AI-FT-PTL-001 §3.1.2, P2 #11): persist one study per
+    # symbol×strategy×timeframe and warm-start from its best historic trial.
+    transfer_enabled = False
+    transfer_seeds = 0
+    try:
+        from app.config import OPTUNA_TRANSFER_ENABLED, OPTUNA_TRANSFER_SEED_TRIALS
+
+        transfer_enabled = bool(OPTUNA_TRANSFER_ENABLED)
+        transfer_seeds = max(0, int(OPTUNA_TRANSFER_SEED_TRIALS))
+    except Exception:
+        pass
+    tf_for_study = str(base_cfg.get("timeframe") or "") or None
+    if transfer_enabled and not base_cfg.get("skip_optuna_transfer"):
+        transfer_path = optuna_transfer_study_path(strat, symbol, tf_for_study)
+        # The per-job resume study (crash recovery) takes precedence; the
+        # transfer study is the cross-run warm-start store.
+        transfer_storage = f"sqlite:///{transfer_path.replace(chr(92), '/')}"
+        transfer_name = optuna_transfer_study_name(strat, symbol, tf_for_study)
+    else:
+        transfer_storage = None
+        transfer_name = None
+
     storage = None
     study_name = f"ml_hp_{job_id or 'anon'}"
     if study_path:
@@ -493,6 +540,38 @@ def run_ml_hyperparam_sweep(
     prior_history = list((prior_cp or {}).get("trial_history") or []) if prior_cp else []
     completed_from_study = len([t for t in study.trials if t.state.name == "COMPLETE"])
     already_done = max(len(prior_history), completed_from_study)
+
+    # Seed the fresh study with the best historic configuration from the
+    # persistent transfer study (P2 #11) so TPE starts near prior optima.
+    seeded_from_transfer = 0
+    if transfer_storage and already_done == 0 and transfer_seeds > 0:
+        try:
+            transfer_study = optuna.load_study(
+                study_name=transfer_name,
+                storage=transfer_storage,
+                sampler=TPESampler(seed=42, n_startup_trials=n_startup),
+            )
+            completed = [
+                t for t in transfer_study.trials if t.state.name == "COMPLETE"
+            ]
+            if completed:
+                ranked = sorted(
+                    completed,
+                    key=lambda t: float(t.value) if t.value is not None else -1e18,
+                    reverse=True,
+                )
+                for t in ranked[:transfer_seeds]:
+                    params = {k: v for k, v in (t.params or {}).items() if k in space}
+                    if params:
+                        study.enqueue_trial(params)
+                        seeded_from_transfer += 1
+                if seeded_from_transfer:
+                    logger.info(
+                        "Optuna transfer: seeded %d trial(s) for %s from %s",
+                        seeded_from_transfer, study_name, transfer_name,
+                    )
+        except Exception:
+            logger.debug("Optuna transfer seeding skipped", exc_info=True)
 
     t0 = time.monotonic()
     trial_history: list[dict[str, Any]] = list(prior_history)
@@ -811,6 +890,56 @@ def run_ml_hyperparam_sweep(
             importance = {k: round(float(v), 4) for k, v in raw_imp.items()}
     except Exception:
         logger.debug("param importance unavailable", exc_info=True)
+
+    # Persist this run's trials into the transfer study so the next sweep for
+    # the same symbol×strategy×timeframe warm-starts (P2 #11).
+    if transfer_storage and transfer_name:
+        try:
+            from optuna.trial import TrialState, create_trial
+
+            transfer_study = optuna.create_study(
+                study_name=transfer_name,
+                storage=transfer_storage,
+                load_if_exists=True,
+                direction="maximize",
+                sampler=TPESampler(seed=42, n_startup_trials=n_startup),
+            )
+            for row in trial_history:
+                if row.get("score") is None:
+                    continue
+                params = {k: v for k, v in (row.get("params") or {}).items() if k in space}
+                if not params:
+                    continue
+                try:
+                    # Build distributions so create_trial can encode params.
+                    dists = {}
+                    for k, v in params.items():
+                        spec = space.get(k) or {}
+                        kind = str(spec.get("type") or "float").lower()
+                        if kind == "categorical":
+                            from optuna.distributions import CategoricalDistribution
+                            dists[k] = CategoricalDistribution(list(spec.get("choices") or [v]))
+                        elif kind == "int":
+                            from optuna.distributions import IntDistribution
+                            dists[k] = IntDistribution(int(spec.get("low", 1)), int(spec.get("high", 10)))
+                        else:
+                            from optuna.distributions import FloatDistribution
+                            dists[k] = FloatDistribution(
+                                float(spec.get("low", 1e-4)), float(spec.get("high", 1e-2)),
+                                log=bool(spec.get("log")),
+                            )
+                    transfer_study.add_trial(
+                        create_trial(
+                            params=params,
+                            distributions=dists,
+                            values=[float(row["score"])],
+                            state=TrialState.COMPLETE,
+                        )
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            logger.debug("Optuna transfer persist skipped", exc_info=True)
 
     elapsed = time.monotonic() - t0
     return {

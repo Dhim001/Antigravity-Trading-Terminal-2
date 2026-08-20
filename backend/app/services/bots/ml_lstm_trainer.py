@@ -56,6 +56,10 @@ def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
+def _checkpoint_path(symbol: str, timeframe: str | None = None) -> str:
+    return os.path.join(_model_dir(symbol, timeframe), "lstm_direction.pt")
+
+
 # ── Feature scaling ──────────────────────────────────────────────────────
 
 
@@ -347,12 +351,21 @@ def train_lstm_signal_model(
     write_ml_progress(progress_path, pct=10, phase="labels", detail="triple-barrier")
     labels = resolve_precomputed_labels(candles, cfg)
     if labels is None:
+        from app.services.bots.ml_posttrade_labels import (
+            apply_posttrade_feedback,
+            barrier_width_scale,
+            tp_is_adjusted_upper_mult,
+        )
+
+        _bw = barrier_width_scale(symbol)
+        _upper = tp_is_adjusted_upper_mult(symbol, atr_mult * _bw, candles)
         labels = label_triple_barrier(
             candles,
-            atr_mult_upper=atr_mult,
-            atr_mult_lower=atr_mult,
+            atr_mult_upper=_upper,
+            atr_mult_lower=atr_mult * _bw,
             max_holding_bars=max_bars,
         )
+        labels = apply_posttrade_feedback(candles, labels, symbol=symbol)
     dist = label_distribution(labels)
     pre_feat = resolve_precomputed_features(candles, cfg)
 
@@ -404,6 +417,93 @@ def train_lstm_signal_model(
         num_classes=N_CLASSES,
     ).to(device)
 
+    # Warm-start fine-tuning (AI-FT-PTL-001 §3.1.1): resume the champion's
+    # weights on the latest data at a reduced LR instead of cold-starting.
+    # Only for live champion trains (never WF folds) when architecture matches.
+    warm_started = False
+    donor_lineage: dict[str, Any] | None = None
+    from app.config import (
+        ML_WARM_START_ENABLED,
+        ML_WARM_START_EPOCHS,
+        ML_WARM_START_LR_FACTOR,
+        TRANSFER_FREEZE_TRUNK_DEFAULT,
+    )
+
+    # Cross-asset donor fine-tune takes precedence over same-symbol warm-start.
+    _donor_cfg = cfg.get("donor") if isinstance(cfg.get("donor"), dict) else None
+    if _donor_cfg and _donor_cfg.get("symbol") and not bool(cfg.get("_wf_mode")):
+        from app.services.bots import model_transfer as _mt
+
+        if _mt.transfer_enabled():
+            donor = _mt.resolve_donor(
+                "LSTM_DIRECTION", str(_donor_cfg["symbol"]), tf,
+                _donor_cfg.get("version_id"),
+            )
+            compat = (
+                _mt.check_compatibility(donor["metadata"], "LSTM_DIRECTION", tf)
+                if donor else ["donor not found"]
+            )
+            ckpt = _mt.donor_checkpoint_path(donor, "LSTM_DIRECTION") if donor else None
+            if donor and not compat and ckpt:
+                try:
+                    _state = torch.load(ckpt, map_location=device)
+                    model.load_state_dict(_state)
+                    warm_started = True
+                    epochs = max(1, int(ML_WARM_START_EPOCHS))
+                    lr = lr * float(ML_WARM_START_LR_FACTOR)
+                    freeze = bool(_donor_cfg.get("freeze_trunk", TRANSFER_FREEZE_TRUNK_DEFAULT))
+                    if freeze:
+                        for name, p in model.named_parameters():
+                            if not name.startswith("fc"):
+                                p.requires_grad = False
+                    donor_lineage = _mt.build_lineage(
+                        donor,
+                        method=_mt.METHOD_WEIGHT_WARM_START,
+                        finetune_budget={
+                            "epochs": epochs,
+                            "learning_rate": lr,
+                            "freeze_trunk": freeze,
+                        },
+                    )
+                    logger.info(
+                        "LSTM donor warm-start %s @ %s from %s (epochs=%d lr=%.6f freeze=%s)",
+                        symbol, tf, donor.get("symbol"), epochs, lr, freeze,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "LSTM donor warm-start failed for %s: %s — training from scratch",
+                        symbol, exc,
+                    )
+                    warm_started = False
+                    donor_lineage = None
+            else:
+                logger.warning(
+                    "LSTM donor %s unusable (compat=%s, checkpoint=%s)",
+                    _donor_cfg.get("symbol"), compat or ["no checkpoint"], bool(ckpt),
+                )
+
+    if (
+        not warm_started
+        and ML_WARM_START_ENABLED
+        and not bool(cfg.get("_wf_mode"))
+        and not cfg.get("champion_train")
+    ):
+        try:
+            _ckpt = _checkpoint_path(symbol, tf)
+            if os.path.isfile(_ckpt):
+                _state = torch.load(_ckpt, map_location=device)
+                model.load_state_dict(_state)
+                warm_started = True
+                epochs = max(1, int(ML_WARM_START_EPOCHS))
+                lr = lr * float(ML_WARM_START_LR_FACTOR)
+                logger.info(
+                    "LSTM warm-start %s @ %s from %s (epochs=%d lr=%.6f)",
+                    symbol, tf, _ckpt, epochs, lr,
+                )
+        except Exception as exc:
+            logger.debug("LSTM warm-start skipped for %s: %s", symbol, exc)
+            warm_started = False
+
     # Class weights for imbalanced labels with clipping to prevent instability
     class_counts = np.bincount(y_train, minlength=N_CLASSES).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
@@ -412,7 +512,9 @@ def train_lstm_signal_model(
     weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
     criterion = nn.CrossEntropyLoss(weight=weight_tensor)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-4,
+    )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-5,
     )
@@ -600,9 +702,18 @@ def train_lstm_signal_model(
         "lookback": lookback,
         "batch_size": batch_size,
         "train_device": train_device_meta.get("device"),
+        "warm_started": warm_started,
         **early_stop_meta,
         **per_class_acc,
     }
+    if donor_lineage is not None:
+        metrics["transfer"] = {
+            "donor_symbol": donor_lineage.get("donor_symbol"),
+            "donor_version_id": donor_lineage.get("donor_version_id"),
+            "freeze_trunk": bool(
+                (donor_lineage.get("finetune_budget") or {}).get("freeze_trunk")
+            ),
+        }
 
     # Step 8: Export to ONNX (single-file; Windows-safe across walk-forward re-exports)
     os.makedirs(_model_dir(symbol, tf), exist_ok=True)
@@ -626,6 +737,12 @@ def train_lstm_signal_model(
 
     # Save scaler
     save_scaler(symbol, scaler, timeframe=tf)
+
+    # Persist the PyTorch checkpoint for future warm-start fine-tuning.
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
+    except Exception:
+        logger.debug("LSTM checkpoint save failed for %s", symbol, exc_info=True)
 
     # Save metadata
     metadata = {
@@ -652,6 +769,8 @@ def train_lstm_signal_model(
         },
         "train_device": train_device_meta,
     }
+    if donor_lineage is not None:
+        metadata["transfer"] = donor_lineage
     with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 

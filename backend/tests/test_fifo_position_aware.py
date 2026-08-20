@@ -91,6 +91,9 @@ class RebuildOrderPnlTests(unittest.TestCase):
                 ('o3', 'BTCUSDT', 'MARKET', 'SELL', 105, 1, 'FILLED', 1, 105, '2026-01-01 00:02:00', 50)
                 """
             )
+            cur.execute(
+                "INSERT INTO positions (symbol, size, avg_price) VALUES ('BTCUSDT', -1, 105)"
+            )
             conn.commit()
             n = rebuild_order_realized_pnl(cur)
             conn.commit()
@@ -216,6 +219,7 @@ class RebuildOrderPnlTests(unittest.TestCase):
                 INSERT INTO bot_trades (
                     bot_id, order_id, symbol, side, quantity, price, pnl, is_exit, timestamp
                 ) VALUES
+                ('bot1', 's1', 'ADAUSDT', 'SELL', 1000, 0.20, 10.0, 1, '2026-01-01 00:01:00'),
                 ('bot1', 'short_open', 'ADAUSDT', 'SELL', 15000, 0.197, NULL, 0, '2026-01-01 00:03:00'),
                 ('bot1', 'cover', 'ADAUSDT', 'BUY', 15000, 0.198, -15.0, 1, '2026-01-01 00:04:00')
                 """
@@ -227,11 +231,56 @@ class RebuildOrderPnlTests(unittest.TestCase):
                 r["id"]: r
                 for r in cur.execute("SELECT id, realized_pnl FROM orders")
             }
-            # Pre-drift close kept.
+            # Stream ≠ live book: only bot-exit PnL is trusted on this symbol.
             self.assertAlmostEqual(float(rows["s1"]["realized_pnl"]), 10.0)
             self.assertIsNone(rows["orphan"]["realized_pnl"])
             self.assertIsNone(rows["short_open"]["realized_pnl"])
             self.assertAlmostEqual(float(rows["cover"]["realized_pnl"]), -15.0)
+            conn.close()
+        finally:
+            db_conn._pool = None
+            db_conn.DB_PATH = old
+
+    def test_drift_symbol_drops_non_bot_fifo(self):
+        """Phantom leftover inventory must not keep FIFO PnL on a later short open."""
+        import os
+        import tempfile
+
+        import app.db.connection as db_conn
+        from app.database import get_connection, init_db
+
+        tmp = tempfile.mkdtemp()
+        old = db_conn.DB_PATH
+        db_conn.DB_PATH = os.path.join(tmp, "drift_nobot_pnl.db")
+        db_conn._pool = None
+        try:
+            init_db()
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    id, symbol, type, side, price, quantity, status,
+                    filled_quantity, average_fill_price, timestamp, realized_pnl
+                ) VALUES
+                ('orphan', 'ADAUSDT', 'MARKET', 'BUY', 0.19, 30000, 'FILLED',
+                 30000, 0.19, '2026-01-01 00:00:00', NULL),
+                ('short_open', 'ADAUSDT', 'MARKET', 'SELL', 0.197, 15000, 'FILLED',
+                 15000, 0.197, '2026-01-01 00:01:00', 99)
+                """
+            )
+            cur.execute(
+                "INSERT INTO positions (symbol, size, avg_price) VALUES ('ADAUSDT', 0, 0)"
+            )
+            conn.commit()
+            rebuild_order_realized_pnl(cur)
+            conn.commit()
+            rows = {
+                r["id"]: r
+                for r in cur.execute("SELECT id, realized_pnl FROM orders")
+            }
+            self.assertIsNone(rows["orphan"]["realized_pnl"])
+            self.assertIsNone(rows["short_open"]["realized_pnl"])
             conn.close()
         finally:
             db_conn._pool = None

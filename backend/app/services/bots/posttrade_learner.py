@@ -632,6 +632,28 @@ async def learn_from_closed_trade(
             except Exception as exc:
                 logger.debug("posttrade retrain skipped: %s", exc)
 
+    # Adaptive conformal gate recalibration (AI-FT-PTL-001 §4.5): refresh the
+    # gate's q_hat from recent prediction/outcome pairs every N closed trades.
+    try:
+        from app.config import CONFORMAL_RECALIB_EVERY_N, CONFORMAL_RECALIB_ENABLED
+
+        if CONFORMAL_RECALIB_ENABLED:
+            exits_n = _count_exits(bot_id)
+            every_n = max(1, int(CONFORMAL_RECALIB_EVERY_N))
+            if exits_n > 0 and exits_n % every_n == 0:
+                from app.services.bots.conformal_gate import recalibrate_conformal_gate
+
+                recal = recalibrate_conformal_gate(bot_id)
+                if recal.get("updated") and bot_manager is not None:
+                    await bot_manager.log_bot_event(
+                        bot_id,
+                        "INFO",
+                        f"Conformal gate recalibrated after {exits_n} exits: "
+                        f"threshold={recal.get('threshold')}",
+                    )
+    except Exception:
+        logger.debug("conformal recalibration skipped for %s", bot_id, exc_info=True)
+
     uncertainties = []
     if sentiment is None or not sentiment:
         uncertainties.append("Missing or sparse recent sentiment data.")
@@ -683,6 +705,69 @@ async def learn_from_closed_trade(
     )
 
     save_agent_reasoning(bot_id, "POSTTRADE_LEARNER", reasoning_obj)
+
+    # Closed-loop feature feedback (AI-FT-PTL-001 §4.2): persist a structured
+    # label row so the next retrain's triple-barrier labeller can use it.
+    try:
+        from app.services.bots.ml_posttrade_labels import record_posttrade_label
+
+        _bar_time = entry_ctx.get("signal_bar_time")
+        try:
+            _bar_time = int(_bar_time) if _bar_time is not None else None
+        except (TypeError, ValueError):
+            _bar_time = None
+        _is_bps = None
+        try:
+            from app.services.bots.execution_tca import mean_is_bps_for_symbol
+
+            _is_bps = mean_is_bps_for_symbol(symbol, lookback_days=1)
+        except Exception:
+            _is_bps = None
+        record_posttrade_label(
+            bot_id=bot_id,
+            symbol=symbol,
+            bar_time=_bar_time,
+            outcome_class=outcome_class,
+            mae=mae_pct,
+            mfe=mfe_pct,
+            execution_shortfall_bps=_is_bps,
+            regime=reason.get("regime"),
+        )
+    except Exception:
+        logger.debug("posttrade label write skipped for %s", symbol, exc_info=True)
+
+    # RL replay buffer (AI-FT-PTL-001 §3.2): complete the pending live
+    # transition with a normalized reward + the outcome class for shaping.
+    try:
+        from app.services.bots.rl_replay_store import record_live_close
+
+        _reward = 0.0
+        if pnl is not None and ep and quantity:
+            _notional = abs(float(ep) * float(quantity))
+            if _notional > 0:
+                _reward = float(pnl) / _notional
+        record_live_close(
+            bot_id,
+            symbol,
+            reward=_reward,
+            outcome_class=outcome_class,
+        )
+    except Exception:
+        logger.debug("rl replay close hook skipped for %s", bot_id, exc_info=True)
+
+    # Stacking meta-learner online update (AI-FT-PTL-001 §4.6): label the
+    # entry-time base-prob vector with the realised outcome, then refresh the
+    # combination weights every N trades.
+    try:
+        from app.services.bots.stacking_meta_learner import (
+            maybe_update_stacking,
+            record_stacking_outcome,
+        )
+
+        record_stacking_outcome(bot_id, win=bool(pnl is not None and pnl > 0))
+        maybe_update_stacking(bot_id)
+    except Exception:
+        logger.debug("stacking online update skipped for %s", bot_id, exc_info=True)
 
     # Publish to Agent Event Bus
     agent_event_bus = getattr(bot_manager, "agent_event_bus", None)

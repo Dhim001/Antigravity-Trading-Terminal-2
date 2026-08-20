@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -131,6 +132,9 @@ def evaluate_oos_accuracy(
     test_candles: list[dict],
     config: dict,
     train_result: dict | None = None,
+    *,
+    progress_pct: int | None = None,
+    progress_phase: str | None = None,
 ) -> dict[str, Any]:
     """Run a trained strategy over OOS candles and compute metrics.
 
@@ -178,7 +182,28 @@ def evaluate_oos_accuracy(
     ):
         stride = max(1, len(test_candles) // 400)
 
+    # Dense per-bar eval can run for many minutes on deep-net strategies —
+    # heartbeat so the job never looks frozen between fold-phase writes.
+    from app.services.bots.ml_job_progress import (
+        progress_path_from_config,
+        write_ml_progress,
+    )
+
+    hb_path = progress_path_from_config(config)
+    hb_t = 0.0
+    n_bars = len(test_candles)
+
     for i, candle in enumerate(test_candles):
+        if hb_path and progress_pct is not None:
+            now = time.monotonic()
+            if now - hb_t >= 2.0:
+                hb_t = now
+                write_ml_progress(
+                    hb_path,
+                    pct=progress_pct,
+                    phase=progress_phase or "oos",
+                    detail=f"oos {i + 1}/{n_bars}",
+                )
         result = strat.evaluate(candle)
         if i % stride != 0:
             continue
@@ -779,6 +804,8 @@ def _run_single_wf_fold(
     try:
         oos_metrics = evaluate_oos_accuracy(
             strategy, test_candles, oos_cfg, train_result=train_result,
+            progress_pct=int(5 + (fold_num - 0.35) / max(1, n_fold_total) * 80),
+            progress_phase=f"fold {fold_num}/{n_fold_total}",
         )
     except Exception as exc:
         logger.warning("WF fold %d OOS eval failed: %s", fold["fold"], exc)

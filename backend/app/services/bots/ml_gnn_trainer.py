@@ -51,6 +51,11 @@ def _scaler_path(basket: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(basket, timeframe), "scaler.json")
 
 
+def _checkpoint_path(basket: str, timeframe: str | None = None) -> str:
+    """Trainable state_dict sidecar (cross-asset transfer donor)."""
+    return os.path.join(_model_dir(basket, timeframe), "checkpoint.pt")
+
+
 def _get_torch():
     try:
         import torch
@@ -407,6 +412,28 @@ def train_gnn_model(
     y_tr, y_va = y[:split], y[split:]
 
     model = _build_gat(N_FEATURES, hidden, 3, n_heads).to(device)
+
+    # Cross-basket donor warm-start (never for WF folds — honest OOS).
+    donor_lineage: dict[str, Any] | None = None
+    if not bool(cfg.get("_wf_mode")):
+        from app.services.bots import model_transfer as _mt
+
+        _ws = _mt.load_donor_weights(
+            model, "GNN_CROSS_ASSET", cfg.get("donor"), tf,
+            device=device, head_prefixes=("classifier",),
+        )
+        if _ws:
+            from app.config import ML_WARM_START_EPOCHS, ML_WARM_START_LR_FACTOR
+
+            donor_lineage = _ws["lineage"]
+            epochs = max(1, int(ML_WARM_START_EPOCHS))
+            lr = lr * float(ML_WARM_START_LR_FACTOR)
+            donor_lineage["finetune_budget"] = {
+                **(donor_lineage.get("finetune_budget") or {}),
+                "epochs": epochs,
+                "learning_rate": lr,
+            }
+
     class_counts = np.bincount(y_tr, minlength=3).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
     weights = torch.tensor(
@@ -415,7 +442,9 @@ def train_gnn_model(
         device=device,
     )
     criterion = nn.CrossEntropyLoss(weight=weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(
+        (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-5,
+    )
 
     adj_one = torch.ones(1, 1, dtype=torch.float32, device=device)
     X_t = cpu_tensor(X_tr, dtype=torch.float32)
@@ -537,6 +566,12 @@ def train_gnn_model(
     with open(_scaler_path(basket, tf), "w", encoding="utf-8") as f:
         json.dump({"mean": mean.tolist(), "std": std.tolist()}, f, indent=2)
 
+    # Persist the trainable checkpoint so other baskets can warm-start from it.
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(basket, tf))
+    except Exception:
+        logger.debug("GNN checkpoint.pt save failed for %s", basket, exc_info=True)
+
     meta = {
         "symbol": str(symbol).upper(),
         "basket_id": basket,
@@ -571,6 +606,15 @@ def train_gnn_model(
         "early_stopped": bool(early_stop_meta.get("early_stopped")),
         "epochs_trained": int(early_stop_meta.get("epochs_trained") or len(loss_history)),
     }
+    if donor_lineage is not None:
+        meta["transfer"] = donor_lineage
+        meta["metrics"]["transfer"] = {
+            "donor_symbol": donor_lineage.get("donor_symbol"),
+            "donor_version_id": donor_lineage.get("donor_version_id"),
+            "freeze_trunk": bool(
+                (donor_lineage.get("finetune_budget") or {}).get("freeze_trunk")
+            ),
+        }
     with open(_metadata_path(basket, tf), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 

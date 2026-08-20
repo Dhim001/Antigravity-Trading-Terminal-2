@@ -4,6 +4,7 @@ import FeatureImportanceChart from '@/components/FeatureImportanceChart';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { formatTransferBadge } from '@/lib/modelTransfer';
 import { normalizeTopFeatures } from '@/components/ml-lab/MlLabConstants';
 
 function versionTitle(v) {
@@ -190,6 +191,14 @@ export function DatasetBrowser({
                             {v.protected ? ' · kept' : ''}
                             {v.sample_count != null ? ` · n=${v.sample_count}` : ''}
                           </span>
+                          {formatTransferBadge(v.transfer) && (
+                            <span
+                              className="ml-training__lineage-badge"
+                              title={`Warm-started from donor ${v.transfer.donor_symbol}`}
+                            >
+                              {formatTransferBadge(v.transfer)}
+                            </span>
+                          )}
                         </>
                       )}
                     </div>

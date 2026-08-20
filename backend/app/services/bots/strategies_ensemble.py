@@ -238,6 +238,17 @@ class HybridEnsembleStrategy(BaseStrategy):
                             threshold=float(self._cfg.get("stacking_threshold", 0.55)),
                             min_margin=float(self._cfg.get("stacking_min_margin", 0.0)),
                         )
+                        # Online update (P2 #9): remember the base-prob vector
+                        # so the trade-close hook can label it with the outcome.
+                        if sig in ("BUY", "SELL") and not df_row.get("_backtest"):
+                            try:
+                                from app.services.bots.stacking_meta_learner import (
+                                    note_pending_base_probs,
+                                )
+
+                                note_pending_base_probs(str(bot_id), base_probs)
+                            except Exception:
+                                pass
                         if sig in ("BUY", "SELL"):
                             out = {
                                 "signal": sig,

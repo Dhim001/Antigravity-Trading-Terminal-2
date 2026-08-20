@@ -61,3 +61,85 @@ def test_record_helper_accepts_dict_and_ndarray(monkeypatch):
 
     record_ml_inference_features("ETHUSDT", "LSTM_DIRECTION", np.ones(len(SIGNAL_FEATURE_NAMES)))
     assert recorded[1][2][0] == 1.0
+
+
+def test_check_drift_tags_provided_baseline():
+    mon = FeatureDriftMonitor(window_size=50)
+    dim = len(SIGNAL_FEATURE_NAMES)
+    for _ in range(35):
+        mon.record_inference("ETHUSDT", "LSTM_DIRECTION", [1.0] * dim)
+    out = mon.check_drift(
+        "ETHUSDT",
+        "LSTM_DIRECTION",
+        training_features=np.ones((50, dim), dtype=np.float32),
+    )
+    assert out is not None
+    assert out["baseline"] == "provided"
+
+
+def test_should_recommend_retrain_ignores_synthetic(monkeypatch):
+    from app.services.bots.ml_feature_drift import should_recommend_retrain
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_feature_drift.get_drift_summary_for_ui",
+        lambda symbol, strategy: {
+            "available": True,
+            "assessment": "significant_drift",
+            "drifted_features_count": 8,
+            "overall_psi": 0.5,
+            "n_live": 400,
+            "baseline": "synthetic",
+        },
+    )
+    assert should_recommend_retrain("SOLUSDT", "TCN_MULTI_HORIZON") is False
+
+
+def test_should_recommend_retrain_ignores_feature_count_alone(monkeypatch):
+    from app.services.bots.ml_feature_drift import should_recommend_retrain
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_feature_drift.get_drift_summary_for_ui",
+        lambda symbol, strategy: {
+            "available": True,
+            "assessment": "moderate_drift",
+            "drifted_features_count": 5,
+            "overall_psi": 0.18,
+            "n_live": 400,
+            "baseline": "json",
+        },
+    )
+    assert should_recommend_retrain("SOLUSDT", "TCN_MULTI_HORIZON") is False
+
+
+def test_should_recommend_retrain_requires_enough_live_bars(monkeypatch):
+    from app.services.bots.ml_feature_drift import should_recommend_retrain
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_feature_drift.get_drift_summary_for_ui",
+        lambda symbol, strategy: {
+            "available": True,
+            "assessment": "significant_drift",
+            "drifted_features_count": 5,
+            "overall_psi": 0.4,
+            "n_live": 40,
+            "baseline": "json",
+        },
+    )
+    assert should_recommend_retrain("SOLUSDT", "TCN_MULTI_HORIZON") is False
+
+
+def test_should_recommend_retrain_true_on_json_significant(monkeypatch):
+    from app.services.bots.ml_feature_drift import should_recommend_retrain
+
+    monkeypatch.setattr(
+        "app.services.bots.ml_feature_drift.get_drift_summary_for_ui",
+        lambda symbol, strategy: {
+            "available": True,
+            "assessment": "significant_drift",
+            "drifted_features_count": 5,
+            "overall_psi": 0.41,
+            "n_live": 250,
+            "baseline": "json",
+        },
+    )
+    assert should_recommend_retrain("SOLUSDT", "TCN_MULTI_HORIZON") is True

@@ -49,6 +49,11 @@ def _scaler_path(symbol: str, timeframe: str | None = None) -> str:
     return os.path.join(_model_dir(symbol, timeframe), "scaler.json")
 
 
+def _checkpoint_path(symbol: str, timeframe: str | None = None) -> str:
+    """Trainable actor-critic state_dict sidecar (cross-asset transfer donor)."""
+    return os.path.join(_model_dir(symbol, timeframe), "policy.pt")
+
+
 def _get_torch():
     try:
         import torch
@@ -256,6 +261,46 @@ def train_ppo_agent(
     if cfg.get("champion_train"):
         wf_mode = False
 
+    # ── Cross-asset donor warm-start ──────────────────────────────
+    # WF/PBO folds always train from scratch (honest OOS); the donor path
+    # only applies to live/champion trains. The transferred model still
+    # registers as a challenger and must pass the usual gates.
+    donor_cfg = cfg.get("donor") if isinstance(cfg.get("donor"), dict) else None
+    donor_info: dict[str, Any] | None = None
+    donor_state: dict[str, Any] | None = None
+    scaler_strategy = "recompute"
+    if donor_cfg and donor_cfg.get("symbol") and not wf_mode:
+        from app.services.bots import model_transfer as _mt
+
+        if _mt.transfer_enabled():
+            donor = _mt.resolve_donor(
+                "RL_PPO_AGENT", str(donor_cfg["symbol"]), tf,
+                donor_cfg.get("version_id"),
+            )
+            compat = (
+                _mt.check_compatibility(donor["metadata"], "RL_PPO_AGENT", tf)
+                if donor else ["donor not found"]
+            )
+            ckpt = _mt.donor_checkpoint_path(donor, "RL_PPO_AGENT") if donor else None
+            if donor and not compat and ckpt:
+                try:
+                    donor_state = torch.load(ckpt, map_location="cpu")
+                    donor_info = donor
+                    scaler_strategy = str(donor_cfg.get("scaler_strategy") or "recompute")
+                    if scaler_strategy not in _mt.SCALER_STRATEGIES:
+                        scaler_strategy = "recompute"
+                except Exception:
+                    logger.warning(
+                        "PPO donor checkpoint load failed for %s",
+                        donor_cfg.get("symbol"), exc_info=True,
+                    )
+                    donor_state = None
+            else:
+                logger.warning(
+                    "PPO donor %s unusable (compat=%s, checkpoint=%s) — training from scratch",
+                    donor_cfg.get("symbol"), compat or ["no checkpoint"], bool(ckpt),
+                )
+
     # Interactive WF/PBO calls trainer without total_timesteps — lean only
     # when capacity parity is off. Otherwise keep the function-arg budget
     # (Lab Train default 200k) or an explicit config override above.
@@ -280,6 +325,14 @@ def train_ppo_agent(
     if total_timesteps < min_steps:
         total_timesteps = min_steps
 
+    # Donor fine-tune runs a reduced budget — the policy is already trained.
+    if donor_state is not None:
+        from app.config import RL_TRANSFER_TIMESTEPS_FRACTION
+
+        frac = float(cfg.get("transfer_timesteps_fraction") or RL_TRANSFER_TIMESTEPS_FRACTION)
+        frac = min(1.0, max(0.05, frac))
+        total_timesteps = max(min_steps, int(total_timesteps * frac))
+
     gamma = float(cfg.get("gamma", 0.99))
     gae_lambda = float(cfg.get("gae_lambda", 0.95))
     clip_epsilon = float(cfg.get("clip_epsilon", 0.2))
@@ -296,6 +349,11 @@ def train_ppo_agent(
         64 if (wf_mode and not wf_parity) else 256,
     ))
     lr = float(cfg.get("learning_rate", 3e-4))
+    if donor_state is not None:
+        from app.config import RL_TRANSFER_LR_FACTOR
+
+        lr_factor = float(cfg.get("transfer_lr_factor") or RL_TRANSFER_LR_FACTOR)
+        lr *= min(1.0, max(0.01, lr_factor))
     vf_coef = float(cfg.get("vf_coef", 0.5))
     ent_coef = clamp_ent_coef(cfg.get("ent_coef", MIN_ENT_COEF))
     cfg["ent_coef"] = ent_coef
@@ -336,10 +394,35 @@ def train_ppo_agent(
     except InterruptedError:
         return cancelled_train_result(symbol, "RL_PPO_AGENT")
 
+    # Scaler strategy: default recomputes feat_mean/std from target candles
+    # (already done by the env); "carry" adopts the donor's scaler verbatim.
+    if donor_info is not None and scaler_strategy == "carry":
+        from app.services.bots import model_transfer as _mt
+
+        d_scaler = _mt.donor_scaler(donor_info)
+        if d_scaler and d_scaler.get("feat_mean") and d_scaler.get("feat_std"):
+            env.set_feature_scaler(d_scaler["feat_mean"], d_scaler["feat_std"])
+            logger.info("PPO donor scaler carried from %s", donor_info.get("symbol"))
+
     # Build model on train device
     model = _build_actor_critic(
         obs_dim=OBS_DIM, act_dim=N_ACTIONS, hidden_dim=hidden_dim,
     ).to(device)
+    if donor_state is not None:
+        try:
+            model.load_state_dict(donor_state)
+            model.to(device)
+            logger.info(
+                "PPO warm-start: loaded donor %s weights (scaler=%s)",
+                donor_info.get("symbol"), scaler_strategy,
+            )
+        except Exception:
+            logger.warning(
+                "PPO donor weight load failed for %s (shape mismatch?) — training from scratch",
+                donor_info.get("symbol") if donor_info else "?", exc_info=True,
+            )
+            donor_state = None
+            donor_info = None
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-5)
 
     # Training loop
@@ -481,7 +564,87 @@ def train_ppo_agent(
             if mean_ret > best_mean_return:
                 best_mean_return = mean_ret
 
+    # ── Transfer KL guard ─────────────────────────────────────────
+    # KL(donor ‖ fine-tuned) on target states from the final rollout; when
+    # the fine-tune moved the policy too far, restore the donor weights and
+    # flag the result — the deploy gates arbitrate from there.
+    transfer_meta: dict[str, Any] | None = None
+    if donor_state is not None and donor_info is not None:
+        from app.config import RL_TRANSFER_MAX_KL
+
+        kl_val: float | None = None
+        transfer_rejected = False
+        try:
+            if len(buffer) > 0:
+                val_obs = torch.tensor(
+                    np.stack(buffer.obs[:1024]), dtype=torch.float32, device=device,
+                )
+                donor_model = _build_actor_critic(
+                    obs_dim=OBS_DIM, act_dim=N_ACTIONS, hidden_dim=hidden_dim,
+                ).to(device)
+                donor_model.load_state_dict(donor_state)
+                donor_model.eval()
+                model.eval()
+                with torch.no_grad():
+                    old_logits, _ = donor_model.policy(val_obs)
+                    old_dist = torch.distributions.Categorical(logits=old_logits)
+                    new_logits, _ = model.policy(val_obs)
+                    new_dist = torch.distributions.Categorical(logits=new_logits)
+                    kl_val = float(
+                        torch.distributions.kl_divergence(old_dist, new_dist).mean().item()
+                    )
+                if kl_val > RL_TRANSFER_MAX_KL:
+                    model.load_state_dict(donor_state)
+                    model.to(device)
+                    transfer_rejected = True
+                    logger.warning(
+                        "PPO transfer REJECTED for %s: KL=%.4f > %.4f — donor weights restored",
+                        symbol, kl_val, RL_TRANSFER_MAX_KL,
+                    )
+        except Exception:
+            logger.debug("PPO transfer KL guard skipped for %s", symbol, exc_info=True)
+
+        jumpstart = None
+        if episode_returns:
+            head = episode_returns[:3]
+            jumpstart = round(sum(head) / len(head), 4)
+        breakeven = None
+        for i, r in enumerate(episode_returns):
+            if r > 0:
+                breakeven = i + 1
+                break
+        transfer_meta = {
+            "donor_symbol": donor_info.get("symbol"),
+            "donor_version_id": donor_info.get("version_id"),
+            "scaler_strategy": scaler_strategy,
+            "kl_divergence": round(kl_val, 6) if kl_val is not None else None,
+            "transfer_rejected": transfer_rejected,
+            "jumpstart_return": jumpstart,
+            "episodes_to_breakeven": breakeven,
+        }
+
     train_device_meta = device_info(device)
+
+    # Continual fine-tuning (AI-FT-PTL-001 §3.2): after the candle-episode
+    # training, apply a KL-constrained update from the live replay buffer.
+    # Skip for WF/PBO folds — replay adapts the live champion only.
+    replay_meta: dict[str, Any] = {"applied": False}
+    if not wf_mode:
+        try:
+            replay_meta = finetune_from_replay(
+                model,
+                optimizer,
+                symbol,
+                device=device,
+                clip_epsilon=clip_epsilon,
+                vf_coef=vf_coef,
+                ent_coef=ent_coef,
+                max_grad_norm=max_grad_norm,
+                batch_size=batch_size,
+            )
+        except Exception:
+            logger.debug("replay fine-tune skipped for %s", symbol, exc_info=True)
+
     # Never emit ±inf/NaN — Starlette JSONResponse raises ValueError and the
     # Lab UI gets HTTP 500 on GET /ml/jobs/{id}, which looks like a hung train
     # (poll_err / "server busy") even though the job already finished.
@@ -518,7 +681,10 @@ def train_ppo_agent(
         "fee_bps": fee_bps,
         "slippage_bps": slip_bps,
         "train_device": train_device_meta.get("device"),
+        "replay_finetune": replay_meta,
     }
+    if transfer_meta is not None:
+        metrics["transfer"] = transfer_meta
 
     train_history = [
         {"episode": i + 1, "return_pct": round(r, 4)}
@@ -588,6 +754,20 @@ def train_ppo_agent(
         "train_device": train_device_meta,
     }
 
+    if transfer_meta is not None and donor_info is not None:
+        from app.services.bots import model_transfer as _mt
+
+        metadata["transfer"] = _mt.build_lineage(
+            donor_info,
+            method=_mt.METHOD_WEIGHT_WARM_START,
+            scaler_strategy=scaler_strategy,
+            finetune_budget={
+                "total_timesteps": int(total_timesteps),
+                "learning_rate": lr,
+                "transfer_rejected": bool(transfer_meta.get("transfer_rejected")),
+            },
+        )
+
     if skip_persist:
         logger.info(
             "PPO fold train for %s @ %s skipped live ONNX write (WF/PBO mode; steps=%d)",
@@ -604,6 +784,12 @@ def train_ppo_agent(
     # ── Export to ONNX (single-file; invalidate ORT mmap before rewrite) ──
     os.makedirs(_model_dir(symbol, tf), exist_ok=True)
     _export_policy_onnx(symbol, model, timeframe=tf)
+
+    # Persist the trainable checkpoint so other assets can warm-start from it.
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
+    except Exception:
+        logger.debug("PPO policy.pt save failed for %s", symbol, exc_info=True)
 
     with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(scaler, fh, indent=2)
@@ -643,6 +829,128 @@ def train_ppo_agent(
     if wf_mode:
         out["_wf_bundle"] = wf_bundle
     return out
+
+
+# ── Replay-based continual fine-tuning (AI-FT-PTL-001 §3.2, P1 #4) ──────────
+
+
+def finetune_from_replay(
+    model,
+    optimizer,
+    symbol: str,
+    *,
+    device,
+    clip_epsilon: float = 0.2,
+    vf_coef: float = 0.5,
+    ent_coef: float = 0.0,
+    max_grad_norm: float = 0.5,
+    batch_size: int = 64,
+) -> dict[str, Any]:
+    """Run KL-constrained PPO epochs on replay-buffer mini-batches.
+
+    Samples stored live transitions, runs ``RL_REPLAY_FINETUNE_EPOCHS`` update
+    epochs, and rejects the update when the mean KL divergence between the
+    pre-update and post-update policy exceeds ``RL_REPLAY_MAX_KL`` (the old
+    weights are restored in that case). Returns a metrics dict; ``applied`` is
+    False when the buffer is too small or the KL guard rejected the update.
+    """
+    torch, nn = _get_torch()
+    from app.config import (
+        RL_REPLAY_FINETUNE_EPOCHS,
+        RL_REPLAY_MAX_KL,
+        RL_REPLAY_MIN_FOR_FINETUNE,
+    )
+    from app.services.bots.rl_replay_store import count_transitions, load_transitions
+
+    n_available = count_transitions(symbol)
+    if n_available < RL_REPLAY_MIN_FOR_FINETUNE:
+        return {
+            "applied": False,
+            "reason": f"replay buffer too small ({n_available} < {RL_REPLAY_MIN_FOR_FINETUNE})",
+            "transitions": n_available,
+        }
+
+    transitions = load_transitions(symbol)
+    if not transitions:
+        return {"applied": False, "reason": "replay buffer empty", "transitions": 0}
+
+    obs_t = torch.tensor(
+        np.stack([t["obs"] for t in transitions]), dtype=torch.float32, device=device,
+    )
+    actions_t = torch.tensor([t["action"] for t in transitions], dtype=torch.long, device=device)
+    rewards_t = torch.tensor([t["reward"] for t in transitions], dtype=torch.float32, device=device)
+
+    # Freeze the pre-update policy for the KL constraint.
+    old_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    model.eval()
+    with torch.no_grad():
+        old_logits, _ = model.policy(obs_t)
+        old_dist = torch.distributions.Categorical(logits=old_logits)
+        old_log_probs = old_dist.log_prob(actions_t)
+
+    # Advantage proxy: center rewards (replay has no value bootstrapping).
+    adv = rewards_t - rewards_t.mean()
+    if adv.std() > 1e-8:
+        adv = adv / adv.std()
+
+    model.train()
+    n = len(transitions)
+    epochs = max(1, int(RL_REPLAY_FINETUNE_EPOCHS))
+    for _ in range(epochs):
+        perm = torch.randperm(n, device=device)
+        for start in range(0, n, batch_size):
+            idx = perm[start:start + batch_size]
+            b_obs, b_act = obs_t[idx], actions_t[idx]
+            b_old_lp, b_adv, b_ret = old_log_probs[idx], adv[idx], rewards_t[idx]
+
+            logits, values = model.policy(b_obs)
+            dist = torch.distributions.Categorical(logits=logits)
+            new_lp = dist.log_prob(b_act)
+            entropy = dist.entropy().mean()
+
+            ratio = torch.exp(new_lp - b_old_lp)
+            surr1 = ratio * b_adv
+            surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * b_adv
+            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = nn.functional.mse_loss(values.squeeze(-1), b_ret)
+            loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
+
+    # KL(old || new) on the replay states; reject when the policy moved too far.
+    model.eval()
+    with torch.no_grad():
+        new_logits, _ = model.policy(obs_t)
+        new_dist = torch.distributions.Categorical(logits=new_logits)
+        kl = float(torch.distributions.kl_divergence(old_dist, new_dist).mean().item())
+
+    if kl > RL_REPLAY_MAX_KL:
+        model.load_state_dict(old_state)
+        model.to(device)
+        logger.warning(
+            "PPO replay fine-tune REJECTED for %s: KL=%.4f > %.4f — old policy restored",
+            symbol, kl, RL_REPLAY_MAX_KL,
+        )
+        return {
+            "applied": False,
+            "reason": f"kl_guard ({kl:.4f} > {RL_REPLAY_MAX_KL})",
+            "kl_divergence": round(kl, 6),
+            "transitions": n,
+        }
+
+    logger.info(
+        "PPO replay fine-tune applied for %s: %d transitions, %d epochs, KL=%.4f",
+        symbol, n, epochs, kl,
+    )
+    return {
+        "applied": True,
+        "kl_divergence": round(kl, 6),
+        "transitions": n,
+        "epochs": epochs,
+    }
 
 
 # ── Model store ───────────────────────────────────────────────────────────
