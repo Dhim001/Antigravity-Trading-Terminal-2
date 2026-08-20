@@ -87,12 +87,13 @@ class TestBuildSequences:
 
         candles = self._make_candles(300)
         labels = label_triple_barrier(candles, atr_mult_upper=2.0, atr_mult_lower=2.0, max_holding_bars=30)
-        X, y = build_sequences(candles, labels, lookback=60, max_holding_bars=30)
+        X, y, w = build_sequences(candles, labels, lookback=60, max_holding_bars=30)
 
         assert X.ndim == 3
         assert X.shape[1] == 60  # lookback
         assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)  # N_FEATURES (dynamic)
         assert len(y) == len(X)
+        assert len(w) == len(X)
         assert set(np.unique(y)).issubset({0, 1, 2})
 
     def test_insufficient_candles_returns_empty(self):
@@ -101,9 +102,10 @@ class TestBuildSequences:
 
         candles = self._make_candles(50)  # too few
         labels = label_triple_barrier(candles, max_holding_bars=30)
-        X, y = build_sequences(candles, labels, lookback=60, max_holding_bars=30)
+        X, y, w = build_sequences(candles, labels, lookback=60, max_holding_bars=30)
         assert len(X) == 0
         assert len(y) == 0
+        assert len(w) == 0
 
 
 # ── Softmax tests ────────────────────────────────────────────────────────

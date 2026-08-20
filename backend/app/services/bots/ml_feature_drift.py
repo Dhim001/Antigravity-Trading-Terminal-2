@@ -316,9 +316,17 @@ class FeatureDriftMonitor:
         if training_features is None or len(training_features) < 10:
             return None
 
-        # Auto-detect feature names
+        # Auto-detect feature names — v8+ names must appear in PSI reports.
         if feature_names is None:
-            feature_names = [f"f_{i}" for i in range(live_arr.shape[1])]
+            try:
+                from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
+
+                if live_arr.shape[1] == len(SIGNAL_FEATURE_NAMES):
+                    feature_names = list(SIGNAL_FEATURE_NAMES)
+                else:
+                    feature_names = [f"f_{i}" for i in range(live_arr.shape[1])]
+            except Exception:
+                feature_names = [f"f_{i}" for i in range(live_arr.shape[1])]
 
         # Ensure shape compatibility
         n_features = min(training_features.shape[1], live_arr.shape[1])

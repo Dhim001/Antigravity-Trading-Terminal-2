@@ -203,15 +203,27 @@ class TcnMultiHorizonStrategy(BaseStrategy):
             return {"signal": "NONE"}
 
         lookback_rows = list(self._bar_history)[:-1]
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
+        from app.services.bots.ml_feature_v8 import resolve_artifact_ffd_d
+
+        symbol = self._cfg.get("model_symbol") or str(df_row.get("_symbol", ""))
+        if not symbol:
+            symbol = str(self.config.get("symbol", "")).upper()
+        ffd_d = None
+        store = get_tcn_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        if symbol:
+            ffd_d = resolve_artifact_ffd_d(
+                store.get_metadata(symbol, model_version=pinned or None, timeframe=tf)
+            )
+        features = bar_to_signal_features(
+            df_row, lookback_rows=lookback_rows, ffd_d=ffd_d,
+        )
         self._window.append(signal_features_to_vector(features))
 
         if len(self._window) < self._lookback:
             return {"signal": "NONE"}
 
-        symbol = self._cfg.get("model_symbol") or str(df_row.get("_symbol", ""))
-        if not symbol:
-            symbol = str(self.config.get("symbol", "")).upper()
         if not symbol:
             return {"signal": "NONE"}
 
@@ -220,9 +232,6 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         record_ml_inference_features(symbol, "TCN_MULTI_HORIZON", self._window[-1])
 
         window_array = np.array(list(self._window))
-        store = get_tcn_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         returns = store.predict(
             symbol, window_array, model_version=pinned or None, timeframe=tf,
         )

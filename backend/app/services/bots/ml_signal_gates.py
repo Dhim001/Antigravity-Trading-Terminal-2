@@ -53,7 +53,31 @@ def apply_ml_meta_label_gate(
         "signal": signal,
         "model_type": result.get("model_type"),
         "raw_signal": result.get("raw_signal") or signal,
+        "primary_side": 1.0 if signal == "BUY" else -1.0,
+        "primary_confidence": result.get("confidence"),
+        "features_available": 0.0,
     }
+    sf = result.get("signal_features") if isinstance(result.get("signal_features"), dict) else None
+    if sf is None:
+        from app.services.bots.meta_label_model import COMPACT_SIGNAL_SLICE
+
+        compact = {}
+        for name in COMPACT_SIGNAL_SLICE:
+            if name in row:
+                compact[name] = row.get(name)
+        if compact:
+            sf = compact
+        else:
+            try:
+                from app.services.bots.ml_feature_engineering import bar_to_signal_features
+
+                hist = row.get("_lookback") if isinstance(row.get("_lookback"), list) else []
+                sf = bar_to_signal_features(row, lookback_rows=hist, symbol=symbol)
+            except Exception:
+                sf = {}
+    if sf:
+        insight["signal_features"] = sf
+        insight["features_available"] = 1.0
 
     try:
         from app.services.bots.calibration import check_meta_label_gate

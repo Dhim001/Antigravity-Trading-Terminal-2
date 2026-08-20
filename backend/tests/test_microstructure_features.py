@@ -215,7 +215,7 @@ def test_compute_vpin_series_in_unit_range():
 
 
 def test_feature_schema_version_bumped():
-    assert SIGNAL_FEATURE_VERSION == 7
+    assert SIGNAL_FEATURE_VERSION == 8
 
 
 def test_feature_schema_includes_microstructure():

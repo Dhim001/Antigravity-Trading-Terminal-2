@@ -167,10 +167,21 @@ def evaluate_oos_accuracy(
         atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
         max_holding_bars=int(config.get("triple_barrier_max_bars", 30)),
     )
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        clamp_uniqueness,
+        directional_hit,
+        finalize_oos_metrics,
+        should_score_oos_event,
+    )
 
-    correct = 0
-    total = 0
+    labels = annotate_event_labels(labels, test_candles, config)
+
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
+    raw_correct = 0
+    raw_total = 0
+    w_correct = 0.0
+    w_total = 0.0
 
     # Stride long OOS windows only in lean WF so validation stays responsive.
     # Capacity parity scores every bar (dense eval matches production intent).
@@ -215,26 +226,25 @@ def evaluate_oos_accuracy(
 
         if i < len(labels):
             lbl = labels[i]
-            actual = lbl.get("label", 0)
-            if (signal == "BUY" and actual == 1) or (signal == "SELL" and actual == -1):
-                correct += 1
-            total += 1
+            hit = directional_hit(signal, lbl)
+            raw_total += 1
+            if hit:
+                raw_correct += 1
+            if should_score_oos_event(lbl, config):
+                u = clamp_uniqueness(lbl.get("uniqueness", 1.0))
+                w_total += u
+                if hit:
+                    w_correct += u
 
-    accuracy = correct / total if total > 0 else 0.0
     tot_bars = len(test_candles)
-    sig_count = counts.get("BUY", 0) + counts.get("SELL", 0)
-    signal_rate = round(sig_count / tot_bars, 4) if tot_bars > 0 else 0.0
-
-    return {
-        "accuracy": round(accuracy, 4),
-        "n_signals": total,
-        "n_correct": correct,
-        "buy_count": counts.get("BUY", 0),
-        "sell_count": counts.get("SELL", 0),
-        "none_count": counts.get("NONE", 0),
-        "signal_rate": signal_rate,
-        "total_bars": tot_bars,
-    }
+    return finalize_oos_metrics(
+        raw_correct=raw_correct,
+        raw_total=raw_total,
+        weighted_correct=w_correct,
+        weighted_total=w_total,
+        counts=counts,
+        total_bars=tot_bars,
+    )
 
 
 def _rl_return_to_score(return_pct: float) -> float:
@@ -393,20 +403,37 @@ def _evaluate_oos_transformer_torch(
             atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
             max_holding_bars=max_bars,
         )
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        clamp_uniqueness,
+        directional_hit,
+        finalize_oos_metrics,
+        should_score_oos_event,
+    )
+
+    labels = annotate_event_labels(labels, test_candles, config)
 
     stride = 1
     if len(test_candles) > 400:
         stride = max(1, len(test_candles) // 400)
 
     model.eval()
-    correct = 0
-    total = 0
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
+    raw_correct = 0
+    raw_total = 0
+    w_correct = 0.0
+    w_total = 0.0
     feat_matrix = resolve_precomputed_features(test_candles, config)
     if feat_matrix is None:
         feat_matrix = precompute_signal_feature_matrix(
             test_candles, feature_lookback=feature_lb,
         )
+    from app.services.bots.ml_feature_engineering import (
+        apply_exclude_features,
+        resolve_exclude_features,
+    )
+
+    feat_matrix = apply_exclude_features(feat_matrix, resolve_exclude_features(config))
 
     with torch.no_grad():
         for i in range(lookback + feature_warmup, len(test_candles)):
@@ -424,21 +451,25 @@ def _evaluate_oos_transformer_torch(
                 continue
             counts[signal] = counts.get(signal, 0) + 1
             if i < len(labels):
-                actual = labels[i].get("label", 0)
-                if (signal == "BUY" and actual == 1) or (signal == "SELL" and actual == -1):
-                    correct += 1
-                total += 1
+                lbl = labels[i]
+                hit = directional_hit(signal, lbl)
+                raw_total += 1
+                if hit:
+                    raw_correct += 1
+                if should_score_oos_event(lbl, config):
+                    u = clamp_uniqueness(lbl.get("uniqueness", 1.0))
+                    w_total += u
+                    if hit:
+                        w_correct += u
 
-    accuracy = correct / total if total > 0 else 0.0
-    return {
-        "accuracy": round(accuracy, 4),
-        "n_signals": total,
-        "n_correct": correct,
-        "buy_count": counts.get("BUY", 0),
-        "sell_count": counts.get("SELL", 0),
-        "none_count": counts.get("NONE", 0),
-        "total_bars": len(test_candles),
-    }
+    return finalize_oos_metrics(
+        raw_correct=raw_correct,
+        raw_total=raw_total,
+        weighted_correct=w_correct,
+        weighted_total=w_total,
+        counts=counts,
+        total_bars=len(test_candles),
+    )
 
 
 def _predict_ml_signal_from_bundle(
@@ -457,7 +488,11 @@ def _predict_ml_signal_from_bundle(
 
     reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
     feat_names = meta.get("feature_names") or list(SIGNAL_FEATURE_NAMES)
-    vec = signal_features_to_vector(features, feature_names=feat_names).reshape(1, -1)
+    vec = signal_features_to_vector(
+        features,
+        feature_names=feat_names,
+        exclude_features=meta.get("exclude_features"),
+    ).reshape(1, -1)
     try:
         proba = model.predict_proba(vec)[0]
         pred_idx = int(np.argmax(proba))
@@ -512,6 +547,15 @@ def _evaluate_oos_ml_signal_batch(
             atr_mult_lower=float(config.get("triple_barrier_atr_mult", 2.0)),
             max_holding_bars=int(config.get("triple_barrier_max_bars", 30)),
         )
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        clamp_uniqueness,
+        directional_hit,
+        finalize_oos_metrics,
+        should_score_oos_event,
+    )
+
+    labels = annotate_event_labels(labels, test_candles, config)
 
     feat_matrix = resolve_precomputed_features(test_candles, config)
     meta = (bundle or {}).get("metadata") if use_bundle else None
@@ -519,9 +563,11 @@ def _evaluate_oos_ml_signal_batch(
         (meta or {}).get("feature_names") if isinstance(meta, dict) else None
     ) or list(SIGNAL_FEATURE_NAMES)
 
-    correct = 0
-    total = 0
     counts = {"BUY": 0, "SELL": 0, "NONE": 0}
+    raw_correct = 0
+    raw_total = 0
+    w_correct = 0.0
+    w_total = 0.0
 
     for i, candle in enumerate(test_candles):
         if i < feature_warmup:
@@ -554,21 +600,25 @@ def _evaluate_oos_ml_signal_batch(
             continue
         counts[signal] = counts.get(signal, 0) + 1
         if i < len(labels):
-            actual = labels[i].get("label", 0)
-            if (signal == "BUY" and actual == 1) or (signal == "SELL" and actual == -1):
-                correct += 1
-            total += 1
+            lbl = labels[i]
+            hit = directional_hit(signal, lbl)
+            raw_total += 1
+            if hit:
+                raw_correct += 1
+            if should_score_oos_event(lbl, config):
+                u = clamp_uniqueness(lbl.get("uniqueness", 1.0))
+                w_total += u
+                if hit:
+                    w_correct += u
 
-    accuracy = correct / total if total > 0 else 0.0
-    return {
-        "accuracy": round(accuracy, 4),
-        "n_signals": total,
-        "n_correct": correct,
-        "buy_count": counts.get("BUY", 0),
-        "sell_count": counts.get("SELL", 0),
-        "none_count": counts.get("NONE", 0),
-        "total_bars": len(test_candles),
-    }
+    return finalize_oos_metrics(
+        raw_correct=raw_correct,
+        raw_total=raw_total,
+        weighted_correct=w_correct,
+        weighted_total=w_total,
+        counts=counts,
+        total_bars=len(test_candles),
+    )
 
 
 # ── Main walk-forward runner ──────────────────────────────────────────────

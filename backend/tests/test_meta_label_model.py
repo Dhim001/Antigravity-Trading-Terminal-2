@@ -21,6 +21,7 @@ app_config.META_LABEL_MODEL_DIR = os.path.join(_TEST_DIR, "meta_label_models")
 
 from app.services.bots.meta_label_model import (  # noqa: E402
     FEATURE_NAMES,
+    FEATURE_SCHEMA_VERSION,
     _parse_entry_ts,
     build_meta_label_dataset,
     features_to_vector,
@@ -95,6 +96,41 @@ class MetaLabelFeatureTests(unittest.TestCase):
         self.assertEqual(feat_losing["child_brs"], 1.0)
         self.assertEqual(feat_losing["regime_switched_flag"], 1.0)
         self.assertEqual(feat_losing["bars_since_switch"], 2.0)
+
+    def test_schema_v3_appends_primary_and_compact_slice(self):
+        self.assertEqual(FEATURE_SCHEMA_VERSION, 3)
+        self.assertGreaterEqual(len(FEATURE_NAMES), 37)
+        feat = insight_to_features(_winning_snap(), symbol="AAPL", side="BUY")
+        vec = features_to_vector(feat)
+        self.assertEqual(len(vec), len(FEATURE_NAMES))
+        self.assertEqual(feat["primary_side"], 1.0)
+        self.assertEqual(feat["features_available"], 0.0)
+
+        feat2 = insight_to_features(
+            {
+                **_winning_snap(),
+                "primary_side": -1,
+                "primary_confidence": 0.91,
+                "features_available": 1,
+                "signal_features": {
+                    "htf_trend_1h": 0.8,
+                    "atr_ratio": 1.2,
+                    "vol_regime_ratio": 0.9,
+                    "range_position": 0.4,
+                    "cvd_z": -0.3,
+                },
+            },
+            side="SELL",
+        )
+        self.assertEqual(feat2["primary_side"], -1.0)
+        self.assertAlmostEqual(feat2["primary_confidence"], 0.91)
+        self.assertEqual(feat2["features_available"], 1.0)
+        self.assertAlmostEqual(feat2["htf_trend_1h"], 0.8)
+        self.assertAlmostEqual(feat2["cvd_z"], -0.3)
+
+        v2_names = FEATURE_NAMES[:29]
+        v2_vec = features_to_vector(feat2, v2_names)
+        self.assertEqual(len(v2_vec), 29)
 
     def test_parse_unix_entry_ts(self):
         dt = _parse_entry_ts("1704067200")
@@ -231,6 +267,38 @@ class MetaLabelGateTests(MetaLabelTrainTests):
         )
         # no model for unknown bot — hybrid uses Wilson; may be None if no bucket stats
         self.assertTrue(reason is None or "calibration gate" in reason.lower() or "meta-label" in reason.lower())
+
+    def test_gate_rejects_low_pwin_despite_high_primary_confidence(self):
+        from unittest import mock
+
+        from app.services.bots.ml_signal_gates import apply_ml_meta_label_gate
+
+        cfg = {
+            "calibration_gate_enabled": True,
+            "meta_label_model_mode": "gbm",
+            "meta_label_min_prob": 0.55,
+            "_bot_id": "bot-ml-1",
+        }
+        result = {"signal": "BUY", "confidence": 0.99, "model_type": "lstm"}
+        row = {
+            "time": 1_700_000_000,
+            "_symbol": "AAPL",
+            "close": 100,
+            "open": 99,
+            "high": 101,
+            "low": 98,
+            "volume": 10,
+            "atr_ratio": 1.1,
+        }
+        with mock.patch(
+            "app.services.bots.meta_label_model.predict_meta_label_prob",
+            return_value=0.12,
+        ):
+            out = apply_ml_meta_label_gate(result, row, cfg)
+        self.assertEqual(out["signal"], "NONE")
+        self.assertEqual(out.get("raw_signal"), "BUY")
+        self.assertEqual(out["reject_reason"], "meta_label_gate")
+        self.assertAlmostEqual(result["confidence"], 0.99)
 
 
 if __name__ == "__main__":

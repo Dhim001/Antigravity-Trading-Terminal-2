@@ -225,6 +225,15 @@ def train_ml_signal_model(
             max_holding_bars=max_bars,
         )
         labels = apply_posttrade_feedback(candles, labels, symbol=symbol)
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        event_filter_metadata,
+        keep_train_row,
+        sample_weight_for_label,
+    )
+    from app.services.bots.ml_feature_engineering import feature_scheme_metadata
+
+    labels = annotate_event_labels(labels, candles, cfg)
     dist = label_distribution(labels)
 
     # Step 2: Extract features for each labelled bar
@@ -241,7 +250,7 @@ def train_ml_signal_model(
     pre_feat = resolve_precomputed_features(candles, cfg)
 
     for idx, label_info in enumerate(labels):
-        if label_info.get("barrier_hit") == "invalid":
+        if not keep_train_row(label_info, cfg):
             continue
         # Need at least feature_warmup prior bars (same gate as live evaluate)
         if idx < feature_warmup:
@@ -270,7 +279,7 @@ def train_ml_signal_model(
         rows.append({
             "vector": vector,
             "label": label_info["label"],  # 1 (BUY), -1 (SELL), 0 (NONE)
-            "uniqueness": float(label_info.get("uniqueness", 1.0)),
+            "uniqueness": sample_weight_for_label(label_info),
         })
 
     n = len(rows)
@@ -289,6 +298,12 @@ def train_ml_signal_model(
     X = np.vstack([r["vector"] for r in rows])
     y = np.array([label_map[r["label"]] for r in rows], dtype=np.int32)
     sample_weights = np.array([r["uniqueness"] for r in rows], dtype=np.float64)
+    from app.services.bots.ml_feature_engineering import (
+        apply_exclude_features,
+        resolve_exclude_features,
+    )
+
+    X = apply_exclude_features(X, resolve_exclude_features(cfg))
 
     # Step 4: Time-ordered train/val split (no shuffling — prevents leakage)
     split_idx = max(1, int(n * (1.0 - val_fraction)))
@@ -455,7 +470,9 @@ def train_ml_signal_model(
                 "timeframe": tf,
                 "_wf_mode": True,
                 "skip_refit": True,
+                **event_filter_metadata(cfg),
             },
+            **feature_scheme_metadata(cfg),
         }
         _signal_model_store.inject_session_model(symbol, model, session_meta, timeframe=tf)
         return {
@@ -508,8 +525,16 @@ def train_ml_signal_model(
             "timeframe": tf,
             "skip_refit": skip_refit,
             "ml_include_trade_state": include_trade_state,
+            **event_filter_metadata(cfg),
         },
+        **feature_scheme_metadata(cfg),
     }
+    try:
+        from app.services.bots.ml_feature_v8 import last_selected_ffd_d
+
+        metadata["frac_diff_d_ffd"] = last_selected_ffd_d()
+    except Exception:
+        pass
     if donor_recipe is not None:
         from app.services.bots import model_transfer as _mt
 
@@ -663,7 +688,11 @@ class MlSignalModelStore:
         reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
         feat_names = meta.get("feature_names") or list(SIGNAL_FEATURE_NAMES)
 
-        vec = signal_features_to_vector(features, feature_names=feat_names).reshape(1, -1)
+        vec = signal_features_to_vector(
+            features,
+            feature_names=feat_names,
+            exclude_features=meta.get("exclude_features"),
+        ).reshape(1, -1)
         try:
             proba = model.predict_proba(vec)[0]
             pred_idx = int(np.argmax(proba))
@@ -698,7 +727,11 @@ class MlSignalModelStore:
         reverse_map = meta.get("reverse_map", {"0": "BUY", "1": "NONE", "2": "SELL"})
         out: list[tuple[str, float] | None] = [None] * n
         bs = max(32, int(batch_size or 512))
-        mat = np.asarray(feature_matrix, dtype=np.float64)
+        from app.services.bots.ml_feature_engineering import mask_features_for_model
+
+        mat = mask_features_for_model(
+            np.asarray(feature_matrix, dtype=np.float64), meta,
+        )
         for start in range(0, n, bs):
             if cancel_cb is not None and cancel_cb():
                 raise InterruptedError("ml_batch_cancel_requested")
@@ -1067,16 +1100,22 @@ class MlSignalBoostStrategy(BaseStrategy):
                 "reject_detail": "No model_symbol / symbol for ML model lookup",
             }
 
-        # Extract features with lookback
         lookback_list = list(self._lookback)[:-1]  # all except current
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_list)
+        store = get_ml_signal_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        from app.services.bots.ml_feature_v8 import resolve_artifact_ffd_d
+
+        meta = store.get_metadata(symbol, pinned or None, timeframe=tf) or {}
+        features = bar_to_signal_features(
+            df_row,
+            lookback_rows=lookback_list,
+            ffd_d=resolve_artifact_ffd_d(meta),
+        )
 
         # Align trade-state dims to the loaded model (not only bot config) so a
         # v4 artifact never gets v5 keys in drift logs, and a v5 model gets
         # live trade_state from eval_row when the manager injects it.
-        store = get_ml_signal_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         include_ts = self._include_trade_state(symbol, store)
 
         trade_state = None

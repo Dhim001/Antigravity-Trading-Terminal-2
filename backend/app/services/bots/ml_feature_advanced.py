@@ -209,6 +209,21 @@ def frac_diff_series(series: np.ndarray, d: float = 0.4, threshold: float = 1e-4
     return out
 
 
+def frac_diff_last(series: np.ndarray, d: float = 0.4, threshold: float = 1e-4) -> float:
+    """Frac-diff of the last point, truncating weights when history is short."""
+    x = np.asarray(series, dtype=np.float64)
+    n = len(x)
+    if n == 0:
+        return 0.0
+    weights = frac_diff_weights(d, threshold=threshold)
+    if n < len(weights):
+        weights = weights[-n:]
+    val = float(np.dot(weights, x[-len(weights):]))
+    if not math.isfinite(val):
+        return 0.0
+    return val
+
+
 def fracdiff_feature_matrix(
     close: np.ndarray,
     volume: np.ndarray,

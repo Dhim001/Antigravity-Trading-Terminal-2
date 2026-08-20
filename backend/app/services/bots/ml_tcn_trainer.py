@@ -144,12 +144,18 @@ def build_tcn_sequences(
     *,
     lookback: int = 120,
     feat_matrix: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build (X, y) sequences for TCN training.
+    labels: list[dict] | None = None,
+    config: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build (X, y, w) sequences for TCN training.
 
     X: (N, lookback, N_FEATURES)
     y: (N, 3) — forward returns at 5, 15, 60 bars
+    w: (N,) uniqueness weights (1.0 when labels missing)
     """
+    from app.services.bots.ml_event_sampling import keep_train_row, sample_weight_for_label
+    from app.services.bots.ml_feature_engineering import apply_exclude_features, resolve_exclude_features
+
     n = len(candles)
     feature_lb = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
@@ -158,21 +164,33 @@ def build_tcn_sequences(
         feat_matrix = precompute_signal_feature_matrix(
             candles, feature_lookback=feature_lb,
         )
+    feat_matrix = apply_exclude_features(feat_matrix, resolve_exclude_features(config))
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[np.ndarray] = []
+    sequences_w: list[float] = []
 
     for i in range(lookback + feature_warmup, n - 60):
+        if labels is not None and i < len(labels) and not keep_train_row(labels[i], config):
+            continue
         returns = _compute_forward_returns(closes, i)
         if returns is None:
             continue
         sequences_x.append(feat_matrix[i - lookback + 1 : i + 1])
         sequences_y.append(np.array(returns, dtype=np.float32))
+        if labels is not None and i < len(labels):
+            sequences_w.append(sample_weight_for_label(labels[i]))
+        else:
+            sequences_w.append(1.0)
 
     if not sequences_x:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
 
-    return np.stack(sequences_x).astype(np.float32), np.stack(sequences_y)
+    return (
+        np.stack(sequences_x).astype(np.float32),
+        np.stack(sequences_y),
+        np.array(sequences_w, dtype=np.float32),
+    )
 
 
 # ── Training pipeline ────────────────────────────────────────────────────
@@ -203,9 +221,11 @@ def train_tcn_model(
     min_samples = int(cfg.get("min_train_samples", 300))
     lr = float(cfg.get("learning_rate", 0.001))
     val_fraction = float(cfg.get("val_fraction", 0.2))
-    from app.services.bots.ml_feature_cache import resolve_precomputed_features
+    from app.services.bots.ml_feature_cache import (
+        resolve_precomputed_features,
+        resolve_precomputed_labels,
+    )
     from app.services.bots.ml_torch_device import (
-        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
@@ -214,6 +234,7 @@ def train_tcn_model(
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
+        unpack_batch_to_device,
     )
 
     if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train"):
@@ -228,8 +249,29 @@ def train_tcn_model(
         return {"ok": False, "error": f"insufficient candles ({len(candles)})", "symbol": symbol}
 
     # Build sequences
+    from app.services.bots.ml_event_sampling import annotate_event_labels, event_filter_metadata
+    from app.services.bots.ml_feature_engineering import (
+        apply_exclude_features,
+        feature_scheme_metadata,
+        resolve_exclude_features,
+    )
+    from app.services.bots.ml_triple_barrier import label_triple_barrier
+
     pre_feat = resolve_precomputed_features(candles, cfg)
-    X, y = build_tcn_sequences(candles, lookback=lookback, feat_matrix=pre_feat)
+    if pre_feat is not None:
+        pre_feat = apply_exclude_features(pre_feat, resolve_exclude_features(cfg))
+    labels = resolve_precomputed_labels(candles, cfg)
+    if labels is None:
+        labels = label_triple_barrier(
+            candles,
+            atr_mult_upper=float(cfg.get("triple_barrier_atr_mult", 2.0)),
+            atr_mult_lower=float(cfg.get("triple_barrier_atr_mult", 2.0)),
+            max_holding_bars=int(cfg.get("triple_barrier_max_bars", 30)),
+        )
+    labels = annotate_event_labels(labels, candles, cfg)
+    X, y, w = build_tcn_sequences(
+        candles, lookback=lookback, feat_matrix=pre_feat, labels=labels, config=cfg,
+    )
     n = len(y)
     if n < min_samples:
         return {"ok": False, "error": f"insufficient sequences ({n} < {min_samples})", "symbol": symbol}
@@ -248,6 +290,7 @@ def train_tcn_model(
     split = max(1, int(n * (1.0 - val_fraction)))
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
+    w_train, w_val = w[:split], w[split:]
 
     # Build model
     model = _build_tcn(
@@ -279,12 +322,14 @@ def train_tcn_model(
         (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-5,
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss(reduction="none")
 
     X_t = cpu_tensor(X_train, dtype=torch.float32)
     y_t = cpu_tensor(y_train, dtype=torch.float32)
+    w_t = cpu_tensor(w_train, dtype=torch.float32)
     X_v = cpu_tensor(X_val, dtype=torch.float32)
     y_v = cpu_tensor(y_val, dtype=torch.float32)
+    w_v = cpu_tensor(w_val, dtype=torch.float32)
 
     best_val_loss = float("inf")
     best_state = None
@@ -308,10 +353,10 @@ def train_tcn_model(
     }
     progress_path = progress_path_from_config(cfg)
     train_loader = make_torch_dataloader(
-        X_t, y_t, batch_size=batch_size, device=device, shuffle=True,
+        X_t, y_t, batch_size=batch_size, device=device, shuffle=True, w_t=w_t,
     )
     val_loader = make_torch_dataloader(
-        X_v, y_v, batch_size=batch_size, device=device, shuffle=False,
+        X_v, y_v, batch_size=batch_size, device=device, shuffle=False, w_t=w_v,
     )
     for epoch in range(epochs):
         if ml_cancel_requested(progress_path):
@@ -320,10 +365,11 @@ def train_tcn_model(
         epoch_loss = 0.0
         n_batches = 0
 
-        for xb, yb in train_loader:
-            xb, yb = batch_to_device(xb, yb, device)
+        for batch in train_loader:
+            xb, yb, wb = unpack_batch_to_device(batch, device)
             pred = model(xb)
-            loss = criterion(pred, yb)
+            per = criterion(pred, yb).mean(dim=-1)
+            loss = (per * wb).mean()
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -335,12 +381,13 @@ def train_tcn_model(
         model.eval()
         with torch.no_grad():
             val_loss = 0.0
-            n_v = 0
-            for xb, yb in val_loader:
-                xb, yb = batch_to_device(xb, yb, device)
-                val_loss += float(criterion(model(xb), yb).item()) * len(xb)
-                n_v += len(xb)
-            val_loss = val_loss / max(1, n_v)
+            n_v = 0.0
+            for batch in val_loader:
+                xb, yb, wb = unpack_batch_to_device(batch, device)
+                per = criterion(model(xb), yb).mean(dim=-1)
+                val_loss += float((per * wb).sum().item())
+                n_v += float(wb.sum().item())
+            val_loss = val_loss / max(1.0, n_v)
         scheduler.step(val_loss)
         loss_history.append({
             "epoch": epoch + 1,
@@ -447,7 +494,9 @@ def train_tcn_model(
 
     scaler = {"mean": feat_mean.tolist(), "std": feat_std.tolist()}
     with open(_scaler_path(symbol, tf), "w", encoding="utf-8") as fh:
-        json.dump(scaler, fh, indent=2)
+        from app.services.bots.ml_feature_v8 import attach_ffd_d
+
+        json.dump(attach_ffd_d(scaler), fh, indent=2)
 
     # Persist the trainable checkpoint so other assets can warm-start from it.
     try:
@@ -466,6 +515,7 @@ def train_tcn_model(
     metadata = {
         "symbol": symbol, "timeframe": tf, "model_type": "tcn_multi_horizon",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
+        **feature_scheme_metadata(cfg),
         "horizons": horizon_names, "lookback": lookback,
         "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "metrics": metrics, "sample_count": n,
@@ -476,9 +526,17 @@ def train_tcn_model(
             "num_blocks": num_blocks,
             "timeframe": tf,
             "train_device": train_device_meta,
+            **event_filter_metadata(cfg),
+            **feature_scheme_metadata(cfg),
         },
         "train_device": train_device_meta,
     }
+    try:
+        from app.services.bots.ml_feature_v8 import last_selected_ffd_d
+
+        metadata["frac_diff_d_ffd"] = last_selected_ffd_d()
+    except Exception:
+        pass
     if donor_lineage is not None:
         metadata["transfer"] = donor_lineage
         metrics["transfer"] = {
@@ -548,6 +606,24 @@ class TcnModelStore:
         base = TcnModelStore._cache_key(symbol, model_version, timeframe)
         return f"{base}{ort_provider_cache_tag(research=research, config=config)}"
 
+    def get_metadata(
+        self,
+        symbol: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict | None:
+        self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
+        key = self._session_key(symbol, model_version, timeframe)
+        meta = self._metadata.get(key)
+        scaler = self._scalers.get(key) or {}
+        if not meta and not scaler:
+            return None
+        out = dict(meta or {})
+        if out.get("frac_diff_d_ffd") is None and scaler.get("frac_diff_d_ffd") is not None:
+            out["frac_diff_d_ffd"] = scaler.get("frac_diff_d_ffd")
+        return out
+
     def invalidate(self, symbol: str | None = None, *, timeframe: str | None = None):
         from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
 
@@ -596,8 +672,10 @@ class TcnModelStore:
             return None
         scaler = self._scalers.get(key)
         if scaler:
-            from app.services.bots.ml_feature_engineering import apply_feature_scaler
+            from app.services.bots.ml_feature_engineering import apply_feature_scaler, mask_features_for_model
 
+            meta = self._metadata.get(key) or {}
+            window = mask_features_for_model(window, meta)
             window = apply_feature_scaler(
                 window,
                 scaler["mean"],
@@ -650,6 +728,13 @@ class TcnModelStore:
         if scaler:
             mean = np.array(scaler["mean"], dtype=np.float32)
             std = np.array(scaler["std"], dtype=np.float32)
+        from app.services.bots.ml_feature_engineering import (
+            apply_feature_scaler,
+            mask_features_for_model,
+        )
+
+        meta = self._metadata.get(key) or {}
+        windows = mask_features_for_model(windows, meta)
         for start in range(0, n, bs):
             if cancel_cb is not None and cancel_cb():
                 raise InterruptedError("ml_batch_cancel_requested")
@@ -657,8 +742,6 @@ class TcnModelStore:
             chunk = windows[start:end].astype(np.float32)
             try:
                 if mean is not None and std is not None:
-                    from app.services.bots.ml_feature_engineering import apply_feature_scaler
-
                     chunk = apply_feature_scaler(
                         chunk, mean, std, log_label=f"TCN[{symbol}]",
                     )

@@ -16,6 +16,28 @@ function srcOrEmpty(knobs) {
   return knobs && typeof knobs === 'object' ? knobs : {};
 }
 
+function parsePositiveNumber(value, fallback, { min = 0, max = 1_000_000 } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function parseEventFilter(value, fallback = 'cusum') {
+  const raw = String(value || fallback).trim().toLowerCase();
+  return raw === 'all' ? 'all' : 'cusum';
+}
+
+function parseFeatureScheme(value, fallback = 'v8') {
+  const raw = String(value || fallback).trim().toLowerCase();
+  const allowed = new Set([
+    'v8', 'v7', 'v8_no_ict', 'v8_no_ofi', 'v8_no_profile',
+    'v8_no_hygiene', 'v8_no_events', 'v8_no_vpin',
+  ]);
+  if (raw === 'current' || raw === 'full' || raw === 'all') return 'v8';
+  if (raw === 'legacy') return 'v7';
+  return allowed.has(raw) ? raw : fallback;
+}
+
 /** Train-capacity knobs — mirrors the Lab Train payload construction. */
 export function knobsToTrainConfig(strategy, knobs) {
   const strat = String(strategy || '').toUpperCase();
@@ -43,6 +65,13 @@ export function knobsToTrainConfig(strategy, knobs) {
     out.gbm_max_iter = parsePositiveInt(src.gbmMaxIter, 300, { min: 40, max: 1000 });
     out.gbm_max_depth = parsePositiveInt(src.gbmMaxDepth, 6, { min: 3, max: 12 });
   }
+  if (strat !== 'RL_PPO_AGENT' && strat !== 'VAE_REGIME_DETECTOR') {
+    out.event_filter = parseEventFilter(src.eventFilter, defaults.eventFilter);
+    out.cusum_threshold = parsePositiveNumber(
+      src.cusumThreshold, defaults.cusumThreshold, { min: 0.1, max: 5 },
+    );
+  }
+  out.feature_scheme = parseFeatureScheme(src.featureScheme, defaults.featureScheme);
   return out;
 }
 
@@ -55,7 +84,7 @@ export function knobsToValidateConfig(strategy, knobs) {
   const strat = String(strategy || '').toUpperCase();
   const defaults = defaultAdvancedKnobs(strat, 'train');
   const src = srcOrEmpty(knobs);
-  return {
+  const out = {
     validate_folds: parsePositiveInt(src.nFolds, defaults.nFolds, { min: 2, max: 8 }),
     validate_mode: 'rolling',
     validate_max_bars: parsePositiveInt(
@@ -66,4 +95,12 @@ export function knobsToValidateConfig(strategy, knobs) {
     pbo_max_combos: parsePositiveInt(src.pboMaxCombos, defaults.pboMaxCombos, { min: 1, max: 16 }),
     wf_capacity_parity: true,
   };
+  if (strat !== 'RL_PPO_AGENT' && strat !== 'VAE_REGIME_DETECTOR') {
+    out.event_filter = parseEventFilter(src.eventFilter, defaults.eventFilter);
+    out.cusum_threshold = parsePositiveNumber(
+      src.cusumThreshold, defaults.cusumThreshold, { min: 0.1, max: 5 },
+    );
+  }
+  out.feature_scheme = parseFeatureScheme(src.featureScheme, defaults.featureScheme);
+  return out;
 }

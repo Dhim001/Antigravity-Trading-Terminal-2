@@ -61,11 +61,10 @@ def _make_bar(i: int, **overrides):
 
 
 def test_schema_v7_dimensions():
-    assert SIGNAL_FEATURE_VERSION == 7
-    assert TRADE_STATE_FEATURE_VERSION == 1007
-    assert len(SIGNAL_FEATURE_NAMES) == 65
     for name in PHASE1 + PHASE2 + PHASE3:
         assert name in SIGNAL_FEATURE_NAMES
+    assert is_compatible_feature_schema(7)
+    assert is_compatible_feature_schema(1007)
 
 
 def test_legacy_schemas_compatible():
@@ -104,7 +103,7 @@ def test_vectorized_loop_parity_v7():
     rows = [_make_bar(i) for i in range(100)]
     loop = precompute_signal_feature_matrix_loop(rows)
     vec = compute_signal_feature_matrix_vectorized(rows)
-    assert loop.shape == (100, 65)
+    assert loop.shape == (100, len(SIGNAL_FEATURE_NAMES))
     assert vec.shape == loop.shape
     assert np.allclose(loop, vec, atol=1e-5, rtol=1e-5)
 

@@ -149,7 +149,15 @@ class LstmModelStore:
         timeframe: str | None = None,
     ) -> dict[str, Any] | None:
         self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
-        return self._metadata.get(self._cache_key(symbol, model_version, timeframe))
+        key = self._cache_key(symbol, model_version, timeframe)
+        meta = self._metadata.get(key)
+        scaler = self._scalers.get(key) or {}
+        if not meta and not scaler:
+            return None
+        out = dict(meta or {})
+        if out.get("frac_diff_d_ffd") is None and scaler.get("frac_diff_d_ffd") is not None:
+            out["frac_diff_d_ffd"] = scaler.get("frac_diff_d_ffd")
+        return out
 
     def predict(
         self,
@@ -180,6 +188,11 @@ class LstmModelStore:
         scaler = self._scalers.get(key)
         if scaler is None:
             return None
+
+        from app.services.bots.ml_feature_engineering import mask_features_for_model
+
+        meta = self._metadata.get(key) or {}
+        window = mask_features_for_model(window, meta)
 
         # Normalize and reshape
         window_scaled = apply_scaler(
@@ -236,6 +249,9 @@ class LstmModelStore:
             return [None] * n
         meta = self._metadata.get(key) or {}
         reverse_map = meta.get("reverse_map") or REVERSE_MAP
+        from app.services.bots.ml_feature_engineering import mask_features_for_model
+
+        windows = mask_features_for_model(windows, meta)
         out: list[tuple[str, float] | None] = [None] * n
         bs = max(32, int(batch_size or 512))
         for start in range(0, n, bs):
@@ -549,9 +565,25 @@ class LstmDirectionStrategy(BaseStrategy):
                 "reject_detail": "Need >= 20 bars of lookback for LSTM features",
             }
 
-        # Extract features for this bar
+        symbol = str(self._cfg.get("model_symbol") or "").strip().upper()
+        if not symbol:
+            symbol = str(df_row.get("_symbol") or self.config.get("symbol") or "").strip().upper()
+
+        from app.services.bots.ml_feature_v8 import resolve_artifact_ffd_d
+
+        ffd_d = None
+        store = get_lstm_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        if symbol:
+            ffd_d = resolve_artifact_ffd_d(
+                store.get_metadata(symbol, model_version=pinned or None, timeframe=tf)
+            )
+
         lookback_rows = list(self._bar_history)[:-1]
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
+        features = bar_to_signal_features(
+            df_row, lookback_rows=lookback_rows, ffd_d=ffd_d,
+        )
         vec = signal_features_to_vector(features)
         self._window.append(vec)
 
@@ -563,10 +595,6 @@ class LstmDirectionStrategy(BaseStrategy):
                 "reject_detail": f"Need {self._lookback} bars in LSTM window ({len(self._window)} so far)",
             }
 
-        # Resolve symbol
-        symbol = str(self._cfg.get("model_symbol") or "").strip().upper()
-        if not symbol:
-            symbol = str(df_row.get("_symbol") or self.config.get("symbol") or "").strip().upper()
         if not symbol:
             return {
                 "signal": "NONE",
@@ -577,10 +605,6 @@ class LstmDirectionStrategy(BaseStrategy):
         from app.services.bots.ml_feature_drift import record_ml_inference_features
 
         record_ml_inference_features(symbol, "LSTM_DIRECTION", vec)
-
-        store = get_lstm_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
 
         # Align window length with the trained artifact once (config may disagree).
         if not self._lookback_synced:

@@ -36,25 +36,28 @@ class TestTcnSequenceBuilding:
         from app.services.bots.ml_feature_engineering import SIGNAL_FEATURE_NAMES
         from app.services.bots.ml_tcn_trainer import build_tcn_sequences
         candles = _make_candles(300)
-        X, y = build_tcn_sequences(candles, lookback=60)
+        X, y, w = build_tcn_sequences(candles, lookback=60)
         assert X.ndim == 3
         assert X.shape[1] == 60  # lookback
         assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)
         assert y.ndim == 2
         assert y.shape[1] == 3  # 3 horizons
+        assert len(w) == len(y)
 
     def test_returns_are_finite(self):
         from app.services.bots.ml_tcn_trainer import build_tcn_sequences
         candles = _make_candles(300)
-        X, y = build_tcn_sequences(candles, lookback=60)
+        X, y, w = build_tcn_sequences(candles, lookback=60)
         assert np.all(np.isfinite(X))
         assert np.all(np.isfinite(y))
+        assert np.all(np.isfinite(w))
 
     def test_insufficient_candles(self):
         from app.services.bots.ml_tcn_trainer import build_tcn_sequences
         candles = _make_candles(50)
-        X, y = build_tcn_sequences(candles, lookback=120)
+        X, y, w = build_tcn_sequences(candles, lookback=120)
         assert len(X) == 0
+        assert len(w) == 0
 
 
 class TestForwardReturns:

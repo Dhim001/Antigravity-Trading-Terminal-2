@@ -82,99 +82,66 @@ class IctSmcStrategy(BaseStrategy):
     # ── Order Block helpers ────────────────────────────────────────
 
     def _detect_bullish_ob(self, row: dict, atr: float, ob_lookback: int = 10) -> bool:
-        """Bullish OB: prior bearish candle followed by a strong bullish impulse.
+        """Bullish OB: prior bearish candle followed by a strong bullish impulse."""
+        from app.services.bots.ml_feature_ict import detect_bullish_ob
 
-        We use lookback _prev columns to check if the prior bar was bearish
-        and the current bar's range exceeds 1.5x ATR (impulse).
-        """
-        close = row.get("close", 0)
-        open_ = row.get("open", 0)
-        prev_close = row.get("close_prev", 0)
-        prev_open = row.get("open_prev", 0)
-
-        if not all((close, open_, prev_close, prev_open)):
-            return False
-
-        # Prior bar was bearish (down candle)
-        prior_bearish = prev_close < prev_open
-        current_range = close - open_
-        impulse_mult = 1.5 * max(0.75, min(2.5, 10.0 / max(1, ob_lookback)))
-        impulse = current_range > impulse_mult * atr
-
-        return prior_bearish and impulse
+        return detect_bullish_ob(
+            row.get("close", 0),
+            row.get("open", 0),
+            row.get("close_prev", 0),
+            row.get("open_prev", 0),
+            atr,
+            ob_lookback,
+        )
 
     def _detect_bearish_ob(self, row: dict, atr: float, ob_lookback: int = 10) -> bool:
         """Bearish OB: prior bullish candle followed by a strong bearish impulse."""
-        close = row.get("close", 0)
-        open_ = row.get("open", 0)
-        prev_close = row.get("close_prev", 0)
-        prev_open = row.get("open_prev", 0)
+        from app.services.bots.ml_feature_ict import detect_bearish_ob
 
-        if not all((close, open_, prev_close, prev_open)):
-            return False
-
-        prior_bullish = prev_close > prev_open
-        current_range = open_ - close
-        impulse_mult = 1.5 * max(0.75, min(2.5, 10.0 / max(1, ob_lookback)))
-        impulse = current_range > impulse_mult * atr
-
-        return prior_bullish and impulse
+        return detect_bearish_ob(
+            row.get("close", 0),
+            row.get("open", 0),
+            row.get("close_prev", 0),
+            row.get("open_prev", 0),
+            atr,
+            ob_lookback,
+        )
 
     # ── Fair Value Gap helpers ─────────────────────────────────────
 
     def _detect_bullish_fvg(self, row: dict, min_gap_pct: float) -> bool:
-        """Bullish FVG: gap between bar[-2] high and current bar low.
+        """Bullish FVG: gap between bar[-2] high and current bar low."""
+        from app.services.bots.ml_feature_ict import detect_bullish_fvg
 
-        Uses prev2_high (bar -2 high) and current low. If current low > prev2_high,
-        there's a gap that price may fill = bullish FVG zone below price.
-        """
-        low = row.get("low", 0)
-        prev2_high = row.get("prev2_high")
-
-        if prev2_high is None or prev2_high <= 0 or low <= 0:
-            return False
-
-        gap = low - prev2_high
-        return gap > prev2_high * min_gap_pct
+        return detect_bullish_fvg(row.get("low", 0), row.get("prev2_high"), min_gap_pct)
 
     def _detect_bearish_fvg(self, row: dict, min_gap_pct: float) -> bool:
         """Bearish FVG: gap between current high and bar[-2] low."""
-        high = row.get("high", 0)
-        prev2_low = row.get("prev2_low")
+        from app.services.bots.ml_feature_ict import detect_bearish_fvg
 
-        if prev2_low is None or prev2_low <= 0 or high <= 0:
-            return False
-
-        gap = prev2_low - high
-        return gap > high * min_gap_pct
+        return detect_bearish_fvg(row.get("high", 0), row.get("prev2_low"), min_gap_pct)
 
     # ── Liquidity Sweep helpers ────────────────────────────────────
 
     def _detect_sweep_low(self, row: dict, lookback: int) -> bool:
-        """Sweep low: current low goes below rolling low, then closes back above.
+        """Sweep low: current low goes below rolling low, then closes back above."""
+        from app.services.bots.ml_feature_ict import detect_sweep_low
 
-        Uses rolling_low_N column added by prepare_strategy_df.
-        """
-        low = row.get("low", 0)
-        close = row.get("close", 0)
-        rolling_low = row.get(f"rolling_low_{lookback}")
-
-        if rolling_low is None or rolling_low <= 0:
-            return False
-
-        # Wicked below the rolling low, but closed back above it
-        return low < rolling_low and close > rolling_low
+        return detect_sweep_low(
+            row.get("low", 0),
+            row.get("close", 0),
+            row.get(f"rolling_low_{lookback}"),
+        )
 
     def _detect_sweep_high(self, row: dict, lookback: int) -> bool:
         """Sweep high: current high goes above rolling high, then closes back below."""
-        high = row.get("high", 0)
-        close = row.get("close", 0)
-        rolling_high = row.get(f"rolling_high_{lookback}")
+        from app.services.bots.ml_feature_ict import detect_sweep_high
 
-        if rolling_high is None or rolling_high <= 0:
-            return False
-
-        return high > rolling_high and close < rolling_high
+        return detect_sweep_high(
+            row.get("high", 0),
+            row.get("close", 0),
+            row.get(f"rolling_high_{lookback}"),
+        )
 
     # ── Reason builder ─────────────────────────────────────────────
 

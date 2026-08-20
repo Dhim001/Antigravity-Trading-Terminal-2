@@ -1543,6 +1543,27 @@
   gap: 0.15rem;
   font-size: 0.6rem;
   color: var(--muted-foreground);
+  min-width: 0;
+}
+
+.ml-training__advanced-field [data-slot="select-trigger"] {
+  width: 100%;
+  min-width: 0;
+  height: 1.75rem;
+  background: color-mix(in oklab, var(--background) 72%, var(--muted));
+  color: var(--foreground);
+  border-color: var(--input);
+}
+
+.ml-training__advanced-field [data-slot="select-trigger"]:hover {
+  background: color-mix(in oklab, var(--background) 55%, var(--muted));
+}
+
+.ml-training__advanced-menu[data-slot="select-content"] {
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border-color, var(--input));
+  min-width: 14rem;
 }
 
 .ml-training__advanced-hint {

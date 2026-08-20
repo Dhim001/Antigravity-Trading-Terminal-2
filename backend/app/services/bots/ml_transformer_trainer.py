@@ -134,7 +134,11 @@ def build_transformer_sequences(
     lookback: int = 90,
     max_holding_bars: int = 30,
     feat_matrix: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    config: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    from app.services.bots.ml_event_sampling import keep_train_row, sample_weight_for_label
+    from app.services.bots.ml_feature_engineering import apply_exclude_features, resolve_exclude_features
+
     n = len(candles)
     feature_lb = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
@@ -142,23 +146,29 @@ def build_transformer_sequences(
         feat_matrix = precompute_signal_feature_matrix(
             candles, feature_lookback=feature_lb,
         )
-    seqs_x, seqs_y = [], []
+    feat_matrix = apply_exclude_features(feat_matrix, resolve_exclude_features(config))
+    seqs_x, seqs_y, seqs_w = [], [], []
 
     for i in range(lookback + feature_warmup, n - max_holding_bars):
         if i >= len(labels):
             break
         lbl = labels[i]
-        if lbl.get("barrier_hit") == "invalid":
+        if not keep_train_row(lbl, config):
             continue
         mapped = LABEL_MAP.get(lbl.get("label"))
         if mapped is None:
             continue
         seqs_x.append(feat_matrix[i - lookback + 1 : i + 1])
         seqs_y.append(mapped)
+        seqs_w.append(sample_weight_for_label(lbl))
 
     if not seqs_x:
-        return np.array([]), np.array([])
-    return np.stack(seqs_x).astype(np.float32), np.array(seqs_y, dtype=np.int64)
+        return np.array([]), np.array([]), np.array([])
+    return (
+        np.stack(seqs_x).astype(np.float32),
+        np.array(seqs_y, dtype=np.int64),
+        np.array(seqs_w, dtype=np.float32),
+    )
 
 
 # ── Training ──────────────────────────────────────────────────────────────
@@ -209,7 +219,6 @@ def train_transformer_model(
         resolve_precomputed_labels,
     )
     from app.services.bots.ml_torch_device import (
-        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
@@ -218,6 +227,7 @@ def train_transformer_model(
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
+        unpack_batch_to_device,
     )
 
     if bool(cfg.get("_wf_mode")) and not cfg.get("champion_train"):
@@ -251,10 +261,17 @@ def train_transformer_model(
         labels = label_triple_barrier(
             candles, atr_mult_upper=atr_mult, atr_mult_lower=atr_mult, max_holding_bars=max_bars,
         )
+    from app.services.bots.ml_event_sampling import annotate_event_labels, class_adjusted_weights, event_filter_metadata
+    from app.services.bots.ml_feature_engineering import apply_exclude_features, feature_scheme_metadata, resolve_exclude_features
+
+    labels = annotate_event_labels(labels, candles, cfg)
     dist = label_distribution(labels)
     pre_feat = resolve_precomputed_features(candles, cfg)
-    X, y = build_transformer_sequences(
-        candles, labels, lookback=lookback, max_holding_bars=max_bars, feat_matrix=pre_feat,
+    if pre_feat is not None:
+        pre_feat = apply_exclude_features(pre_feat, resolve_exclude_features(cfg))
+    X, y, w = build_transformer_sequences(
+        candles, labels, lookback=lookback, max_holding_bars=max_bars,
+        feat_matrix=pre_feat, config=cfg,
     )
     n = len(y)
     if n < min_samples:
@@ -269,6 +286,7 @@ def train_transformer_model(
     split = max(1, int(n * (1 - val_frac)))
     X_tr, X_va = X[:split], X[split:]
     y_tr, y_va = y[:split], y[split:]
+    w_tr, w_va = w[:split], w[split:]
 
     model = _build_transformer(N_FEATURES, d_model, nhead, n_layers, lookback).to(device)
 
@@ -297,16 +315,17 @@ def train_transformer_model(
     class_counts = np.maximum(class_counts, 1.0)
     w_arr = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
     w_arr = np.clip(w_arr, 0.5, 5.0)
-    weights = torch.tensor(w_arr, dtype=torch.float32, device=device)
-    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss(reduction="none", label_smoothing=0.1)
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-4,
     )
 
     X_t = cpu_tensor(X_tr, dtype=torch.float32)
     y_t = cpu_tensor(y_tr, dtype=torch.long)
+    w_t = cpu_tensor(class_adjusted_weights(w_tr, y_tr, w_arr), dtype=torch.float32)
     X_v = cpu_tensor(X_va, dtype=torch.float32)
     y_v = cpu_tensor(y_va, dtype=torch.long)
+    w_v = cpu_tensor(class_adjusted_weights(w_va, y_va, w_arr), dtype=torch.float32)
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
@@ -321,10 +340,10 @@ def train_transformer_model(
     }
 
     train_loader = make_torch_dataloader(
-        X_t, y_t, batch_size=batch_size, device=device, shuffle=True,
+        X_t, y_t, batch_size=batch_size, device=device, shuffle=True, w_t=w_t,
     )
     val_loader = make_torch_dataloader(
-        X_v, y_v, batch_size=batch_size, device=device, shuffle=False,
+        X_v, y_v, batch_size=batch_size, device=device, shuffle=False, w_t=w_v,
     )
     for ep in range(epochs):
         if ml_cancel_requested(progress_path):
@@ -332,10 +351,11 @@ def train_transformer_model(
         model.train()
         ep_loss = 0.0
         n_batches = 0
-        for xb, yb in train_loader:
-            xb, yb = batch_to_device(xb, yb, device)
+        for batch in train_loader:
+            xb, yb, wb = unpack_batch_to_device(batch, device)
             optimizer.zero_grad()
-            loss = criterion(model(xb), yb)
+            per = criterion(model(xb), yb)
+            loss = (per * wb).mean()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -346,12 +366,13 @@ def train_transformer_model(
         model.eval()
         with torch.no_grad():
             vl = 0.0
-            n_v = 0
-            for xb, yb in val_loader:
-                xb, yb = batch_to_device(xb, yb, device)
-                vl += float(criterion(model(xb), yb).item()) * len(xb)
-                n_v += len(xb)
-            vl = vl / max(1, n_v)
+            n_v = 0.0
+            for batch in val_loader:
+                xb, yb, wb = unpack_batch_to_device(batch, device)
+                per = criterion(model(xb), yb)
+                vl += float((per * wb).sum().item())
+                n_v += float(wb.sum().item())
+            vl = vl / max(1.0, n_v)
         loss_history.append({
             "epoch": ep + 1,
             "train_loss": round(avg_train, 6),
@@ -501,7 +522,9 @@ def train_transformer_model(
     )
 
     with open(_scaler_path(symbol, tf), "w") as f:
-        json.dump({"mean": mean.tolist(), "std": std.tolist()}, f, indent=2)
+        from app.services.bots.ml_feature_v8 import attach_ffd_d
+
+        json.dump(attach_ffd_d({"mean": mean.tolist(), "std": std.tolist()}), f, indent=2)
 
     # Persist the trainable checkpoint so other assets can warm-start from it.
     try:
@@ -512,6 +535,7 @@ def train_transformer_model(
     meta = {
         "symbol": symbol, "timeframe": tf, "model_type": "transformer_signal",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
+        **feature_scheme_metadata(cfg),
         "reverse_map": {str(k): v for k, v in REVERSE_MAP.items()},
         "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "metrics": {
@@ -529,12 +553,20 @@ def train_transformer_model(
             "epochs": int(epochs),
             "early_stop_patience": max_patience,
             "train_device": train_device_meta,
+            **event_filter_metadata(cfg),
+            **feature_scheme_metadata(cfg),
         },
         "train_device": train_device_meta,
         "loss_history": loss_history,
         "early_stopped": bool(early_stop_meta.get("early_stopped")),
         "epochs_trained": int(early_stop_meta.get("epochs_trained") or len(loss_history)),
     }
+    try:
+        from app.services.bots.ml_feature_v8 import last_selected_ffd_d
+
+        meta["frac_diff_d_ffd"] = last_selected_ffd_d()
+    except Exception:
+        pass
     if donor_lineage is not None:
         meta["transfer"] = donor_lineage
         meta["metrics"]["transfer"] = {
@@ -635,8 +667,10 @@ class TransformerModelStore:
         scaler = self._scalers.get(key)
         try:
             if scaler:
-                from app.services.bots.ml_feature_engineering import apply_feature_scaler
+                from app.services.bots.ml_feature_engineering import apply_feature_scaler, mask_features_for_model
 
+                meta = self._metadata.get(key, {})
+                window = mask_features_for_model(window, meta)
                 window = apply_feature_scaler(
                     window,
                     scaler["mean"],
@@ -695,6 +729,12 @@ class TransformerModelStore:
         if scaler:
             mean = np.array(scaler["mean"], dtype=np.float32)
             std = np.array(scaler["std"], dtype=np.float32)
+        from app.services.bots.ml_feature_engineering import (
+            apply_feature_scaler,
+            mask_features_for_model,
+        )
+
+        windows = mask_features_for_model(windows, meta)
         for start in range(0, n, bs):
             if cancel_cb is not None and cancel_cb():
                 raise InterruptedError("ml_batch_cancel_requested")
@@ -702,8 +742,6 @@ class TransformerModelStore:
             chunk = windows[start:end].astype(np.float32)
             try:
                 if mean is not None and std is not None:
-                    from app.services.bots.ml_feature_engineering import apply_feature_scaler
-
                     chunk = apply_feature_scaler(
                         chunk, mean, std, log_label=f"Transformer[{symbol}]",
                     )
@@ -729,7 +767,15 @@ class TransformerModelStore:
         timeframe=None,
     ):
         self._ensure_loaded(symbol, model_version=model_version, timeframe=timeframe)
-        return self._metadata.get(self._session_key(symbol, model_version, timeframe))
+        key = self._session_key(symbol, model_version, timeframe)
+        meta = self._metadata.get(key)
+        scaler = self._scalers.get(key) or {}
+        if not meta and not scaler:
+            return None
+        out = dict(meta or {})
+        if out.get("frac_diff_d_ffd") is None and scaler.get("frac_diff_d_ffd") is not None:
+            out["frac_diff_d_ffd"] = scaler.get("frac_diff_d_ffd")
+        return out
 
     def _ensure_loaded(
         self,

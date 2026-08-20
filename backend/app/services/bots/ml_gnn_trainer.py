@@ -195,6 +195,24 @@ class GnnModelStore:
 
         return f"{model_storage_key(basket, timeframe)}|{model_version or 'latest'}"
 
+    def get_metadata(
+        self,
+        basket: str,
+        model_version: str | None = None,
+        *,
+        timeframe: str | None = None,
+    ) -> dict | None:
+        self._ensure_loaded(basket, model_version=model_version, timeframe=timeframe)
+        key = self._cache_key(basket, model_version, timeframe)
+        meta = self._metadata.get(key)
+        scaler = self._scalers.get(key) or {}
+        if not meta and not scaler:
+            return None
+        out = dict(meta or {})
+        if out.get("frac_diff_d_ffd") is None and scaler.get("frac_diff_d_ffd") is not None:
+            out["frac_diff_d_ffd"] = scaler.get("frac_diff_d_ffd")
+        return out
+
     def invalidate(self, basket=None, *, timeframe: str | None = None):
         from app.services.bots.ml_model_artifacts import model_storage_key, safe_symbol_key
 
@@ -244,8 +262,10 @@ class GnnModelStore:
 
         scaler = self._scalers.get(key)
         if scaler:
-            from app.services.bots.ml_feature_engineering import apply_feature_scaler
+            from app.services.bots.ml_feature_engineering import apply_feature_scaler, mask_features_for_model
 
+            meta = self._metadata.get(key) or {}
+            node_features = mask_features_for_model(node_features, meta)
             node_features = apply_feature_scaler(
                 node_features,
                 scaler["mean"],
@@ -373,14 +393,28 @@ def train_gnn_model(
     labels = label_triple_barrier(
         candles, atr_mult_upper=atr_mult, atr_mult_lower=atr_mult, max_holding_bars=max_bars
     )
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        class_adjusted_weights,
+        event_filter_metadata,
+        keep_train_row,
+        sample_weight_for_label,
+    )
+    from app.services.bots.ml_feature_engineering import (
+        feature_scheme_metadata,
+        resolve_exclude_features,
+    )
+
+    labels = annotate_event_labels(labels, candles, cfg)
     dist = label_distribution(labels)
     label_map = {1: 0, 0: 1, -1: 2}  # BUY / NONE / SELL
     reverse_map = {0: "BUY", 1: "NONE", 2: "SELL"}
 
     X_list: list[np.ndarray] = []
     y_list: list[int] = []
+    w_list: list[float] = []
     for idx, label_info in enumerate(labels):
-        if label_info.get("barrier_hit") == "invalid":
+        if not keep_train_row(label_info, cfg):
             continue
         if idx < 20:
             continue
@@ -388,8 +422,11 @@ def train_gnn_model(
             continue
         lookback = [dict(c) for c in candles[max(0, idx - 20):idx]]
         feats = bar_to_signal_features(candles[idx], lookback_rows=lookback)
+        for _ex in resolve_exclude_features(cfg):
+            feats[str(_ex)] = 0.0
         X_list.append(signal_features_to_vector(feats).astype(np.float32))
         y_list.append(label_map[int(label_info["label"])])
+        w_list.append(sample_weight_for_label(label_info))
 
     n = len(y_list)
     if n < min_samples:
@@ -402,6 +439,7 @@ def train_gnn_model(
 
     X = np.stack(X_list, axis=0)
     y = np.asarray(y_list, dtype=np.int64)
+    w = np.asarray(w_list, dtype=np.float32)
     mean = X.mean(axis=0)
     std = X.std(axis=0)
     std = np.where(std < 1e-8, 1.0, std)
@@ -410,6 +448,7 @@ def train_gnn_model(
     split = max(1, int(n * (1 - val_frac)))
     X_tr, X_va = X[:split], X[split:]
     y_tr, y_va = y[:split], y[split:]
+    w_tr, w_va = w[:split], w[split:]
 
     model = _build_gat(N_FEATURES, hidden, 3, n_heads).to(device)
 
@@ -436,12 +475,8 @@ def train_gnn_model(
 
     class_counts = np.bincount(y_tr, minlength=3).astype(np.float32)
     class_counts = np.maximum(class_counts, 1.0)
-    weights = torch.tensor(
-        (1.0 / class_counts) * class_counts.sum() / 3.0,
-        dtype=torch.float32,
-        device=device,
-    )
-    criterion = nn.CrossEntropyLoss(weight=weights)
+    class_w = (1.0 / class_counts) * class_counts.sum() / 3.0
+    criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = torch.optim.Adam(
         (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-5,
     )
@@ -449,8 +484,10 @@ def train_gnn_model(
     adj_one = torch.ones(1, 1, dtype=torch.float32, device=device)
     X_t = cpu_tensor(X_tr, dtype=torch.float32)
     y_t = cpu_tensor(y_tr, dtype=torch.long)
+    w_t = cpu_tensor(class_adjusted_weights(w_tr, y_tr, class_w), dtype=torch.float32)
     X_v = cpu_tensor(X_va, dtype=torch.float32)
     y_v = cpu_tensor(y_va, dtype=torch.long)
+    w_v = cpu_tensor(class_adjusted_weights(w_va, y_va, class_w), dtype=torch.float32)
 
     best_val, best_state, pat = float("inf"), None, 0
     loss_history: list[dict] = []
@@ -487,7 +524,9 @@ def train_gnn_model(
                 logits.append(model(xj, adj_one)[0])
             logits_t = torch.stack(logits, dim=0)
             yb = y_t[b].to(device, non_blocking=True)
-            loss = criterion(logits_t, yb)
+            wb = w_t[b].to(device, non_blocking=True)
+            per = criterion(logits_t, yb)
+            loss = (per * wb).mean()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -503,7 +542,9 @@ def train_gnn_model(
                 va_logits.append(model(xj, adj_one)[0])
             va_stack = torch.stack(va_logits, dim=0)
             yvb = y_v.to(device, non_blocking=True)
-            vl = float(criterion(va_stack, yvb).item())
+            wvb = w_v.to(device, non_blocking=True)
+            per_v = criterion(va_stack, yvb)
+            vl = float((per_v * wvb).mean().item())
             va_pred = va_stack.argmax(1).detach().cpu().numpy()
         loss_history.append({
             "epoch": ep + 1,
@@ -564,7 +605,9 @@ def train_gnn_model(
     )
 
     with open(_scaler_path(basket, tf), "w", encoding="utf-8") as f:
-        json.dump({"mean": mean.tolist(), "std": std.tolist()}, f, indent=2)
+        from app.services.bots.ml_feature_v8 import attach_ffd_d
+
+        json.dump(attach_ffd_d({"mean": mean.tolist(), "std": std.tolist()}), f, indent=2)
 
     # Persist the trainable checkpoint so other baskets can warm-start from it.
     try:
@@ -578,6 +621,7 @@ def train_gnn_model(
         "timeframe": tf,
         "model_type": "gnn_cross_asset",
         "feature_schema_version": SIGNAL_FEATURE_VERSION,
+        **feature_scheme_metadata(cfg),
         "feature_names": list(SIGNAL_FEATURE_NAMES),
         "reverse_map": {str(k): v for k, v in reverse_map.items()},
         "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -600,12 +644,20 @@ def train_gnn_model(
             "epochs": int(epochs),
             "early_stop_patience": max_patience,
             "train_device": train_device_meta,
+            **event_filter_metadata(cfg),
+            **feature_scheme_metadata(cfg),
         },
         "train_device": train_device_meta,
         "loss_history": loss_history,
         "early_stopped": bool(early_stop_meta.get("early_stopped")),
         "epochs_trained": int(early_stop_meta.get("epochs_trained") or len(loss_history)),
     }
+    try:
+        from app.services.bots.ml_feature_v8 import last_selected_ffd_d
+
+        meta["frac_diff_d_ffd"] = last_selected_ffd_d()
+    except Exception:
+        pass
     if donor_lineage is not None:
         meta["transfer"] = donor_lineage
         meta["metrics"]["transfer"] = {

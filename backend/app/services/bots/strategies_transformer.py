@@ -178,17 +178,25 @@ class TransformerSignalStrategy(BaseStrategy):
             return {"signal": "NONE"}
 
         lookback_rows = list(self._bar_history)[:-1]
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
-        self._window.append(signal_features_to_vector(features))
+        from app.services.bots.ml_feature_v8 import resolve_artifact_ffd_d
 
         symbol = self._cfg.get("model_symbol") or str(df_row.get("_symbol", ""))
         if not symbol:
             symbol = str(self.config.get("symbol", "")).upper()
+        store = get_transformer_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        ffd_d = resolve_artifact_ffd_d(
+            store.get_metadata(symbol, model_version=pinned or None, timeframe=tf)
+        ) if symbol else None
+        features = bar_to_signal_features(
+            df_row, lookback_rows=lookback_rows, ffd_d=ffd_d,
+        )
+        self._window.append(signal_features_to_vector(features))
+
         if not symbol:
             return {"signal": "NONE"}
 
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
         self._sync_lookback_from_model(symbol, pinned=pinned, timeframe=tf)
 
         if len(self._window) < self._lookback:
@@ -199,7 +207,6 @@ class TransformerSignalStrategy(BaseStrategy):
         record_ml_inference_features(symbol, "TRANSFORMER_SIGNAL", self._window[-1])
 
         window_array = np.array(list(self._window))
-        store = get_transformer_store()
         result = store.predict(
             symbol, window_array, model_version=pinned or None, timeframe=tf,
         )

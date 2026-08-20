@@ -1,5 +1,12 @@
 import { Input } from '@/components/ui/input';
-import { DEEP_ML_STRATEGIES } from '@/components/ml-lab/MlLabConstants';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { DEEP_ML_STRATEGIES, FEATURE_SCHEME_OPTIONS } from '@/components/ml-lab/MlLabConstants';
 
 export function MlAdvancedKnobs({ advanced, setAdvanced, strategy }) {
   return (
@@ -136,6 +143,57 @@ export function MlAdvancedKnobs({ advanced, setAdvanced, strategy }) {
             </label>
           </>
         )}
+        {strategy !== 'RL_PPO_AGENT' && strategy !== 'VAE_REGIME_DETECTOR' && (
+          <>
+            <label className="ml-training__advanced-field">
+              <span>event_filter</span>
+              <Select
+                value={advanced.eventFilter || 'cusum'}
+                onValueChange={(value) => setAdvanced((a) => ({ ...a, eventFilter: value }))}
+              >
+                <SelectTrigger size="sm" className="h-7 w-full min-w-0 text-xs" aria-label="Event filter">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper" className="ml-training__advanced-menu">
+                  <SelectItem value="cusum" className="text-xs">cusum</SelectItem>
+                  <SelectItem value="all" className="text-xs">all bars</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="ml-training__advanced-field">
+              <span>cusum_threshold</span>
+              <Input
+                type="number"
+                min={0.1}
+                max={5}
+                step={0.05}
+                className="h-7 text-xs"
+                value={advanced.cusumThreshold}
+                onChange={(e) => setAdvanced((a) => ({ ...a, cusumThreshold: e.target.value }))}
+              />
+            </label>
+          </>
+        )}
+        <label className="ml-training__advanced-field">
+          <span title="Zero families without changing ONNX width — use for v7 vs v8 A/B">
+            feature_scheme
+          </span>
+          <Select
+            value={advanced.featureScheme || 'v8'}
+            onValueChange={(value) => setAdvanced((a) => ({ ...a, featureScheme: value }))}
+          >
+            <SelectTrigger size="sm" className="h-7 w-full min-w-0 text-xs" aria-label="Feature scheme">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" className="ml-training__advanced-menu">
+              {FEATURE_SCHEME_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
       </div>
       <p className="ml-training__advanced-hint">
         Train uses GPU (CUDA) when PyTorch detects it; Validate stays lighter on CPU.

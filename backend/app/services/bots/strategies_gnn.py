@@ -62,23 +62,29 @@ class GnnCrossAssetStrategy(BaseStrategy):
         if not symbol:
             return {"signal": "NONE"}
 
-        # Extract features for current bar
         lookback_rows = list(self._bar_history)[:-1]
-        features = bar_to_signal_features(df_row, lookback_rows=lookback_rows)
+        from app.services.bots.ml_feature_v8 import resolve_artifact_ffd_d
+
+        store = get_gnn_store()
+        pinned = self._cfg.get("model_version") or None
+        tf = self._model_timeframe()
+        basket_id = (self._cfg.get("basket_id") or symbol or "").upper()
+        ffd_d = resolve_artifact_ffd_d(
+            store.get_metadata(
+                basket_id or symbol, model_version=pinned or None, timeframe=tf,
+            )
+        )
+        features = bar_to_signal_features(
+            df_row, lookback_rows=lookback_rows, ffd_d=ffd_d,
+        )
         feat_vec = signal_features_to_vector(features)
 
         from app.services.bots.ml_feature_drift import record_ml_inference_features
 
         record_ml_inference_features(symbol, "GNN_CROSS_ASSET", feat_vec)
 
-        # Prefer explicit basket; fall back to symbol so Model Training artifacts resolve
-        basket_id = (self._cfg.get("basket_id") or symbol or "").upper()
         if not basket_id:
             return {"signal": "NONE"}
-
-        store = get_gnn_store()
-        pinned = self._cfg.get("model_version") or None
-        tf = self._model_timeframe()
 
         # For single-symbol context, create 1-node graph
         node_features = feat_vec.reshape(1, -1)

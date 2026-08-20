@@ -150,6 +150,10 @@ export const FIELD_META = {
   basket_id: { label: 'Basket ID', group: 'ml_model', kind: 'text', hint: 'Correlated asset basket identifier.' },
   triple_barrier_atr_mult: { label: 'Barrier ATR mult', group: 'ml_model', kind: 'decimal', hint: 'Triple-barrier label width in ATR multiples.' },
   triple_barrier_max_bars: { label: 'Barrier max bars', group: 'ml_model', kind: 'integer', hint: 'Max bars before triple-barrier timeout.' },
+  event_filter: { label: 'Event filter', group: 'ml_model', kind: 'text', hint: 'Train on all bars or CUSUM events (cusum / all).' },
+  cusum_threshold: { label: 'CUSUM threshold', group: 'ml_model', kind: 'decimal', hint: 'CUSUM k × rolling vol; fire when cumulative log-return exceeds kσ.' },
+  feature_scheme: { label: 'Feature scheme', group: 'ml_model', kind: 'text', hint: 'v8 = all columns; v7 zeros the v8 tail; v8_no_* ablates a family. Width stays 84.' },
+  exclude_features: { label: 'Exclude features', group: 'ml_model', kind: 'text', hint: 'Zero these schema columns at train/serve (e.g. vpin). Names stay in the vector.' },
   min_train_samples: { label: 'Min train samples', group: 'ml_model', kind: 'integer', hint: 'Minimum labeled samples before training.' },
   val_fraction: { label: 'Validation fraction', group: 'ml_model', kind: 'decimal', hint: 'Holdout fraction for validation metrics.' },
   retrain_interval_hours: { label: 'Retrain interval (h)', group: 'ml_model', kind: 'integer', hint: 'Hours between scheduled retrains.' },
@@ -262,7 +266,7 @@ function humanizeKey(key) {
 
 function inferGroup(key) {
   if (/^(trailing_stop|stop_loss|take_profit|tp_)/.test(key)) return 'risk';
-  if (/^(lookback|hidden_dim|num_layers|learning_rate|batch_size|d_model|nhead|latent_dim|anomaly_|suppress_|n_heads|min_corr|basket_id|triple_barrier|min_train|val_fraction|retrain_interval|model_symbol|model_version|model_artifact|min_return)/.test(key)) return 'ml_model';
+  if (/^(lookback|hidden_dim|num_layers|learning_rate|batch_size|d_model|nhead|latent_dim|anomaly_|suppress_|n_heads|min_corr|basket_id|triple_barrier|event_filter|cusum_|feature_scheme|exclude_features|min_train|val_fraction|retrain_interval|model_symbol|model_version|model_artifact|min_return)/.test(key)) return 'ml_model';
   if (/^(gamma|gae_lambda|clip_epsilon|ppo_epochs|n_steps|total_timesteps|vf_coef|ent_coef)/.test(key)) return 'rl_policy';
   if (/^(llm_temperature|max_reasoning_tokens)/.test(key)) return 'agent_llm';
   if (/^(require_multi_domain)/.test(key)) return 'agent_gate';
@@ -346,6 +350,9 @@ const SWEEP_DEFAULT_PLACEHOLDERS = {
   clip_epsilon: '0.1, 0.2',
   triple_barrier_atr_mult: '1.5, 2, 2.5',
   triple_barrier_max_bars: '20, 30, 40',
+  event_filter: 'cusum, all',
+  cusum_threshold: '0.75, 1, 1.5',
+  feature_scheme: 'v8, v7, v8_no_ict',
   val_fraction: '0.15, 0.2',
   min_train_samples: '200, 300',
   anomaly_threshold: '1.5, 2, 2.5',
@@ -377,7 +384,7 @@ const ML_SWEEP_ORDERED = [
   'learning_rate', 'batch_size', 'epochs', 'early_stop_patience', 'd_model', 'nhead', 'latent_dim',
   'gbm_max_depth', 'gbm_learning_rate', 'gbm_max_iter', 'gbm_l2_reg',
   'anomaly_threshold', 'suppress_threshold', 'n_heads', 'min_corr',
-  'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'val_fraction', 'min_train_samples',
+  'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'event_filter', 'cusum_threshold', 'feature_scheme', 'val_fraction', 'min_train_samples',
   'gamma', 'gae_lambda', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'ent_coef', 'vf_coef',
   ...SHARED_RISK_SWEEP_KEYS,
 ];
@@ -387,7 +394,7 @@ export const ML_TRAINING_SWEEP_KEYS = new Set([
   'lookback', 'hidden_dim', 'num_layers', 'learning_rate', 'batch_size', 'epochs',
   'early_stop_patience', 'd_model', 'nhead', 'n_heads', 'latent_dim',
   'gbm_max_depth', 'gbm_learning_rate', 'gbm_max_iter', 'gbm_l2_reg',
-  'val_fraction', 'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'min_train_samples',
+  'val_fraction', 'triple_barrier_atr_mult', 'triple_barrier_max_bars', 'event_filter', 'cusum_threshold', 'feature_scheme', 'min_train_samples',
   'gamma', 'gae_lambda', 'clip_epsilon', 'ppo_epochs', 'n_steps', 'ent_coef', 'vf_coef',
   'total_timesteps',
 ]);

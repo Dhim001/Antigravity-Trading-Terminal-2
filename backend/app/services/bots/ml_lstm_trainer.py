@@ -174,22 +174,28 @@ def build_sequences(
     max_holding_bars: int = 30,
     progress_path: str | None = None,
     feat_matrix: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build (X, y) sliding window sequences from labelled candles.
+    config: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build (X, y, w) sliding window sequences from labelled candles.
 
     Returns
     -------
     X : np.ndarray of shape (N, lookback, N_FEATURES)
     y : np.ndarray of shape (N,) with values in {0, 1, 2}
+    w : np.ndarray of shape (N,) uniqueness weights in [0.05, 1]
     """
+    from app.services.bots.ml_event_sampling import keep_train_row, sample_weight_for_label
+    from app.services.bots.ml_feature_engineering import apply_exclude_features, resolve_exclude_features
+
     n = len(candles)
     # Micro features window to EVAL_FEATURE_LOOKBACK; evaluate keeps a longer
     # HTF history deque separately. Keep sequence
     # start at lookback+20 so sample counts stay aligned with feature warmup.
     feature_lookback = EVAL_FEATURE_LOOKBACK
     feature_warmup = 20
+    empty = (np.array([]), np.array([]), np.array([]))
     if n == 0:
-        return np.array([]), np.array([])
+        return empty
 
     from app.services.bots.ml_job_progress import ml_cancel_requested, write_ml_progress
 
@@ -215,9 +221,11 @@ def build_sequences(
             progress_cb=_on_feat_progress if progress_path else None,
             cancel_cb=_cancel if progress_path else None,
         )
+    feat_matrix = apply_exclude_features(feat_matrix, resolve_exclude_features(config))
 
     sequences_x: list[np.ndarray] = []
     sequences_y: list[int] = []
+    sequences_w: list[float] = []
     start_i = lookback + feature_warmup
     end_i = n - max_holding_bars
     report_every = max(2_000, max(1, (end_i - start_i) // 20))
@@ -228,13 +236,14 @@ def build_sequences(
         if i >= len(labels):
             break
         label_info = labels[i]
-        if label_info.get("barrier_hit") == "invalid":
+        if not keep_train_row(label_info, config):
             continue
         mapped = LABEL_MAP.get(label_info.get("label"))
         if mapped is None:
             continue
         sequences_x.append(feat_matrix[i - lookback + 1 : i + 1])
         sequences_y.append(mapped)
+        sequences_w.append(sample_weight_for_label(label_info))
         if progress_path and (i - start_i + 1) % report_every == 0:
             write_ml_progress(
                 progress_path,
@@ -244,11 +253,12 @@ def build_sequences(
             )
 
     if not sequences_x:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), np.array([])
 
     X = np.stack(sequences_x).astype(np.float32)  # (N, lookback, N_FEATURES)
     y = np.array(sequences_y, dtype=np.int64)
-    return X, y
+    w = np.array(sequences_w, dtype=np.float32)
+    return X, y, w
 
 
 # ── Training pipeline ────────────────────────────────────────────────────
@@ -303,7 +313,6 @@ def train_lstm_signal_model(
     num_layers = int(cfg.get("num_layers", 2))
     lr = float(cfg.get("learning_rate", 0.001))
     from app.services.bots.ml_torch_device import (
-        batch_to_device,
         cap_wf_epochs,
         cpu_tensor,
         device_info,
@@ -312,6 +321,7 @@ def train_lstm_signal_model(
         resolve_torch_device,
         resolve_wf_torch_device,
         suggest_batch_size,
+        unpack_batch_to_device,
     )
     from app.services.bots.ml_job_progress import (
         cancelled_train_result,
@@ -366,18 +376,34 @@ def train_lstm_signal_model(
             max_holding_bars=max_bars,
         )
         labels = apply_posttrade_feedback(candles, labels, symbol=symbol)
+    from app.services.bots.ml_event_sampling import (
+        annotate_event_labels,
+        class_adjusted_weights,
+        event_filter_metadata,
+    )
+
+    labels = annotate_event_labels(labels, candles, cfg)
     dist = label_distribution(labels)
     pre_feat = resolve_precomputed_features(candles, cfg)
+    from app.services.bots.ml_feature_engineering import (
+        apply_exclude_features,
+        feature_scheme_metadata,
+        resolve_exclude_features,
+    )
+
+    if pre_feat is not None:
+        pre_feat = apply_exclude_features(pre_feat, resolve_exclude_features(cfg))
 
     # Step 2: Build sliding window sequences
     write_ml_progress(progress_path, pct=15, phase="sequences", detail="build windows")
     try:
-        X, y = build_sequences(
+        X, y, w = build_sequences(
             candles, labels,
             lookback=lookback,
             max_holding_bars=max_bars,
             progress_path=progress_path,
             feat_matrix=pre_feat,
+            config=cfg,
         )
     except InterruptedError:
         return cancelled_train_result(symbol, "LSTM_DIRECTION")
@@ -394,6 +420,7 @@ def train_lstm_signal_model(
     split_idx = max(1, int(n * (1.0 - val_fraction)))
     X_train, X_val = X[:split_idx], X[split_idx:]
     y_train, y_val = y[:split_idx], y[split_idx:]
+    w_train, w_val = w[:split_idx], w[split_idx:]
 
     n_classes = len(np.unique(y_train))
     if n_classes < 2:
@@ -406,6 +433,12 @@ def train_lstm_signal_model(
 
     # Step 4: Compute and apply feature scaling
     scaler = compute_scaler(X_train)
+    try:
+        from app.services.bots.ml_feature_v8 import last_selected_ffd_d
+
+        scaler["frac_diff_d_ffd"] = last_selected_ffd_d()
+    except Exception:
+        pass
     X_train = apply_scaler(X_train, scaler)
     X_val = apply_scaler(X_val, scaler)
 
@@ -509,9 +542,8 @@ def train_lstm_signal_model(
     class_counts = np.maximum(class_counts, 1.0)
     class_weights = (1.0 / class_counts) * class_counts.sum() / N_CLASSES
     class_weights = np.clip(class_weights, 0.5, 5.0)
-    weight_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
-    criterion = nn.CrossEntropyLoss(weight=weight_tensor)
+    criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=1e-4,
     )
@@ -522,8 +554,16 @@ def train_lstm_signal_model(
     # Keep full datasets on CPU — move mini-batches to GPU (avoids CUDA alloc hang/OOM).
     X_train_t = cpu_tensor(X_train, dtype=torch.float32)
     y_train_t = cpu_tensor(y_train, dtype=torch.long)
+    w_train_t = cpu_tensor(
+        class_adjusted_weights(w_train, y_train, class_weights),
+        dtype=torch.float32,
+    )
     X_val_t = cpu_tensor(X_val, dtype=torch.float32)
     y_val_t = cpu_tensor(y_val, dtype=torch.long)
+    w_val_t = cpu_tensor(
+        class_adjusted_weights(w_val, y_val, class_weights),
+        dtype=torch.float32,
+    )
 
     logger.info(
         "LSTM train %s @ %s on %s (hidden=%d layers=%d batch=%d epochs≤%d)",
@@ -551,19 +591,22 @@ def train_lstm_signal_model(
 
     train_loader = make_torch_dataloader(
         X_train_t, y_train_t, batch_size=batch_size, device=device, shuffle=True,
+        w_t=w_train_t,
     )
     val_loader = make_torch_dataloader(
         X_val_t, y_val_t, batch_size=batch_size, device=device, shuffle=False,
+        w_t=w_val_t,
     )
 
     def _batched_val_loss() -> float:
         total = 0.0
         n = 0
-        for xb, yb in val_loader:
-            xb, yb = batch_to_device(xb, yb, device)
-            total += float(criterion(model(xb), yb).item()) * len(xb)
-            n += len(xb)
-        return total / max(1, n)
+        for batch in val_loader:
+            xb, yb, wb = unpack_batch_to_device(batch, device)
+            per = criterion(model(xb), yb)
+            total += float((per * wb).sum().item())
+            n += float(wb.sum().item())
+        return total / max(1.0, n)
 
     model.train()
     for epoch in range(epochs):
@@ -572,11 +615,12 @@ def train_lstm_signal_model(
         epoch_loss = 0.0
         n_batches = 0
 
-        for xb, yb in train_loader:
-            xb, yb = batch_to_device(xb, yb, device)
+        for batch in train_loader:
+            xb, yb, wb = unpack_batch_to_device(batch, device)
             optimizer.zero_grad()
             logits = model(xb)
-            loss = criterion(logits, yb)
+            per = criterion(logits, yb)
+            loss = (per * wb).mean()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -758,6 +802,7 @@ def train_lstm_signal_model(
         "label_distribution": dist,
         "metrics": metrics,
         "loss_history": loss_history,
+        **feature_scheme_metadata(cfg),
         "config": {
             "lookback": lookback,
             "hidden_dim": hidden_dim,
@@ -766,7 +811,10 @@ def train_lstm_signal_model(
             "max_holding_bars": max_bars,
             "timeframe": tf,
             "train_device": train_device_meta,
+            **event_filter_metadata(cfg),
+            **feature_scheme_metadata(cfg),
         },
+        "frac_diff_d_ffd": scaler.get("frac_diff_d_ffd"),
         "train_device": train_device_meta,
     }
     if donor_lineage is not None:

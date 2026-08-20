@@ -28,6 +28,9 @@ export function defaultAdvancedKnobs(strategy, kind = 'validate') {
     hiddenDim: isRl ? 256 : 128,
     gbmMaxIter: 300,
     gbmMaxDepth: 6,
+    eventFilter: 'cusum',
+    cusumThreshold: 1,
+    featureScheme: 'v8',
   };
 }
 
@@ -53,6 +56,17 @@ export function parsePositiveInt(value, fallback, { min = 1, max = 1_000_000 } =
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
+
+export const FEATURE_SCHEME_OPTIONS = [
+  { value: 'v8', label: 'v8 current (84 cols)' },
+  { value: 'v7', label: 'v7 legacy (zero v8 extras)' },
+  { value: 'v8_no_ict', label: 'v8 minus ICT' },
+  { value: 'v8_no_ofi', label: 'v8 minus OFI' },
+  { value: 'v8_no_profile', label: 'v8 minus profile' },
+  { value: 'v8_no_hygiene', label: 'v8 minus YZ/AVWAP/FFD' },
+  { value: 'v8_no_events', label: 'v8 minus earnings/macro' },
+  { value: 'v8_no_vpin', label: 'v8 minus VPIN' },
+];
 
 export const TRAINING_WINDOWS = [
   { value: '1', label: '1 month', targetBars1m: 12000 },
@@ -139,6 +153,9 @@ export function syncAdvancedForWindow(prev, strategy, monthsValue, tfValue) {
     totalTimesteps: prev?.totalTimesteps ?? base.totalTimesteps,
     gbmMaxIter: prev?.gbmMaxIter ?? base.gbmMaxIter,
     gbmMaxDepth: prev?.gbmMaxDepth ?? base.gbmMaxDepth,
+    eventFilter: prev?.eventFilter ?? base.eventFilter,
+    cusumThreshold: prev?.cusumThreshold ?? base.cusumThreshold,
+    featureScheme: prev?.featureScheme ?? base.featureScheme,
     pboMaxCombos: prev?.pboMaxCombos ?? base.pboMaxCombos,
   };
 }

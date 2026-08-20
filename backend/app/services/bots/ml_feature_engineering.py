@@ -16,7 +16,7 @@ import logging
 import math
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence, Sequence
 
 import numpy as np
 
@@ -25,15 +25,16 @@ logger = logging.getLogger(__name__)
 
 # ── Feature schema ────────────────────────────────────────────────────────
 
-# Always-on schema: Phase 1→2→3 landed as v7 (~65 dims). Older models load via
+# Always-on schema: Phase 1→2→3 landed as v7 (65 dims). v8 appends ICT / OFI /
+# profile / vol-hygiene columns. Older models load via
 # ``align_features_to_scaler_dim`` (leading columns) until retrain.
-SIGNAL_FEATURE_VERSION = 7
+SIGNAL_FEATURE_VERSION = 8
 
 # Trade-state is opt-in and must not collide with signal schema versions.
 # Legacy trade-state models used schema version 5 (when signal was v4).
 LEGACY_TRADE_STATE_FEATURE_VERSION = 5
-TRADE_STATE_FEATURE_VERSION = 1007
-LEGACY_SIGNAL_FEATURE_VERSIONS = frozenset({4, 5, 6})
+TRADE_STATE_FEATURE_VERSION = 1008
+LEGACY_SIGNAL_FEATURE_VERSIONS = frozenset({4, 5, 6, 7})
 TRADE_STATE_FEATURE_NAMES: tuple[str, ...] = (
     "bot_loss_streak",
     "bot_win_rate_24h",
@@ -126,6 +127,30 @@ SIGNAL_FEATURE_NAMES: tuple[str, ...] = (
     # Phase 3: Crypto derivatives (2) — zeros for non-crypto
     "funding_rate_norm",
     "oi_change_24h_norm",
+    # Phase v8: ICT (4)
+    "dist_to_ob_atr",
+    "in_fvg",
+    "sweep_reclaim",
+    "ob_age_norm",
+    # Phase v8: corporate / macro / sentiment mask (4)
+    "hours_to_earnings",
+    "earnings_flag",
+    "macro_impact_max",
+    "sentiment_available",
+    # Phase v8: OFI (3) — L2 live / candle-body proxy in train
+    "ofi_bair",
+    "ofi_mlofi",
+    "book_available",
+    # Phase v8: volume profile (4)
+    "poc_dist_atr",
+    "vah_dist_atr",
+    "val_dist_atr",
+    "in_value_area",
+    # Phase v8: AVWAP + vol hygiene (4) — do not redefine v7 names
+    "avwap_session_dev",
+    "rv_yang_zhang_20",
+    "overnight_gap",
+    "frac_diff_close_ffd",
 )
 
 
@@ -139,7 +164,7 @@ def is_compatible_feature_schema(schema_ver: int) -> bool:
         return True
     if ver in LEGACY_SIGNAL_FEATURE_VERSIONS:
         return True
-    if ver == LEGACY_TRADE_STATE_FEATURE_VERSION:
+    if ver in (LEGACY_TRADE_STATE_FEATURE_VERSION, 1007):
         return True
     return False
 
@@ -197,6 +222,7 @@ def bar_to_signal_features(
     symbol: str | None = None,
     timeframe: str | None = None,
     peer_candles: dict[str, list] | None = None,
+    ffd_d: float | None = None,
 ) -> dict[str, float]:
     """Extract ML features from a single indicator-enriched bar row.
 
@@ -493,8 +519,18 @@ def bar_to_signal_features(
                 peer_candles=peer_candles,
             )
         )
+        from app.services.bots.ml_feature_v8 import v8_features_for_bar
+
+        feats.update(
+            v8_features_for_bar(
+                df_row,
+                lb_full,
+                symbol=sym or None,
+                ffd_d=ffd_d,
+            )
+        )
     except Exception:
-        logger.debug("advanced/HTF feature extract failed", exc_info=True)
+        logger.debug("advanced/HTF/v8 feature extract failed", exc_info=True)
         for name in SIGNAL_FEATURE_NAMES:
             feats.setdefault(name, 0.0)
     return feats
@@ -990,6 +1026,15 @@ def compute_signal_feature_matrix_vectorized(
     struct = structure_feature_matrix(high, low, close)
     deriv = crypto_deriv_feature_matrix(rows_for_htf, symbol or None)
 
+    from app.services.bots.ml_feature_v8 import V8_FEATURE_NAMES, v8_feature_matrix
+
+    v8 = v8_feature_matrix(
+        open_, high, low, close, volume, atr,
+        times=times,
+        candles=candles,
+        symbol=symbol or None,
+    )
+
     cols = [
         returns_1, returns_5, returns_15, log_return,
         atr_ratio, bb_width, rolling_vol_20,
@@ -1011,6 +1056,7 @@ def compute_signal_feature_matrix_vectorized(
         *[xa[name] for name in CROSS_ASSET_FEATURE_NAMES],
         *[struct[name] for name in STRUCTURE_FEATURE_NAMES],
         *[deriv[name] for name in CRYPTO_DERIV_FEATURE_NAMES],
+        *[v8[name] for name in V8_FEATURE_NAMES],
     ]
     assert len(cols) == n_feat, f"feature col count {len(cols)} != {n_feat}"
     stacked = np.column_stack(cols).astype(np.float32, copy=False)
@@ -1141,16 +1187,121 @@ def merge_trade_state_features(
     return out
 
 
+def apply_exclude_features(
+    mat: np.ndarray,
+    exclude: Sequence[str] | None = None,
+    *,
+    names: tuple[str, ...] | list[str] | None = None,
+) -> np.ndarray:
+    """Zero denylisted columns in-place-copy. Never drop names (breaks align)."""
+    if not exclude:
+        return mat
+    names = names or SIGNAL_FEATURE_NAMES
+    out = np.array(mat, copy=True)
+    index = {str(n): i for i, n in enumerate(names)}
+    width = int(out.shape[-1]) if out.ndim >= 1 else 0
+    for name in exclude:
+        j = index.get(str(name))
+        if j is None or j >= width:
+            continue
+        out[..., j] = 0.0
+    return out
+
+
+DEFAULT_FEATURE_SCHEME = "v8"
+_FEATURE_SCHEME_ALIASES = {
+    "current": "v8",
+    "full": "v8",
+    "all": "v8",
+    "legacy": "v7",
+}
+
+
+def feature_scheme_catalog() -> dict[str, tuple[str, ...]]:
+    """Named denylists for Lab A/B tests. Vector width stays current schema."""
+    from app.services.bots.ml_feature_v8 import (
+        EVENT_FEATURE_NAMES,
+        HYGIENE_FEATURE_NAMES,
+        ICT_FEATURE_NAMES,
+        OFI_FEATURE_NAMES,
+        PROFILE_FEATURE_NAMES,
+        V8_FEATURE_NAMES,
+    )
+
+    return {
+        "v8": (),
+        "v7": tuple(V8_FEATURE_NAMES),
+        "v8_no_ict": tuple(ICT_FEATURE_NAMES),
+        "v8_no_events": tuple(EVENT_FEATURE_NAMES),
+        "v8_no_ofi": tuple(OFI_FEATURE_NAMES),
+        "v8_no_profile": tuple(PROFILE_FEATURE_NAMES),
+        "v8_no_hygiene": tuple(HYGIENE_FEATURE_NAMES),
+        "v8_no_vpin": ("vpin",),
+    }
+
+
+def resolve_feature_scheme(config: dict | None = None) -> str:
+    catalog = feature_scheme_catalog()
+    cfg = config if isinstance(config, dict) else {}
+    raw = str(cfg.get("feature_scheme") or DEFAULT_FEATURE_SCHEME).strip().lower()
+    raw = _FEATURE_SCHEME_ALIASES.get(raw, raw)
+    return raw if raw in catalog else DEFAULT_FEATURE_SCHEME
+
+
+def resolve_exclude_features(config: dict | None = None) -> list[str]:
+    """Scheme denylist plus any extra ``exclude_features`` (names, never dropped)."""
+    cfg = config if isinstance(config, dict) else {}
+    catalog = feature_scheme_catalog()
+    names: list[str] = list(catalog.get(resolve_feature_scheme(cfg), ()))
+    extra = cfg.get("exclude_features") or []
+    if isinstance(extra, str):
+        extra = [part.strip() for part in extra.split(",") if part.strip()]
+    seen = set(names)
+    for item in extra:
+        key = str(item).strip()
+        if key and key not in seen:
+            names.append(key)
+            seen.add(key)
+    return names
+
+
+def feature_scheme_metadata(config: dict | None = None) -> dict[str, Any]:
+    cfg = config if isinstance(config, dict) else {}
+    return {
+        "feature_scheme": resolve_feature_scheme(cfg),
+        "exclude_features": resolve_exclude_features(cfg),
+    }
+
+
+def mask_features_for_model(
+    arr: np.ndarray,
+    metadata: dict | None = None,
+) -> np.ndarray:
+    """Zero scheme columns using the artifact's stored denylist (train/serve parity)."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    if "exclude_features" in meta:
+        return apply_exclude_features(arr, meta.get("exclude_features"))
+    cfg = dict(meta.get("config") or {})
+    if meta.get("feature_scheme"):
+        cfg["feature_scheme"] = meta.get("feature_scheme")
+    return apply_exclude_features(arr, resolve_exclude_features(cfg))
+
+
 def signal_features_to_vector(
     features: dict[str, float],
     *,
     include_trade_state: bool = False,
     feature_names: tuple[str, ...] | list[str] | None = None,
+    exclude_features: Sequence[str] | None = None,
 ) -> np.ndarray:
     """Convert feature dict to a numpy vector in canonical order."""
     names = feature_names or resolve_feature_names(include_trade_state=include_trade_state)
+    exclude = {str(x) for x in (exclude_features or ())}
     return np.array(
-        [float(features.get(name, 0.0)) for name in names],
+        [
+            0.0 if name in exclude else float(features.get(name, 0.0))
+            for name in names
+        ],
         dtype=np.float64,
     )
 

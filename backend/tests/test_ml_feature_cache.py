@@ -38,6 +38,8 @@ def test_wf_feature_cache_gather_matches_slice():
     assert cache.feature_matrix.shape == full_feat.shape
     np.testing.assert_allclose(cache.feature_matrix, full_feat, rtol=1e-5, atol=1e-5)
     assert len(cache.labels) == len(full_labels)
+    assert all("uniqueness" in row for row in cache.labels)
+    assert all("is_event" in row for row in cache.labels)
 
     indices = list(range(10, 80))
     gathered = cache.gather(indices)

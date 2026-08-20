@@ -185,10 +185,12 @@ def make_torch_dataloader(
     batch_size: int,
     device,
     shuffle: bool = True,
+    w_t=None,
 ):
     """DataLoader with ``pin_memory`` on CUDA and platform-safe ``num_workers``.
 
     Optimizer Opt #8 — overlaps host→device copies when CUDA is available.
+    Optional ``w_t`` adds per-sample uniqueness / class weights.
     """
     import torch
     from torch.utils.data import DataLoader, TensorDataset
@@ -204,13 +206,21 @@ def make_torch_dataloader(
     }
     if workers > 0:
         kwargs["persistent_workers"] = True
-    return DataLoader(TensorDataset(X_t, y_t), **kwargs)
+    tensors = (X_t, y_t) if w_t is None else (X_t, y_t, w_t)
+    return DataLoader(TensorDataset(*tensors), **kwargs)
 
 
-def batch_to_device(batch_x, batch_y, device):
+def batch_to_device(batch_x, batch_y, device, batch_w=None):
     """Move a DataLoader batch to ``device`` with non_blocking CUDA copies."""
     non_blocking = getattr(device, "type", None) == "cuda"
-    return (
-        batch_x.to(device, non_blocking=non_blocking),
-        batch_y.to(device, non_blocking=non_blocking),
-    )
+    x = batch_x.to(device, non_blocking=non_blocking)
+    y = batch_y.to(device, non_blocking=non_blocking)
+    if batch_w is None:
+        return x, y
+    return x, y, batch_w.to(device, non_blocking=non_blocking)
+
+
+def unpack_batch_to_device(batch, device):
+    """Move a 2- or 3-tuple DataLoader batch to ``device``."""
+    non_blocking = getattr(device, "type", None) == "cuda"
+    return tuple(t.to(device, non_blocking=non_blocking) for t in batch)

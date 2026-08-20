@@ -37,6 +37,25 @@ describe('knobsToTrainConfig', () => {
     expect(out.gbm_max_iter).toBe(450);
     expect(out.gbm_max_depth).toBe(8);
     expect(out.epochs).toBeUndefined();
+    expect(out.event_filter).toBe('cusum');
+    expect(out.cusum_threshold).toBe(1);
+  });
+
+  it('maps event_filter and cusum_threshold', () => {
+    const out = knobsToTrainConfig('LSTM_DIRECTION', {
+      eventFilter: 'all',
+      cusumThreshold: '1.5',
+    });
+    expect(out.event_filter).toBe('all');
+    expect(out.cusum_threshold).toBe(1.5);
+  });
+
+  it('maps feature_scheme for train and validate', () => {
+    const train = knobsToTrainConfig('LSTM_DIRECTION', { featureScheme: 'v7' });
+    expect(train.feature_scheme).toBe('v7');
+    const val = knobsToValidateConfig('ML_SIGNAL_BOOST', { featureScheme: 'v8_no_ict' });
+    expect(val.feature_scheme).toBe('v8_no_ict');
+    expect(knobsToTrainConfig('RL_PPO_AGENT', {}).feature_scheme).toBe('v8');
   });
 
   it('clamps out-of-range values', () => {
@@ -59,6 +78,8 @@ describe('knobsToValidateConfig', () => {
     expect(out.pbo_max_combos).toBe(4);
     expect(out.validate_pbo).toBe(true); // GBM gets PBO like Lab Validate
     expect(out.wf_capacity_parity).toBe(true);
+    expect(out.event_filter).toBe('cusum');
+    expect(out.cusum_threshold).toBe(1);
   });
 
   it('keeps PBO off for deep / RL strategies', () => {

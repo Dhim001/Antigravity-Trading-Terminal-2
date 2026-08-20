@@ -36,6 +36,16 @@ class WfFeatureCache:
             atr_mult_lower=atr_mult,
             max_holding_bars=max_bars,
         )
+        from app.services.bots.ml_event_sampling import annotate_event_labels
+        from app.services.bots.ml_feature_engineering import (
+            apply_exclude_features,
+            resolve_exclude_features,
+        )
+
+        self.labels = annotate_event_labels(self.labels, candles or [], cfg)
+        exclude = resolve_exclude_features(cfg)
+        if exclude:
+            self.feature_matrix = apply_exclude_features(self.feature_matrix, exclude)
 
     def gather(self, indices: Sequence[int]) -> dict[str, Any]:
         """Return features/labels aligned to ``indices`` (may be non-contiguous)."""

@@ -23,7 +23,7 @@ from app.services.bots.calibration import (
 
 logger = logging.getLogger(__name__)
 
-FEATURE_SCHEMA_VERSION = 2
+FEATURE_SCHEMA_VERSION = 3
 
 FEATURE_NAMES: tuple[str, ...] = (
     "score",
@@ -56,6 +56,23 @@ FEATURE_NAMES: tuple[str, ...] = (
     "child_vwap",
     "bars_since_switch",
     "regime_switched_flag",
+    # Schema v3: primary side/size + compact signal slice (append-only).
+    "primary_side",
+    "primary_confidence",
+    "features_available",
+    "htf_trend_1h",
+    "atr_ratio",
+    "vol_regime_ratio",
+    "range_position",
+    "cvd_z",
+)
+
+COMPACT_SIGNAL_SLICE: tuple[str, ...] = (
+    "htf_trend_1h",
+    "atr_ratio",
+    "vol_regime_ratio",
+    "range_position",
+    "cvd_z",
 )
 
 _ATR_REGIMES = frozenset({"elevated", "compressed", "normal"})
@@ -173,6 +190,24 @@ def insight_to_features(
     dow_sin, dow_cos = _cyclical(dow, 7.0)
 
     side_u = str(side or "BUY").upper()
+    sf = insight.get("signal_features")
+    if not isinstance(sf, dict):
+        sf = {}
+    primary_side = insight.get("primary_side")
+    if primary_side is None:
+        primary_side = 1.0 if side_u == "BUY" else -1.0
+    primary_conf = insight.get("primary_confidence")
+    if primary_conf is None:
+        primary_conf = confidence
+    compact = {name: _safe_float(sf.get(name, insight.get(name))) for name in COMPACT_SIGNAL_SLICE}
+    features_available = 1.0 if (
+        insight.get("features_available")
+        or any(abs(compact[n]) > 1e-12 for n in COMPACT_SIGNAL_SLICE)
+        or sf
+    ) else 0.0
+    if insight.get("features_available") is not None:
+        features_available = 1.0 if _safe_float(insight.get("features_available")) else 0.0
+
     return {
         "score": float(score),
         "confidence": confidence,
@@ -203,6 +238,14 @@ def insight_to_features(
         "child_vwap": 1.0 if selected_strategy == "VWAP_PULLBACK" else 0.0,
         "bars_since_switch": float(bars_since_switch),
         "regime_switched_flag": 1.0 if regime_switched else 0.0,
+        "primary_side": 1.0 if _safe_float(primary_side) >= 0 else -1.0,
+        "primary_confidence": _safe_float(primary_conf),
+        "features_available": features_available,
+        "htf_trend_1h": compact["htf_trend_1h"],
+        "atr_ratio": compact["atr_ratio"],
+        "vol_regime_ratio": compact["vol_regime_ratio"],
+        "range_position": compact["range_position"],
+        "cvd_z": compact["cvd_z"],
         # metadata for debugging (not in FEATURE_NAMES)
         "_symbol": symbol,
         "_timeframe": timeframe,
@@ -302,16 +345,22 @@ def build_meta_label_dataset_from_candles(
     The result is many more training samples (one per bar, not one per closed
     trade) and a label definition that matches what the primary model predicts.
     """
+    from app.services.bots.ml_event_sampling import annotate_event_labels, keep_train_row
+    from app.services.bots.ml_feature_engineering import bar_to_signal_features
     from app.services.bots.ml_triple_barrier import label_triple_barrier_from_config
 
     cfg = config if isinstance(config, dict) else {}
     labels = label_triple_barrier_from_config(candles, cfg)
+    labels = annotate_event_labels(labels, candles, cfg)
 
     rows: list[dict[str, Any]] = []
     skipped = 0
     snaps = entry_snapshots or {}
 
     for lab in labels:
+        if not keep_train_row(lab, cfg):
+            skipped += 1
+            continue
         idx = int(lab.get("index", 0))
         candle = candles[idx] if 0 <= idx < len(candles) else {}
         label = int(lab.get("label", 0))
@@ -327,21 +376,25 @@ def build_meta_label_dataset_from_candles(
         symbol = str(cfg.get("model_symbol") or cfg.get("symbol") or "").upper()
         timeframe = str(cfg.get("timeframe") or "1m")
 
+        lookback = candles[max(0, idx - 24):idx] if isinstance(candles, list) else []
+        try:
+            bar_feats = bar_to_signal_features(candle, lookback_rows=lookback, symbol=symbol)
+        except Exception:
+            bar_feats = {}
+
         if snap:
-            feat = insight_to_features(
-                snap, symbol=symbol, side=side, timeframe=timeframe,
-                entry_ts=candle.get("time"),
-            )
+            insight = dict(snap)
         else:
-            # No insight snapshot — synthesize a minimal feature vector from
-            # the bar itself so the GBM still gets a row. The model learns
-            # less from these (no sub-report scores) but the triple-barrier
-            # label is the signal.
-            feat = insight_to_features(
-                {"confidence": 0.5, "score": 0},
-                symbol=symbol, side=side, timeframe=timeframe,
-                entry_ts=candle.get("time"),
-            )
+            insight = {"confidence": 0.5, "score": 0}
+        insight["primary_side"] = 1.0 if side == "BUY" else -1.0
+        insight["primary_confidence"] = _safe_float(insight.get("confidence"), 0.5)
+        insight["signal_features"] = bar_feats
+        insight["features_available"] = 1.0 if bar_feats else 0.0
+
+        feat = insight_to_features(
+            insight, symbol=symbol, side=side, timeframe=timeframe,
+            entry_ts=candle.get("time"),
+        )
 
         rows.append({
             "features": feat,
@@ -580,6 +633,17 @@ def train_meta_label_model(
         )
     else:
         dataset = build_meta_label_dataset(bot_id)
+        if (
+            int(dataset.get("sample_count") or 0) < min_samples
+            and candles
+        ):
+            logger.info(
+                "Meta-label realized samples %s < %s — falling back to CUSUM TBM labels",
+                dataset.get("sample_count"), min_samples,
+            )
+            dataset = build_meta_label_dataset_from_candles(
+                bot_id, candles, config=cfg,
+            )
     rows = dataset["rows"]
 
     trained = train_model_from_rows(rows, min_samples=min_samples, val_fraction=val_fraction)

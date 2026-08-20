@@ -29,10 +29,11 @@ class TestTransformerSequences:
         from app.services.bots.ml_triple_barrier import label_triple_barrier
         candles = _make_candles(300)
         labels = label_triple_barrier(candles, max_holding_bars=30)
-        X, y = build_transformer_sequences(candles, labels, lookback=60, max_holding_bars=30)
+        X, y, w = build_transformer_sequences(candles, labels, lookback=60, max_holding_bars=30)
         assert X.ndim == 3
         assert X.shape[1] == 60
         assert X.shape[2] == len(SIGNAL_FEATURE_NAMES)
+        assert len(w) == len(y)
         assert set(np.unique(y)).issubset({0, 1, 2})
 
     def test_insufficient_candles(self):
@@ -40,8 +41,9 @@ class TestTransformerSequences:
         from app.services.bots.ml_triple_barrier import label_triple_barrier
         candles = _make_candles(50)
         labels = label_triple_barrier(candles, max_holding_bars=30)
-        X, y = build_transformer_sequences(candles, labels, lookback=60, max_holding_bars=30)
+        X, y, w = build_transformer_sequences(candles, labels, lookback=60, max_holding_bars=30)
         assert len(X) == 0
+        assert len(w) == 0
 
 
 class TestTransformerStrategy:
