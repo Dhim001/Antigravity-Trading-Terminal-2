@@ -54,3 +54,8 @@ rq>=1.16.0
 # onnxruntime>=1.18.0
 # onnxscript>=0.7.0
 # onnx>=1.17.0
+
+# Copilot intent router (P3 #14): local sentence embedder for LoRA intent
+# classification. Optional — falls back to a deterministic hashing embedder
+# when not installed. First use downloads all-MiniLM-L6-v2 (~90MB) from HF.
+sentence-transformers>=5.0.0

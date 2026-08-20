@@ -46,15 +46,19 @@ MANIFEST
 .coverage
 .coverage.*
 htmlcov/
+coverage/
 .hypothesis/
 .ruff_cache/
 .mypy_cache/
 .dmypy.json
 dmypy.json
 .ipynb_checkpoints/
+.vitest/
+**/.vitest/
 
 # Virtual environments
 .venv/
+**/.venv/
 venv/
 ENV/
 env/
@@ -76,9 +80,14 @@ backend/trading-massive.db
 backend/trading-*.db
 backend/trading-*.db-*
 
+# Catch-all: backend/data is runtime-only (models, caches, job dumps).
+# Do not commit anything under this tree.
+backend/data/
+
 # Generated / cached market data (yfinance seeds, eToro id cache)
 backend/data/*.parquet
 backend/data/*.json
+backend/data/**/*.json
 backend/data/archive_wal/
 backend/data/meta_label_models/
 backend/data/feature_drift/
@@ -102,6 +111,9 @@ backend/data/ml_checkpoints/
 backend/data/optuna/
 backend/data/ml_job_results/
 
+# Copilot intent LoRA (live chat pairs, adapter weights, meta)
+backend/data/copilot_intent/
+
 # Per-bot fitted artifacts written at runtime
 backend/data/calibration/
 backend/data/conformal/
@@ -110,11 +122,28 @@ backend/data/stacking/
 backend/data/strategy_state/
 backend/data/journal_screenshots/
 
+# IB contract resolve cache + local seed dumps next to the app package
+backend/app/data/*.json
+backend/app/data/*.parquet
+
+# Prompt-library live corrections (committed files are the versioned *.json exemplars)
+backend/app/services/agent/prompt_library/*.jsonl
+backend/app/services/agent/prompt_library/negative_examples.jsonl
+
 *.onnx
 *.joblib
 *.pkl
 *.pt
 *.pth
+*.npz
+*.jsonl
+*.progress.json
+
+# Ad-hoc research / extract dumps dropped at repo root
+/ml-feature-enrichment.json
+/*-enrichment.json
+_tmp_*.py
+**/_tmp_*.py
 
 # Numba JIT caches (ml_feature_kernels and similar)
 *.nbc

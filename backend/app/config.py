@@ -305,6 +305,13 @@ RISK_SENTINEL_ENABLED = os.environ.get("RISK_SENTINEL_ENABLED", "true").lower() 
 RISK_SENTINEL_MAX_VELOCITY = float(os.environ.get("RISK_SENTINEL_MAX_VELOCITY", "3.0"))
 RISK_SENTINEL_AUTO_PAUSE_ON_STREAK = os.environ.get("RISK_SENTINEL_AUTO_PAUSE_ON_STREAK", "true").lower() in ("1", "true", "yes")
 RISK_SENTINEL_MAX_CORRELATION_EXPOSURE_PCT = float(os.environ.get("RISK_SENTINEL_MAX_CORRELATION_EXPOSURE_PCT", "40.0"))
+# Drift WARN is evaluated every RISK_MONITOR_INTERVAL_SEC; without a cooldown
+# the bot log console repeats the same line (new DB id each tick).
+RISK_SENTINEL_DRIFT_ALERT_SEC = float(os.environ.get("RISK_SENTINEL_DRIFT_ALERT_SEC", str(6 * 3600)))
+# Skip drift alerts until the bot has been deployed this long — leftover
+# symbol×strategy drift buffers from a previous SOL/TCN run would otherwise
+# fire on a freshly created bot with zero trades.
+RISK_SENTINEL_DRIFT_MIN_BOT_AGE_SEC = float(os.environ.get("RISK_SENTINEL_DRIFT_MIN_BOT_AGE_SEC", str(2 * 3600)))
 
 # Regime Rotation Agent (automatic strategy rotation based on market conditions)
 REGIME_ROTATION_ENABLED = os.environ.get("REGIME_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -353,6 +360,122 @@ POSTTRADE_LEARNER_AUTO_RETRAIN = os.environ.get("POSTTRADE_LEARNER_AUTO_RETRAIN"
 POSTTRADE_LEARNER_RETRAIN_EVERY_N = int(os.environ.get("POSTTRADE_LEARNER_RETRAIN_EVERY_N", "10"))
 POSTTRADE_LEARNER_STOP_WIDEN_PCT = float(os.environ.get("POSTTRADE_LEARNER_STOP_WIDEN_PCT", "0.25"))
 POSTTRADE_LEARNER_CONFIDENCE_BUMP = float(os.environ.get("POSTTRADE_LEARNER_CONFIDENCE_BUMP", "0.03"))
+
+# Closed-loop feature feedback (AI-FT-PTL-001 §4.2) — post-trade outcomes feed
+# the next retrain's triple-barrier labels (barrier width, regime weighting,
+# execution-quality exclusion).
+POSTTRADE_LABELS_ENABLED = os.environ.get("POSTTRADE_LABELS_ENABLED", "true").lower() in ("1", "true", "yes")
+POSTTRADE_LABELS_LOOKBACK_DAYS = int(os.environ.get("POSTTRADE_LABELS_LOOKBACK_DAYS", "90"))
+# Barrier width scale from median excursion, clamped to [min, max].
+POSTTRADE_LABELS_BARRIER_SCALE_MIN = float(os.environ.get("POSTTRADE_LABELS_BARRIER_SCALE_MIN", "0.7"))
+POSTTRADE_LABELS_BARRIER_SCALE_MAX = float(os.environ.get("POSTTRADE_LABELS_BARRIER_SCALE_MAX", "1.6"))
+# Down-weight samples from hostile regimes (regime_mismatch lessons).
+POSTTRADE_LABELS_HOSTILE_WEIGHT = float(os.environ.get("POSTTRADE_LABELS_HOSTILE_WEIGHT", "0.4"))
+# Exclude bars whose mean execution shortfall exceeds this (unreliable labels).
+POSTTRADE_LABELS_MAX_IS_BPS = float(os.environ.get("POSTTRADE_LABELS_MAX_IS_BPS", "50.0"))
+
+# Incremental GBM boosting (AI-FT-PTL-001 §3.1.1) — ML_SIGNAL_BOOST warm-start.
+GBM_WARM_START_ENABLED = os.environ.get("GBM_WARM_START_ENABLED", "true").lower() in ("1", "true", "yes")
+GBM_WARM_START_DELTA_ITERS = int(os.environ.get("GBM_WARM_START_DELTA_ITERS", "60"))
+
+# Warm-start fine-tuning for PyTorch models (AI-FT-PTL-001 §3.1.1) — resume the
+# champion's weights on new data at a reduced LR instead of cold-starting.
+ML_WARM_START_ENABLED = os.environ.get("ML_WARM_START_ENABLED", "true").lower() in ("1", "true", "yes")
+ML_WARM_START_LR_FACTOR = float(os.environ.get("ML_WARM_START_LR_FACTOR", "0.1"))
+ML_WARM_START_EPOCHS = int(os.environ.get("ML_WARM_START_EPOCHS", "12"))
+
+# RL replay buffer + continual fine-tuning (AI-FT-PTL-001 §3.2, P1 #4).
+RL_REPLAY_ENABLED = os.environ.get("RL_REPLAY_ENABLED", "true").lower() in ("1", "true", "yes")
+RL_REPLAY_MAX_TRANSITIONS = int(os.environ.get("RL_REPLAY_MAX_TRANSITIONS", "50000"))
+RL_REPLAY_MIN_FOR_FINETUNE = int(os.environ.get("RL_REPLAY_MIN_FOR_FINETUNE", "1000"))
+RL_REPLAY_FINETUNE_EPOCHS = int(os.environ.get("RL_REPLAY_FINETUNE_EPOCHS", "4"))
+# KL-divergence constraint: reject a fine-tune update when KLD exceeds this.
+RL_REPLAY_MAX_KL = float(os.environ.get("RL_REPLAY_MAX_KL", "0.05"))
+RL_REPLAY_KL_BETA = float(os.environ.get("RL_REPLAY_KL_BETA", "0.01"))
+
+# Execution-aware reward feedback (AI-FT-PTL-001 §4.3, P1 #6) — fold measured
+# implementation shortfall into RL training costs and supervised TP barriers.
+TCA_REWARD_FEEDBACK_ENABLED = os.environ.get("TCA_REWARD_FEEDBACK_ENABLED", "true").lower() in ("1", "true", "yes")
+TCA_REWARD_LOOKBACK_DAYS = int(os.environ.get("TCA_REWARD_LOOKBACK_DAYS", "30"))
+
+# Adaptive conformal gate recalibration (AI-FT-PTL-001 §4.5, P1 #7).
+CONFORMAL_RECALIB_ENABLED = os.environ.get("CONFORMAL_RECALIB_ENABLED", "true").lower() in ("1", "true", "yes")
+CONFORMAL_RECALIB_EVERY_N = int(os.environ.get("CONFORMAL_RECALIB_EVERY_N", "50"))
+CONFORMAL_RECALIB_WINDOW = int(os.environ.get("CONFORMAL_RECALIB_WINDOW", "200"))
+CONFORMAL_RECALIB_EMA_ALPHA = float(os.environ.get("CONFORMAL_RECALIB_EMA_ALPHA", "0.2"))
+
+# Cross-strategy learning transfer (AI-FT-PTL-001 §4.4, P1 #8) — symbol-wide
+# regime warning when regime_mismatch lessons pile up across bots.
+CROSS_STRATEGY_TRANSFER_ENABLED = os.environ.get("CROSS_STRATEGY_TRANSFER_ENABLED", "true").lower() in ("1", "true", "yes")
+REGIME_WARNING_MIN_LESSONS = int(os.environ.get("REGIME_WARNING_MIN_LESSONS", "3"))
+REGIME_WARNING_WINDOW_SEC = float(os.environ.get("REGIME_WARNING_WINDOW_SEC", "86400"))
+REGIME_WARNING_CONFIDENCE_BUMP = float(os.environ.get("REGIME_WARNING_CONFIDENCE_BUMP", "0.05"))
+
+# Stacking meta-learner online update (AI-FT-PTL-001 §4.6, P2 #9) — refresh
+# ensemble combination weights from live outcomes without a full retrain.
+STACKING_ONLINE_UPDATE_ENABLED = os.environ.get("STACKING_ONLINE_UPDATE_ENABLED", "true").lower() in ("1", "true", "yes")
+STACKING_ONLINE_BUFFER = int(os.environ.get("STACKING_ONLINE_BUFFER", "500"))
+STACKING_ONLINE_UPDATE_EVERY_N = int(os.environ.get("STACKING_ONLINE_UPDATE_EVERY_N", "100"))
+
+# Adaptive regime boundary calibration (AI-FT-PTL-001 §3.3, P2 #10) — EMA
+# update of the Gaussian-mixture centroids on a rolling window.
+REGIME_BOUNDARY_CALIB_ENABLED = os.environ.get("REGIME_BOUNDARY_CALIB_ENABLED", "true").lower() in ("1", "true", "yes")
+REGIME_BOUNDARY_CALIB_ALPHA = float(os.environ.get("REGIME_BOUNDARY_CALIB_ALPHA", "0.05"))
+REGIME_BOUNDARY_CALIB_WINDOW = int(os.environ.get("REGIME_BOUNDARY_CALIB_WINDOW", "500"))
+REGIME_BOUNDARY_CALIB_INTERVAL_SEC = float(os.environ.get("REGIME_BOUNDARY_CALIB_INTERVAL_SEC", "86400"))
+REGIME_BOUNDARY_MIN_WEIGHT = float(os.environ.get("REGIME_BOUNDARY_MIN_WEIGHT", "0.05"))
+REGIME_BOUNDARY_MAX_SHIFT_SIGMA = float(os.environ.get("REGIME_BOUNDARY_MAX_SHIFT_SIGMA", "2.0"))
+
+# Optuna study persistence & transfer (AI-FT-PTL-001 §3.1.2, P2 #11) —
+# warm-start sweeps from the previous study for the same symbol×strategy×tf.
+OPTUNA_TRANSFER_ENABLED = os.environ.get("OPTUNA_TRANSFER_ENABLED", "true").lower() in ("1", "true", "yes")
+OPTUNA_TRANSFER_SEED_TRIALS = int(os.environ.get("OPTUNA_TRANSFER_SEED_TRIALS", "3"))
+
+# Isotonic calibration layer for meta-label P(win) (AI-FT-PTL-001 §3.4, P2 #12).
+META_LABEL_ISOTONIC_ENABLED = os.environ.get("META_LABEL_ISOTONIC_ENABLED", "true").lower() in ("1", "true", "yes")
+META_LABEL_ISOTONIC_MIN_SAMPLES = int(os.environ.get("META_LABEL_ISOTONIC_MIN_SAMPLES", "30"))
+
+# Domain-specific prompt library for the copilot (AI-FT-PTL-001 §3.5, P2 #13).
+COPILOT_PROMPT_LIBRARY_ENABLED = os.environ.get("COPILOT_PROMPT_LIBRARY_ENABLED", "true").lower() in ("1", "true", "yes")
+COPILOT_PROMPT_EXEMPLARS_MAX = int(os.environ.get("COPILOT_PROMPT_EXEMPLARS_MAX", "2"))
+
+# LoRA fine-tune of a local embedding model for copilot intent routing
+# (AI-FT-PTL-001 §3.5, P3 #14). Collects (query, intent, tool_call) tuples
+# from copilot logs; a trainer fine-tunes low-rank adapters on a frozen
+# sentence embedder; the tuned embeddings route intents without an LLM call.
+COPILOT_LORA_ENABLED = os.environ.get("COPILOT_LORA_ENABLED", "true").lower() in ("1", "true", "yes")
+COPILOT_LORA_LOG_ENABLED = os.environ.get("COPILOT_LORA_LOG_ENABLED", "true").lower() in ("1", "true", "yes")
+COPILOT_LORA_MIN_TRAIN_SAMPLES = int(os.environ.get("COPILOT_LORA_MIN_TRAIN_SAMPLES", "1000"))
+COPILOT_LORA_RANK = int(os.environ.get("COPILOT_LORA_RANK", "8"))
+COPILOT_LORA_EPOCHS = int(os.environ.get("COPILOT_LORA_EPOCHS", "200"))
+COPILOT_LORA_LR = float(os.environ.get("COPILOT_LORA_LR", "0.5"))
+COPILOT_LORA_EMBED_DIM = int(os.environ.get("COPILOT_LORA_EMBED_DIM", "384"))
+# Minimum softmax confidence for the tuned router to override rule-based
+# intent classification; below this we keep the rule result.
+COPILOT_LORA_MIN_CONFIDENCE = float(os.environ.get("COPILOT_LORA_MIN_CONFIDENCE", "0.6"))
+
+# Cross-asset model transfer — warm-start a target asset's model from a donor
+# asset's trained checkpoint instead of training from scratch. The transferred
+# model registers as a challenger and still must pass WF/PBO/deploy gates.
+MODEL_TRANSFER_ENABLED = os.environ.get("MODEL_TRANSFER_ENABLED", "true").lower() in ("1", "true", "yes")
+# RL donor fine-tune knobs: fraction of from-scratch timesteps, LR shrink, and
+# the KL(old‖new) ceiling — beyond it the donor weights are restored.
+RL_TRANSFER_TIMESTEPS_FRACTION = float(os.environ.get("RL_TRANSFER_TIMESTEPS_FRACTION", "0.25"))
+RL_TRANSFER_LR_FACTOR = float(os.environ.get("RL_TRANSFER_LR_FACTOR", "0.3"))
+RL_TRANSFER_MAX_KL = float(os.environ.get("RL_TRANSFER_MAX_KL", "0.05"))
+# Supervised donor fine-tune: freeze all but the head by default when True.
+TRANSFER_FREEZE_TRUNK_DEFAULT = os.environ.get("TRANSFER_FREEZE_TRUNK_DEFAULT", "false").lower() in ("1", "true", "yes")
+# Stretch: LightGBM warm-start boosting for GBM donor transfer.
+# EVALUATED (2026-08): skipped — migration cost too high for the payoff.
+#   * sklearn HistGradientBoosting has no init_model; its warm_start re-fits
+#     the feature BinMapper on the new data, which silently invalidates the
+#     donor trees' bin-index splits — cross-asset warm-start is unsafe there.
+#   * LightGBM init_model would work (splits reference raw values) but needs a
+#     new C++ dependency, a trainer rewrite (param mapping, early stopping,
+#     calibration re-validation), and a champion model-type migration story.
+# Recipe transfer (donor barrier params + feature importances) is the shipped
+# deliverable; the flag stays as a documented future extension point.
+GBM_TRANSFER_WARM_START_ENABLED = os.environ.get("GBM_TRANSFER_WARM_START_ENABLED", "false").lower() in ("1", "true", "yes")
 
 # Agent Decision Eval (Sprint 4) — closed-loop scoring of vetoes/rotations/patches/pauses
 AGENT_EVAL_ENABLED = os.environ.get("AGENT_EVAL_ENABLED", "true").lower() in ("1", "true", "yes")
