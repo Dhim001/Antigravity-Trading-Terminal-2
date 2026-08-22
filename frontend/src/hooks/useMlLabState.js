@@ -472,7 +472,11 @@ export default function useMlLabState() {
 
   const handleCancelJob = useCallback(async () => {
     const jobId = getMlTrainingSession().jobId;
-    if (!jobId || cancellingJob) return;
+    if (cancellingJob) return;
+    if (!jobId) {
+      toast.message('Job is still starting — tap Cancel again in a moment');
+      return;
+    }
     setCancellingJob(true);
     try {
       const body = await cancelMlJob(jobId);

@@ -175,6 +175,73 @@ class TestActionQueue(unittest.TestCase):
         self.assertEqual(proposed.payload["action_id"], out["action_id"])
         self.assertEqual(proposed.payload["actor"], "RiskSentinel")
 
+    def test_propose_same_bot_is_idempotent(self):
+        first = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-dup", "symbol": "BTCUSDT"}, "streak"
+        )
+        second = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-dup", "symbol": "BTCUSDT"}, "streak again"
+        )
+        self.assertTrue(first.get("pending"))
+        self.assertTrue(second.get("pending"))
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(first["action_id"], second["action_id"])
+        self.assertEqual(len(action_queue.list_actions("pending")), 1)
+
+        other = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-other", "symbol": "ETHUSDT"}, "streak"
+        )
+        self.assertNotEqual(other["action_id"], first["action_id"])
+        self.assertEqual(len(action_queue.list_actions("pending")), 2)
+
+    def test_reject_cools_down_repropose(self):
+        out = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-rej"}, "streak"
+        )
+        self.assertTrue(action_queue.reject_action(out["action_id"]).get("ok"))
+        again = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-rej"}, "streak"
+        )
+        self.assertFalse(again.get("pending"))
+        self.assertEqual(again.get("skipped"), "recently_rejected")
+        self.assertEqual(action_queue.list_actions("pending"), [])
+
+    def test_approve_expires_duplicate_siblings(self):
+        from app.db.connection import db_session
+
+        first = action_queue.propose_action(
+            "RiskSentinel", "pause_bot", {"bot_id": "b-sib"}, "a"
+        )
+        # Bypass propose() dedupe to simulate historical clones already in DB.
+        with db_session() as conn:
+            conn.cursor().execute(
+                """
+                INSERT INTO agent_pending_actions
+                    (actor, action_type, params_json, reason, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("RiskSentinel", "pause_bot", '{"bot_id": "b-sib"}', "clone", "pending", 1.0),
+            )
+        self.assertGreaterEqual(len(action_queue.list_actions("pending")), 1)
+        # list_actions collapses clones; re-insert one sibling then approve the original.
+        with db_session() as conn:
+            conn.cursor().execute(
+                """
+                INSERT INTO agent_pending_actions
+                    (actor, action_type, params_json, reason, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("RiskSentinel", "pause_bot", '{"bot_id": "b-sib"}', "clone2", "pending", 2.0),
+            )
+        asyncio.run(action_queue.approve_action(first["action_id"]))
+        pending = action_queue.list_actions("pending")
+        self.assertTrue(
+            all((r.get("params") or {}).get("bot_id") != "b-sib" for r in pending),
+            pending,
+        )
+        row = action_queue.get_action(first["action_id"])
+        self.assertEqual(row["status"], "approved")
+
 
 class TestActionQueueHttp(unittest.TestCase):
     @classmethod

@@ -1370,6 +1370,7 @@ _CAMEL_TO_SNAKE_ITEM_CONFIG = {
     "validateMaxBars": "validate_max_bars",
     "pboSegments": "pbo_segments",
     "pboMaxCombos": "pbo_max_combos",
+    "trainInit": "train_init",
 }
 
 

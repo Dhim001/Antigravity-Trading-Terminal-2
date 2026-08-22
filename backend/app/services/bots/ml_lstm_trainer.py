@@ -293,7 +293,11 @@ def train_lstm_signal_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("LSTM_DIRECTION", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
-    from app.services.bots.ml_training_window import apply_champion_train_overrides
+    from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
+        apply_champion_train_overrides,
+        from_scratch_requested,
+    )
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
@@ -464,7 +468,12 @@ def train_lstm_signal_model(
 
     # Cross-asset donor fine-tune takes precedence over same-symbol warm-start.
     _donor_cfg = cfg.get("donor") if isinstance(cfg.get("donor"), dict) else None
-    if _donor_cfg and _donor_cfg.get("symbol") and not bool(cfg.get("_wf_mode")):
+    if (
+        _donor_cfg
+        and _donor_cfg.get("symbol")
+        and not bool(cfg.get("_wf_mode"))
+        and allow_weight_warm_start(cfg)
+    ):
         from app.services.bots import model_transfer as _mt
 
         if _mt.transfer_enabled():
@@ -520,6 +529,7 @@ def train_lstm_signal_model(
         and ML_WARM_START_ENABLED
         and not bool(cfg.get("_wf_mode"))
         and not cfg.get("champion_train")
+        and allow_weight_warm_start(cfg)
     ):
         try:
             _ckpt = _checkpoint_path(symbol, tf)
@@ -747,6 +757,7 @@ def train_lstm_signal_model(
         "batch_size": batch_size,
         "train_device": train_device_meta.get("device"),
         "warm_started": warm_started,
+        **({"from_scratch": True} if from_scratch_requested(cfg) else {}),
         **early_stop_meta,
         **per_class_acc,
     }

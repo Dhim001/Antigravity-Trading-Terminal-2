@@ -31,6 +31,7 @@ export function MlTransferDonorPicker({
   symbol,
   timeframe,
   disabled = false,
+  forceOffReason = null,
   value,
   onChange,
 }) {
@@ -65,7 +66,7 @@ export function MlTransferDonorPicker({
     };
   }, [open, supported, strategy, symbol, timeframe]);
 
-  const reason = donorDisabledReason({
+  const reason = forceOffReason || donorDisabledReason({
     enabled: enabledBackend,
     supported,
     donors: donors || [],
@@ -91,9 +92,11 @@ export function MlTransferDonorPicker({
         <GitBranch size={12} />
         <span>Transfer from donor</span>
         <span className="ml-transfer__toggle-hint">
-          {value?.enabled && value?.symbol
-            ? `warm-start from ${value.symbol}`
-            : 'train from scratch'}
+          {forceOffReason
+            ? 'ignored — From scratch'
+            : value?.enabled && value?.symbol
+              ? `warm-start from ${value.symbol}`
+              : 'off'}
         </span>
         <span className={cn('ml-transfer__chevron', open && 'ml-transfer__chevron--open')}>▸</span>
       </button>

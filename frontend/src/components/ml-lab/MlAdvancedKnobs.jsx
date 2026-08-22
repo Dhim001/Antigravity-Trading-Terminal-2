@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { DEEP_ML_STRATEGIES, FEATURE_SCHEME_OPTIONS } from '@/components/ml-lab/MlLabConstants';
+import { DEEP_ML_STRATEGIES, FEATURE_SCHEME_OPTIONS, persistTrainInit } from '@/components/ml-lab/MlLabConstants';
 
 export function MlAdvancedKnobs({ advanced, setAdvanced, strategy }) {
   return (
@@ -191,6 +191,26 @@ export function MlAdvancedKnobs({ advanced, setAdvanced, strategy }) {
                   {opt.label}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <label className="ml-training__advanced-field">
+          <span title="Fine-tune resumes the live champion; from scratch uses random weights and the full budget">
+            train_init
+          </span>
+          <Select
+            value={advanced.trainInit === 'scratch' ? 'scratch' : 'warm'}
+            onValueChange={(value) => {
+              persistTrainInit(value);
+              setAdvanced((a) => ({ ...a, trainInit: value }));
+            }}
+          >
+            <SelectTrigger size="sm" className="h-7 w-full min-w-0 text-xs" aria-label="Train initialization">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent position="popper" className="ml-training__advanced-menu">
+              <SelectItem value="warm" className="text-xs">fine-tune existing</SelectItem>
+              <SelectItem value="scratch" className="text-xs">from scratch</SelectItem>
             </SelectContent>
           </Select>
         </label>

@@ -72,7 +72,13 @@
   padding: var(--sp-3);
 }
 
-.automation-studio .algo-tab__panel {
+.automation-studio .algo-tab__main,
+.automation-studio .algo-tab__stack,
+.automation-studio .algo-tab__rail {
+  gap: var(--sp-3);
+}
+
+.automation-studio .algo-tab__panel:not(.algo-tab__panel--approvals):not(.algo-tab__panel--reasoning) {
   min-height: 200px;
 }
 

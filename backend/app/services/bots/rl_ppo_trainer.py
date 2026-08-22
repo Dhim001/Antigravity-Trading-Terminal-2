@@ -241,7 +241,10 @@ def train_ppo_agent(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("RL_PPO_AGENT", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
-    from app.services.bots.ml_training_window import apply_champion_train_overrides
+    from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
+        apply_champion_train_overrides,
+    )
 
     from app.services.bots.rl_risk import (
         MIN_ENT_COEF,
@@ -269,7 +272,7 @@ def train_ppo_agent(
     donor_info: dict[str, Any] | None = None
     donor_state: dict[str, Any] | None = None
     scaler_strategy = "recompute"
-    if donor_cfg and donor_cfg.get("symbol") and not wf_mode:
+    if donor_cfg and donor_cfg.get("symbol") and not wf_mode and allow_weight_warm_start(cfg):
         from app.services.bots import model_transfer as _mt
 
         if _mt.transfer_enabled():

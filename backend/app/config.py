@@ -521,6 +521,8 @@ SCANNER_DEPLOY_WATCHLIST: list[str] = []
 # (kill switch, max-drawdown halt, daily-loss halt) always execute immediately.
 AUTO_AGENT_ACTIONS = os.environ.get("AUTO_AGENT_ACTIONS", "false").lower() in ("1", "true", "yes")
 AGENT_HITL_TTL_SEC = float(os.environ.get("AGENT_HITL_TTL_SEC", "900"))
+# After a human rejects, do not re-park the same actor/action/bot until this elapses.
+AGENT_HITL_REJECT_COOLDOWN_SEC = float(os.environ.get("AGENT_HITL_REJECT_COOLDOWN_SEC", "3600"))
 
 # Trading Chatbot / Copilot
 TRADE_COPILOT_ENABLED = os.environ.get("TRADE_COPILOT_ENABLED", "true").lower() in ("1", "true", "yes")

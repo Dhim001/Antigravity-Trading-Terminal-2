@@ -4,6 +4,7 @@ import unittest
 
 from app.services.bots.indicators import (
     atr_col,
+    config_cache_key,
     first_eval_index,
     macd_hist_col,
     merge_strategy_config,
@@ -56,6 +57,28 @@ class TestIndicatorConfig(unittest.TestCase):
 
     def test_first_eval_index(self):
         self.assertGreaterEqual(first_eval_index(None, "MACD_RSI", {}), 49)
+
+    def test_ml_config_cache_key_is_hashable(self):
+        """ML defaults include exclude_features: [] — must still be a dict key."""
+        overlay = {
+            "exclude_features": ["rsi", "vwap"],
+            "event_policy": {"calendar_gate": True, "macro_gate": False},
+        }
+        for strat in ("ML_SIGNAL_BOOST", "TCN_MULTI_HORIZON", "LSTM_DIRECTION"):
+            key = config_cache_key(strat, overlay)
+            bucket = {key: strat}
+            self.assertEqual(bucket[key], strat)
+            self.assertIsInstance(hash(key), int)
+
+    def test_ml_signal_boost_process_candles(self):
+        screener = MarketScreenerService()
+        df = screener.process_candles(
+            "ETHUSDT",
+            make_candles(120),
+            {"exclude_features": [], "event_policy": {"calendar_gate": True}},
+            "ML_SIGNAL_BOOST",
+        )
+        self.assertGreaterEqual(len(df), 2)
 
 
 class TestStrategyEvaluate(unittest.TestCase):

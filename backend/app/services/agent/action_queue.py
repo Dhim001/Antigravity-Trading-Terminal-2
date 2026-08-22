@@ -19,7 +19,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable
 
-from app.config import AGENT_HITL_TTL_SEC
+from app.config import AGENT_HITL_REJECT_COOLDOWN_SEC, AGENT_HITL_TTL_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,134 @@ def _row_to_action(row: Any) -> dict[str, Any]:
         "created_at": _get("created_at", 6),
         "resolved_at": _get("resolved_at", 7),
     }
+
+
+def _action_key(actor: str, action_type: str, params: dict[str, Any] | None) -> str:
+    """Identity for dedupe / reject-cooldown (same bot pause is one decision)."""
+    p = params if isinstance(params, dict) else {}
+    bot_id = str(p.get("bot_id") or "").strip()
+    if bot_id:
+        return f"{actor}\0{action_type}\0bot:{bot_id}"
+    symbol = str(p.get("symbol") or "").strip()
+    if symbol:
+        return f"{actor}\0{action_type}\0sym:{symbol}"
+    return f"{actor}\0{action_type}\0{json.dumps(p, sort_keys=True, default=str)}"
+
+
+def _rows_for(status: str, actor: str, action_type: str) -> list[dict[str, Any]]:
+    from app.db.connection import db_session
+
+    with db_session(commit=False) as conn:
+        rows = (
+            conn.cursor()
+            .execute(
+                """
+                SELECT id, actor, action_type, params_json, reason, status,
+                       created_at, resolved_at
+                FROM agent_pending_actions
+                WHERE status = ? AND actor = ? AND action_type = ?
+                ORDER BY id DESC
+                """,
+                (status, str(actor or ""), str(action_type or "")),
+            )
+            .fetchall()
+        )
+    return [_row_to_action(r) for r in rows]
+
+
+def _matching(status: str, actor: str, action_type: str, params: dict[str, Any] | None) -> list[dict[str, Any]]:
+    key = _action_key(actor, action_type, params)
+    return [
+        row
+        for row in _rows_for(status, actor, action_type)
+        if _action_key(row.get("actor") or "", row.get("action_type") or "", row.get("params")) == key
+    ]
+
+
+def _expire_ids(ids: list[int]) -> None:
+    if not ids:
+        return
+    from app.db.connection import db_session
+
+    now = time.time()
+    marks = ",".join("?" for _ in ids)
+    with db_session() as conn:
+        conn.cursor().execute(
+            f"UPDATE agent_pending_actions SET status = ?, resolved_at = ? "
+            f"WHERE id IN ({marks}) AND status = ?",
+            (STATUS_EXPIRED, now, *ids, STATUS_PENDING),
+        )
+    for aid in ids:
+        _execute_callbacks.pop(int(aid), None)
+
+
+def expire_duplicate_pending() -> int:
+    """Keep the newest pending row per action key; expire older clones."""
+    try:
+        _ensure_tables()
+        from app.db.connection import db_session
+
+        with db_session(commit=False) as conn:
+            rows = (
+                conn.cursor()
+                .execute(
+                    """
+                    SELECT id, actor, action_type, params_json, reason, status,
+                           created_at, resolved_at
+                    FROM agent_pending_actions WHERE status = ?
+                    ORDER BY id DESC
+                    """,
+                    (STATUS_PENDING,),
+                )
+                .fetchall()
+            )
+    except Exception as exc:
+        logger.debug("action_queue duplicate scan failed: %s", exc)
+        return 0
+    seen: set[str] = set()
+    stale: list[int] = []
+    for raw in rows:
+        action = _row_to_action(raw)
+        key = _action_key(action.get("actor") or "", action.get("action_type") or "", action.get("params"))
+        try:
+            aid = int(action["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if key in seen:
+            stale.append(aid)
+        else:
+            seen.add(key)
+    if stale:
+        try:
+            _expire_ids(stale)
+        except Exception as exc:
+            logger.debug("action_queue duplicate expire failed: %s", exc)
+            return 0
+    return len(stale)
+
+
+def _supersede_siblings(action: dict[str, Any]) -> int:
+    """Expire other pending rows that are the same HITL decision."""
+    try:
+        keep_id = int(action.get("id"))
+    except (TypeError, ValueError):
+        return 0
+    matches = _matching(
+        STATUS_PENDING,
+        action.get("actor") or "",
+        action.get("action_type") or "",
+        action.get("params"),
+    )
+    stale = []
+    for row in matches:
+        try:
+            aid = int(row["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if aid != keep_id:
+            stale.append(aid)
+    _expire_ids(stale)
+    return len(stale)
 
 
 def _publish_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -174,6 +302,39 @@ def propose_action(
 
     now = time.time()
     try:
+        existing = _matching(STATUS_PENDING, actor, action_type, params or {})
+    except Exception:
+        existing = []
+    if existing:
+        try:
+            action_id = int(existing[0]["id"])
+        except (TypeError, ValueError, KeyError):
+            action_id = None
+        if action_id is not None:
+            if execute_fn is not None:
+                _execute_callbacks[action_id] = execute_fn
+            return {"pending": True, "action_id": action_id, "duplicate": True}
+
+    try:
+        rejected = _matching(STATUS_REJECTED, actor, action_type, params or {})
+    except Exception:
+        rejected = []
+    cooldown = float(AGENT_HITL_REJECT_COOLDOWN_SEC)
+    if cooldown > 0 and rejected:
+        latest = rejected[0]
+        resolved_at = float(latest.get("resolved_at") or 0)
+        if resolved_at and (now - resolved_at) < cooldown:
+            try:
+                skipped_id = int(latest["id"])
+            except (TypeError, ValueError, KeyError):
+                skipped_id = None
+            return {
+                "pending": False,
+                "skipped": "recently_rejected",
+                "action_id": skipped_id,
+            }
+
+    try:
         from app.db.connection import db_session
 
         with db_session() as conn:
@@ -253,6 +414,7 @@ def list_actions(status: str | None = None, *, limit: int = 50) -> list[dict[str
     except Exception:
         return []
     expire_old()
+    expire_duplicate_pending()
     lim = max(1, min(int(limit or 50), 200))
     sql = (
         "SELECT id, actor, action_type, params_json, reason, status, created_at, resolved_at "
@@ -344,6 +506,11 @@ async def approve_action(action_id: int) -> dict[str, Any]:
     if not transitioned:
         return {"ok": False, "error": f"Action {action_id} already {action['status']}"}
 
+    try:
+        _supersede_siblings(action)
+    except Exception as exc:
+        logger.debug("action_queue sibling expire on approve skipped: %s", exc)
+
     outcome: dict[str, Any] | None = await _execute_via_registry(action)
     if outcome is None:
         execute_fn = _execute_callbacks.pop(int(action_id), None)
@@ -395,6 +562,10 @@ def reject_action(action_id: int) -> dict[str, Any]:
         return {"ok": False, "error": f"Action {action_id} not found"}
     if not transitioned:
         return {"ok": False, "error": f"Action {action_id} already {action['status']}"}
+    try:
+        _supersede_siblings(action)
+    except Exception as exc:
+        logger.debug("action_queue sibling expire on reject skipped: %s", exc)
     _publish_event(
         "AGENT_ACTION_RESOLVED",
         {

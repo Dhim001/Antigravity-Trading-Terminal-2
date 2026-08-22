@@ -217,6 +217,20 @@ class MlTrainExecutorTests(unittest.TestCase):
         self.assertIsNone(exe._pool)
         shutdown_ml_train_pool()
 
+    def test_reset_ml_train_pool_terminates_workers(self):
+        import app.services.bots.ml_train_executor as exe
+        from unittest.mock import MagicMock
+
+        proc = MagicMock()
+        proc.is_alive.return_value = True
+        pool = MagicMock()
+        pool._processes = {1: proc}
+        exe._pool = pool
+        reset_ml_train_pool(reason="cancel", terminate_workers=True)
+        proc.terminate.assert_called_once()
+        pool.shutdown.assert_called_once()
+        self.assertIsNone(exe._pool)
+
     def test_run_in_pool_retries_after_broken_pool(self):
         import asyncio
         from concurrent.futures import Future
@@ -262,6 +276,46 @@ class MlTrainExecutorTests(unittest.TestCase):
         self.assertTrue(out.get("ok"))
         self.assertEqual(calls["n"], 2)
         reset.assert_called()
+
+    def test_run_in_pool_does_not_retry_when_cancelled(self):
+        import asyncio
+
+        from app.services.bots import ml_train_executor as exe
+
+        class BrokenProcessPool(Exception):
+            pass
+
+        calls = {"n": 0}
+        cancelled = {"v": False}
+
+        class _Pool:
+            def submit(self, fn, *args):
+                calls["n"] += 1
+                cancelled["v"] = True
+                raise BrokenProcessPool(
+                    "A child process terminated abruptly, the process pool is not usable anymore"
+                )
+
+        with patch.object(exe, "use_process_pool_for_strategy", return_value=True):
+            with patch.object(exe, "get_ml_train_pool", return_value=_Pool()):
+                with patch.object(exe, "reset_ml_train_pool") as reset:
+                    with patch("app.services.bots.ml_job_store.attach_ml_job_future"):
+                        with patch(
+                            "app.services.bots.ml_job_store.is_ml_job_cancelled",
+                            side_effect=lambda _jid: cancelled["v"],
+                        ):
+                            with patch("app.services.bots.ml_job_store.mark_ml_job_running"):
+                                out = asyncio.run(
+                                    exe._run_in_pool(
+                                        lambda: None,
+                                        job_id="job-cancel",
+                                        strategy="LSTM_DIRECTION",
+                                    )
+                                )
+        self.assertTrue(out.get("cancelled"))
+        self.assertFalse(out.get("ok"))
+        self.assertEqual(calls["n"], 1)
+        reset.assert_not_called()
 
 
 if __name__ == "__main__":

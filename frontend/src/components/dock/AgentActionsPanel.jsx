@@ -36,58 +36,70 @@ export default function AgentActionsPanel() {
 
   const decide = useCallback(
     async (action, approve) => {
-      if (!action?.id || busyId) return;
-      setBusyId(action.id);
+      const actionId = action?.id ?? action?.action_id;
+      if (actionId == null || actionId === '' || busyId) return;
+      setBusyId(actionId);
       try {
-        if (approve) {
-          await approveAgentAction(action.id);
-          toast.success(`Approved ${action.action_type} (#${action.id})`);
-        } else {
-          await rejectAgentAction(action.id);
-          toast.message(`Rejected ${action.action_type} (#${action.id})`);
+        const body = approve
+          ? await approveAgentAction(actionId)
+          : await rejectAgentAction(actionId);
+        if (!body?.ok) {
+          throw new Error(body?.error || (approve ? 'Approve failed' : 'Reject failed'));
         }
-        setActions((prev) => prev.filter((a) => a.id !== action.id));
+        if (approve) {
+          toast.success(`Approved ${action.action_type} (#${actionId})`);
+        } else {
+          toast.message(`Rejected ${action.action_type} (#${actionId})`);
+        }
+        setActions((prev) => prev.filter((a) => (a.id ?? a.action_id) !== actionId));
       } catch (err) {
         toast.error(err?.message || 'Action failed');
       } finally {
         setBusyId(null);
+        load();
       }
     },
-    [busyId],
+    [busyId, load],
   );
 
   if (actions.length === 0) return null;
 
   return (
-    <section className="algo-tab__panel" aria-label="Pending agent actions">
+    <section className="algo-tab__panel algo-tab__panel--approvals" aria-label="Pending agent actions">
       <header className="algo-tab__panel-header">
-        <span className="flex items-center gap-1.5">
-          <ShieldQuestion className="size-3.5 text-amber-500" />
-          Agent approvals
-        </span>
-        <Badge variant="secondary" className="num-mono h-5 px-1.5 text-[10px]">
+        <div className="algo-tab__panel-heading">
+          <div className="algo-tab__panel-title">
+            <ShieldQuestion size={13} className="text-amber-500" aria-hidden />
+            Agent approvals
+          </div>
+          <span className="algo-tab__panel-subtitle">HITL queue</span>
+        </div>
+        <Badge variant="secondary" className="num-mono h-5 shrink-0 px-1.5 text-[10px]">
           {actions.length}
         </Badge>
       </header>
-      <div className="flex flex-col gap-2 p-2">
+      <div className="algo-approvals-list">
         {actions.map((a) => (
-          <div
-            key={a.id}
-            className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-foreground">
-                {a.actor} · <code className="text-[11px]">{a.action_type}</code>
-              </span>
-              <span className="flex items-center gap-1">
+          <article key={a.id} className="algo-approval-card">
+            <div className="algo-approval-card__head">
+              <div className="algo-approval-card__who">
+                <span className="algo-approval-card__actor">{a.actor}</span>
+                <span className="algo-approval-card__type">{a.action_type}</span>
+              </div>
+              <div className="algo-approval-card__actions">
                 <Button
-                  size="sm"
+                  type="button"
+                  size="xs"
                   variant="default"
-                  className="h-6 gap-1 px-2 text-[11px]"
-                  disabled={busyId === a.id}
-                  onClick={() => decide(a, true)}
+                  className="algo-approval-card__approve"
+                  disabled={busyId != null}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    decide(a, true);
+                  }}
                 >
-                  {busyId === a.id ? (
+                  {busyId === (a.id ?? a.action_id) ? (
                     <Loader2 className="size-3 animate-spin" />
                   ) : (
                     <Check className="size-3" />
@@ -95,29 +107,34 @@ export default function AgentActionsPanel() {
                   Approve
                 </Button>
                 <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 gap-1 px-2 text-[11px]"
-                  disabled={busyId === a.id}
-                  onClick={() => decide(a, false)}
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="algo-approval-card__reject"
+                  disabled={busyId != null}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    decide(a, false);
+                  }}
                 >
                   <X className="size-3" />
                   Reject
                 </Button>
-              </span>
+              </div>
             </div>
             {a.reason ? (
-              <p className="mt-1 text-muted-foreground">{a.reason}</p>
+              <p className="algo-approval-card__reason">{a.reason}</p>
             ) : null}
             {a.params && Object.keys(a.params).length > 0 ? (
-              <p className="mt-0.5 truncate text-[10px] text-muted-foreground/70">
+              <p className="algo-approval-card__meta">
                 {Object.entries(a.params)
                   .slice(0, 4)
                   .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
                   .join(' · ')}
               </p>
             ) : null}
-          </div>
+          </article>
         ))}
       </div>
     </section>

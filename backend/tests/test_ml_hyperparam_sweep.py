@@ -529,6 +529,44 @@ def test_prepare_lab_champion_strips_trial_flags():
     assert skip_live_artifact_writes(clean) is False
 
 
+def test_from_scratch_requested_and_strips_donor():
+    from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
+        from_scratch_requested,
+        prepare_lab_champion_train_config,
+    )
+
+    assert from_scratch_requested({}) is False
+    assert from_scratch_requested(None) is False
+    assert from_scratch_requested({"from_scratch": False}) is False
+    assert allow_weight_warm_start({"champion_train": True}) is True
+    assert from_scratch_requested({"from_scratch": True}) is True
+    assert from_scratch_requested({"train_init": "scratch"}) is True
+    assert from_scratch_requested({"warm_start": False}) is True
+    assert allow_weight_warm_start({"from_scratch": True}) is False
+
+    clean = prepare_lab_champion_train_config({
+        "from_scratch": True,
+        "donor": {"symbol": "ETHUSD"},
+        "epochs": 80,
+    })
+    assert clean["from_scratch"] is True
+    assert "donor" not in clean
+    assert clean["epochs"] == 80
+    assert clean["skip_persist"] is False
+
+
+def test_prepare_lab_keeps_donor_when_fine_tuning():
+    from app.services.bots.ml_training_window import prepare_lab_champion_train_config
+
+    clean = prepare_lab_champion_train_config({
+        "donor": {"symbol": "ETHUSD"},
+        "champion_train": True,
+    })
+    assert clean["donor"]["symbol"] == "ETHUSD"
+    assert "from_scratch" not in clean
+
+
 def test_slim_keys_keep_best_hyperparams_for_apply(tmp_path, monkeypatch):
     """Offloaded sweep results must still expose best_hyperparams in the slim headline."""
     from app.services.bots import ml_job_store as store

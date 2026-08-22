@@ -36,6 +36,7 @@ describe('useMlLabState module', () => {
     expect(knobs).toMatchObject({
       nFolds: expect.any(Number),
       epochs: expect.any(Number),
+      trainInit: expect.stringMatching(/^(warm|scratch)$/),
     });
   });
 });

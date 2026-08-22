@@ -231,6 +231,27 @@ class TestPpoDonorWarmStart(unittest.TestCase):
         self.assertNotIn("transfer", result.get("metrics") or {})
         self.assertNotIn("transfer", result)
 
+    def test_from_scratch_ignores_donor(self):
+        from app.services.bots.rl_ppo_trainer import train_ppo_agent
+
+        _write_ppo_donor()
+        patches = _ppo_patches()
+        for p in patches:
+            p.start()
+        try:
+            result = train_ppo_agent(
+                "ADAUSD", _make_candles(300),
+                config=_ppo_config(from_scratch=True),
+                total_timesteps=2560,
+            )
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertTrue(result.get("ok"), result.get("error"))
+        self.assertNotIn("transfer", result.get("metrics") or {})
+        self.assertGreater(result["metrics"]["total_timesteps"], 640)
+
 
 class TestLstmDonorWarmStart(unittest.TestCase):
     def setUp(self):

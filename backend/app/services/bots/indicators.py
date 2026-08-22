@@ -480,9 +480,30 @@ def adx_col(length: int) -> str:
     return f"ADX_{length}"
 
 
+def _freeze_cache_value(value):
+    """Make nested config values hashable for screener / grouping dict keys.
+
+    ML defaults include ``exclude_features: []`` (and live bots often carry
+    nested ``event_policy`` / train blobs). ``tuple(sorted(d.items()))`` stays
+    unhashable when any value is a list or dict, so ``process_candles`` and
+    bar-close grouping raise ``TypeError`` and the bot never stamps last_eval.
+    """
+    if isinstance(value, dict):
+        return tuple(
+            sorted((str(k), _freeze_cache_value(v)) for k, v in value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_cache_value(v) for v in value)
+    if isinstance(value, set):
+        return tuple(sorted((_freeze_cache_value(v) for v in value), key=repr))
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    return repr(value)
+
+
 def config_cache_key(strategy: str, config: dict | None) -> tuple:
     merged = merge_strategy_config(strategy, config)
-    return tuple(sorted(merged.items()))
+    return tuple(sorted((k, _freeze_cache_value(v)) for k, v in merged.items()))
 
 
 def prepare_strategy_df(df: pd.DataFrame, strategy: str, config: dict | None) -> pd.DataFrame:

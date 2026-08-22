@@ -293,18 +293,23 @@ def shutdown_ml_train_pool() -> None:
             _pool = None
 
 
-def reset_ml_train_pool(*, reason: str = "") -> None:
+def reset_ml_train_pool(*, reason: str = "", terminate_workers: bool = False) -> None:
     """Drop a broken ProcessPoolExecutor so the next job gets a fresh pool.
 
     After an abrupt worker kill (OOM, Task Manager, admin cancel), Python marks
     the pool unusable: \"A child process terminated abruptly, the process pool
     is not usable anymore\". Clearing ``_pool`` lets ``get_ml_train_pool``
     create a new executor without restarting the whole backend.
+
+    ``terminate_workers=True`` is the Lab Cancel path: ``Future.cancel()``
+    cannot stop a running worker, so we SIGTERM/TerminateProcess the child.
     """
     global _pool
     with _pool_lock:
         if _pool is None:
             return
+        if terminate_workers:
+            _terminate_pool_workers(_pool)
         try:
             _pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -314,6 +319,32 @@ def reset_ml_train_pool(*, reason: str = "") -> None:
             "ML train process pool reset%s",
             f" ({reason})" if reason else "",
         )
+
+
+def _terminate_pool_workers(pool: ProcessPoolExecutor) -> int:
+    """Best-effort kill of ProcessPoolExecutor children. Returns how many we signalled."""
+    n = 0
+    procs = getattr(pool, "_processes", None)
+    values = []
+    try:
+        if isinstance(procs, dict):
+            values = list(procs.values())
+        elif procs:
+            values = list(procs)
+    except Exception:
+        values = []
+    for proc in values:
+        try:
+            if proc is None:
+                continue
+            alive = proc.is_alive() if callable(getattr(proc, "is_alive", None)) else True
+            if not alive:
+                continue
+            proc.terminate()
+            n += 1
+        except Exception:
+            logger.debug("ML train worker terminate failed", exc_info=True)
+    return n
 
 
 def _is_broken_pool_error(exc: BaseException) -> bool:
@@ -891,6 +922,9 @@ async def _run_in_pool(fn, *args, job_id: str | None = None, strategy: str | Non
                 return await asyncio.wrap_future(cfut)
             except Exception as exc:
                 last_exc = exc
+                # User Cancel kills the worker; do not restart the train.
+                if job_id and is_ml_job_cancelled(job_id):
+                    return {"ok": False, "cancelled": True, "error": "cancelled"}
                 # Broken pool after worker kill: recreate once. Never fall back to
                 # in-process torch (MEMORY #9/#27) — that would OOM the live feed.
                 if _is_broken_pool_error(exc):

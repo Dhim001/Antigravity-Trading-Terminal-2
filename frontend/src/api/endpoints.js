@@ -524,7 +524,6 @@ export async function approveAgentAction(actionId) {
     `/api/v1/agent/actions/${encodeURIComponent(actionId)}/approve`,
     { method: 'POST', timeoutMs: 60000, body: {} },
   );
-  if (!body?.ok) throw new Error(body?.error || 'Approve failed');
   return body;
 }
 
@@ -534,7 +533,6 @@ export async function rejectAgentAction(actionId) {
     `/api/v1/agent/actions/${encodeURIComponent(actionId)}/reject`,
     { method: 'POST', timeoutMs: 30000, body: {} },
   );
-  if (!body?.ok) throw new Error(body?.error || 'Reject failed');
   return body;
 }
 

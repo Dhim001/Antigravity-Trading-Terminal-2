@@ -1010,6 +1010,7 @@ export function AlgoTab({ hideToolbar = false }) {
         </Alert>
       )}
 
+      <div className="algo-tab__main">
       <section className="algo-tab__panel algo-tab__panel--deploy">
         <header className="algo-tab__panel-header">
           <div className="algo-tab__panel-heading">
@@ -2289,6 +2290,7 @@ export function AlgoTab({ hideToolbar = false }) {
         </DialogContent>
       </Dialog>
 
+      <div className="algo-tab__stack">
       <section className="algo-tab__panel algo-tab__panel--bots">
         <header className="algo-tab__panel-header">
           <div className="algo-tab__panel-heading">
@@ -2376,9 +2378,11 @@ export function AlgoTab({ hideToolbar = false }) {
         </ScrollTablePanel>
       </section>
 
-      <AgentActionsPanel />
-
       <BotReasoningPanel botId={selectedBotId} />
+      </div>
+
+      <div className="algo-tab__rail">
+      <AgentActionsPanel />
 
       <section className="algo-tab__panel algo-tab__panel--log">
         <header className="algo-tab__panel-header">
@@ -2468,6 +2472,8 @@ export function AlgoTab({ hideToolbar = false }) {
           </div>
         </div>
       </section>
+      </div>
+      </div>
       </div>
     </div>
   );

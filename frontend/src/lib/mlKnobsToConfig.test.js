@@ -58,6 +58,13 @@ describe('knobsToTrainConfig', () => {
     expect(knobsToTrainConfig('RL_PPO_AGENT', {}).feature_scheme).toBe('v8');
   });
 
+  it('maps train_init to from_scratch', () => {
+    expect(knobsToTrainConfig('LSTM_DIRECTION', { trainInit: 'scratch' }).from_scratch).toBe(true);
+    expect(knobsToTrainConfig('ML_SIGNAL_BOOST', { trainInit: 'warm' }).from_scratch).toBe(false);
+    expect(knobsToTrainConfig('LSTM_DIRECTION', {}).from_scratch).toBe(false);
+    expect(knobsToValidateConfig('LSTM_DIRECTION', { trainInit: 'scratch' }).from_scratch).toBeUndefined();
+  });
+
   it('clamps out-of-range values', () => {
     const out = knobsToTrainConfig('ML_SIGNAL_BOOST', { gbmMaxIter: '5000' });
     expect(out.gbm_max_iter).toBe(1000);

@@ -188,6 +188,30 @@ def next_training_window_months(months: int) -> int | None:
     return None
 
 
+def from_scratch_requested(cfg: dict | None) -> bool:
+    """True when Lab / API asked for a cold start instead of a fine-tune.
+
+    Honors ``from_scratch: true``, ``warm_start: false``, or
+    ``train_init`` in {scratch, from_scratch, cold, random}. Queue retrains
+    omit these keys and keep the existing same-symbol / donor warm-start path.
+    """
+    blob = cfg if isinstance(cfg, dict) else {}
+    val = blob.get("from_scratch")
+    if val is True:
+        return True
+    if val is False:
+        return False
+    if blob.get("warm_start") is False:
+        return True
+    init = str(blob.get("train_init") or "").strip().lower()
+    return init in ("scratch", "from_scratch", "cold", "random")
+
+
+def allow_weight_warm_start(cfg: dict | None) -> bool:
+    """False when the user asked to ignore the live champion and any donor."""
+    return not from_scratch_requested(cfg)
+
+
 def apply_champion_train_overrides(cfg: dict, raw_cfg: dict | None = None) -> dict:
     """Normalize config when Lab Apply & Retrain / Trigger sets ``champion_train``.
 
@@ -250,6 +274,11 @@ def prepare_lab_champion_train_config(config: dict | None) -> dict:
     # skip_refit may be re-set by calendar holdout below the call site
     if cfg.get("champion_train"):
         cfg.pop("skip_refit", None)
+    if from_scratch_requested(cfg):
+        cfg["from_scratch"] = True
+        # Donor transfer is the other warm-start path — drop it so /ml/train
+        # does not 400 on a leftover picker and trainers cannot load weights.
+        cfg.pop("donor", None)
     return cfg
 
 

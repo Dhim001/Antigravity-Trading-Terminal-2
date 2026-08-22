@@ -82,7 +82,19 @@ async def propose_or_execute(
             return {"executed": True, "ok": False, "error": str(exc2), "fallback": True}
 
     if outcome.get("pending"):
-        return {"pending": True, "action_id": outcome.get("action_id")}
+        return {
+            "pending": True,
+            "action_id": outcome.get("action_id"),
+            "duplicate": bool(outcome.get("duplicate")),
+        }
+
+    # Human already dismissed this decision — do NOT fall through to execute.
+    if outcome.get("skipped"):
+        return {
+            "pending": False,
+            "skipped": outcome.get("skipped"),
+            "action_id": outcome.get("action_id"),
+        }
 
     # Propose failed cleanly (e.g. DB down) — same direct-execution fallback.
     logger.warning(

@@ -101,7 +101,9 @@ def train_ml_signal_model(
     cfg = merge_strategy_config("ML_SIGNAL_BOOST", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
     from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
         apply_champion_train_overrides,
+        from_scratch_requested,
         skip_live_artifact_writes,
     )
 
@@ -120,7 +122,7 @@ def train_ml_signal_model(
     # Optuna hyperparameter transfer is handled separately (P2 #11).
     donor_recipe: dict[str, Any] | None = None
     _donor_cfg = cfg.get("donor") if isinstance(cfg.get("donor"), dict) else None
-    if _donor_cfg and _donor_cfg.get("symbol") and not wf_mode:
+    if _donor_cfg and _donor_cfg.get("symbol") and not wf_mode and allow_weight_warm_start(cfg):
         from app.services.bots import model_transfer as _mt
 
         if _mt.transfer_enabled():
@@ -346,7 +348,12 @@ def train_ml_signal_model(
     model = None
     from app.config import GBM_WARM_START_DELTA_ITERS, GBM_WARM_START_ENABLED
 
-    if GBM_WARM_START_ENABLED and not wf_mode and not skip_persist:
+    if (
+        GBM_WARM_START_ENABLED
+        and not wf_mode
+        and not skip_persist
+        and allow_weight_warm_start(cfg)
+    ):
         try:
             _prev = joblib.load(_model_path(symbol, tf))
             _prev_names = getattr(_prev, "feature_names_in_", None)
@@ -393,6 +400,8 @@ def train_ml_signal_model(
     if warm_started:
         metrics["warm_started"] = True
         metrics["warm_start_iters"] = int(getattr(model, "max_iter", 0) or 0)
+    if from_scratch_requested(cfg):
+        metrics["from_scratch"] = True
 
     if len(y_val) >= 3 and len(np.unique(y_val)) >= 2:
         y_pred_val = model.predict(X_val)

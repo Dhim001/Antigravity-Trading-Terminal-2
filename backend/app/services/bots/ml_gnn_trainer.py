@@ -351,7 +351,10 @@ def train_gnn_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("GNN_CROSS_ASSET", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
-    from app.services.bots.ml_training_window import apply_champion_train_overrides
+    from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
+        apply_champion_train_overrides,
+    )
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
@@ -454,7 +457,7 @@ def train_gnn_model(
 
     # Cross-basket donor warm-start (never for WF folds — honest OOS).
     donor_lineage: dict[str, Any] | None = None
-    if not bool(cfg.get("_wf_mode")):
+    if not bool(cfg.get("_wf_mode")) and allow_weight_warm_start(cfg):
         from app.services.bots import model_transfer as _mt
 
         _ws = _mt.load_donor_weights(

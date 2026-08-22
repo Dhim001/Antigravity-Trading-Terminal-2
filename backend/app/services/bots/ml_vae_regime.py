@@ -152,7 +152,10 @@ def train_vae_regime_model(
     raw_cfg = dict(config or {})
     cfg = merge_strategy_config("VAE_REGIME_DETECTOR", raw_cfg)
     from app.services.bots.ml_model_artifacts import normalize_model_timeframe
-    from app.services.bots.ml_training_window import apply_champion_train_overrides
+    from app.services.bots.ml_training_window import (
+        allow_weight_warm_start,
+        apply_champion_train_overrides,
+    )
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
     cfg["timeframe"] = tf
@@ -219,7 +222,7 @@ def train_vae_regime_model(
     # the regime baseline (reconstruction-error mean/std — the effective
     # "regime head") is always re-fit on target data below. Never for WF folds.
     donor_lineage: dict[str, Any] | None = None
-    if not bool(cfg.get("_wf_mode")):
+    if not bool(cfg.get("_wf_mode")) and allow_weight_warm_start(cfg):
         from app.services.bots import model_transfer as _mt
 
         _ws = _mt.load_donor_weights(

@@ -113,6 +113,36 @@ class MlJobStoreTests(unittest.TestCase):
         finally:
             cleanup_ml_progress(path)
 
+    def test_cancel_running_process_pool_kills_worker(self):
+        from unittest.mock import Mock
+
+        path = make_progress_path("kill")
+        try:
+            job_id = create_ml_job(
+                kind="train",
+                strategy="LSTM_DIRECTION",
+                symbol="BTCUSDT",
+                progress_path=path,
+            )
+            mark_ml_job_running(job_id)
+            fut = Mock()
+            fut.running.return_value = True
+            fut.done.return_value = False
+            fut.cancel.return_value = False
+            attach_ml_job_future(job_id, fut)
+            with patch(
+                "app.services.bots.ml_train_executor.reset_ml_train_pool",
+            ) as reset:
+                outcome = request_ml_job_cancel(job_id)
+            reset.assert_called_once()
+            self.assertTrue(reset.call_args.kwargs.get("terminate_workers"))
+            self.assertTrue(outcome.get("immediate"))
+            self.assertTrue(outcome.get("force_killed"))
+            self.assertEqual(get_ml_job(job_id)["status"], "cancelled")
+            self.assertTrue(ml_cancel_requested(path))
+        finally:
+            cleanup_ml_progress(path)
+
     def test_counts_and_list(self):
         create_ml_job(kind="train", strategy="A", symbol="X")
         j2 = create_ml_job(kind="validate", strategy="B", symbol="Y")

@@ -5,6 +5,37 @@ export const DEEP_ML_STRATEGIES = new Set(
   ML_STRATEGY_IDS.filter((id) => isDeepMlStrategy(id)),
 );
 
+export const ML_LAB_TRAIN_INIT_KEY = 'ml-lab-train-init';
+
+/** Lab train init: resume champion weights vs random init + full budget. */
+export function parseTrainInit(value, fallback = 'warm') {
+  const raw = String(value ?? fallback).trim().toLowerCase();
+  if (raw === 'scratch' || raw === 'from_scratch' || raw === 'cold' || raw === 'random') {
+    return 'scratch';
+  }
+  return 'warm';
+}
+
+export function readStoredTrainInit() {
+  try {
+    const v = window.localStorage.getItem(ML_LAB_TRAIN_INIT_KEY);
+    if (v === 'scratch' || v === 'warm') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'warm';
+}
+
+export function persistTrainInit(value) {
+  const next = parseTrainInit(value);
+  try {
+    window.localStorage.setItem(ML_LAB_TRAIN_INIT_KEY, next);
+  } catch {
+    /* ignore */
+  }
+  return next;
+}
+
 /** Defaults: Train + Validate share production capacity (accuracy-first). */
 export function defaultAdvancedKnobs(strategy, kind = 'validate') {
   const isRl = strategy === 'RL_PPO_AGENT';
@@ -31,6 +62,7 @@ export function defaultAdvancedKnobs(strategy, kind = 'validate') {
     eventFilter: 'cusum',
     cusumThreshold: 1,
     featureScheme: 'v8',
+    trainInit: readStoredTrainInit(),
   };
 }
 
@@ -156,6 +188,7 @@ export function syncAdvancedForWindow(prev, strategy, monthsValue, tfValue) {
     eventFilter: prev?.eventFilter ?? base.eventFilter,
     cusumThreshold: prev?.cusumThreshold ?? base.cusumThreshold,
     featureScheme: prev?.featureScheme ?? base.featureScheme,
+    trainInit: parseTrainInit(prev?.trainInit ?? base.trainInit),
     pboMaxCombos: prev?.pboMaxCombos ?? base.pboMaxCombos,
   };
 }

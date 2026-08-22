@@ -5,6 +5,7 @@ Statuses: queued | running | done | error | cancelled
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -14,6 +15,8 @@ import uuid
 from concurrent.futures import Future
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _STATUSES = frozenset({"queued", "running", "done", "error", "cancelled"})
 _TERMINAL = frozenset({"done", "error", "cancelled"})
@@ -471,10 +474,14 @@ def ml_job_counts() -> dict[str, int]:
 
 
 def set_ml_job_progress_path(job_id: str, progress_path: str | None) -> None:
+    snapshot = None
     with _lock:
         job = _jobs.get(job_id)
         if job:
             job["progress_path"] = progress_path
+            snapshot = dict(job)
+    if snapshot:
+        _persist_ml_job_row(snapshot)
 
 
 def attach_ml_job_future(job_id: str, future: Future) -> None:
@@ -599,8 +606,21 @@ def is_ml_job_cancelled(job_id: str) -> bool:
         return job.get("status") == "cancelled" or bool(job.get("cancel_requested"))
 
 
+def finish_ml_job_if_cancelled(job_id: str) -> bool:
+    """If cancel was requested, mark the job cancelled. Returns True when done."""
+    if not is_ml_job_cancelled(job_id):
+        return False
+    finish_ml_job(
+        job_id,
+        "cancelled",
+        result={"ok": False, "cancelled": True, "error": "cancelled"},
+        error="cancelled",
+    )
+    return True
+
+
 def request_ml_job_cancel(job_id: str) -> dict[str, Any]:
-    """Request cooperative cancel. Returns {ok, cancelled, status, error?}."""
+    """Request cancel. Queued jobs stop immediately; running process-pool workers are killed."""
     from app.services.bots.ml_job_progress import request_ml_cancel_file
 
     if not job_id:
@@ -621,7 +641,9 @@ def request_ml_job_cancel(job_id: str) -> dict[str, Any]:
         job["cancel_requested"] = True
         progress_path = job.get("progress_path")
         fut = _futures.get(job_id)
+        snapshot = dict(job)
 
+    _persist_ml_job_row(snapshot)
     request_ml_cancel_file(progress_path)
 
     # Queued (not yet running in the pool): try Future.cancel().
@@ -629,24 +651,44 @@ def request_ml_job_cancel(job_id: str) -> dict[str, Any]:
     if fut is not None and not fut.running() and not fut.done():
         cancelled_future = bool(fut.cancel())
 
+    force_killed = False
+    if not cancelled_future and fut is not None and fut.running():
+        # ProcessPoolExecutor cannot interrupt sklearn.fit / a CUDA epoch.
+        # Kill the worker; _run_in_pool treats BrokenProcessPool + cancel as cancelled.
+        try:
+            from app.services.bots.ml_train_executor import reset_ml_train_pool
+
+            reset_ml_train_pool(
+                reason=f"user cancel {job_id}",
+                terminate_workers=True,
+            )
+            force_killed = True
+        except Exception:
+            logger.debug("force-stop ML train pool on cancel failed", exc_info=True)
+
     with _lock:
         job = _jobs.get(job_id)
         if not job:
             return {"ok": True, "cancelled": True, "status": "cancelled"}
-        if cancelled_future or job.get("status") == "queued":
-            # Mark cancelled; persist once via finish_ml_job (single run-history insert).
+        if cancelled_future or job.get("status") == "queued" or force_killed:
             job["cancel_requested"] = True
             was_queued = job.get("status") == "queued"
         else:
             was_queued = False
 
-    if cancelled_future or was_queued:
+    if cancelled_future or was_queued or force_killed:
         finish_ml_job(job_id, "cancelled", error="cancelled")
-        return {"ok": True, "cancelled": True, "status": "cancelled", "immediate": True}
+        return {
+            "ok": True,
+            "cancelled": True,
+            "status": "cancelled",
+            "immediate": True,
+            **({"force_killed": True} if force_killed else {}),
+        }
 
     with _lock:
         job = _jobs.get(job_id)
-        # Running — cooperative; status stays running until worker exits.
+        # In-process (RL) or pre-dispatch fetch — cooperative via the cancel file.
         return {
             "ok": True,
             "cancelled": False,

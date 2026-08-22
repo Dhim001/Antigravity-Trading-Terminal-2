@@ -1,11 +1,11 @@
 /**
  * Persistent ML batch progress strip — rendered in the Model Training panel
  * whenever a server batch is active or recently finished. The Batch Train
- * dialog owns the detailed view; this strip keeps progress visible across
- * dialog closes, dock remounts, and reloads (state lives in mlBatchTracker).
+ * dialog owns the detailed view; this strip is the minimized form of that
+ * panel so the rest of the app stays usable during a run.
  */
 import { useSyncExternalStore } from 'react';
-import { Layers, X } from 'lucide-react';
+import { Layers, Maximize2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getStrategyMeta } from '@/config/strategies';
 import { deriveServerProgress } from '@/components/ml-lab/batchTrainServerRunner';
@@ -15,6 +15,7 @@ import {
   getMlBatchTracker,
   subscribeMlBatchTracker,
 } from '@/lib/mlBatchTracker';
+import { cn } from '@/lib/utils';
 
 export default function MlBatchStrip({ onView }) {
   const tracker = useSyncExternalStore(
@@ -36,6 +37,7 @@ export default function MlBatchStrip({ onView }) {
   const stalled = Boolean(tracker.active && batch?.stalled);
   const reconnecting = tracker.active && tracker.pollErrors > 2;
   const barPct = prog.total > 0 ? Math.round((prog.index / prog.total) * 100) : 0;
+  const canMaximize = typeof onView === 'function';
 
   if (tracker.terminal) {
     const lost = tracker.terminal.status === 'lost';
@@ -47,7 +49,7 @@ export default function MlBatchStrip({ onView }) {
             ? `Batch tracking lost — ${tracker.terminal.error || 'batch unavailable'}`
             : formatBatchTrainSummary(tracker.terminal)}
         </span>
-        {!lost && tracker.terminal.batchId && onView && (
+        {!lost && tracker.terminal.batchId && canMaximize && (
           <Button
             type="button"
             variant="ghost"
@@ -73,7 +75,12 @@ export default function MlBatchStrip({ onView }) {
   }
 
   return (
-    <div className="ml-batch-strip" data-testid="ml-batch-strip">
+    <div
+      className={cn('ml-batch-strip', canMaximize && 'ml-batch-strip--interactive')}
+      data-testid="ml-batch-strip"
+      title={canMaximize ? 'Maximize batch train panel' : undefined}
+      onClick={canMaximize ? () => onView(tracker.batchId) : undefined}
+    >
       <Layers size={13} aria-hidden className="shrink-0" />
       <span className="ml-batch-strip__text num-mono">
         Batch {tracker.symbol || ''} — {prog.index}/{prog.total}
@@ -91,15 +98,20 @@ export default function MlBatchStrip({ onView }) {
       >
         <span className="ml-batch-strip__bar-fill" style={{ width: `${barPct}%` }} />
       </span>
-      {onView && (
+      {canMaximize && (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-6 px-2 text-[0.65rem]"
-          onClick={() => onView(tracker.batchId)}
+          className="h-6 gap-1 px-2 text-[0.65rem]"
+          title="Maximize batch train panel"
+          onClick={(e) => {
+            e.stopPropagation();
+            onView(tracker.batchId);
+          }}
         >
-          View
+          <Maximize2 size={12} aria-hidden />
+          Maximize
         </Button>
       )}
     </div>

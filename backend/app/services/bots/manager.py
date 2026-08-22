@@ -166,6 +166,8 @@ class BotManagerService:
                 "last_signal_bar_time": bot.get("last_signal_bar_time"),
                 "last_signal_at": bot.get("last_signal_at"),
                 "last_tick_signal_at": bot.get("last_tick_signal_at"),
+                "last_eval_at": bot.get("last_eval_at"),
+                "last_bar_processed": bot.get("last_bar_processed"),
             }
             for bot_id, bot in self.active_bots.items()
         }
@@ -198,6 +200,12 @@ class BotManagerService:
             )
             self.active_bots[bot_id]["last_tick_signal_at"] = (
                 prev["last_tick_signal_at"] if prev else 0
+            )
+            self.active_bots[bot_id]["last_eval_at"] = (
+                prev["last_eval_at"] if prev else None
+            )
+            self.active_bots[bot_id]["last_bar_processed"] = (
+                prev["last_bar_processed"] if prev else None
             )
             mode = (row["execution_mode"] or "BAR_CLOSE").upper()
             self.active_bots[bot_id]["execution_mode"] = mode
@@ -1015,20 +1023,44 @@ class BotManagerService:
             bot_strategy = bot["strategy"]
             bot_config = bot.get("config", {})
             strat_key = normalize_strategy_name(bot_strategy)
-            key = (strat_key, config_cache_key(strat_key, bot_config))
+            try:
+                key = (strat_key, config_cache_key(strat_key, bot_config))
+            except TypeError as exc:
+                self.logger.error(
+                    "Screener cache key unhashable for %s %s: %s",
+                    str(bot_id)[:8],
+                    strat_key,
+                    exc,
+                )
+                continue
             screener_groups.setdefault(key, []).append((bot_id, bot))
 
         for (strat_key, _), bot_list in screener_groups.items():
             sample_bot = bot_list[0][1]
             bot_config = sample_bot.get("config", {})
-            df = await asyncio.to_thread(
-                self.screener.process_candles,
-                symbol,
-                ohlcv_data,
-                bot_config,
-                strat_key,
-            )
+            try:
+                df = await asyncio.to_thread(
+                    self.screener.process_candles,
+                    symbol,
+                    ohlcv_data,
+                    bot_config,
+                    strat_key,
+                )
+            except Exception as exc:
+                self.logger.exception(
+                    "process_candles failed for %s %s: %s",
+                    symbol,
+                    strat_key,
+                    exc,
+                )
+                continue
             if df.empty or len(df) < 2:
+                self.logger.warning(
+                    "Screener produced no bars for %s %s (ohlcv=%s) — skipping eval",
+                    symbol,
+                    strat_key,
+                    len(ohlcv_data or []),
+                )
                 continue
 
             for bot_id, bot in bot_list:
@@ -1056,6 +1088,12 @@ class BotManagerService:
                 pos_size = float(bot_pos.get("size") or 0.0)
                 eval_row["_current_side"] = "BUY" if pos_size > 0 else ("SELL" if pos_size < 0 else "NONE")
                 eval_row["_symbol"] = symbol
+
+                # Liveness: stamp before calendar skip so a RUNNING equity bot
+                # outside RTH is not indistinguishable from a dead eval loop.
+                bot["last_eval_at"] = time.time()
+                if bar_time is not None:
+                    bot["last_bar_processed"] = bar_time
 
                 # Equity RTH: skip entry evaluation when flat outside the session.
                 # Use wall-clock (not bar time) so stale last-RTH candles after the
@@ -1112,11 +1150,6 @@ class BotManagerService:
                 # opened_at and candle bar_time are both unix seconds; do not mix with ms.
                 signal = None
                 signal_data = {}
-                # Bot liveness: stamp every bar evaluation so a RUNNING bot that
-                # stops evaluating (dead loop / stalled feed) is detectable.
-                bot["last_eval_at"] = time.time()
-                if bar_time is not None:
-                    bot["last_bar_processed"] = bar_time
                 time_stop_bars = int((bot_config or {}).get("time_stop_bars") or 0)
                 if pos_size != 0 and time_stop_bars > 0:
                     from app.services.bots.position_duration import bars_held_since_open

@@ -13,6 +13,7 @@ import {
   PanelLeft,
   Play,
   RefreshCw,
+  Square,
   Workflow,
   XCircle,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ import { DeployReadinessStrip, DataCalendarStrip } from '@/components/ml-lab/MlD
 import { JobProgressBar, JobPollLog, POLL_LOG_PREF_KEY } from '@/components/ml-lab/MlJobProgress';
 import { DatasetBrowser } from '@/components/ml-lab/MlDatasetBrowser';
 import { MlTransferDonorPicker } from '@/components/ml-lab/MlTransferDonorPicker';
+import { MlTrainInitToggle } from '@/components/ml-lab/MlTrainInitToggle';
 import { buildDonorConfig } from '@/lib/modelTransfer';
 import { MlRetrainQueue } from '@/components/ml-lab/MlRetrainQueue';
 import { MlTrainRunsTable } from '@/components/ml-lab/MlTrainRunsTable';
@@ -53,10 +55,12 @@ import {
   estimateValidateBars,
   suggestedNFolds,
   fmtMetric,
+  parseTrainInit,
 } from '@/components/ml-lab/MlLabConstants';
 import { isAbortError } from '@/api/client';
 import { getStrategyMeta, isMlStrategy } from '@/config/strategies';
 import { buildChallengerHint } from '@/lib/mlChallengerHint';
+import { knobsToTrainConfig } from '@/lib/mlKnobsToConfig';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
@@ -344,7 +348,6 @@ export default function ModelTrainingDashboard({
     const knobs = (configOverride && typeof configOverride === 'object')
       ? configOverride
       : (strat === strategy ? advanced : defaultAdvancedKnobs(strat, 'train'));
-    const trainDefaults = defaultAdvancedKnobs(strat, 'train');
     const hp = hyperparams && typeof hyperparams === 'object' ? hyperparams : {};
     // Queue / decay retrain only: champion write + live-model HP reuse (no Lab knob overlay).
     // Apply & Retrain keeps Lab knobs + Optuna hp — do NOT treat championTrain as reuseLive
@@ -354,14 +357,18 @@ export default function ModelTrainingDashboard({
     localJobWaiterRef.current = true;
     let trainUiCompleted = false;
     let trainOk = false;
+    const fromScratch = !reuseLive && parseTrainInit(knobs.trainInit) === 'scratch';
+    const trainKnobConfig = knobsToTrainConfig(strat, knobs);
     try {
       if (DEEP_ML_STRATEGIES.has(strat) || strat === 'RL_PPO_AGENT' || strat === 'ML_SIGNAL_BOOST') {
         toast.message(
           reuseLive
             ? `Retrain ${strat} with saved model hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
-            : isChampion
-              ? `Champion retrain ${strat} with tuned hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
-              : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
+            : fromScratch
+              ? `Training ${strat} from scratch… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
+              : isChampion
+                ? `Champion retrain ${strat} with tuned hyperparams… up to ${formatMlJobBudgetLabel(trainTimeoutMs)}`
+                : `Training ${strat}… up to ${formatMlJobBudgetLabel(trainTimeoutMs)} (CUDA if the backend torch build supports it)`,
         );
       }
       const baseConfig = reuseLive
@@ -381,37 +388,7 @@ export default function ModelTrainingDashboard({
             champion_train: isChampion,
             skip_persist: false,
             skip_snapshot: false,
-            ...(strat === 'RL_PPO_AGENT'
-              ? {
-                  total_timesteps: parsePositiveInt(
-                    knobs.totalTimesteps, trainDefaults.totalTimesteps, { min: 256, max: 500_000 },
-                  ),
-                  hidden_dim: parsePositiveInt(
-                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                  ),
-                }
-              : {}),
-            ...(DEEP_ML_STRATEGIES.has(strat)
-              ? {
-                  epochs: parsePositiveInt(knobs.epochs, trainDefaults.epochs, { min: 1, max: 500 }),
-                  early_stop_patience: parsePositiveInt(
-                    knobs.earlyStopPatience, trainDefaults.earlyStopPatience, { min: 1, max: 100 },
-                  ),
-                  hidden_dim: parsePositiveInt(
-                    knobs.hiddenDim, trainDefaults.hiddenDim, { min: 32, max: 1024 },
-                  ),
-                  ...(strat === 'TRANSFORMER_SIGNAL'
-                    ? { d_model: parsePositiveInt(knobs.hiddenDim, 128, { min: 32, max: 512 }) }
-                    : {}),
-                  ...(strat === 'TCN_MULTI_HORIZON' ? { num_blocks: 6 } : {}),
-                }
-              : {}),
-            ...(strat === 'ML_SIGNAL_BOOST'
-              ? {
-                  gbm_max_iter: parsePositiveInt(knobs.gbmMaxIter, 300, { min: 40, max: 1000 }),
-                  gbm_max_depth: parsePositiveInt(knobs.gbmMaxDepth, 6, { min: 3, max: 12 }),
-                }
-              : {}),
+            ...trainKnobConfig,
             ...hp,
             skip_persist: false,
             skip_snapshot: false,
@@ -423,17 +400,21 @@ export default function ModelTrainingDashboard({
                   ? { use_optimized_hyperparams: true }
                   : {}
               )),
+            from_scratch: fromScratch,
           };
       // Cross-asset donor warm-start — only for the interactively selected
       // pair (batch/queue trains pass their own frozen knob snapshot).
-      const donorConfig = buildDonorConfig({
-        enabled: donorSel.enabled && strat === strategy && symbol === activeSymbol,
-        strategy: strat,
-        donorSymbol: donorSel.symbol,
-        donorVersionId: donorSel.versionId,
-        scalerStrategy: donorSel.scalerStrategy,
-        freezeTrunk: donorSel.freezeTrunk,
-      });
+      // From-scratch trains ignore donors even if the picker is still on.
+      const donorConfig = !fromScratch && !reuseLive
+        ? buildDonorConfig({
+            enabled: donorSel.enabled && strat === strategy && symbol === activeSymbol,
+            strategy: strat,
+            donorSymbol: donorSel.symbol,
+            donorVersionId: donorSel.versionId,
+            scalerStrategy: donorSel.scalerStrategy,
+            freezeTrunk: donorSel.freezeTrunk,
+          })
+        : null;
       if (donorConfig) baseConfig.donor = donorConfig;
       const body = await submitMlTrainJob({
         symbol,
@@ -489,6 +470,8 @@ export default function ModelTrainingDashboard({
         if (m.train_samples != null && m.val_samples != null) {
           metricBits.push(`${m.train_samples}/${m.val_samples} tv`);
         }
+        if (m.from_scratch) metricBits.push('from scratch');
+        else if (m.warm_started) metricBits.push('fine-tuned');
         const metricNote = metricBits.length ? ` · ${metricBits.join(' · ')}` : '';
         // Cross-asset transfer outcome: jumpstart / breakeven / KL rejection.
         const tr = m.transfer && typeof m.transfer === 'object' ? m.transfer : null;
@@ -1267,7 +1250,7 @@ export default function ModelTrainingDashboard({
             job={jobProgress}
             serverProgress={serverProgress}
             jobId={activeJobId}
-            onCancel={activeJobId ? handleCancelJob : undefined}
+            onCancel={jobProgress?.active ? handleCancelJob : undefined}
             cancelling={cancellingJob}
           />
         )}
@@ -1316,11 +1299,22 @@ export default function ModelTrainingDashboard({
           <p className="text-xs text-destructive">{status.error}</p>
         )}
 
+        <MlTrainInitToggle
+          value={advanced.trainInit}
+          disabled={training || validating || busyElsewhere}
+          onChange={(next) => setAdvanced((a) => ({ ...a, trainInit: next }))}
+        />
+
         <MlTransferDonorPicker
           strategy={strategy}
           symbol={activeSymbol}
           timeframe={trainingTimeframe}
-          disabled={training || validating || busyElsewhere || !activeSymbol}
+          disabled={training || validating || busyElsewhere || !activeSymbol || parseTrainInit(advanced.trainInit) === 'scratch'}
+          forceOffReason={
+            parseTrainInit(advanced.trainInit) === 'scratch'
+              ? 'From scratch is selected — donor transfer is ignored'
+              : null
+          }
           value={donorSel}
           onChange={setDonorSel}
         />
@@ -1336,11 +1330,27 @@ export default function ModelTrainingDashboard({
             type="button"
             size="sm"
             className="h-8 text-xs gap-1"
-            disabled={training || validating || busyElsewhere || !activeSymbol}
-            onClick={handleTrain}
+            disabled={
+              validating
+              || busyElsewhere
+              || !activeSymbol
+              || (training && cancellingJob)
+            }
+            onClick={() => {
+              if (training) {
+                void handleCancelJob();
+                return;
+              }
+              void handleTrain();
+            }}
+            title={training ? 'Stop this retrain' : 'Train and write a new champion'}
           >
-            {training ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            Trigger retrain
+            {training
+              ? (cancellingJob
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Square size={14} />)
+              : <Play size={14} />}
+            {training ? (cancellingJob ? 'Cancelling…' : 'Cancel retrain') : 'Trigger retrain'}
           </Button>
           <Button
             type="button"
@@ -1399,6 +1409,9 @@ export default function ModelTrainingDashboard({
           Trigger retrain and Walk-forward Validate both use the Training window above
           ({Number(advanced.validateMaxBars).toLocaleString()} bars at capacity parity)
           so OOS metrics match production Train depth.
+          {parseTrainInit(advanced.trainInit) === 'scratch'
+            ? ' Start from is From scratch — this writes a new champion without resuming weights.'
+            : ' Start from Fine-tune resumes the live champion when one exists; pick From scratch for a full cold train.'}
         </p>
       </section>
 

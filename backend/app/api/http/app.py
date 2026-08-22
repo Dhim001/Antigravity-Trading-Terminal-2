@@ -836,9 +836,13 @@ async def ml_train_handler(request: Request) -> JSONResponse:
         update_ml_job_progress(job_id, {"pct": 1, "phase": "queued", "detail": "starting"})
 
         async def _bg_train() -> None:
+            from app.services.bots.ml_job_store import finish_ml_job_if_cancelled
+
             cfg = dict(config)
             try:
                 mark_ml_job_running(job_id)
+                if finish_ml_job_if_cancelled(job_id):
+                    return
                 write_ml_progress(
                     progress_path, pct=2, phase="fetch",
                     detail=f"candles ≤{bar_limit} bars",
@@ -850,6 +854,8 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                 candles = await _fetch_training_candles(
                     state, symbol, tf=tf, months=win_months, limit=bar_limit, config=cfg,
                 )
+                if finish_ml_job_if_cancelled(job_id):
+                    return
                 if len(candles) < 200:
                     finish_ml_job(
                         job_id,
@@ -864,6 +870,8 @@ async def ml_train_handler(request: Request) -> JSONResponse:
                 candles = await asyncio.to_thread(
                     _enrich_training_candles, symbol, candles, strategy, cfg,
                 )
+                if finish_ml_job_if_cancelled(job_id):
+                    return
                 window_meta = summarize_training_window(
                     candles, win_months, bar_limit=bar_limit, timeframe=tf,
                     calendar=cfg.get("_data_calendar") if isinstance(cfg.get("_data_calendar"), dict) else None,
@@ -1403,9 +1411,13 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
             update_ml_job_progress(job_id, {"pct": 1, "phase": "queued", "detail": "starting"})
 
             async def _bg_validate() -> None:
+                from app.services.bots.ml_job_store import finish_ml_job_if_cancelled
+
                 cfg = dict(config)
                 try:
                     mark_ml_job_running(job_id)
+                    if finish_ml_job_if_cancelled(job_id):
+                        return
                     write_ml_progress(
                         progress_path, pct=2, phase="fetch",
                         detail=f"candles ≤{vmax} bars",
@@ -1423,6 +1435,8 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                         config=cfg,
                         n_folds=n_folds,
                     )
+                    if finish_ml_job_if_cancelled(job_id):
+                        return
                     write_ml_progress(progress_path, pct=4, phase="enrich", detail="indicators")
                     update_ml_job_progress(
                         job_id, {"pct": 4, "phase": "enrich", "detail": "indicators"},
@@ -1455,6 +1469,8 @@ async def ml_validate_handler(request: Request) -> JSONResponse:
                         progress_path, pct=5, phase="validate",
                         detail=f"walk-forward · {len(candles)} bars",
                     )
+                    if finish_ml_job_if_cancelled(job_id):
+                        return
                     await submit_validate_job(
                         strategy,
                         symbol,
@@ -3652,7 +3668,8 @@ async def agent_action_approve_handler(request: Request) -> JSONResponse:
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "Invalid action id"}, status_code=400)
     res = await action_queue.approve_action(action_id)
-    return JSONResponse(res)
+    status = 200 if res.get("ok") else (404 if "not found" in str(res.get("error") or "").lower() else 409)
+    return JSONResponse(res, status_code=status)
 
 
 async def agent_action_reject_handler(request: Request) -> JSONResponse:
@@ -3664,7 +3681,8 @@ async def agent_action_reject_handler(request: Request) -> JSONResponse:
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "Invalid action id"}, status_code=400)
     res = await asyncio.to_thread(action_queue.reject_action, action_id)
-    return JSONResponse(res)
+    status = 200 if res.get("ok") else (404 if "not found" in str(res.get("error") or "").lower() else 409)
+    return JSONResponse(res, status_code=status)
 
 
 async def copilot_history_handler(request: Request) -> JSONResponse:
@@ -3793,6 +3811,12 @@ def create_http_app(state: AppState) -> Starlette:
 
     app = Starlette(routes=starlette_routes)
     app.state.terminal = state
+    try:
+        from app.services.agent import action_queue as _action_queue
+
+        _action_queue.set_state_provider(lambda: state)
+    except Exception:
+        pass
 
     if HTTP_CORS_ORIGINS:
         origins = (

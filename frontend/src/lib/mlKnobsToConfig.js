@@ -10,7 +10,7 @@
  */
 
 import { isDeepMlStrategy } from '@/config/strategies';
-import { defaultAdvancedKnobs, parsePositiveInt } from '@/components/ml-lab/MlLabConstants';
+import { defaultAdvancedKnobs, parsePositiveInt, parseTrainInit } from '@/components/ml-lab/MlLabConstants';
 
 function srcOrEmpty(knobs) {
   return knobs && typeof knobs === 'object' ? knobs : {};
@@ -72,6 +72,7 @@ export function knobsToTrainConfig(strategy, knobs) {
     );
   }
   out.feature_scheme = parseFeatureScheme(src.featureScheme, defaults.featureScheme);
+  out.from_scratch = parseTrainInit(src.trainInit, defaults.trainInit) === 'scratch';
   return out;
 }
 

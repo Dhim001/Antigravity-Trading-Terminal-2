@@ -90,6 +90,56 @@ class TestDeskSupervisor(unittest.TestCase):
         self.assertEqual(pending[0]["actor"], "RegimeRotation")
         self.assertEqual(pending[0]["action_type"], "rotate_strategy")
 
+    def test_recent_reject_does_not_execute_or_requeue(self):
+        _set_auto(False)
+        calls = []
+
+        async def _exec():
+            calls.append(1)
+
+        first = asyncio.run(
+            desk_supervisor.propose_or_execute(
+                "RiskSentinel", "pause_bot", {"bot_id": "b-1"}, "streak", _exec
+            )
+        )
+        self.assertTrue(first.get("pending"))
+        self.assertTrue(action_queue.reject_action(first["action_id"]).get("ok"))
+
+        again = asyncio.run(
+            desk_supervisor.propose_or_execute(
+                "RiskSentinel", "pause_bot", {"bot_id": "b-1"}, "streak", _exec
+            )
+        )
+        self.assertEqual(again.get("skipped"), "recently_rejected")
+        self.assertFalse(again.get("pending"))
+        self.assertFalse(again.get("executed"))
+        self.assertEqual(calls, [])
+        self.assertEqual(action_queue.list_actions("pending"), [])
+
+    def test_duplicate_propose_returns_existing_pending(self):
+        _set_auto(False)
+        calls = []
+
+        def _exec():
+            calls.append(1)
+
+        first = asyncio.run(
+            desk_supervisor.propose_or_execute(
+                "RiskSentinel", "pause_bot", {"bot_id": "b-dup"}, "streak", _exec
+            )
+        )
+        second = asyncio.run(
+            desk_supervisor.propose_or_execute(
+                "RiskSentinel", "pause_bot", {"bot_id": "b-dup"}, "streak", _exec
+            )
+        )
+        self.assertTrue(first.get("pending"))
+        self.assertTrue(second.get("pending"))
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(first.get("action_id"), second.get("action_id"))
+        self.assertEqual(calls, [])
+        self.assertEqual(len(action_queue.list_actions("pending")), 1)
+
     def test_emergency_bypasses_queue_when_flag_off(self):
         _set_auto(False)
         calls = []

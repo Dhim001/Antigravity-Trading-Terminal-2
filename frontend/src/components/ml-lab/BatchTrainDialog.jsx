@@ -2,6 +2,7 @@
  * Batch Train dialog — queue multiple ML strategies sequentially.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Minus } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -278,6 +279,10 @@ export default function BatchTrainDialog({
     return m;
   }, [inventory]);
 
+  const handleMinimize = () => {
+    onOpenChange?.(false);
+  };
+
   const handleCancel = async () => {
     if (running) {
       // Soft-stop first so the queue never starts another strategy, then ask
@@ -541,14 +546,32 @@ export default function BatchTrainDialog({
   ];
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!running) onOpenChange?.(v); }}>
-      <DialogContent className="batch-train-dialog sm:max-w-md" showCloseButton={!running}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="batch-train-dialog sm:max-w-md"
+        showCloseButton={!running}
+      >
+        {running ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="absolute top-2 right-2"
+            title="Minimize — keep training in the background"
+            aria-label="Minimize batch train panel"
+            onClick={handleMinimize}
+          >
+            <Minus />
+          </Button>
+        ) : null}
         <DialogHeader>
           <DialogTitle>
             Batch Train — {symbol || '—'} ({timeframe}, {windowLabel(trainingWindow)})
           </DialogTitle>
           <DialogDescription>
-            Queue multiple ML strategies. Failures skip to the next strategy.
+            {running
+              ? 'Training continues if you minimize. Use Cancel batch to stop the run.'
+              : 'Queue multiple ML strategies. Failures skip to the next strategy.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -667,8 +690,24 @@ export default function BatchTrainDialog({
         )}
 
         <DialogFooter>
-          <Button type="button" variant="outline" size="sm" onClick={handleCancel}>
-            Cancel
+          {running ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={handleMinimize}
+              title="Hide this panel — training keeps running"
+            >
+              Minimize
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleCancel}
+          >
+            {running ? 'Cancel batch' : 'Cancel'}
           </Button>
           {!running && failedIds.length > 0 && (
             <Button
