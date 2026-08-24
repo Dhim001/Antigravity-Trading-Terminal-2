@@ -231,21 +231,37 @@ def _update_chandelier_stop(
     bar_high: float,
     atr: float,
     multiplier: float = 3.0,
+    *,
+    arm_r: float = 0.0,
+    tighten_r: float = 2.0,
+    tighten_mult: float = 2.0,
+    stop_loss_percent: float | None = None,
 ) -> None:
     """Long Chandelier Exit: trail from highest-high minus N×ATR.
 
-    When PnL already exceeds 2×ATR gained (the 'profit-lock' zone), tighten
-    the multiplier to 2× to protect unrealised gains more aggressively.
+    When ``arm_r <= 0`` this matches the legacy immediate trail (tighten to
+    2×ATR after +2 ATR of profit). When ``arm_r > 0`` the initial stop is
+    held until +arm_r, then floored at breakeven and trailed.
     """
-    if atr <= 0:
-        return
+    from app.services.bots.profit_lock import ratchet_chandelier_stop
+
     position["high_watermark"] = max(position.get("high_watermark", bar_high), bar_high)
-    # Tighten once price has moved >2×ATR in our favour (profit-lock).
     entry_price = float(position.get("entry_price") or bar_high)
-    profit_atr_units = (position["high_watermark"] - entry_price) / atr
-    effective_mult = 2.0 if profit_atr_units >= 2.0 else multiplier
-    new_sl = position["high_watermark"] - effective_mult * atr
-    position["stop_loss"] = max(position.get("stop_loss") or 0, new_sl)
+    new_sl = ratchet_chandelier_stop(
+        is_long=True,
+        avg_price=entry_price,
+        extreme=position["high_watermark"],
+        atr=atr,
+        current_sl=position.get("stop_loss"),
+        multiplier=multiplier,
+        arm_r=arm_r,
+        tighten_r=tighten_r,
+        tighten_mult=tighten_mult,
+        stop_loss_percent=stop_loss_percent,
+        entry_atr=position.get("entry_atr"),
+    )
+    if new_sl is not None:
+        position["stop_loss"] = new_sl
 
 
 def _update_chandelier_stop_short(
@@ -253,17 +269,32 @@ def _update_chandelier_stop_short(
     bar_low: float,
     atr: float,
     multiplier: float = 3.0,
+    *,
+    arm_r: float = 0.0,
+    tighten_r: float = 2.0,
+    tighten_mult: float = 2.0,
+    stop_loss_percent: float | None = None,
 ) -> None:
     """Short Chandelier Exit: trail from lowest-low plus N×ATR."""
-    if atr <= 0:
-        return
+    from app.services.bots.profit_lock import ratchet_chandelier_stop
+
     position["low_watermark"] = min(position.get("low_watermark", bar_low), bar_low)
     entry_price = float(position.get("entry_price") or bar_low)
-    profit_atr_units = (entry_price - position["low_watermark"]) / atr
-    effective_mult = 2.0 if profit_atr_units >= 2.0 else multiplier
-    new_sl = position["low_watermark"] + effective_mult * atr
-    current_sl = position.get("stop_loss")
-    position["stop_loss"] = min(current_sl, new_sl) if current_sl is not None else new_sl
+    new_sl = ratchet_chandelier_stop(
+        is_long=False,
+        avg_price=entry_price,
+        extreme=position["low_watermark"],
+        atr=atr,
+        current_sl=position.get("stop_loss"),
+        multiplier=multiplier,
+        arm_r=arm_r,
+        tighten_r=tighten_r,
+        tighten_mult=tighten_mult,
+        stop_loss_percent=stop_loss_percent,
+        entry_atr=position.get("entry_atr"),
+    )
+    if new_sl is not None:
+        position["stop_loss"] = new_sl
 
 
 def _sharpe_ratio(equity_curve: list[dict]) -> float | None:
@@ -599,9 +630,20 @@ class BacktesterService:
             cfg.get("trailing_stop_percent") or cfg.get("stop_loss_percent") or 0,
         )
         # 3.3-C: Chandelier ATR trailing stop config.
-        use_chandelier = bool(cfg.get("chandelier_stop_enabled", False))
-        chandelier_mult = float(cfg.get("chandelier_multiplier") or 3.0)
-        chandelier_mult = max(1.0, min(10.0, chandelier_mult))
+        from app.services.bots.profit_lock import chandelier_kwargs_from_config
+
+        risk_merged = merge_strategy_config(strategy_name, cfg)
+        use_chandelier = bool(risk_merged.get("chandelier_stop_enabled", False))
+        chand = chandelier_kwargs_from_config(risk_merged)
+        chandelier_mult = chand["multiplier"]
+        chandelier_arm_r = chand["arm_r"]
+        chandelier_tighten_r = chand["tighten_r"]
+        chandelier_tighten_mult = chand["tighten_mult"]
+        chandelier_sl_pct = (
+            float(risk_merged["trailing_stop_percent"])
+            if risk_merged.get("trailing_stop_percent") is not None
+            else (float(risk_merged["stop_loss_percent"]) if risk_merged.get("stop_loss_percent") is not None else None)
+        )
         if strat_key == "RL_PPO_AGENT" and not cfg.get("rl_percent_stops"):
             from app.services.bots.rl_risk import resolve_atr_stop_mult, resolve_rl_risk_usd
 
@@ -1471,14 +1513,26 @@ class BacktesterService:
                     # 3.3-C: Use Chandelier ATR stop when enabled; fall back to pct trailing.
                     if use_chandelier:
                         bar_atr = float(row.get("ATR_14") or row.get("ATRr_14") or position.get("entry_atr") or 0)
-                        _update_chandelier_stop(position, bar_high, bar_atr, chandelier_mult)
+                        _update_chandelier_stop(
+                            position, bar_high, bar_atr, chandelier_mult,
+                            arm_r=chandelier_arm_r,
+                            tighten_r=chandelier_tighten_r,
+                            tighten_mult=chandelier_tighten_mult,
+                            stop_loss_percent=chandelier_sl_pct,
+                        )
                     else:
                         _update_trailing_stop(position, bar_low, bar_high, trailing_pct)
                     trigger, exit_px = _check_long_sl_tp(position, bar_low, bar_high, randomize_sl_tp=randomize_sl_tp)
                 else:
                     if use_chandelier:
                         bar_atr = float(row.get("ATR_14") or row.get("ATRr_14") or position.get("entry_atr") or 0)
-                        _update_chandelier_stop_short(position, bar_low, bar_atr, chandelier_mult)
+                        _update_chandelier_stop_short(
+                            position, bar_low, bar_atr, chandelier_mult,
+                            arm_r=chandelier_arm_r,
+                            tighten_r=chandelier_tighten_r,
+                            tighten_mult=chandelier_tighten_mult,
+                            stop_loss_percent=chandelier_sl_pct,
+                        )
                     else:
                         _update_trailing_stop_short(position, bar_low, bar_high, trailing_pct)
                     trigger, exit_px = _check_short_sl_tp(position, bar_low, bar_high, randomize_sl_tp=randomize_sl_tp)

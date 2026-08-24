@@ -110,6 +110,77 @@ def ensure_ml_batch_tables(cursor=None) -> None:
             conn.close()
 
 
+def ensure_ml_pipeline_tables(cursor=None) -> None:
+    """Create durable ML full-pipeline run tables (idempotent)."""
+    own = cursor is None
+    conn = get_connection() if own else None
+    cur = conn.cursor() if own else cursor
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ml_pipeline_runs (
+                id TEXT PRIMARY KEY,
+                profile TEXT NOT NULL DEFAULT 'research',
+                stage TEXT NOT NULL DEFAULT 'SEARCH',
+                status TEXT NOT NULL DEFAULT 'queued',
+                strategy TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT,
+                config_json TEXT,
+                auto_deploy_mode TEXT NOT NULL DEFAULT 'paper',
+                stop_after_validate INTEGER NOT NULL DEFAULT 0,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                pending_approval INTEGER NOT NULL DEFAULT 0,
+                sweep_job_id TEXT,
+                train_job_id TEXT,
+                validate_job_id TEXT,
+                backtest_job_id TEXT,
+                bot_id TEXT,
+                search_json TEXT,
+                train_json TEXT,
+                validation_json TEXT,
+                backtest_json TEXT,
+                gate_json TEXT,
+                last_error TEXT,
+                stage_elapsed_json TEXT,
+                started_at TEXT,
+                stage_started_at TEXT,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_pipeline_runs_status "
+            "ON ml_pipeline_runs (status, updated_at DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_pipeline_runs_symbol "
+            "ON ml_pipeline_runs (symbol, status, created_at DESC)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ml_pipeline_events (
+                id TEXT PRIMARY KEY,
+                pipeline_id TEXT NOT NULL,
+                from_stage TEXT,
+                to_stage TEXT,
+                elapsed_ms INTEGER,
+                error TEXT,
+                job_id TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_pipeline_events_run "
+            "ON ml_pipeline_events (pipeline_id, created_at)"
+        )
+        _safe_alter(cur, "ALTER TABLE ml_train_runs ADD COLUMN pipeline_id TEXT")
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
 def ensure_agent_event_tables(cursor=None) -> None:
     """Create the durable agent event log (idempotent).
 
@@ -723,6 +794,7 @@ def init_db():
     _safe_alter(cursor, "ALTER TABLE ml_jobs ADD COLUMN checkpoint_json TEXT")
 
     ensure_ml_batch_tables(cursor)
+    ensure_ml_pipeline_tables(cursor)
     ensure_agent_event_tables(cursor)
     ensure_agent_decision_eval_tables(cursor)
     ensure_agent_action_tables(cursor)

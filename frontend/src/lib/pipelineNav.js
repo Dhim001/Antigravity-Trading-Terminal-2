@@ -29,6 +29,7 @@ export function openAlgoDeployDialog({ openStudio = false } = {}) {
  */
 export function navigatePipelineStageReview(stageId) {
   switch (stageId) {
+    case 'SEARCH':
     case 'TRAINING':
     case 'VALIDATING':
       openModelTrainingDock();

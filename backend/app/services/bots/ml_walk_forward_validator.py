@@ -143,7 +143,10 @@ def evaluate_oos_accuracy(
     """
     key = str(strategy_cls or "").upper()
     bundle = (train_result or {}).get("_wf_bundle") if isinstance(train_result, dict) else None
-    if isinstance(bundle, dict) and bundle.get("strategy") == "TRANSFORMER_SIGNAL":
+    if isinstance(bundle, dict) and bundle.get("strategy") in (
+        "TRANSFORMER_SIGNAL",
+        "LSTM_DIRECTION",
+    ):
         return _evaluate_oos_transformer_torch(test_candles, bundle, config or {})
 
     if key == "RL_PPO_AGENT":
@@ -299,6 +302,13 @@ def _evaluate_oos_rl_env(
         feat_std=feat_std,
     )
 
+    from app.services.bots.rl_risk import resolve_min_confidence, greedy_serve_action
+
+    if isinstance(bundle, dict) and bundle.get("min_confidence") is not None:
+        threshold = resolve_min_confidence(bundle)
+    else:
+        threshold = resolve_min_confidence(config)
+
     model.eval()
     device = next(model.parameters()).device
     obs = env.reset()
@@ -314,7 +324,9 @@ def _evaluate_oos_rl_env(
         with torch.no_grad():
             x = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             logits = model(x)
-            action = int(torch.argmax(logits, dim=-1).item())
+            action = greedy_serve_action(
+                logits.detach().cpu().numpy(), min_confidence=threshold,
+            )
         action_counts[action] = action_counts.get(action, 0) + 1
         obs, _reward, done, _info = env.step(action)
         steps += 1
@@ -366,7 +378,7 @@ def _evaluate_oos_transformer_torch(
     bundle: dict,
     config: dict,
 ) -> dict[str, Any]:
-    """In-memory Transformer OOS eval — no ONNX reload between WF folds."""
+    """In-memory Transformer / LSTM OOS eval — no ONNX reload between WF folds."""
     from app.services.bots.ml_feature_cache import (
         resolve_precomputed_features,
         resolve_precomputed_labels,

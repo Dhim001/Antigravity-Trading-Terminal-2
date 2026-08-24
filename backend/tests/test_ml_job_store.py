@@ -153,6 +153,17 @@ class MlJobStoreTests(unittest.TestCase):
         rows = list_ml_jobs(limit=10)
         self.assertGreaterEqual(len(rows), 2)
 
+    def test_early_stop_progress_persists_off_5pct_bucket(self):
+        job_id = create_ml_job(kind="validate", strategy="LSTM_DIRECTION", symbol="SOLUSDT")
+        mark_ml_job_running(job_id)
+        with patch("app.services.bots.ml_job_store._persist_ml_job_row") as persist:
+            update_ml_job_progress(job_id, {
+                "pct": 29,
+                "phase": "early_stop",
+                "detail": "early stop @ 13/100",
+            })
+        persist.assert_called()
+
 
 class MlJobProgressTests(unittest.TestCase):
     def test_write_read_cancel(self):

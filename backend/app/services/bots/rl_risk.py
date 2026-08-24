@@ -8,6 +8,7 @@ the same ATR + $15–25 + real-fee contract.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 RL_STRATEGY = "RL_PPO_AGENT"
@@ -23,6 +24,12 @@ DEFAULT_SLIPPAGE_BPS = 5.0
 PREFERRED_TRAIN_TIMEFRAME = "5m"
 MIN_PROFIT_FACTOR = 1.3
 MIN_EPISODES = 1
+# 4-way softmax → uniform ≈0.25; live/OOS require a real edge above chance.
+DEFAULT_MIN_CONFIDENCE = 0.40
+DEFAULT_SCALER_FIT_FRAC = 0.8
+# Path reward: Δlog-equity − λ·Δdrawdown − turnover (R-multiple is aux only).
+REWARD_DD_LAMBDA = 0.5
+REWARD_TURNOVER_COEF = 0.0002
 
 
 def is_rl_strategy(strategy: str | None) -> bool:
@@ -208,6 +215,83 @@ def payoff_passes(
     if pf <= min_pf:
         return False, f"profit factor {pf:.2f} ≤ {min_pf:.2f}"
     return True, f"avg win ${win:.2f} ≥ avg loss ${loss:.2f}, PF {pf:.2f}"
+
+
+def resolve_min_confidence(config: dict | None) -> float:
+    cfg = config or {}
+    raw = cfg.get("min_confidence")
+    try:
+        val = float(raw) if raw is not None else DEFAULT_MIN_CONFIDENCE
+    except (TypeError, ValueError):
+        val = DEFAULT_MIN_CONFIDENCE
+    return max(0.0, min(0.95, val))
+
+
+def greedy_serve_action(logits, min_confidence: float = DEFAULT_MIN_CONFIDENCE) -> int:
+    """Argmax with a BUY/SELL confidence floor — CLOSE is never thresholded.
+
+    Train still samples Categorical. Live ONNX and walk-forward OOS must use
+    this rule so the deployed policy matches the one we score.
+    """
+    import numpy as np
+
+    arr = np.asarray(logits, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return 0
+    shifted = arr - float(arr.max())
+    probs = np.exp(shifted)
+    total = float(probs.sum())
+    if total <= 0 or not np.isfinite(total):
+        return 0
+    probs = probs / total
+    action = int(np.argmax(probs))
+    # 1=BUY, 2=SELL — match rl_trading_env without importing it.
+    if action in (1, 2) and float(probs[action]) < float(min_confidence):
+        return 0
+    return action
+
+
+def log_equity_delta(prev_eq: float, eq: float) -> float:
+    prev = max(float(prev_eq), 1e-12)
+    cur = max(float(eq), 1e-12)
+    return float(math.log(cur / prev))
+
+
+def drawdown_increase(peak_before: float, prev_eq: float, eq: float) -> float:
+    peak_before = max(float(peak_before), 1e-12)
+    peak_after = max(peak_before, float(eq))
+    prev_dd = max(0.0, (peak_before - float(prev_eq)) / peak_before)
+    now_dd = max(0.0, (peak_after - float(eq)) / peak_after) if peak_after > 1e-12 else 0.0
+    return max(0.0, now_dd - prev_dd)
+
+
+def path_step_reward(
+    prev_eq: float,
+    eq: float,
+    peak_before: float,
+    *,
+    traded: bool,
+    dd_lambda: float = REWARD_DD_LAMBDA,
+    turnover_coef: float = REWARD_TURNOVER_COEF,
+) -> float:
+    """Primary env reward: log-equity path minus incremental DD and churn."""
+    reward = log_equity_delta(prev_eq, eq)
+    reward -= float(dd_lambda) * drawdown_increase(peak_before, prev_eq, eq)
+    if traded:
+        reward -= float(turnover_coef)
+    return float(reward)
+
+
+def live_close_log_reward(pnl: float | None, entry_price: float | None, quantity: float | None) -> float:
+    """Map a live close onto the same Δlog-equity units the env trains on."""
+    if pnl is None or not entry_price or not quantity:
+        return 0.0
+    try:
+        notional = abs(float(entry_price) * float(quantity))
+        frac = float(pnl) / notional if notional > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return float(math.log(max(1e-12, 1.0 + frac)))
 
 
 def trade_payoff_stats(pnls: list[float]) -> dict[str, float]:

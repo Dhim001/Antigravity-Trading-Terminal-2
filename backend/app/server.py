@@ -698,6 +698,7 @@ async def main():
                         ml_retrain_drain_loop(
                             state.bot_manager,
                             event_bus=getattr(state, "event_bus", None),
+                            app_state=state,
                         )
                     )
                 )

@@ -694,9 +694,13 @@ def train_ppo_agent(
         for i, r in enumerate(episode_returns[-50:])
     ]
 
+    from app.services.bots.rl_risk import resolve_min_confidence
+
     scaler = {
         "feat_mean": env._feat_mean.tolist(),
         "feat_std": env._feat_std.tolist(),
+        "scaler_fit_n": int(getattr(env, "_scaler_fit_n", 0) or 0),
+        "scaler_fit_frac": float(getattr(env, "_scaler_fit_frac", 0.8) or 0.8),
     }
     # In-memory bundle for WF/PBO OOS — avoids triple-barrier accuracy and
     # lets folds skip clobbering the live champion ONNX.
@@ -706,6 +710,7 @@ def train_ppo_agent(
         "scaler": scaler,
         "hidden_dim": hidden_dim,
         "device": str(getattr(device, "type", device)),
+        "min_confidence": resolve_min_confidence(cfg),
     }
 
     from app.services.bots.ml_training_window import skip_live_artifact_writes
@@ -860,6 +865,7 @@ def finetune_from_replay(
     torch, nn = _get_torch()
     from app.config import (
         RL_REPLAY_FINETUNE_EPOCHS,
+        RL_REPLAY_KL_BETA,
         RL_REPLAY_MAX_KL,
         RL_REPLAY_MIN_FOR_FINETUNE,
     )
@@ -881,20 +887,38 @@ def finetune_from_replay(
         np.stack([t["obs"] for t in transitions]), dtype=torch.float32, device=device,
     )
     actions_t = torch.tensor([t["action"] for t in transitions], dtype=torch.long, device=device)
-    rewards_t = torch.tensor([t["reward"] for t in transitions], dtype=torch.float32, device=device)
+    rewards_list = [float(t["reward"]) for t in transitions]
+    dones_list = [bool(t["done"]) for t in transitions]
+    kl_beta = float(RL_REPLAY_KL_BETA)
 
     # Freeze the pre-update policy for the KL constraint.
     old_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     model.eval()
     with torch.no_grad():
-        old_logits, _ = model.policy(obs_t)
+        old_logits, old_values = model.policy(obs_t)
         old_dist = torch.distributions.Categorical(logits=old_logits)
         old_log_probs = old_dist.log_prob(actions_t)
+        last = transitions[-1]
+        next_value = 0.0
+        if last.get("next_obs") is not None and not last.get("done"):
+            nx = torch.tensor(
+                np.asarray(last["next_obs"], dtype=np.float32),
+                dtype=torch.float32,
+                device=device,
+            ).unsqueeze(0)
+            _, nv = model.policy(nx)
+            next_value = float(nv.squeeze().item())
+        values_list = old_values.detach().squeeze(-1).cpu().numpy().tolist()
+        if not isinstance(values_list, list):
+            values_list = [float(values_list)]
+        advantages, returns = compute_gae(
+            rewards_list, values_list, dones_list, next_value,
+        )
 
-    # Advantage proxy: center rewards (replay has no value bootstrapping).
-    adv = rewards_t - rewards_t.mean()
+    adv = torch.as_tensor(advantages, dtype=torch.float32, device=device)
+    ret_t = torch.as_tensor(returns, dtype=torch.float32, device=device)
     if adv.std() > 1e-8:
-        adv = adv / adv.std()
+        adv = (adv - adv.mean()) / adv.std()
 
     model.train()
     n = len(transitions)
@@ -904,7 +928,7 @@ def finetune_from_replay(
         for start in range(0, n, batch_size):
             idx = perm[start:start + batch_size]
             b_obs, b_act = obs_t[idx], actions_t[idx]
-            b_old_lp, b_adv, b_ret = old_log_probs[idx], adv[idx], rewards_t[idx]
+            b_old_lp, b_adv, b_ret = old_log_probs[idx], adv[idx], ret_t[idx]
 
             logits, values = model.policy(b_obs)
             dist = torch.distributions.Categorical(logits=logits)
@@ -916,7 +940,16 @@ def finetune_from_replay(
             surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * b_adv
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = nn.functional.mse_loss(values.squeeze(-1), b_ret)
-            loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+            kl_batch = torch.distributions.kl_divergence(
+                torch.distributions.Categorical(logits=old_logits[idx]),
+                dist,
+            ).mean()
+            loss = (
+                policy_loss
+                + vf_coef * value_loss
+                - ent_coef * entropy
+                + kl_beta * kl_batch
+            )
 
             optimizer.zero_grad()
             loss.backward()

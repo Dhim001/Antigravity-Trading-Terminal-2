@@ -8,6 +8,7 @@ from unittest.mock import patch
 from app.services.bots.ml_train_executor import (
     _is_broken_pool_error,
     reset_ml_train_pool,
+    resolve_pbo_limits,
     run_train_job,
     run_validate_job,
     shutdown_ml_train_pool,
@@ -316,6 +317,72 @@ class MlTrainExecutorTests(unittest.TestCase):
         self.assertFalse(out.get("ok"))
         self.assertEqual(calls["n"], 1)
         reset.assert_not_called()
+
+    def test_interactive_pbo_clamps_and_skips_deep(self):
+        deep = resolve_pbo_limits(
+            "LSTM_DIRECTION", {}, run_pbo=True, pbo_segments=8,
+        )
+        self.assertFalse(deep["run_pbo"])
+        self.assertEqual(deep["skip_reason"], "deep_too_expensive")
+        self.assertEqual(deep["max_combos"], 4)
+        gbm = resolve_pbo_limits(
+            "ML_SIGNAL_BOOST", {"pbo_max_combos": 16}, run_pbo=True, pbo_segments=8,
+        )
+        self.assertTrue(gbm["run_pbo"])
+        self.assertEqual(gbm["n_segments"], 4)
+        self.assertEqual(gbm["max_combos"], 4)
+
+    def test_research_pbo_lifts_cap_and_forces_deep(self):
+        gbm = resolve_pbo_limits(
+            "ML_SIGNAL_BOOST", {"pbo_profile": "research"}, run_pbo=False, pbo_segments=4,
+        )
+        self.assertTrue(gbm["run_pbo"])
+        self.assertEqual(gbm["n_segments"], 6)
+        self.assertEqual(gbm["max_combos"], 15)
+        deep = resolve_pbo_limits(
+            "LSTM_DIRECTION", {"pbo_profile": "research"}, run_pbo=False, pbo_segments=4,
+        )
+        self.assertTrue(deep["run_pbo"])
+        self.assertTrue(deep["cheap_pbo"])
+        self.assertEqual(deep["max_combos"], 6)
+        rl = resolve_pbo_limits(
+            "RL_PPO_AGENT", {"pbo_profile": "research"}, run_pbo=False, pbo_segments=4,
+        )
+        self.assertTrue(rl["run_pbo"])
+        self.assertTrue(rl["cheap_pbo"])
+
+    def test_research_pbo_passed_into_compute(self):
+        captured = {}
+
+        def _pbo(*_a, **kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "pbo": 0.2}
+
+        with patch(
+            "app.services.bots.ml_walk_forward_validator.walk_forward_ml_train",
+            return_value={"ok": True, "aggregate": {"mean_oos_accuracy": 0.6}},
+        ):
+            with patch(
+                "app.services.bots.ml_model_artifacts.persist_ml_validation_metadata",
+                return_value={"ok": True},
+            ):
+                with patch(
+                    "app.services.bots.ml_pbo_validator.compute_ml_pbo",
+                    side_effect=_pbo,
+                ):
+                    out = run_validate_job(
+                        "ML_SIGNAL_BOOST",
+                        "ETHUSDT",
+                        [{"close": i} for i in range(200)],
+                        {"pbo_profile": "research"},
+                        2,
+                        "rolling",
+                        True,
+                        4,
+                    )
+        self.assertTrue(out["ok"])
+        self.assertEqual(captured.get("n_segments"), 6)
+        self.assertEqual(captured.get("max_combos"), 15)
 
 
 if __name__ == "__main__":

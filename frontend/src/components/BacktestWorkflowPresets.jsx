@@ -52,7 +52,7 @@ export const WORKFLOW_PRESETS = [
   {
     id: 'ml_full_pipeline',
     label: 'ML Pipeline',
-    hint: 'Full Train → Validate → Backtest → Gate cycle',
+    hint: 'Search → Train → Validate → Backtest → Gate',
   },
   {
     id: 'ml_retrain_validate',

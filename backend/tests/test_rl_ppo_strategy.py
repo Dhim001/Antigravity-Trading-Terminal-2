@@ -177,6 +177,75 @@ class TestTradingEnv:
         assert "final_equity" in stats
         assert "total_trades" in stats
         assert stats["total_trades"] == 2  # buy + close
+        assert "max_drawdown" in stats
+
+    def test_buy_fills_next_bar_open(self):
+        from app.services.bots.rl_trading_env import ACTION_BUY, TradingEnv
+
+        candles = []
+        for i in range(40):
+            candles.append({
+                "time": 1_700_000_000 + i * 60,
+                "open": 50.0 + i,
+                "high": 80.0 + i,
+                "low": 40.0,
+                "close": 100.0 + i,
+                "volume": 1000.0,
+                "ATR_14": 20.0,
+            })
+        env = TradingEnv(
+            candles,
+            feature_lookback=5,
+            config={
+                "env_seed": 0,
+                "use_atr_stops": False,
+                "fee_bps": 0,
+                "slippage_bps": 0,
+            },
+        )
+        env.reset()
+        start = env._step_idx
+        env.step(ACTION_BUY)
+        assert env._entry_price == pytest.approx(50.0 + (start + 1))
+        assert env._step_idx == start + 1
+
+    def test_scaler_fits_prefix_not_full_series(self):
+        from app.services.bots.rl_trading_env import TradingEnv
+
+        candles = self._make_candles(100, trend=1.0)
+        prefix = TradingEnv(
+            candles, feature_lookback=5, config={"scaler_fit_frac": 0.5},
+        )
+        full = TradingEnv(
+            candles, feature_lookback=5, config={"scaler_fit_frac": 1.0},
+        )
+        assert prefix._scaler_fit_n < full._scaler_fit_n
+        assert not np.allclose(prefix._feat_mean, full._feat_mean, atol=1e-8)
+
+    def test_step_reward_is_log_equity_not_r_multiple(self):
+        from app.services.bots.rl_trading_env import (
+            ACTION_BUY, ACTION_CLOSE, ACTION_HOLD, TradingEnv,
+        )
+
+        candles = self._make_candles(40, trend=1.0, atr=2.0)
+        env = TradingEnv(
+            candles,
+            feature_lookback=5,
+            config={
+                "env_seed": 0,
+                "use_atr_stops": False,
+                "fee_bps": 0,
+                "slippage_bps": 0,
+                "reward_turnover_coef": 0.0,
+                "reward_dd_lambda": 0.0,
+            },
+        )
+        env.reset()
+        env.step(ACTION_BUY)
+        env.step(ACTION_HOLD)
+        _, reward, _, info = env.step(ACTION_CLOSE)
+        assert abs(reward) < 0.2
+        assert "r_multiple" in info
 
 
 # ── GAE tests ─────────────────────────────────────────────────────────────

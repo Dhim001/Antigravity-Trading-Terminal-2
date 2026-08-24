@@ -154,6 +154,9 @@ def fetch_entry_context(bot_id: str, symbol: str) -> dict[str, Any]:
     return item
 
 
+GIVEBACK_CAPTURE_MAX = 0.30
+
+
 def classify_outcome(
     *,
     pnl: float | None,
@@ -162,6 +165,7 @@ def classify_outcome(
     trigger_type: str | None,
     insight: dict[str, Any] | None,
     stop_loss_percent: float | None = None,
+    realized_pct: float | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Heuristic outcome class for a closed trade."""
     reason: dict[str, Any] = {
@@ -169,6 +173,7 @@ def classify_outcome(
         "mae_pct": mae_pct,
         "mfe_pct": mfe_pct,
         "trigger_type": trigger_type,
+        "realized_pct": realized_pct,
     }
     snap = insight if isinstance(insight, dict) else {}
     regime = str(
@@ -205,6 +210,19 @@ def classify_outcome(
         reason["note"] = "Trade went favorably then reversed into a loss"
         return "good_entry_bad_exit", reason
 
+    if won and mfe is not None and mfe > 0 and realized_pct is not None:
+        try:
+            capture = float(realized_pct) / float(mfe)
+        except (TypeError, ValueError, ZeroDivisionError):
+            capture = None
+        if capture is not None:
+            reason["capture_frac"] = round(capture, 4)
+            if capture < GIVEBACK_CAPTURE_MAX:
+                reason["note"] = (
+                    f"Captured {capture:.0%} of MFE — profit give-back, do not tighten the initial stop"
+                )
+                return "giveback_win", reason
+
     if won and mfe is not None and mae is not None and mfe >= mae and mfe > 0:
         return "clean_win", reason
     if won:
@@ -226,7 +244,9 @@ def _default_min_confidence(strategy: str) -> float:
     if s == "TCN_MULTI_HORIZON":
         return 0.002
     if s == "RL_PPO_AGENT":
-        return 0.28
+        from app.services.bots.rl_risk import DEFAULT_MIN_CONFIDENCE
+
+        return DEFAULT_MIN_CONFIDENCE
     return 0.55
 
 
@@ -461,6 +481,16 @@ async def learn_from_closed_trade(
     except (TypeError, ValueError):
         sl_pct_f = None
 
+    realized_pct = None
+    if ep is not None and ep > 0:
+        try:
+            if is_long:
+                realized_pct = (float(exit_price) - ep) / ep * 100.0
+            else:
+                realized_pct = (ep - float(exit_price)) / ep * 100.0
+        except (TypeError, ValueError):
+            realized_pct = None
+
     outcome_class, reason = classify_outcome(
         pnl=pnl,
         mae_pct=mae_pct,
@@ -468,6 +498,7 @@ async def learn_from_closed_trade(
         trigger_type=trigger_type,
         insight=insight,
         stop_loss_percent=sl_pct_f,
+        realized_pct=realized_pct,
     )
 
     patch = build_config_patch(
@@ -740,12 +771,9 @@ async def learn_from_closed_trade(
     # transition with a normalized reward + the outcome class for shaping.
     try:
         from app.services.bots.rl_replay_store import record_live_close
+        from app.services.bots.rl_risk import live_close_log_reward
 
-        _reward = 0.0
-        if pnl is not None and ep and quantity:
-            _notional = abs(float(ep) * float(quantity))
-            if _notional > 0:
-                _reward = float(pnl) / _notional
+        _reward = live_close_log_reward(pnl, ep, quantity)
         record_live_close(
             bot_id,
             symbol,

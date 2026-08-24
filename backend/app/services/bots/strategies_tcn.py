@@ -36,6 +36,8 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         min_return (float): Minimum return magnitude to count as directional (default 0.001).
         min_confidence (float): Minimum average magnitude across horizons (default 0.002).
         model_symbol (str): Override symbol for model lookup.
+        horizon_exit_bars (int): Bars without a fresh BUY/SELL consensus before CLOSE
+            (default 60 — the longest TCN forecast).
     """
 
     def __init__(self, config: dict):
@@ -45,6 +47,31 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         self._window: deque = deque(maxlen=self._lookback)
         from app.services.bots.ml_feature_engineering import EVAL_HISTORY_LOOKBACK
         self._bar_history: deque = deque(maxlen=EVAL_HISTORY_LOOKBACK + 1)
+        self._reset_horizon_state()
+
+    def _reset_horizon_state(self) -> None:
+        self._consensus_side: str | None = None
+        self._bars_since_consensus = 0
+
+    def _maybe_horizon_exit(self, raw: dict) -> dict:
+        """Flatten after the 60-bar forecast expires without a fresh BUY/SELL consensus."""
+        out = dict(raw or {})
+        sig = str(out.get("signal") or "NONE").upper()
+        horizon = int(self._cfg.get("horizon_exit_bars") or 60)
+        if sig in ("BUY", "SELL"):
+            self._consensus_side = sig
+            self._bars_since_consensus = 0
+            return out
+        if self._consensus_side not in ("BUY", "SELL"):
+            return out
+        self._bars_since_consensus += 1
+        if horizon <= 0 or self._bars_since_consensus < horizon:
+            return out
+        out["signal"] = "CLOSE"
+        out["horizon_exit"] = True
+        out["horizon_exit_bars"] = self._bars_since_consensus
+        out["expired_side"] = self._consensus_side
+        return out
 
     def _model_timeframe(self) -> str:
         from app.services.bots.ml_model_artifacts import normalize_model_timeframe
@@ -129,6 +156,7 @@ class TcnMultiHorizonStrategy(BaseStrategy):
             return out
 
         lookback = self._lookback
+        self._reset_horizon_state()
 
         def _feat_progress(done: int, total: int) -> None:
             if progress_cb is None:
@@ -175,8 +203,10 @@ class TcnMultiHorizonStrategy(BaseStrategy):
             )
             for j, returns in enumerate(preds):
                 row_i = 19 + int(ends[j])
-                out[row_i] = self._returns_to_signal(
-                    rows[row_i], returns, symbol=symbol, timeframe=tf,
+                out[row_i] = self._maybe_horizon_exit(
+                    self._returns_to_signal(
+                        rows[row_i], returns, symbol=symbol, timeframe=tf,
+                    )
                 )
             infer_done += len(ends)
             if progress_cb is not None:
@@ -235,4 +265,6 @@ class TcnMultiHorizonStrategy(BaseStrategy):
         returns = store.predict(
             symbol, window_array, model_version=pinned or None, timeframe=tf,
         )
-        return self._returns_to_signal(df_row, returns, symbol=symbol, timeframe=tf)
+        return self._maybe_horizon_exit(
+            self._returns_to_signal(df_row, returns, symbol=symbol, timeframe=tf)
+        )

@@ -297,6 +297,7 @@ def train_lstm_signal_model(
         allow_weight_warm_start,
         apply_champion_train_overrides,
         from_scratch_requested,
+        skip_live_artifact_writes,
     )
 
     tf = normalize_model_timeframe(cfg.get("timeframe") or raw_cfg.get("timeframe"))
@@ -714,7 +715,11 @@ def train_lstm_signal_model(
     if best_state is not None:
         model.load_state_dict(best_state)
 
+    if ml_cancel_requested(progress_path):
+        return cancelled_train_result(symbol, "LSTM_DIRECTION")
+
     # Step 7: Validation & Training metrics
+    write_ml_progress(progress_path, pct=91, phase="metrics", detail="train/val logits")
     model.eval()
     val_logits_chunks: list = []
     train_logits_chunks: list = []
@@ -770,36 +775,7 @@ def train_lstm_signal_model(
             ),
         }
 
-    # Step 8: Export to ONNX (single-file; Windows-safe across walk-forward re-exports)
-    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
-    onnx_path = _onnx_path(symbol, tf)
-    from app.services.bots.ml_model_artifacts import export_onnx_single_file
-    from app.services.bots.strategies_lstm import get_lstm_store
-
-    export_onnx_single_file(
-        model,
-        torch.randn(1, lookback, N_FEATURES),
-        onnx_path,
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={
-            "input": {0: "batch_size"},
-            "logits": {0: "batch_size"},
-        },
-        opset_version=17,
-        invalidate=lambda: get_lstm_store().invalidate(symbol, timeframe=tf),
-    )
-
-    # Save scaler
-    save_scaler(symbol, scaler, timeframe=tf)
-
-    # Persist the PyTorch checkpoint for future warm-start fine-tuning.
-    try:
-        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
-    except Exception:
-        logger.debug("LSTM checkpoint save failed for %s", symbol, exc_info=True)
-
-    # Save metadata
+    # Save metadata (in-memory first — WF folds must not write the live champion).
     metadata = {
         "symbol": symbol,
         "timeframe": tf,
@@ -830,6 +806,63 @@ def train_lstm_signal_model(
     }
     if donor_lineage is not None:
         metadata["transfer"] = donor_lineage
+
+    # Walk-forward / PBO folds score in-memory. Writing ONNX to the live
+    # SOLUSDT path after every fold hangs Windows (ORT mmap + torch.onnx.export)
+    # and is why Full Pipeline Validate never left fold 1.
+    skip_artifacts = skip_live_artifact_writes(cfg)
+    if skip_artifacts:
+        write_ml_progress(progress_path, pct=92, phase="fold-train", detail="oos-ready")
+        from app.services.bots.ml_torch_device import module_cpu_copy
+
+        cpu_model = module_cpu_copy(model)
+        logger.info(
+            "LSTM fold trained for %s @ %s (n=%d, val_acc=%.4f, epochs=%d, skip live ONNX)",
+            symbol, tf, n, val_acc, epoch + 1,
+        )
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "timeframe": tf,
+            **metadata,
+            "_wf_bundle": {
+                "strategy": "LSTM_DIRECTION",
+                "model": cpu_model,
+                "mean": scaler.get("mean"),
+                "std": scaler.get("std"),
+                "lookback": lookback,
+                "reverse_map": dict(REVERSE_MAP),
+                "min_confidence": float(cfg.get("min_confidence", 0.55)),
+            },
+        }
+
+    # Step 8: Export to ONNX (Lab Train / champion only)
+    os.makedirs(_model_dir(symbol, tf), exist_ok=True)
+    onnx_path = _onnx_path(symbol, tf)
+    from app.services.bots.ml_model_artifacts import export_onnx_single_file
+    from app.services.bots.strategies_lstm import get_lstm_store
+
+    write_ml_progress(progress_path, pct=92, phase="export", detail="onnx")
+    export_onnx_single_file(
+        model,
+        torch.randn(1, lookback, N_FEATURES),
+        onnx_path,
+        input_names=["input"],
+        output_names=["logits"],
+        dynamic_axes={
+            "input": {0: "batch_size"},
+            "logits": {0: "batch_size"},
+        },
+        opset_version=17,
+        invalidate=lambda: get_lstm_store().invalidate(symbol, timeframe=tf),
+    )
+
+    save_scaler(symbol, scaler, timeframe=tf)
+    try:
+        torch.save(model.state_dict(), _checkpoint_path(symbol, tf))
+    except Exception:
+        logger.debug("LSTM checkpoint save failed for %s", symbol, exc_info=True)
+
     with open(_metadata_path(symbol, tf), "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
 

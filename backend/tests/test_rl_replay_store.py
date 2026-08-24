@@ -77,21 +77,24 @@ class TestRewardShaping:
     def test_outcome_modifiers_present(self):
         from app.services.bots.rl_replay_store import OUTCOME_REWARD_MODIFIERS
 
-        assert OUTCOME_REWARD_MODIFIERS["clean_win"] == 0.2
-        assert OUTCOME_REWARD_MODIFIERS["regime_mismatch"] == -0.3
-        assert OUTCOME_REWARD_MODIFIERS["stop_too_tight"] == -0.1
-        assert OUTCOME_REWARD_MODIFIERS["good_entry_bad_exit"] == -0.15
+        assert OUTCOME_REWARD_MODIFIERS["clean_win"] == 0.002
+        assert OUTCOME_REWARD_MODIFIERS["regime_mismatch"] == -0.003
+        assert OUTCOME_REWARD_MODIFIERS["stop_too_tight"] == -0.001
+        assert OUTCOME_REWARD_MODIFIERS["good_entry_bad_exit"] == -0.0015
+        assert OUTCOME_REWARD_MODIFIERS["giveback_win"] == -0.001
 
     def test_live_close_applies_modifier(self, tmp_replay_db):
         m = tmp_replay_db
         m._pending_actions.clear()
         with mock.patch.object(m, "RL_REPLAY_ENABLED", True), \
              mock.patch.object(m, "TCA_REWARD_FEEDBACK_ENABLED", False):
-            m.note_pending_action("b1", "SOLUSDT", np.array([0.5, 0.6]), 1)
-            m.record_live_close("b1", "SOLUSDT", reward=0.10, outcome_class="clean_win")
+            m.note_pending_action("b1", "SOLUSDT", np.array([0.5, 0.6, 1.0, 0.02, 0.1]), 1)
+            m.record_live_close("b1", "SOLUSDT", reward=0.010, outcome_class="clean_win")
             rows = m.load_transitions("SOLUSDT")
             assert len(rows) == 1
-            assert abs(rows[0]["reward"] - 0.30) < 1e-6  # 0.10 + 0.2 bonus
+            assert abs(rows[0]["reward"] - 0.012) < 1e-6  # 0.010 + 0.002 bonus
+            assert rows[0]["next_obs"] is not None
+            np.testing.assert_allclose(rows[0]["next_obs"][-3:], [0.0, 0.0, 0.0])
 
     def test_live_close_subtracts_is(self, tmp_replay_db):
         m = tmp_replay_db
@@ -103,9 +106,25 @@ class TestRewardShaping:
                  return_value=20.0,  # 20 bps = 0.002
              ):
             m.note_pending_action("b1", "ADAUSDT", np.array([0.5]), 2)
-            m.record_live_close("b1", "ADAUSDT", reward=0.10, outcome_class=None)
+            m.record_live_close("b1", "ADAUSDT", reward=0.010, outcome_class=None)
             rows = m.load_transitions("ADAUSDT")
-            assert abs(rows[0]["reward"] - 0.098) < 1e-6  # 0.10 − 0.002 IS
+            assert abs(rows[0]["reward"] - 0.008) < 1e-6  # 0.010 − 0.002 IS
+
+    def test_note_pending_writes_prior_step(self, tmp_replay_db):
+        m = tmp_replay_db
+        m._pending_actions.clear()
+        with mock.patch.object(m, "RL_REPLAY_ENABLED", True), \
+             mock.patch.object(m, "TCA_REWARD_FEEDBACK_ENABLED", False):
+            m.note_pending_action("b1", "ETHUSDT", np.array([1.0, 0.0, 0.0, 0.0]), 1)
+            m.note_pending_action("b1", "ETHUSDT", np.array([1.1, 1.0, 0.01, 0.1]), 0)
+            mid = m.load_transitions("ETHUSDT")
+            assert len(mid) == 1
+            assert mid[0]["done"] is False
+            np.testing.assert_allclose(mid[0]["next_obs"], [1.1, 1.0, 0.01, 0.1])
+            m.record_live_close("b1", "ETHUSDT", reward=0.01, outcome_class="clean_win")
+            rows = m.load_transitions("ETHUSDT")
+            assert len(rows) == 2
+            assert rows[-1]["done"] is True
 
 
 class TestFinetuneGuard:

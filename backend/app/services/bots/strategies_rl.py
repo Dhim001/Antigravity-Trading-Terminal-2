@@ -47,7 +47,7 @@ class RlPpoStrategy(BaseStrategy):
     network for action decisions on each bar.
 
     Config keys:
-        min_confidence (float): Min softmax prob to act (default 0.28).
+        min_confidence (float): Min softmax prob to act (default 0.40).
         model_symbol (str): Override symbol for model lookup.
     """
 
@@ -214,7 +214,9 @@ class RlPpoStrategy(BaseStrategy):
             }
 
         action, confidence = result
-        threshold = float(self._cfg.get("min_confidence", 0.28))
+        from app.services.bots.rl_risk import DEFAULT_MIN_CONFIDENCE
+
+        threshold = float(self._cfg.get("min_confidence", DEFAULT_MIN_CONFIDENCE))
 
         # Replay buffer (AI-FT-PTL-001 §3.2): stash live (obs, action) so the
         # trade-close hook can persist the full transition with its reward.

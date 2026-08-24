@@ -83,8 +83,9 @@ import {
   getAutoAdvance,
   getAutoDeployMode,
   getMlPipeline,
+  hydrateMlPipeline,
   setAutoAdvance,
-  startPipeline,
+  startServerPipeline,
   subscribeMlPipeline,
 } from '@/lib/mlPipeline';
 import {
@@ -325,6 +326,7 @@ export default function ModelTrainingDashboard({
     const pipe = getMlPipeline();
     if (
       pipe.pipelineId
+      && !pipe.ownedByServer
       && pipe.stage === stage
       && String(pipe.strategy || '').toUpperCase() === String(strat || '').toUpperCase()
       && String(pipe.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()
@@ -523,6 +525,7 @@ export default function ModelTrainingDashboard({
         const pipe = getMlPipeline();
         if (
           pipe.pipelineId
+          && !pipe.ownedByServer
           && pipe.stage === 'TRAINING'
           && pipe.autoAdvance
           && String(pipe.strategy || '').toUpperCase() === String(strat).toUpperCase()
@@ -536,7 +539,7 @@ export default function ModelTrainingDashboard({
         lastTrainOutcomeRef.current = { strat, cancelled: false };
         toast.error(job.error || result.error || 'Training failed');
         const pipe = getMlPipeline();
-        if (pipe.pipelineId && pipe.stage === 'TRAINING') {
+        if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'TRAINING') {
           failPipeline(pipe.pipelineId, {
             stage: 'TRAINING',
             error: job.error || result.error || 'Training failed',
@@ -554,7 +557,7 @@ export default function ModelTrainingDashboard({
           toast.error(err.message || 'Training request failed');
         }
         const pipe = getMlPipeline();
-        if (pipe.pipelineId && pipe.stage === 'TRAINING') {
+        if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'TRAINING') {
           failPipeline(pipe.pipelineId, {
             stage: 'TRAINING',
             error: err.message || 'Training request failed',
@@ -758,7 +761,7 @@ export default function ModelTrainingDashboard({
       if (job.status === 'cancelled' || result.cancelled) {
         toast.message('Validation cancelled');
         const pipe = getMlPipeline();
-        if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+        if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'VALIDATING') {
           failPipeline(pipe.pipelineId, { stage: 'VALIDATING', error: 'cancelled' });
         }
       } else if (job.status === 'done' && result.ok) {
@@ -778,9 +781,8 @@ export default function ModelTrainingDashboard({
           toast.success(`Walk-forward validation finished${twNote}`);
         }
         const pipe = getMlPipeline();
-        if (pipe.pipelineId && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
+        if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
           advancePipeline(pipe.pipelineId, { result });
-          // AlgoPanel listens for BACKTESTING and kicks off holdout BT.
         }
       } else {
         const foldErr = Array.isArray(result?.folds)
@@ -788,7 +790,7 @@ export default function ModelTrainingDashboard({
           : null;
         toast.error(job.error || result.error || foldErr || 'Validation failed');
         const pipe = getMlPipeline();
-        if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+        if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'VALIDATING') {
           failPipeline(pipe.pipelineId, {
             stage: 'VALIDATING',
             error: job.error || result.error || foldErr || 'Validation failed',
@@ -813,7 +815,7 @@ export default function ModelTrainingDashboard({
               validateOk = true;
               toast.success('Walk-forward validation finished (recovered after client wait timeout)');
               const pipe = getMlPipeline();
-              if (pipe.pipelineId && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
+              if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'VALIDATING' && pipe.autoAdvance) {
                 advancePipeline(pipe.pipelineId, { result });
               }
               return validateOk;
@@ -845,7 +847,7 @@ export default function ModelTrainingDashboard({
         toast.error(badJson ? 'Validation failed — recycle backend and retry' : friendly);
       }
       const pipe = getMlPipeline();
-      if (pipe.pipelineId && pipe.stage === 'VALIDATING') {
+      if (pipe.pipelineId && !pipe.ownedByServer && pipe.stage === 'VALIDATING') {
         failPipeline(pipe.pipelineId, { stage: 'VALIDATING', error: friendly });
       }
     } finally {
@@ -868,16 +870,19 @@ export default function ModelTrainingDashboard({
       toast.message('Wait for the current ML job to finish');
       return;
     }
-    startPipeline({
+    const config = knobsToTrainConfig(strategy, advanced);
+    toast.message('Full pipeline started — Search → Train → Validate → Backtest → Gate');
+    void startServerPipeline({
       strategy,
       symbol: activeSymbol,
       timeframe: trainingTimeframe,
       trainingWindow,
-      autoAdvance: autoAdvanceOn,
       autoDeployMode: getAutoDeployMode(),
+      profile: 'research',
+      config,
+    }).catch((err) => {
+      toast.error(err?.message || 'Failed to start full pipeline');
     });
-    toast.message('Full pipeline started — Train → Validate → Backtest → Gate');
-    void runTrainJob(strategy, activeSymbol);
   };
 
   // Reset the donor selection when the target pair changes — a donor picked
@@ -890,6 +895,7 @@ export default function ModelTrainingDashboard({
   // progress strip + dialog can follow an in-flight server batch.
   useEffect(() => {
     rehydrateMlBatchTracker({ symbol: activeSymbol });
+    void hydrateMlPipeline({ symbol: activeSymbol });
   }, [activeSymbol]);
 
   useEffect(() => {
@@ -907,31 +913,24 @@ export default function ModelTrainingDashboard({
         toast.message(
           `ML job already running for ${sess.strategy} / ${sess.symbol} — wait for it before starting a pipeline`,
         );
-        const existing = getMlPipeline();
-        if (d.pipelineId && existing.pipelineId === d.pipelineId) {
-          failPipeline(d.pipelineId, { stage: 'TRAINING', error: 'ML Lab busy — pipeline not started' });
-        }
         return;
       }
       if (strat !== strategy) setStrategy(strat);
       if (tf && tf !== trainingTimeframe) setTrainingTimeframe(tf);
-      // Presets may already have started the pipeline — reuse that id.
-      const existing = getMlPipeline();
-      if (!(d.pipelineId && existing.pipelineId === d.pipelineId)) {
-        startPipeline({
-          strategy: strat,
-          symbol: sym,
-          timeframe: tf,
-          trainingWindow,
-          autoAdvance: true,
-          autoDeployMode: mode === 'retrain_validate' ? 'approval' : getAutoDeployMode(),
-          stopAfterValidate: mode === 'retrain_validate',
-          presetId: mode === 'retrain_validate' ? 'ml_retrain_validate' : 'ml_full_pipeline',
-        });
-      }
-      setTimeout(() => {
-        void runTrainJob(strat, sym);
-      }, 50);
+      const retrain = mode === 'retrain_validate';
+      void startServerPipeline({
+        strategy: strat,
+        symbol: sym,
+        timeframe: tf,
+        trainingWindow,
+        autoDeployMode: retrain ? 'approval' : getAutoDeployMode(),
+        profile: retrain ? 'retrain' : 'research',
+        stopAfterValidate: retrain,
+        presetId: retrain ? 'ml_retrain_validate' : 'ml_full_pipeline',
+        config: knobsToTrainConfig(strat, advanced),
+      }).catch((err) => {
+        toast.error(err?.message || 'Failed to start pipeline');
+      });
     };
     const onOpenBatch = (e) => {
       clearMlLabRequest('ml-lab-open-batch');

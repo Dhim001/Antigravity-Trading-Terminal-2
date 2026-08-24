@@ -267,6 +267,11 @@ export function applyServerMessage(type, data, storeActions, meta) {
         applyMlJobProgressMessage(data);
       });
       break;
+    case MessageType.ML_PIPELINE:
+      import('@/lib/mlPipeline').then(({ applyPipelineSnapshot }) => {
+        if (data) applyPipelineSnapshot(data);
+      });
+      break;
     case MessageType.BACKTEST_RESULT: {
       const resultJobId = data?.job_id || null;
       const watchedId = watchedBacktestJobId();

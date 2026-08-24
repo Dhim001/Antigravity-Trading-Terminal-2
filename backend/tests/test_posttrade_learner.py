@@ -80,6 +80,30 @@ class ClassifyOutcomeTests(unittest.TestCase):
         )
         self.assertEqual(cls, "clean_win")
 
+    def test_giveback_win_low_mfe_capture(self):
+        cls, reason = classify_outcome(
+            pnl=3.34,
+            mae_pct=0.93,
+            mfe_pct=2.2113,
+            trigger_type="SL",
+            insight={},
+            realized_pct=0.167,
+        )
+        self.assertEqual(cls, "giveback_win")
+        self.assertLess(reason["capture_frac"], 0.30)
+        self.assertIn("give-back", reason["note"].lower())
+
+    def test_full_mfe_capture_stays_clean_win(self):
+        cls, _ = classify_outcome(
+            pnl=50.0,
+            mae_pct=0.1,
+            mfe_pct=2.5,
+            trigger_type="TP",
+            insight={},
+            realized_pct=2.5,
+        )
+        self.assertEqual(cls, "clean_win")
+
     def test_win_without_excursion_marks_is_not_clean(self):
         cls, reason = classify_outcome(
             pnl=5.0,
@@ -136,6 +160,16 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertIn("atr_stop_mult", patch)
         self.assertGreater(patch["atr_stop_mult"], 1.5)
+        self.assertNotIn("trailing_stop_percent", patch)
+        self.assertNotIn("stop_loss_percent", patch)
+
+    def test_giveback_win_does_not_tighten_stop(self):
+        patch = build_config_patch(
+            "giveback_win",
+            {"trailing_stop_percent": 2.0, "take_profit_percent": 2.5},
+            strategy="TCN_MULTI_HORIZON",
+        )
+        self.assertEqual(patch, {})
         self.assertNotIn("trailing_stop_percent", patch)
         self.assertNotIn("stop_loss_percent", patch)
 

@@ -198,6 +198,48 @@ export async function retryMlBatch(batchId) {
   });
 }
 
+export async function submitMlPipeline(body) {
+  return apiRequest('/api/v1/ml/pipeline', {
+    method: 'POST',
+    body,
+    timeoutMs: ML_JOB_SUBMIT_TIMEOUT_MS,
+  });
+}
+
+export async function fetchMlPipeline(pipelineId) {
+  return apiRequest(`/api/v1/ml/pipeline/${encodeURIComponent(pipelineId)}`, {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+}
+
+export async function fetchActiveMlPipeline(symbol) {
+  const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+  return apiRequest(`/api/v1/ml/pipeline/active${qs}`, {
+    timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,
+  });
+}
+
+export async function cancelMlPipeline(pipelineId) {
+  return apiRequest(`/api/v1/ml/pipeline/${encodeURIComponent(pipelineId)}/cancel`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  });
+}
+
+export async function approveMlPipeline(pipelineId) {
+  return apiRequest(`/api/v1/ml/pipeline/${encodeURIComponent(pipelineId)}/approve`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  });
+}
+
+export async function retryMlPipeline(pipelineId) {
+  return apiRequest(`/api/v1/ml/pipeline/${encodeURIComponent(pipelineId)}/retry`, {
+    method: 'POST',
+    timeoutMs: 30_000,
+  });
+}
+
 export async function pollMlJob(jobId) {
   return apiRequest(`/api/v1/ml/jobs/${encodeURIComponent(jobId)}`, {
     timeoutMs: ML_JOB_STATUS_POLL_TIMEOUT_MS,

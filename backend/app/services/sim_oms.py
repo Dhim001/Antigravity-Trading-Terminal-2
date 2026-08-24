@@ -882,6 +882,7 @@ class SimulatedOMSService(BaseOMSService):
         triggered_logs: list[str] = []
 
         current_atrs = {}
+        candle_cache: dict[tuple[str, str], list] = {}
 
         # Massive + Alpaca expose feed._seeded. Skip symbols until REST/live seed
         # replaces SYMBOLS defaults (BTCUSDT starts at 63000) — otherwise a backend
@@ -906,34 +907,58 @@ class SimulatedOMSService(BaseOMSService):
                 if abs(osize) <= 1e-8:
                     continue
 
-                bot_config = owner.get("bot_config") or {}
+                from app.services.bots.indicators import merge_strategy_config
+                from app.services.bots.profit_lock import (
+                    chandelier_kwargs_from_config,
+                    hold_excursion_from_candles,
+                )
+
+                bot_config = merge_strategy_config(
+                    owner.get("strategy") or "",
+                    owner.get("bot_config") or {},
+                )
                 use_chandelier = bool(bot_config.get("chandelier_stop_enabled", False))
+                chand = chandelier_kwargs_from_config(bot_config)
                 current_atr = None
+                bar_high = None
+                bar_low = None
 
                 if use_chandelier:
                     timeframe = owner.get("timeframe") or "1m"
                     key = (symbol, timeframe)
-                    if key not in current_atrs:
-                        current_atr_val = 0.0
+                    if key not in candle_cache:
+                        candles = []
                         try:
                             from app.services.bots.candle_source import get_bot_candles
-                            import pandas as pd
-                            import pandas_ta as ta
 
-                            candles = get_bot_candles(symbol, self.feed, timeframe=timeframe)
+                            candles = get_bot_candles(symbol, self.feed, timeframe=timeframe) or []
+                        except Exception as exc:
+                            print(f"Failed to load candles in check_sl_tp_triggers: {exc}")
+                        candle_cache[key] = candles
+                    candles = candle_cache[key]
+                    atr_key = (symbol, timeframe, bot_config.get("atr_length", 14))
+                    if atr_key not in current_atrs:
+                        current_atr_val = 0.0
+                        try:
                             if candles and len(candles) >= 15:
+                                import math
+                                import pandas as pd
+                                import pandas_ta as ta
+
                                 df = pd.DataFrame(candles)
                                 atr_len = bot_config.get("atr_length", 14)
                                 atr_series = ta.atr(df["high"], df["low"], df["close"], length=atr_len)
                                 if atr_series is not None and not atr_series.empty:
-                                    import math
                                     val = atr_series.iloc[-1]
                                     if not math.isnan(val):
                                         current_atr_val = float(val)
                         except Exception as exc:
                             print(f"Failed to calculate current ATR in check_sl_tp_triggers: {exc}")
-                        current_atrs[key] = current_atr_val
-                    current_atr = current_atrs[key]
+                        current_atrs[atr_key] = current_atr_val
+                    current_atr = current_atrs[atr_key]
+                    bar_high, bar_low = hold_excursion_from_candles(
+                        candles, opened_at=owner.get("opened_at"),
+                    )
 
                 trigger_type, trailing_sl, updated_high, updated_low = bot_positions.evaluate_risk_trigger(
                     osize,
@@ -944,11 +969,16 @@ class SimulatedOMSService(BaseOMSService):
                     stop_loss_price=owner["stop_loss_price"],
                     take_profit_price=owner["take_profit_price"],
                     chandelier_stop_enabled=use_chandelier,
-                    chandelier_multiplier=float(bot_config.get("chandelier_multiplier") or 3.0),
+                    chandelier_multiplier=chand["multiplier"],
+                    chandelier_arm_r=chand["arm_r"],
+                    chandelier_tighten_r=chand["tighten_r"],
+                    chandelier_tighten_mult=chand["tighten_mult"],
                     high_watermark=owner.get("high_watermark"),
                     low_watermark=owner.get("low_watermark"),
                     entry_atr=owner.get("entry_atr"),
                     current_atr=current_atr,
+                    bar_high=bar_high,
+                    bar_low=bar_low,
                 )
 
                 if (
@@ -969,6 +999,8 @@ class SimulatedOMSService(BaseOMSService):
                     market_price=market_price,
                     stop_loss_price=sl_ref,
                     take_profit_price=tp_ref,
+                    previous_stop_loss_price=owner.get("stop_loss_price"),
+                    size=osize,
                 )
                 if trigger_type == "SL":
                     triggered_logs.append(
@@ -1036,6 +1068,8 @@ class SimulatedOMSService(BaseOMSService):
                 market_price=market_price,
                 stop_loss_price=sl_price,
                 take_profit_price=tp_price,
+                previous_stop_loss_price=account.get("stop_loss_price"),
+                size=acc_size,
             )
             if trigger_type == "SL":
                 triggered_logs.append(

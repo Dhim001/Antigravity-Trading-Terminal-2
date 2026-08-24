@@ -127,7 +127,7 @@ class MlRetrainScheduler:
     Usage:
         scheduler = MlRetrainScheduler()
         actions = scheduler.check(active_bots)
-        # Queue via request_retrain(); ml_retrain_drain_loop submits train jobs.
+        # Queue via request_retrain(); ml_retrain_drain_loop enqueues pipeline runs.
     """
 
     def __init__(
@@ -500,8 +500,9 @@ async def drain_one_pending_retrain(
     bot_manager,
     *,
     event_bus=None,
+    app_state=None,
 ) -> dict[str, Any] | None:
-    """Pop one pending ML retrain and submit a train job. Returns outcome or None."""
+    """Pop one pending ML retrain and enqueue a profile=retrain pipeline."""
     scheduler = get_retrain_scheduler()
     item = scheduler.pop_next_pending(ml_only=True)
     if not item:
@@ -515,58 +516,14 @@ async def drain_one_pending_retrain(
     if not strategy or not symbol:
         return {"ok": False, "error": "missing strategy/symbol", "item": item}
 
-    try:
-        candles = await _resolve_drain_candles(
-            bot_manager, symbol, strategy, timeframe=tf,
-        )
-    except Exception as exc:
-        logger.exception("Drain candle fetch failed for %s/%s", strategy, symbol)
-        # Re-queue so a later cycle can retry.
-        scheduler.request_retrain(
-            strategy, symbol,
-            reason=f"drain retry after candle fetch error: {exc}",
-            source="retrain_drain",
-            timeframe=tf,
-        )
-        return {"ok": False, "error": str(exc), "strategy": strategy, "symbol": symbol}
-
-    if len(candles) < 200:
-        logger.warning(
-            "Drain skipped %s/%s — insufficient candles (%d)",
-            strategy, symbol, len(candles),
-        )
-        scheduler.request_retrain(
-            strategy, symbol,
-            reason=f"drain retry: insufficient candles ({len(candles)})",
-            source="retrain_drain",
-            timeframe=tf,
-        )
-        return {
-            "ok": False,
-            "error": f"insufficient candles ({len(candles)})",
-            "strategy": strategy,
-            "symbol": symbol,
-        }
-
-    from app.services.bots.ml_job_store import create_ml_job
-    from app.services.bots.ml_train_executor import submit_train_job
-
-    job_id = create_ml_job(kind="train", strategy=strategy, symbol=symbol)
-    logger.info(
-        "Retrain drain submitting train job %s for %s/%s @ %s (reasons=%s)",
-        job_id, strategy, symbol, tf, item.get("reasons"),
-    )
-
     train_cfg: dict[str, Any] = {
         "timeframe": tf,
-        # Lab write semantics — persist champion + snapshot like Apply & Retrain.
         "champion_train": True,
         "use_optimized_hyperparams": True,
         "retrain_from_live_model": True,
         "skip_persist": False,
         "skip_snapshot": False,
     }
-    # Prefer hyperparameters from the live model metadata (same params).
     try:
         from app.services.bots.optimization_store import (
             merge_live_model_train_hyperparams,
@@ -576,50 +533,60 @@ async def drain_one_pending_retrain(
         train_cfg = merge_live_model_train_hyperparams(
             train_cfg, symbol, strategy, timeframe=tf,
         )
-        # Fill any remaining gaps from the latest Optuna/sweep best_config.
         use_opt = bool(item.get("retrain_use_optimized_hyperparams", True))
         if use_opt:
             train_cfg = merge_optimized_train_hyperparams(train_cfg, symbol, strategy)
-            if train_cfg.get("retrain_from_optimized"):
-                logger.info(
-                    "Retrain drain using optimized hyperparams for %s/%s: %s",
-                    strategy, symbol, train_cfg.get("_optimized_hyperparams_applied"),
-                )
-        if train_cfg.get("retrain_from_live_model"):
-            logger.info(
-                "Retrain drain using live-model hyperparams for %s/%s: %s",
-                strategy, symbol, train_cfg.get("_live_model_hyperparams_applied"),
-            )
     except Exception:
         logger.debug("Hyperparam reuse lookup failed", exc_info=True)
 
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
     try:
-        result = await submit_train_job(
-            strategy, symbol, candles, train_cfg,
-            job_id=job_id, event_bus=event_bus,
+        run = pipeline_runner.create_pipeline_run(
+            symbol=symbol,
+            strategy=strategy,
+            timeframe=tf,
+            config=train_cfg,
+            profile="retrain",
+            auto_deploy_mode="paper",
         )
     except Exception as exc:
-        logger.exception("Drain train job %s failed", job_id)
-        return {
-            "ok": False,
-            "error": str(exc),
-            "job_id": job_id,
-            "strategy": strategy,
-            "symbol": symbol,
-        }
+        logger.exception("Retrain drain failed to create pipeline for %s/%s", strategy, symbol)
+        scheduler.request_retrain(
+            strategy, symbol,
+            reason=f"drain retry after pipeline create error: {exc}",
+            source="retrain_drain",
+            timeframe=tf,
+        )
+        return {"ok": False, "error": str(exc), "strategy": strategy, "symbol": symbol}
 
-    ok = bool(isinstance(result, dict) and result.get("ok") and not result.get("cancelled"))
+    state = app_state
+    if state is None:
+        state = type("DrainState", (), {
+            "bot_manager": bot_manager,
+            "oms": getattr(bot_manager, "oms", None),
+            "feed": getattr(getattr(bot_manager, "oms", None), "feed", None),
+            "backtester": getattr(bot_manager, "backtester", None),
+            "event_bus": event_bus,
+        })()
+    pipeline_runner.start_pipeline_runner(
+        run["pipeline_id"], state, event_bus=event_bus,
+    )
+    logger.info(
+        "Retrain drain enqueued pipeline %s for %s/%s @ %s (reasons=%s)",
+        run["pipeline_id"], strategy, symbol, tf, item.get("reasons"),
+    )
     return {
-        "ok": ok,
-        "job_id": job_id,
+        "ok": True,
+        "pipeline_id": run["pipeline_id"],
         "strategy": strategy,
         "symbol": symbol,
-        "result": result if isinstance(result, dict) else None,
+        "profile": "retrain",
     }
 
 
-async def ml_retrain_drain_loop(bot_manager, *, event_bus=None) -> None:
-    """Background loop: drain pending ML retrain queue into real train jobs."""
+async def ml_retrain_drain_loop(bot_manager, *, event_bus=None, app_state=None) -> None:
+    """Background loop: drain pending ML retrain queue into pipeline runs."""
     from app.config import ML_RETRAIN_AUTO_DRAIN, ML_RETRAIN_DRAIN_INTERVAL_SEC
 
     if not ML_RETRAIN_AUTO_DRAIN:
@@ -641,14 +608,16 @@ async def ml_retrain_drain_loop(bot_manager, *, event_bus=None) -> None:
             )
             if not has_ml:
                 continue
-            outcome = await drain_one_pending_retrain(bot_manager, event_bus=event_bus)
+            outcome = await drain_one_pending_retrain(
+                bot_manager, event_bus=event_bus, app_state=app_state,
+            )
             if outcome:
                 logger.info(
-                    "Retrain drain outcome: ok=%s %s/%s job=%s",
+                    "Retrain drain outcome: ok=%s %s/%s pipeline=%s",
                     outcome.get("ok"),
                     outcome.get("strategy"),
                     outcome.get("symbol"),
-                    outcome.get("job_id"),
+                    outcome.get("pipeline_id"),
                 )
         except asyncio.CancelledError:
             raise

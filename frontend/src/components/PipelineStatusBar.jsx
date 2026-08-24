@@ -30,6 +30,10 @@ function stageStatus(pipeline, stageId) {
     return 'pending';
   }
   if (current === 'IDLE') return 'pending';
+  if (stageId === 'SEARCH') {
+    if (pipeline.profile === 'retrain') return 'done';
+    if (!pipeline.ownedByServer && current !== 'SEARCH') return 'done';
+  }
   if (current === 'DEPLOYED') {
     return stageId === 'DEPLOYED' || order.indexOf(stageId) < order.indexOf('DEPLOYED')
       ? 'done'

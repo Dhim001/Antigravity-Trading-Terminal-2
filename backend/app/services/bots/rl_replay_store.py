@@ -29,18 +29,27 @@ from app.database import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Reward shaping from post-trade lessons (AI-FT-PTL-001 §3.2, P1 #5):
-# outcome_class → auxiliary reward modifier injected at record time.
+# Reward shaping from post-trade lessons (AI-FT-PTL-001 §3.2, P1 #5).
+# Same Δlog-equity units as TradingEnv / live_close_log_reward (not R-multiples).
 OUTCOME_REWARD_MODIFIERS: dict[str, float] = {
-    "clean_win": 0.2,
-    "regime_mismatch": -0.3,
-    "stop_too_tight": -0.1,
-    "good_entry_bad_exit": -0.15,
+    "clean_win": 0.002,
+    "regime_mismatch": -0.003,
+    "stop_too_tight": -0.001,
+    "good_entry_bad_exit": -0.0015,
+    "giveback_win": -0.001,
 }
 
 # Latest (obs, action) per live bot — written by the RL strategy each bar,
 # consumed by record_live_close when the position closes.
 _pending_actions: dict[str, dict[str, Any]] = {}
+
+
+def _flatten_position_obs(obs: Any) -> np.ndarray:
+    """Copy an observation with position features zeroed (flat next-state)."""
+    arr = np.asarray(obs, dtype=np.float32).copy()
+    if arr.size >= 3:
+        arr[-3:] = 0.0
+    return arr
 
 
 def note_pending_action(
@@ -49,13 +58,25 @@ def note_pending_action(
     obs: Any,
     action: int,
 ) -> None:
-    """Stash the latest live (obs, action) so the close hook can complete it."""
+    """Stash the latest live (obs, action); complete the previous bar's step."""
     if not RL_REPLAY_ENABLED or not bot_id:
         return
     try:
+        obs_arr = np.asarray(obs, dtype=np.float32).copy()
+        prev = _pending_actions.get(bot_id)
+        if prev and prev.get("obs") is not None:
+            record_transition(
+                bot_id=bot_id,
+                symbol=prev.get("symbol") or symbol,
+                obs=prev["obs"],
+                action=int(prev["action"]),
+                reward=0.0,
+                next_obs=obs_arr,
+                done=False,
+            )
         _pending_actions[bot_id] = {
             "symbol": str(symbol).upper(),
-            "obs": np.asarray(obs, dtype=np.float32).copy(),
+            "obs": obs_arr,
             "action": int(action),
         }
     except Exception:
@@ -92,13 +113,14 @@ def record_live_close(
             if is_bps:
                 shaped -= float(is_bps) / 10_000.0
 
+        close_next = next_obs if next_obs is not None else _flatten_position_obs(pending["obs"])
         record_transition(
             bot_id=bot_id,
             symbol=pending["symbol"],
             obs=pending["obs"],
             action=pending["action"],
             reward=shaped,
-            next_obs=next_obs,
+            next_obs=close_next,
             done=True,
             outcome_class=outcome_class,
         )

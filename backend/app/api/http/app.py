@@ -1869,6 +1869,163 @@ async def ml_batch_retry_handler(request: Request) -> JSONResponse:
     )
 
 
+async def ml_pipeline_create_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/pipeline — start a durable research/retrain pipeline."""
+    try:
+        raw = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+
+    body, err = _parse_ml_request_body(raw)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    symbol = _normalize_ml_symbol(body.get("symbol") or "")
+    strategy = (body.get("strategy") or "").upper()
+    if not symbol or not strategy:
+        return JSONResponse({"ok": False, "error": "symbol and strategy required"}, status_code=400)
+
+    from app.services.bots.ml_registry import is_ml_strategy
+
+    if not is_ml_strategy(strategy):
+        from app.services.bots.ml_retrain_scheduler import lab_train_unsupported_error
+        return JSONResponse({"ok": False, "error": lab_train_unsupported_error(strategy)}, status_code=400)
+
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+    from app.services.bots.ml_model_artifacts import normalize_model_timeframe
+    from app.services.bots.ml_training_window import parse_training_window_months
+
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    tf = normalize_model_timeframe(config.get("timeframe") or body.get("timeframe"))
+    config = {**config, "timeframe": tf}
+    win_months = parse_training_window_months(
+        {**config, "training_window_months": body.get("training_window") or config.get("training_window_months")}
+    )
+    config["training_window_months"] = win_months
+    profile = pipeline_runner.normalize_profile(body.get("profile"))
+    if body.get("presetId") == "ml_retrain_validate" or body.get("mode") == "retrain_validate":
+        profile = "retrain"
+    stop = bool(body.get("stop_after_validate") or body.get("stopAfterValidate"))
+    auto_mode = pipeline_runner.normalize_auto_deploy_mode(
+        body.get("auto_deploy_mode") or body.get("autoDeployMode")
+    )
+
+    state: AppState = request.app.state.terminal
+    event_bus = getattr(state, "event_bus", None)
+    pipeline_runner.resume_incomplete_pipelines(state, event_bus=event_bus)
+
+    try:
+        run = pipeline_runner.create_pipeline_run(
+            symbol=symbol,
+            strategy=strategy,
+            timeframe=tf,
+            config=config,
+            profile=profile,
+            auto_deploy_mode=auto_mode,
+            stop_after_validate=stop,
+            pipeline_id=body.get("pipeline_id") or body.get("pipelineId"),
+        )
+    except Exception as exc:
+        logger.exception("ML pipeline create failed for %s/%s", strategy, symbol)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    pipeline_runner.start_pipeline_runner(
+        run["pipeline_id"], state, event_bus=event_bus,
+    )
+    return JSONResponse(
+        {"ok": True, "pipeline_id": run["pipeline_id"], "pipeline": pipeline_runner.public_pipeline(run)},
+        status_code=202,
+    )
+
+
+async def ml_pipeline_get_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/pipeline/{pipeline_id}."""
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
+    pipeline_id = request.path_params.get("pipeline_id")
+    if not pipeline_id:
+        return JSONResponse({"ok": False, "error": "pipeline_id required"}, status_code=400)
+    state: AppState = request.app.state.terminal
+    pipeline_runner.resume_incomplete_pipelines(state, event_bus=getattr(state, "event_bus", None))
+    run = pipeline_runner.get_pipeline(pipeline_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "pipeline not found"}, status_code=404)
+    if pipeline_runner.ensure_pipeline_runner(
+        pipeline_id, state, event_bus=getattr(state, "event_bus", None),
+    ):
+        run = pipeline_runner.get_pipeline(pipeline_id) or run
+    return JSONResponse({"ok": True, "pipeline": pipeline_runner.public_pipeline(run)})
+
+
+async def ml_pipeline_active_handler(request: Request) -> JSONResponse:
+    """GET /api/v1/ml/pipeline/active?symbol= — newest non-terminal run."""
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
+    state: AppState = request.app.state.terminal
+    pipeline_runner.resume_incomplete_pipelines(state, event_bus=getattr(state, "event_bus", None))
+    symbol = request.query_params.get("symbol")
+    run = pipeline_runner.latest_active_pipeline(symbol)
+    if run and pipeline_runner.ensure_pipeline_runner(
+        run["pipeline_id"], state, event_bus=getattr(state, "event_bus", None),
+    ):
+        run = pipeline_runner.get_pipeline(run["pipeline_id"]) or run
+    return JSONResponse({
+        "ok": True,
+        "pipeline": pipeline_runner.public_pipeline(run) if run else None,
+    })
+
+
+async def ml_pipeline_cancel_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/pipeline/{pipeline_id}/cancel."""
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
+    pipeline_id = request.path_params.get("pipeline_id")
+    if not pipeline_id:
+        return JSONResponse({"ok": False, "error": "pipeline_id required"}, status_code=400)
+    run = pipeline_runner.cancel_pipeline(pipeline_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "pipeline not found"}, status_code=404)
+    return JSONResponse({"ok": True, "pipeline": pipeline_runner.public_pipeline(run)})
+
+
+async def ml_pipeline_approve_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/pipeline/{pipeline_id}/approve — resume deploy after gate."""
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
+    pipeline_id = request.path_params.get("pipeline_id")
+    if not pipeline_id:
+        return JSONResponse({"ok": False, "error": "pipeline_id required"}, status_code=400)
+    run = pipeline_runner.approve_pipeline(pipeline_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "pipeline not found"}, status_code=404)
+    state: AppState = request.app.state.terminal
+    pipeline_runner.start_pipeline_runner(
+        pipeline_id, state, event_bus=getattr(state, "event_bus", None),
+    )
+    return JSONResponse({"ok": True, "pipeline": pipeline_runner.public_pipeline(run)})
+
+
+async def ml_pipeline_retry_handler(request: Request) -> JSONResponse:
+    """POST /api/v1/ml/pipeline/{pipeline_id}/retry — resume from last failed stage."""
+    from app.services.bots import ml_pipeline_runner as pipeline_runner
+
+    pipeline_id = request.path_params.get("pipeline_id")
+    if not pipeline_id:
+        return JSONResponse({"ok": False, "error": "pipeline_id required"}, status_code=400)
+    run = pipeline_runner.retry_pipeline(pipeline_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "pipeline not found"}, status_code=404)
+    if run.get("requeued"):
+        state: AppState = request.app.state.terminal
+        pipeline_runner.start_pipeline_runner(
+            pipeline_id, state, event_bus=getattr(state, "event_bus", None),
+        )
+    return JSONResponse(
+        {"ok": True, "pipeline": pipeline_runner.public_pipeline(run), "requeued": run.get("requeued", 0)},
+        status_code=202,
+    )
+
+
 async def ml_list_runs_handler(request: Request) -> JSONResponse:
     """GET /api/v1/ml/runs — persistent train/validate history."""
     from app.services.bots.ml_train_runs import list_ml_train_runs
@@ -3741,6 +3898,12 @@ def create_http_app(state: AppState) -> Starlette:
         Route("/api/v1/ml/batch-train/{batch_id}", ml_batch_status_handler, methods=["GET"]),
         Route("/api/v1/ml/batch-train/{batch_id}/cancel", ml_batch_cancel_handler, methods=["POST"]),
         Route("/api/v1/ml/batch-train/{batch_id}/retry", ml_batch_retry_handler, methods=["POST"]),
+        Route("/api/v1/ml/pipeline", ml_pipeline_create_handler, methods=["POST"]),
+        Route("/api/v1/ml/pipeline/active", ml_pipeline_active_handler, methods=["GET"]),
+        Route("/api/v1/ml/pipeline/{pipeline_id}", ml_pipeline_get_handler, methods=["GET"]),
+        Route("/api/v1/ml/pipeline/{pipeline_id}/cancel", ml_pipeline_cancel_handler, methods=["POST"]),
+        Route("/api/v1/ml/pipeline/{pipeline_id}/approve", ml_pipeline_approve_handler, methods=["POST"]),
+        Route("/api/v1/ml/pipeline/{pipeline_id}/retry", ml_pipeline_retry_handler, methods=["POST"]),
         Route("/api/v1/ml/runs", ml_list_runs_handler, methods=["GET"]),
         Route("/api/v1/ml/activate-version", ml_activate_version_handler, methods=["POST"]),
         Route("/api/v1/ml/delete-version", ml_delete_version_handler, methods=["POST"]),

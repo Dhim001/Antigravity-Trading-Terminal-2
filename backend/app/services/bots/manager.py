@@ -2080,7 +2080,10 @@ class BotManagerService:
         tp_pct = None
         tp_price = None
         if not is_exit:
-            bot_cfg = merge_tp_config(bot.get("strategy", ""), bot.get("config", {}))
+            bot_cfg = merge_tp_config(
+                bot.get("strategy", ""),
+                merge_strategy_config(bot.get("strategy", ""), bot.get("config", {})),
+            )
             from app.services.bots.rl_risk import is_rl_strategy, uses_percent_stops
 
             if is_rl_strategy(bot.get("strategy")) and not uses_percent_stops(bot.get("config") or {}):
@@ -2112,8 +2115,8 @@ class BotManagerService:
                         )
             else:
                 sl_pct = (
-                    bot.get("config", {}).get("trailing_stop_percent")
-                    or bot.get("config", {}).get("stop_loss_percent")
+                    bot_cfg.get("trailing_stop_percent")
+                    or bot_cfg.get("stop_loss_percent")
                 )
         if not is_exit and tp_price is None and signal_data.get("take_profit_price") is not None:
             tp_price = signal_data.get("take_profit_price")

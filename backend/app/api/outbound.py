@@ -103,6 +103,10 @@ def ml_job_progress(data: dict) -> dict:
     return frame(MessageType.ML_JOB_PROGRESS, data)
 
 
+def ml_pipeline(data: dict) -> dict:
+    return frame(MessageType.ML_PIPELINE, data)
+
+
 def ticks_update(data: dict, *, meta: dict | None = None) -> dict:
     payload = frame(MessageType.TICKS_UPDATE, data)
     if meta is not None:

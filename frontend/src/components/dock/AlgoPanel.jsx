@@ -640,7 +640,7 @@ export function AlgoTab({ hideToolbar = false }) {
     });
     sendAction(Action.BOT_CREATE, payload);
     const pipe = getMlPipeline();
-    if (pipe.pipelineId && (pipe.stage === 'READY_TO_DEPLOY' || pipe.stage === 'GATE_CHECK')) {
+    if (pipe.pipelineId && !pipe.ownedByServer && (pipe.stage === 'READY_TO_DEPLOY' || pipe.stage === 'GATE_CHECK')) {
       if (pipe.stage === 'GATE_CHECK') advancePipeline(pipe.pipelineId);
       advancePipeline(pipe.pipelineId);
       completePipeline(pipe.pipelineId);
@@ -652,6 +652,7 @@ export function AlgoTab({ hideToolbar = false }) {
   // Pipeline: when stage hits BACKTESTING, align config and run holdout BT.
   useEffect(() => {
     if (mlPipeline.stage !== 'BACKTESTING' || !mlPipeline.pipelineId) return;
+    if (mlPipeline.ownedByServer) return;
     if (pipelineBtStartedRef.current === mlPipeline.pipelineId) return;
     if (backtestRunning) return;
 
@@ -694,6 +695,7 @@ export function AlgoTab({ hideToolbar = false }) {
   // Pipeline: after backtest finishes during BACKTESTING → gate → maybe deploy.
   useEffect(() => {
     if (mlPipeline.stage !== 'BACKTESTING' || !mlPipeline.pipelineId) return;
+    if (mlPipeline.ownedByServer) return;
     if (backtestRunning) return;
     if (!backtestResults) return;
     if (pipelineGateDoneRef.current === mlPipeline.pipelineId) return;

@@ -87,6 +87,7 @@ class MessageType(StrEnum):
     BACKTEST_RESULT = "backtest_result"
     BACKTEST_PROGRESS = "backtest_progress"
     ML_JOB_PROGRESS = "ml_job_progress"
+    ML_PIPELINE = "ml_pipeline"
     TICKS_UPDATE = "ticks_update"
     BOTS_HISTORY = "bots_history"
     AGENT_INSIGHT = "agent_insight"

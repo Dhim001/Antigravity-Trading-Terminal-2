@@ -30,6 +30,11 @@ import {
   fetchMlBatch,
   cancelMlBatch,
   retryMlBatch,
+  submitMlPipeline,
+  fetchMlPipeline,
+  fetchActiveMlPipeline,
+  cancelMlPipeline,
+  approveMlPipeline,
 } from './mlLabApi';
 
 describe('mlLabApi', () => {
@@ -220,6 +225,47 @@ describe('mlLabApi', () => {
     await retryMlBatch('b-1');
     expect(apiRequest).toHaveBeenCalledWith(
       '/api/v1/ml/batch-train/b-1/retry',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('submitMlPipeline posts the research pipeline body', async () => {
+    apiRequest.mockResolvedValueOnce({ ok: true, pipeline_id: 'p-1' });
+    await submitMlPipeline({
+      symbol: 'ETHUSDT',
+      strategy: 'ML_SIGNAL_BOOST',
+      profile: 'research',
+      auto_deploy_mode: 'paper',
+    });
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/pipeline', {
+      method: 'POST',
+      body: {
+        symbol: 'ETHUSDT',
+        strategy: 'ML_SIGNAL_BOOST',
+        profile: 'research',
+        auto_deploy_mode: 'paper',
+      },
+      timeoutMs: 10000,
+    });
+  });
+
+  it('fetch/cancel/approve pipeline hit the durable routes', async () => {
+    apiRequest.mockResolvedValue({ ok: true });
+    await fetchMlPipeline('p-1');
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/ml/pipeline/p-1', expect.any(Object));
+    await fetchActiveMlPipeline('ETHUSDT');
+    expect(apiRequest).toHaveBeenCalledWith(
+      '/api/v1/ml/pipeline/active?symbol=ETHUSDT',
+      expect.any(Object),
+    );
+    await cancelMlPipeline('p-1');
+    expect(apiRequest).toHaveBeenCalledWith(
+      '/api/v1/ml/pipeline/p-1/cancel',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    await approveMlPipeline('p-1');
+    expect(apiRequest).toHaveBeenCalledWith(
+      '/api/v1/ml/pipeline/p-1/approve',
       expect.objectContaining({ method: 'POST' }),
     );
   });

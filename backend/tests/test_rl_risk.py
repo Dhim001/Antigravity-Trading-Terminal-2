@@ -1,5 +1,9 @@
 """RL ATR risk, cost defaults, train guards, and payoff gate."""
 
+import math
+
+import pytest
+
 from app.services.bots.rl_risk import (
     MIN_ENT_COEF,
     MIN_PROFIT_FACTOR,
@@ -67,6 +71,35 @@ def test_trade_payoff_stats():
     assert stats["profit_factor"] > 1.3
 
 
+def test_path_step_reward_units():
+    from app.services.bots.rl_risk import path_step_reward
+
+    # 1% equity up, no new DD, no trade → ≈ log(1.01)
+    r = path_step_reward(1.0, 1.01, 1.0, traded=False)
+    assert abs(r - math.log(1.01)) < 1e-9
+    # Drawdown increase is penalized; a winning step that makes a new peak is not.
+    down = path_step_reward(1.0, 0.9, 1.0, traded=False)
+    assert down < math.log(0.9)
+    churn = path_step_reward(1.0, 1.0, 1.0, traded=True)
+    assert churn < 0.0
+
+
+def test_greedy_serve_holds_below_min_confidence():
+    from app.services.bots.rl_risk import greedy_serve_action
+
+    assert greedy_serve_action([0.0, 0.1, 0.0, 0.0], min_confidence=0.40) == 0
+    assert greedy_serve_action([0.0, 5.0, 0.0, 0.0], min_confidence=0.40) == 1
+    # CLOSE is never thresholded.
+    assert greedy_serve_action([0.0, 0.0, 0.0, 0.1], min_confidence=0.40) == 3
+
+
+def test_live_close_log_reward():
+    from app.services.bots.rl_risk import live_close_log_reward
+
+    assert live_close_log_reward(10.0, 100.0, 1.0) == pytest.approx(math.log(1.10))
+    assert live_close_log_reward(None, 100.0, 1.0) == 0.0
+
+
 def test_env_hits_atr_stop():
     from app.services.bots.rl_trading_env import ACTION_BUY, TradingEnv
 
@@ -88,8 +121,10 @@ def test_env_hits_atr_stop():
         config={"env_seed": 0, "max_episode_steps": 30, "fee_bps": 10, "slippage_bps": 5},
     )
     env.reset()
-    env.step(ACTION_BUY)
     hit = False
+    _, _, _, info = env.step(ACTION_BUY)
+    if info.get("barrier") == "atr_stop":
+        hit = True
     for _ in range(8):
         _, _, _, info = env.step(0)
         if info.get("barrier") == "atr_stop":

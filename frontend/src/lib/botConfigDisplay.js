@@ -651,7 +651,7 @@ export function buildAppliedDeployConfig(strategy, cfg = {}, opts = {}) {
 /** Confidence slider bounds — RL/TCN use non-probability scales. */
 export function confidenceRangeForStrategy(strategy) {
   const strat = String(strategy || '').toUpperCase();
-  if (strat === 'RL_PPO_AGENT') return { min: 0.15, max: 0.8, step: 0.01, defaultValue: 0.28 };
+  if (strat === 'RL_PPO_AGENT') return { min: 0.15, max: 0.8, step: 0.01, defaultValue: 0.40 };
   if (strat === 'TCN_MULTI_HORIZON') return { min: 0.0005, max: 0.05, step: 0.0005, defaultValue: 0.002 };
   return { min: 0.4, max: 1, step: 0.05, defaultValue: 0.55 };
 }

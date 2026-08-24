@@ -172,7 +172,7 @@ export const useStore = create(subscribeWithSelector((set, get) => ({
         execution_mode: 'BAR_CLOSE',
         allocation,
         config: pickDeployConfig(id, {
-          min_confidence: id === 'RL_PPO_AGENT' ? 0.28 : id === 'TCN_MULTI_HORIZON' ? 0.002 : 0.55,
+          min_confidence: id === 'RL_PPO_AGENT' ? 0.40 : id === 'TCN_MULTI_HORIZON' ? 0.002 : 0.55,
           ...(id === 'RL_PPO_AGENT'
             ? {
               tp_mode: 'strategy',

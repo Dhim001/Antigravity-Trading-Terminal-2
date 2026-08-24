@@ -31,6 +31,83 @@ TORCH_TRAIN_STRATEGIES = frozenset({
     "GNN_CROSS_ASSET",
 })
 
+# Interactive Lab Validate clamps CSCV. Pipeline research profile lifts it.
+_PBO_INTERACTIVE_SEGMENTS = 4
+_PBO_INTERACTIVE_COMBOS = 4
+_PBO_RESEARCH_GBM_SEGMENTS = 6
+_PBO_RESEARCH_GBM_COMBOS = 15
+_PBO_RESEARCH_DEEP_SEGMENTS = 4
+_PBO_RESEARCH_DEEP_COMBOS = 6
+
+
+def resolve_pbo_limits(
+    strategy: str,
+    config: dict | None,
+    *,
+    run_pbo: bool,
+    pbo_segments: int,
+) -> dict[str, Any]:
+    """Decide whether PBO runs and at what CSCV size.
+
+    ``pbo_profile=research`` (full pipeline) always runs PBO: GBM at 6/15,
+    deep/RL at cheap 4/6. Interactive Lab Validate stays clamped at 4/4 and
+    still skips deep/RL unless ``force_pbo``.
+    """
+    cfg = dict(config or {})
+    strat = str(strategy or "").upper()
+    profile = str(cfg.get("pbo_profile") or "interactive").strip().lower()
+    is_deep = strat in TORCH_TRAIN_STRATEGIES and strat != "RL_PPO_AGENT"
+    is_rl = strat == "RL_PPO_AGENT"
+    try:
+        user_combos = int(cfg.get("pbo_max_combos") or _PBO_INTERACTIVE_COMBOS)
+    except (TypeError, ValueError):
+        user_combos = _PBO_INTERACTIVE_COMBOS
+
+    if profile == "research":
+        if is_deep or is_rl:
+            return {
+                "run_pbo": True,
+                "n_segments": _PBO_RESEARCH_DEEP_SEGMENTS,
+                "max_combos": _PBO_RESEARCH_DEEP_COMBOS,
+                "skip_reason": None,
+                "cheap_pbo": True,
+            }
+        return {
+            "run_pbo": True,
+            "n_segments": _PBO_RESEARCH_GBM_SEGMENTS,
+            "max_combos": _PBO_RESEARCH_GBM_COMBOS,
+            "skip_reason": None,
+            "cheap_pbo": False,
+        }
+
+    segs = min(max(2, int(pbo_segments or _PBO_INTERACTIVE_SEGMENTS)), _PBO_INTERACTIVE_SEGMENTS)
+    combos = min(max(1, user_combos), _PBO_INTERACTIVE_COMBOS)
+    if run_pbo and (is_deep or is_rl) and not bool(cfg.get("force_pbo")):
+        return {
+            "run_pbo": False,
+            "n_segments": segs,
+            "max_combos": combos,
+            "skip_reason": "deep_too_expensive" if is_deep else "rl_too_expensive",
+            "cheap_pbo": False,
+        }
+    return {
+        "run_pbo": bool(run_pbo),
+        "n_segments": segs,
+        "max_combos": combos,
+        "skip_reason": None,
+        "cheap_pbo": False,
+    }
+
+
+def _pbo_compute_config(cfg: dict, limits: dict) -> dict:
+    """Config for CSCV retrains — cheap fidelity only for research deep/RL PBO."""
+    out = dict(cfg)
+    if not limits.get("cheap_pbo"):
+        return out
+    out["wf_capacity_parity"] = False
+    out["force_pbo"] = True
+    return out
+
 
 def _assess_candle_integrity(candles: list, timeframe: str | None = None) -> dict[str, Any]:
     """Compute candle integrity metrics for the train-time DQ gate.
@@ -558,9 +635,9 @@ def run_validate_job(
         and not bool(cfg.get("wf_capacity_parity", True))
     ):
         cfg.setdefault("max_iter", 40)
-    # Transformer OOS uses in-memory torch; other strategies still export fold
-    # ONNX for strategy.evaluate — champion is restored after WF below.
-    if strat_u == "TRANSFORMER_SIGNAL":
+    # Transformer / LSTM OOS uses in-memory torch. Other strategies still
+    # export fold ONNX for strategy.evaluate — champion is restored after WF.
+    if strat_u in ("TRANSFORMER_SIGNAL", "LSTM_DIRECTION"):
         cfg.setdefault("skip_onnx_export", True)
 
     champion_snap = _backup_live_champion(strat_u, symbol, cfg.get("timeframe"))
@@ -589,10 +666,6 @@ def run_validate_job(
             except (TypeError, ValueError):
                 ep = int(cfg["wf_epochs"])
             cfg["epochs"] = min(max(1, ep), int(cfg["wf_epochs"]))
-        # CSCV PBO re-trains deep models many times — skip unless force_pbo.
-        if run_pbo and not bool(cfg.get("force_pbo")):
-            run_pbo = False
-            cfg["_pbo_skipped"] = "deep_too_expensive"
 
     if strat_u == "RL_PPO_AGENT":
         cfg.setdefault("wf_use_gpu", True)
@@ -617,9 +690,13 @@ def run_validate_job(
                 user_vmax = 0
             if user_vmax <= 0:
                 cfg["validate_max_bars"] = 2000
-        if run_pbo and not bool(cfg.get("force_pbo")):
-            run_pbo = False
-            cfg["_pbo_skipped"] = "rl_too_expensive"
+
+    pbo_limits = resolve_pbo_limits(
+        strat_u, cfg, run_pbo=run_pbo, pbo_segments=pbo_segments,
+    )
+    run_pbo = bool(pbo_limits["run_pbo"])
+    if pbo_limits.get("skip_reason"):
+        cfg["_pbo_skipped"] = pbo_limits["skip_reason"]
 
     max_bars = int(cfg.get("validate_max_bars", 12_000 if wf_parity else 2500))
     # Fast mode keeps a hard ceiling so interactive Validate stays responsive.
@@ -678,9 +755,9 @@ def run_validate_job(
             from app.services.bots.ml_pbo_validator import compute_ml_pbo
             result["pbo"] = compute_ml_pbo(
                 strategy, symbol, candles,
-                config=cfg,
-                n_segments=min(pbo_segments, 4),
-                max_combos=min(4, int(cfg.get("pbo_max_combos", 4))),
+                config=_pbo_compute_config(cfg, pbo_limits),
+                n_segments=int(pbo_limits["n_segments"]),
+                max_combos=int(pbo_limits["max_combos"]),
             )
         except Exception as exc:
             logger.exception("PBO failed for %s/%s", strategy, symbol)

@@ -533,7 +533,12 @@ def update_ml_job_progress(job_id: str, progress: dict[str, Any] | None) -> dict
     if snapshot:
         # Throttle DB writes: only persist every ~5% or phase change via pct buckets.
         pct = int((snapshot.get("progress") or {}).get("pct") or 0)
-        if pct % 5 == 0 or pct >= 99 or (snapshot.get("progress") or {}).get("phase") in ("queued", "done", "error"):
+        phase = str((snapshot.get("progress") or {}).get("phase") or "")
+        persist_phases = {
+            "queued", "done", "error", "cancelled",
+            "early_stop", "export", "fold-train", "metrics",
+        }
+        if pct % 5 == 0 or pct >= 99 or phase in persist_phases:
             _persist_ml_job_row(snapshot)
     return snapshot
 

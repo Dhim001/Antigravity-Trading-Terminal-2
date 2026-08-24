@@ -90,10 +90,15 @@ def evaluate_risk_trigger(
     take_profit_price: float | None,
     chandelier_stop_enabled: bool = False,
     chandelier_multiplier: float = 3.0,
+    chandelier_arm_r: float = 0.0,
+    chandelier_tighten_r: float = 2.0,
+    chandelier_tighten_mult: float = 2.0,
     high_watermark: float | None = None,
     low_watermark: float | None = None,
     entry_atr: float | None = None,
     current_atr: float | None = None,
+    bar_high: float | None = None,
+    bar_low: float | None = None,
 ) -> tuple[str | None, float | None, float | None, float | None]:
     """
     Returns (trigger_type 'SL'|'TP'|None, updated trailing stop_loss_price, updated_high, updated_low).
@@ -105,52 +110,74 @@ def evaluate_risk_trigger(
     tp_price = take_profit_price
     trigger_type = None
 
-    updated_high = high_watermark
-    updated_low = low_watermark
+    # Last trade plus optional candle wicks (live OMS). Backtests already pass
+    # bar high/low via the watermark the bar loop maintains.
+    excursion_high = market_price
+    excursion_low = market_price
+    if bar_high is not None:
+        try:
+            bh = float(bar_high)
+            if bh > 0:
+                excursion_high = max(excursion_high, bh)
+        except (TypeError, ValueError):
+            pass
+    if bar_low is not None:
+        try:
+            bl = float(bar_low)
+            if bl > 0:
+                excursion_low = min(excursion_low, bl)
+        except (TypeError, ValueError):
+            pass
 
     # Always track excursion marks (MAE/MFE). Previously only the chandelier
     # branch updated these, so signal / %-stop exits reported mfe=0 forever.
-    if size > 0:
-        updated_high = (
-            max(float(high_watermark), market_price)
-            if high_watermark is not None
-            else market_price
-        )
-        updated_low = (
-            min(float(low_watermark), market_price)
-            if low_watermark is not None
-            else market_price
-        )
-    else:
-        updated_high = (
-            max(float(high_watermark), market_price)
-            if high_watermark is not None
-            else market_price
-        )
-        updated_low = (
-            min(float(low_watermark), market_price)
-            if low_watermark is not None
-            else market_price
-        )
+    updated_high = (
+        max(float(high_watermark), excursion_high)
+        if high_watermark is not None
+        else excursion_high
+    )
+    updated_low = (
+        min(float(low_watermark), excursion_low)
+        if low_watermark is not None
+        else excursion_low
+    )
 
     if chandelier_stop_enabled:
+        from app.services.bots.profit_lock import ratchet_chandelier_stop
+
         atr = current_atr if current_atr is not None and current_atr > 0 else (entry_atr or 0.0)
         if size > 0:
-            if atr > 0:
-                profit_atr_units = (updated_high - avg_price) / atr
-                effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
-                potential_sl = updated_high - effective_mult * atr
-                sl_price = max(sl_price, potential_sl) if sl_price is not None else potential_sl
+            sl_price = ratchet_chandelier_stop(
+                is_long=True,
+                avg_price=avg_price,
+                extreme=float(updated_high if updated_high is not None else market_price),
+                atr=float(atr or 0.0),
+                current_sl=sl_price,
+                multiplier=chandelier_multiplier,
+                arm_r=chandelier_arm_r,
+                tighten_r=chandelier_tighten_r,
+                tighten_mult=chandelier_tighten_mult,
+                stop_loss_percent=stop_loss_percent,
+                entry_atr=entry_atr,
+            )
             if sl_price is not None and market_price <= sl_price:
                 trigger_type = "SL"
             elif tp_price is not None and market_price >= tp_price:
                 trigger_type = "TP"
         elif size < 0:
-            if atr > 0:
-                profit_atr_units = (avg_price - updated_low) / atr
-                effective_mult = 2.0 if profit_atr_units >= 2.0 else chandelier_multiplier
-                potential_sl = updated_low + effective_mult * atr
-                sl_price = min(sl_price, potential_sl) if sl_price is not None else potential_sl
+            sl_price = ratchet_chandelier_stop(
+                is_long=False,
+                avg_price=avg_price,
+                extreme=float(updated_low if updated_low is not None else market_price),
+                atr=float(atr or 0.0),
+                current_sl=sl_price,
+                multiplier=chandelier_multiplier,
+                arm_r=chandelier_arm_r,
+                tighten_r=chandelier_tighten_r,
+                tighten_mult=chandelier_tighten_mult,
+                stop_loss_percent=stop_loss_percent,
+                entry_atr=entry_atr,
+            )
             if sl_price is not None and market_price >= sl_price:
                 trigger_type = "SL"
             elif tp_price is not None and market_price <= tp_price:
@@ -185,17 +212,44 @@ def sl_tp_limit_fill_price(
     market_price: float,
     stop_loss_price: float | None = None,
     take_profit_price: float | None = None,
+    previous_stop_loss_price: float | None = None,
+    size: float | None = None,
 ) -> float:
     """
     Fill price for SL/TP exits — limit-style at the stored trigger level.
 
-    Matches backtester intra-bar logic: when price gaps through TP/SL, fill at
-    the limit level rather than the current (gapped) market quote.
+    Matches backtester intra-bar logic: when price gaps through a *resting*
+    TP/SL, fill at the limit rather than the gapped quote.
+
+    A chandelier ratchet that invents a new stop already through last is not
+    a resting order — fill at last, not at the new stop (recycle / wick-arm).
+    Pass ``size`` + ``previous_stop_loss_price`` to enable that guard.
     """
     if trigger_type == "TP" and take_profit_price is not None:
         return float(take_profit_price)
     if trigger_type == "SL" and stop_loss_price is not None:
-        return float(stop_loss_price)
+        new_sl = float(stop_loss_price)
+        last = float(market_price)
+        if size is None:
+            return new_sl
+        prev = None
+        if previous_stop_loss_price is not None:
+            try:
+                prev = float(previous_stop_loss_price)
+            except (TypeError, ValueError):
+                prev = None
+        is_long = float(size) > 0
+        if is_long:
+            if prev is not None and last <= prev:
+                return prev
+            if prev is None or new_sl > prev + _EPS:
+                return last
+        else:
+            if prev is not None and last >= prev:
+                return prev
+            if prev is None or new_sl < prev - _EPS:
+                return last
+        return new_sl
     return float(market_price)
 
 
@@ -260,7 +314,8 @@ def list_owners_grouped() -> dict[str, list[dict]]:
             SELECT bp.bot_id, bp.symbol, bp.size, bp.avg_price,
                    bp.stop_loss_percent, bp.take_profit_percent, bp.stop_loss_price, bp.take_profit_price,
                    bp.high_watermark, bp.low_watermark, bp.entry_atr, bp.opened_at,
-                   b.config as bot_config, b.timeframe as bot_timeframe
+                   b.config as bot_config, b.timeframe as bot_timeframe,
+                   b.strategy as bot_strategy
             FROM bot_positions bp
             LEFT JOIN bots b ON bp.bot_id = b.id
             WHERE ABS(bp.size) > ?
@@ -285,6 +340,7 @@ def list_owners_grouped() -> dict[str, list[dict]]:
                 "opened_at": float(row["opened_at"]) if row["opened_at"] is not None else None,
                 "bot_config": json.loads(row["bot_config"]) if row["bot_config"] else {},
                 "timeframe": row["bot_timeframe"] or "1m",
+                "strategy": row["bot_strategy"] or "",
             })
         return grouped
     finally:
@@ -302,7 +358,8 @@ def get_symbol_owners(symbol: str) -> list[dict]:
             SELECT bp.bot_id, bp.size, bp.avg_price,
                    bp.stop_loss_percent, bp.take_profit_percent, bp.stop_loss_price, bp.take_profit_price,
                    bp.high_watermark, bp.low_watermark, bp.entry_atr, bp.opened_at,
-                   b.config as bot_config, b.timeframe as bot_timeframe
+                   b.config as bot_config, b.timeframe as bot_timeframe,
+                   b.strategy as bot_strategy
             FROM bot_positions bp
             LEFT JOIN bots b ON bp.bot_id = b.id
             WHERE bp.symbol = ? AND ABS(bp.size) > ?
@@ -325,6 +382,7 @@ def get_symbol_owners(symbol: str) -> list[dict]:
                 "opened_at": float(row["opened_at"]) if row["opened_at"] is not None else None,
                 "bot_config": json.loads(row["bot_config"]) if row["bot_config"] else {},
                 "timeframe": row["bot_timeframe"] or "1m",
+                "strategy": row["bot_strategy"] or "",
             }
             for row in cursor.fetchall()
         ]
@@ -472,7 +530,7 @@ def apply_fill(
     cursor = conn.cursor()
     try:
         # Load bot config to see if chandelier is enabled
-        cursor.execute("SELECT config, timeframe FROM bots WHERE id = ?", (bot_id,))
+        cursor.execute("SELECT config, timeframe, strategy FROM bots WHERE id = ?", (bot_id,))
         bot_row = cursor.fetchone()
         entry_atr = None
         # Seed both excursion marks at fill price; evaluate_risk_trigger expands them.
@@ -480,7 +538,10 @@ def apply_fill(
         low_watermark = price
 
         if bot_row:
-            bot_config = json.loads(bot_row["config"]) if bot_row["config"] else {}
+            from app.services.bots.indicators import merge_strategy_config
+
+            raw_cfg = json.loads(bot_row["config"]) if bot_row["config"] else {}
+            bot_config = merge_strategy_config(bot_row["strategy"] or "", raw_cfg)
             timeframe = bot_row["timeframe"] or "1m"
             if bot_config.get("chandelier_stop_enabled"):
                 if feed is not None:

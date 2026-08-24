@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   advancePipeline,
+  applyPipelineSnapshot,
   cancelPipeline,
   completePipeline,
   failPipeline,
   getAutoDeployMode,
   getMlPipeline,
   isPipelineActive,
+  PIPELINE_STEPPER_STAGES,
   resetPipeline,
   setAutoDeployMode,
   setPipelineTrainResult,
@@ -151,5 +153,38 @@ describe('mlPipeline', () => {
     const last = getMlPipeline().transitionLog.at(-1);
     expect(last.to).toBe('ERROR');
     expect(last.error).toBe('boom');
+  });
+
+  it('includes Search in the stepper', () => {
+    expect(PIPELINE_STEPPER_STAGES[0]).toEqual({ id: 'SEARCH', label: 'Search' });
+  });
+
+  it('starts research profile at SEARCH', () => {
+    startPipeline({
+      strategy: 'ML_SIGNAL_BOOST',
+      symbol: 'BTCUSDT',
+      profile: 'research',
+    });
+    expect(getMlPipeline().stage).toBe('SEARCH');
+  });
+
+  it('hydrates a server snapshot as the projection', () => {
+    applyPipelineSnapshot({
+      pipeline_id: 'srv-1',
+      stage: 'VALIDATING',
+      strategy: 'ML_SIGNAL_BOOST',
+      symbol: 'ETHUSDT',
+      profile: 'research',
+      owned_by_server: true,
+      auto_deploy_mode: 'paper',
+      train_result: { ok: true },
+      events: [{ from: 'TRAINING', to: 'VALIDATING', created_at: '2026-08-22T00:00:00Z' }],
+    });
+    const s = getMlPipeline();
+    expect(s.pipelineId).toBe('srv-1');
+    expect(s.ownedByServer).toBe(true);
+    expect(s.stage).toBe('VALIDATING');
+    expect(s.trainResult).toEqual({ ok: true });
+    expect(s.transitionLog[0].from).toBe('TRAINING');
   });
 });

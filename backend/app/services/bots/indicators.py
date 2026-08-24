@@ -252,8 +252,8 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "macd_signal": 9,
         "atr_length": 14,
         "adx_length": 14,
-        # 4-way softmax → uniform ≈0.25; require a modest edge above chance.
-        "min_confidence": 0.28,
+        # 4-way softmax → uniform ≈0.25; require a real edge above chance.
+        "min_confidence": 0.40,
         "model_symbol": "",
         "model_version": "",
         "model_artifact": "",
@@ -309,6 +309,15 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
         "cusum_threshold": 1.0,
         "exclude_features": [],
         "feature_scheme": "v8",
+        # Initial 2% hard stop stays wide through 1m chop; chandelier arms at +1R
+        # and then trails 2×ATR from the high so a 2.2% run cannot exit at +0.17%.
+        "trailing_stop_percent": 2.0,
+        "chandelier_stop_enabled": True,
+        "chandelier_multiplier": 2.0,
+        "chandelier_arm_r": 1.0,
+        "chandelier_tighten_r": 2.0,
+        "chandelier_tighten_mult": 2.0,
+        "horizon_exit_bars": 60,
     },
     "VAE_REGIME_DETECTOR": {
         "rsi_length": 14,

@@ -100,6 +100,35 @@ class TestTcnStrategy:
         result = strat.evaluate(bar)
         assert result["signal"] == "NONE"
 
+    def test_horizon_exit_after_sixty_bars_without_consensus(self):
+        from app.services.bots.strategies_tcn import TcnMultiHorizonStrategy
+        strat = TcnMultiHorizonStrategy({"symbol": "BTCUSDT", "horizon_exit_bars": 60})
+        first = strat._maybe_horizon_exit({"signal": "BUY", "confidence": 0.4})
+        assert first["signal"] == "BUY"
+        last = {"signal": "NONE"}
+        for _ in range(59):
+            last = strat._maybe_horizon_exit({"signal": "NONE"})
+            assert last["signal"] == "NONE"
+        last = strat._maybe_horizon_exit({"signal": "NONE"})
+        assert last["signal"] == "CLOSE"
+        assert last["horizon_exit"] is True
+        assert last["expired_side"] == "BUY"
+        assert last["horizon_exit_bars"] == 60
+        again = strat._maybe_horizon_exit({"signal": "NONE"})
+        assert again["signal"] == "CLOSE"
+
+    def test_fresh_consensus_resets_horizon_clock(self):
+        from app.services.bots.strategies_tcn import TcnMultiHorizonStrategy
+        strat = TcnMultiHorizonStrategy({"symbol": "BTCUSDT", "horizon_exit_bars": 5})
+        strat._maybe_horizon_exit({"signal": "BUY"})
+        for _ in range(4):
+            strat._maybe_horizon_exit({"signal": "NONE"})
+        again = strat._maybe_horizon_exit({"signal": "BUY"})
+        assert again["signal"] == "BUY"
+        for _ in range(4):
+            out = strat._maybe_horizon_exit({"signal": "NONE"})
+            assert out["signal"] == "NONE"
+
 
 class TestTcnRegistration:
     def test_factory(self):

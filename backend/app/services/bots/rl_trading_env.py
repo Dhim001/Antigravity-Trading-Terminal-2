@@ -4,6 +4,10 @@ Gymnasium-style API (reset / step) without the Gymnasium dependency.
 Wraps a candle series with indicators into a simulated trading environment
 where an agent can take discrete actions and receive rewards.
 
+Decision at completed bar t, fill at bar t+1 open. ATR stop/TP may still
+hit on that fill bar's high/low. Reward is Δlog-equity − λ·ΔDD − turnover;
+R-multiple is recorded in info / episode stats only.
+
 Action space (Discrete, 4):
     0 = HOLD   — do nothing
     1 = BUY    — open long / close short
@@ -43,9 +47,6 @@ SIDE_FLAT = 0
 SIDE_LONG = 1
 SIDE_SHORT = -1
 
-# Reward scaling constants
-_TRADE_COST = 0.001        # legacy fallback when costs are explicitly zero
-_HOLDING_COST = 0.00005    # small per-step cost for holding a position
 _MAX_HOLDING_BARS = 100    # normalize bars_since_entry
 # Default episode cap — without this, one "episode" walks the entire candle
 # history (50k+ bars on Apply & Retrain), so Optuna budgets (8k–65k steps)
@@ -117,6 +118,9 @@ class TradingEnv:
         self._symbol = str(self.config.get("symbol") or "").strip() or None
         self._progress_path = progress_path
         from app.services.bots.rl_risk import (
+            DEFAULT_SCALER_FIT_FRAC,
+            REWARD_DD_LAMBDA,
+            REWARD_TURNOVER_COEF,
             resolve_atr_stop_mult,
             resolve_rl_costs,
             resolve_take_profit_r,
@@ -125,6 +129,23 @@ class TradingEnv:
         self._fee_bps, self._slippage_bps = resolve_rl_costs(self.config)
         self._atr_stop_mult = resolve_atr_stop_mult(self.config)
         self._take_profit_r = resolve_take_profit_r(self.config)
+        try:
+            self._dd_lambda = float(self.config.get("reward_dd_lambda", REWARD_DD_LAMBDA))
+        except (TypeError, ValueError):
+            self._dd_lambda = REWARD_DD_LAMBDA
+        try:
+            self._turnover_coef = float(
+                self.config.get("reward_turnover_coef", REWARD_TURNOVER_COEF)
+            )
+        except (TypeError, ValueError):
+            self._turnover_coef = REWARD_TURNOVER_COEF
+        try:
+            self._scaler_fit_frac = float(
+                self.config.get("scaler_fit_frac", DEFAULT_SCALER_FIT_FRAC)
+            )
+        except (TypeError, ValueError):
+            self._scaler_fit_frac = DEFAULT_SCALER_FIT_FRAC
+        self._scaler_fit_frac = min(1.0, max(0.1, self._scaler_fit_frac))
         self._use_atr_stops = self.config.get("use_atr_stops")
         if self._use_atr_stops is None:
             self._use_atr_stops = True
@@ -144,6 +165,7 @@ class TradingEnv:
 
         # Pre-extract all feature vectors for speed
         self._feature_vectors: list[np.ndarray] = []
+        self._opens: list[float] = []
         self._closes: list[float] = []
         self._highs: list[float] = []
         self._lows: list[float] = []
@@ -153,7 +175,10 @@ class TradingEnv:
         _hb_t = 0.0
         for i in range(self.n_candles):
             c = candles[i]
-            self._closes.append(_safe_float(c.get("close")))
+            close_px = _safe_float(c.get("close"))
+            open_px = _safe_float(c.get("open"), close_px)
+            self._opens.append(open_px if open_px > 0 else close_px)
+            self._closes.append(close_px)
             self._highs.append(_safe_float(c.get("high")))
             self._lows.append(_safe_float(c.get("low")))
             atr = c.get("ATR_14") or c.get("ATRr_14") or c.get("atr")
@@ -193,19 +218,18 @@ class TradingEnv:
                     except Exception:
                         pass
 
-        # Compute feature-wise mean/std for normalization
-        if self._feature_vectors:
-            stacked = np.stack(self._feature_vectors)
-            self._feat_mean = stacked.mean(axis=0)
-            self._feat_std = stacked.std(axis=0)
-            self._feat_std = np.where(self._feat_std < 1e-8, 1.0, self._feat_std)
+        # Fit scaler on a train prefix only — full-file mean/std leaks the future.
+        # Walk-forward OOS passes a frozen fold scaler and skips this fit.
+        self._scaler_fit_n = 0
+        if feat_mean is not None and feat_std is not None:
+            self._feat_mean = np.zeros(N_FEATURES)
+            self._feat_std = np.ones(N_FEATURES)
+            self.set_feature_scaler(feat_mean, feat_std)
+        elif self._feature_vectors:
+            self._fit_train_scaler()
         else:
             self._feat_mean = np.zeros(N_FEATURES)
             self._feat_std = np.ones(N_FEATURES)
-
-        # Optional: lock train-fold scaler for honest OOS eval
-        if feat_mean is not None and feat_std is not None:
-            self.set_feature_scaler(feat_mean, feat_std)
 
         # State variables (set by reset)
         self._step_idx = 0
@@ -215,12 +239,25 @@ class TradingEnv:
         self._entry_step = 0
         self._equity = 1.0  # normalized starting equity
         self._prev_equity = 1.0
+        self._peak_equity = 1.0
+        self._max_dd = 0.0
         self._total_trades = 0
         self._stop_price = 0.0
         self._take_profit_price = 0.0
         self._stop_distance = 0.0
         self._closed_pnls: list[float] = []
         self._done = False
+
+    def _fit_train_scaler(self) -> None:
+        n = len(self._feature_vectors)
+        warmup = max(0, int(self.feature_lookback))
+        n_fit = max(warmup + 1, int(n * self._scaler_fit_frac))
+        n_fit = min(n, max(1, n_fit))
+        stacked = np.stack(self._feature_vectors[:n_fit])
+        self._feat_mean = stacked.mean(axis=0)
+        self._feat_std = stacked.std(axis=0)
+        self._feat_std = np.where(self._feat_std < 1e-8, 1.0, self._feat_std)
+        self._scaler_fit_n = n_fit
 
     def set_feature_scaler(self, feat_mean, feat_std) -> None:
         """Apply a frozen train-time feature scaler (WF OOS must not refit)."""
@@ -287,6 +324,8 @@ class TradingEnv:
         self._stop_distance = 0.0
         self._equity = 1.0
         self._prev_equity = 1.0
+        self._peak_equity = 1.0
+        self._max_dd = 0.0
         self._total_trades = 0
         self._closed_pnls: list[float] = []
         self._done = False
@@ -322,89 +361,124 @@ class TradingEnv:
         if self._done:
             return self._get_obs(), 0.0, True, {"reason": "already_done"}
 
-        close = self._closes[self._step_idx]
-        high = self._highs[self._step_idx] if self._step_idx < len(self._highs) else close
-        low = self._lows[self._step_idx] if self._step_idx < len(self._lows) else close
-
+        decision_idx = self._step_idx
+        fill_idx = decision_idx + 1
         raw_action = int(action)
         action = self._mask_entry_action(raw_action)
 
-        reward = 0.0
         info: dict[str, Any] = {
             "action": action,
             "raw_action": raw_action,
-            "step": self._step_idx,
+            "step": decision_idx,
+            "fill_idx": fill_idx,
             "entry_masked": action != raw_action,
+            "r_multiple": 0.0,
         }
+        eq_before = self._equity
+        peak_before = self._peak_equity
         traded = False
-        stop_hit = False
+        r_acc = 0.0
 
-        # ATR×1.5 / 1.5R exits fire before the policy can override them.
-        if self._position_side != SIDE_FLAT and self._use_atr_stops:
-            hit_px, hit_reason = self._barrier_hit(high, low)
-            if hit_px is not None:
-                reward += self._close_position(hit_px)
+        def _apply_close(price: float) -> None:
+            nonlocal traded, r_acc
+            r_acc += self._close_position(price)
+            traded = True
+
+        if fill_idx >= self.n_candles:
+            if self._position_side != SIDE_FLAT:
+                close_px = self._closes[min(decision_idx, self.n_candles - 1)]
+                exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
+                _apply_close(self._fill_price(close_px, exit_side))
+            self._done = True
+            info["reason"] = "end_of_data"
+            if traded:
+                self._total_trades += 1
+            reward = self._finish_step_reward(eq_before, peak_before, traded)
+            info["r_multiple"] = r_acc
+            self._fill_step_info(info, traded)
+            return self._get_obs(), reward, True, info
+
+        fill_open = self._opens[fill_idx] if fill_idx < len(self._opens) else self._closes[fill_idx]
+        if fill_open <= 0:
+            fill_open = self._closes[fill_idx]
+        fill_high = self._highs[fill_idx] if fill_idx < len(self._highs) else fill_open
+        fill_low = self._lows[fill_idx] if fill_idx < len(self._lows) else fill_open
+
+        # Decision used completed bar t; fill and barriers use bar t+1.
+        self._step_idx = fill_idx
+
+        if action == ACTION_BUY:
+            if self._position_side == SIDE_SHORT:
+                _apply_close(self._fill_price(fill_open, "BUY"))
+            if self._position_side == SIDE_FLAT:
+                self._open_position(SIDE_LONG, self._fill_price(fill_open, "BUY"))
                 traded = True
-                stop_hit = True
+        elif action == ACTION_SELL:
+            if self._position_side == SIDE_LONG:
+                _apply_close(self._fill_price(fill_open, "SELL"))
+            if self._position_side == SIDE_FLAT:
+                self._open_position(SIDE_SHORT, self._fill_price(fill_open, "SELL"))
+                traded = True
+        elif action == ACTION_CLOSE:
+            if self._position_side != SIDE_FLAT:
+                exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
+                _apply_close(self._fill_price(fill_open, exit_side))
+
+        # After the next-open fill, ATR stop/TP may still hit on this bar's H/L.
+        if self._position_side != SIDE_FLAT and self._use_atr_stops:
+            hit_px, hit_reason = self._barrier_hit(fill_high, fill_low)
+            if hit_px is not None:
+                _apply_close(hit_px)
                 info["barrier"] = hit_reason
-                action = ACTION_HOLD
 
-        # ── Execute action ────────────────────────────────────────────
-        if not stop_hit:
-            if action == ACTION_BUY:
-                if self._position_side == SIDE_SHORT:
-                    reward += self._close_position(self._fill_price(close, "BUY"))
-                    traded = True
-                if self._position_side == SIDE_FLAT:
-                    self._open_position(SIDE_LONG, self._fill_price(close, "BUY"))
-                    traded = True
-
-            elif action == ACTION_SELL:
-                if self._position_side == SIDE_LONG:
-                    reward += self._close_position(self._fill_price(close, "SELL"))
-                    traded = True
-                if self._position_side == SIDE_FLAT:
-                    self._open_position(SIDE_SHORT, self._fill_price(close, "SELL"))
-                    traded = True
-
-            elif action == ACTION_CLOSE:
-                if self._position_side != SIDE_FLAT:
-                    exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
-                    reward += self._close_position(self._fill_price(close, exit_side))
-                    traded = True
-
-        # ACTION_HOLD → no position change
-
-        # Holding cost only — no MTM bonus (live is stopped on ATR, not mark).
-        if self._position_side != SIDE_FLAT:
-            reward -= _HOLDING_COST
+        if fill_idx >= self._episode_end_idx or fill_idx >= self.n_candles - 1:
+            if self._position_side != SIDE_FLAT:
+                final_close = self._closes[fill_idx]
+                exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
+                _apply_close(self._fill_price(final_close, exit_side))
+            self._done = True
+            info["reason"] = (
+                "end_of_data"
+                if fill_idx >= self.n_candles - 1
+                else "episode_horizon"
+            )
 
         if traded:
             self._total_trades += 1
 
-        # ── Advance step ──────────────────────────────────────────────
-        self._step_idx += 1
-        if self._step_idx >= self._episode_end_idx or self._step_idx >= self.n_candles - 1:
-            # Force close at end of episode window / data
-            if self._position_side != SIDE_FLAT:
-                final_close = self._closes[min(self._step_idx, self.n_candles - 1)]
-                exit_side = "SELL" if self._position_side == SIDE_LONG else "BUY"
-                reward += self._close_position(self._fill_price(final_close, exit_side))
-            self._done = True
-            info["reason"] = (
-                "end_of_data"
-                if self._step_idx >= self.n_candles - 1
-                else "episode_horizon"
-            )
+        reward = self._finish_step_reward(eq_before, peak_before, traded)
+        info["r_multiple"] = r_acc
+        self._fill_step_info(info, traded)
+        return self._get_obs(), reward, self._done, info
 
+    def _finish_step_reward(
+        self, eq_before: float, peak_before: float, traded: bool,
+    ) -> float:
+        from app.services.bots.rl_risk import path_step_reward
+
+        eq = self._equity
+        reward = path_step_reward(
+            eq_before,
+            eq,
+            peak_before,
+            traded=traded,
+            dd_lambda=self._dd_lambda,
+            turnover_coef=self._turnover_coef,
+        )
+        self._peak_equity = max(peak_before, eq)
+        if self._peak_equity > 1e-12:
+            dd = max(0.0, (self._peak_equity - eq) / self._peak_equity)
+            self._max_dd = max(self._max_dd, dd)
+        self._prev_equity = eq
+        return float(reward)
+
+    def _fill_step_info(self, info: dict[str, Any], traded: bool) -> None:
         info["equity"] = self._equity
         info["position_side"] = self._position_side
         info["total_trades"] = self._total_trades
         info["traded"] = traded
         info["fee_bps"] = self._fee_bps
         info["slippage_bps"] = self._slippage_bps
-
-        return self._get_obs(), reward, self._done, info
 
     def _get_obs(self) -> np.ndarray:
         """Construct observation vector: normalized features + position state."""
@@ -476,7 +550,7 @@ class TradingEnv:
             self._equity *= (1.0 - fee)
 
     def _close_position(self, price: float) -> float:
-        """Close position and return realized R (pnl / stop distance)."""
+        """Close position, update equity, return R-multiple for diagnostics."""
         if self._entry_price <= 0:
             self._position_side = SIDE_FLAT
             return 0.0
@@ -532,5 +606,6 @@ class TradingEnv:
             "slippage_bps": self._slippage_bps,
             "atr_stop_mult": self._atr_stop_mult,
             "take_profit_r": self._take_profit_r,
+            "max_drawdown": round(self._max_dd, 6),
             **payoff,
         }
